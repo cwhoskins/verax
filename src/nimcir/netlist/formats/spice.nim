@@ -41,6 +41,23 @@ let deviceKindByPrefix = {
   'V': "voltage_source", 'I': "current_source",
 }.toTable
 
+let prefixByDeviceKind = block:
+  var t: Table[string, char]
+  for prefix, kind in deviceKindByPrefix:
+    t[kind] = prefix
+  t
+
+proc designatorPrefix*(kind: string): char =
+  ## The SPICE reference-designator prefix letter for a known device `kind`
+  ## (e.g. `"voltage_source"` -> `'V'`). Raises `NetlistFormatError` if
+  ## `kind` isn't one of the built-in device kinds this module recognizes --
+  ## SPICE infers device type from this letter, not from any `kind` field,
+  ## so getting it right matters for anything synthesizing new components
+  ## meant to be simulated (see `nimcir/spice`).
+  if not prefixByDeviceKind.hasKey(kind):
+    raise newException(NetlistFormatError, "no SPICE designator prefix for kind: " & kind)
+  prefixByDeviceKind[kind]
+
 let pinTemplates = {
   "resistor": @[("1", ptPassive), ("2", ptPassive)],
   "capacitor": @[("1", ptPassive), ("2", ptPassive)],
@@ -255,7 +272,11 @@ proc writeSubcktBlock(s: Stream, templ: Netlist) =
     s.writeLine(formatInstanceLine(child))
   s.writeLine(".ENDS " & templ.name)
 
-proc writeNetlist*(nl: Netlist, s: Stream) =
+proc writeNetlist*(nl: Netlist, s: Stream, cards: seq[string] = @[]) =
+  ## `cards` are raw control/analysis card lines (e.g. `@[".op"]`), written
+  ## after the `.MODEL` lines and before `.END`. Empty by default, so this
+  ## writes pure topology exactly as before -- validating a generated deck
+  ## by actually simulating it (see `nimcir/spice`) is what `cards` is for.
   s.writeLine(nl.name)
 
   var templates: OrderedTable[string, Netlist]
@@ -273,11 +294,14 @@ proc writeNetlist*(nl: Netlist, s: Stream) =
   for name, modelLine in nl.models:
     s.writeLine(".MODEL " & name & " " & modelLine)
 
+  for card in cards:
+    s.writeLine(card)
+
   s.writeLine(".END")
 
-proc writeNetlistFile*(nl: Netlist, path: string) =
+proc writeNetlistFile*(nl: Netlist, path: string, cards: seq[string] = @[]) =
   let s = newFileStream(path, fmWrite)
   if s == nil:
     raise newException(NetlistFormatError, "cannot open for writing: " & path)
   defer: s.close()
-  writeNetlist(nl, s)
+  writeNetlist(nl, s, cards)

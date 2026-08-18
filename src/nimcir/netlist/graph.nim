@@ -44,6 +44,19 @@ proc disconnect*(p: Pin) =
         break
     p.net = nil
 
+proc removeComponent*(nl: Netlist, designator: string) =
+  ## Disconnects every pin of `nl.components[designator]`, then removes it
+  ## from `nl.components` (and from `nl.children` if it had a `subNetlist`).
+  ## Raises `NetlistError` if `designator` isn't present.
+  if not nl.components.hasKey(designator):
+    raise newException(NetlistError, "no such component: " & designator)
+  let c = nl.components[designator]
+  for _, p in c.pins:
+    disconnect(p)
+  nl.components.del(designator)
+  if c.subNetlist != nil:
+    nl.children.del(designator)
+
 proc connect*(p: Pin, n: Net) =
   ## Wires `p` <-> `n` in both directions. Idempotent. If `p` was already
   ## connected to a different net, it is disconnected from that net first.
@@ -114,6 +127,7 @@ proc clone*(nl: Netlist, globalNets: var OrderedTable[string, Net]): Netlist =
   for designator, oldComp in nl.components:
     let newComp = newComponent(designator, oldComp.name, oldComp.partNumber, oldComp.kind)
     newComp.attrs = oldComp.attrs
+    newComp.simReplace = oldComp.simReplace
     newComp.netlist = result
     result.components[designator] = newComp
     compMap[designator] = newComp

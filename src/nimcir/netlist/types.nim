@@ -48,6 +48,10 @@ type
     subNetlist*: Netlist
       ## Set only when this component instantiates a child hierarchical
       ## netlist (e.g. a SPICE `X` device).
+    simReplace*: SimReplacement
+      ## Set only when this component has a simulation-only replacement
+      ## defined (see `nimcir/spice`). `nil` for every component that has
+      ## none -- this field never affects non-simulation use of the netlist.
     attrs*: OrderedTable[string, string]
 
   Net* = ref object
@@ -75,6 +79,31 @@ type
     models*: OrderedTable[string, string]
       ## SPICE `.MODEL` passthrough: name -> raw remainder-of-line.
     attrs*: OrderedTable[string, string]
+
+  SimReplacement* = ref object
+    ## A simulation-only override for a `Component`: "for simulation
+    ## purposes, replace this component with a device of `kind`, wired as
+    ## `pinNets` describes". Stored on `Component.simReplace` -- co-located
+    ## with the component's own definition so it can't drift out of sync
+    ## with it -- but it never mutates the component itself; it only takes
+    ## effect when a simulation-ready netlist is materialized from a clone
+    ## (see `nimcir/spice/transform.materializeSimNetlist`).
+    kind*: string
+      ## The replacement component's `kind`, e.g. "voltage_source".
+    designator*: string
+      ## Reference designator for the replacement. Empty string means
+      ## "auto-derive a SPICE-convention-correct prefix for `kind` at
+      ## materialize time" (see `nimcir/spice/transform.replaceComponent`).
+    partNumber*: string
+    pinNets*: OrderedTable[string, string]
+      ## Replacement pin name -> net NAME (not a `Net` reference: this is
+      ## captured against the original netlist but only ever applied to a
+      ## later clone of it, which has its own distinct `Net` objects with
+      ## the same names).
+    attrs*: OrderedTable[string, string]
+
+proc newSimReplacement*(kind: string, designator = "", partNumber = ""): SimReplacement =
+  SimReplacement(kind: kind, designator: designator, partNumber: partNumber)
 
 proc newPin*(name: string, kind: PinType = ptUnknown): Pin =
   Pin(name: name, kind: kind)

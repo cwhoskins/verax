@@ -16,6 +16,22 @@
 ## `attrs` already being an open-ended bag elsewhere in this codebase (e.g.
 ## the SPICE reader's `value`/model passthrough).
 ##
+## A `component` block may also contain one `simReplace` statement, which
+## records a simulation-only replacement for that component (see
+## `nimcir/spice`) without describing anything about the real design -- it
+## only ever sets `Component.simReplace`, never `connect`s/mutates the
+## component itself:
+##
+## ```nim
+## component U1, kind = "regulator_ic", partNumber = "LM317":
+##   pin "IN", vin
+##   pin "OUT", vout
+##   pin "GND", gnd
+##   simReplace kind = "voltage_source":
+##     pin "+", vout
+##     pin "-", gnd
+## ```
+##
 ## ```nim
 ## import nimcir/netlist/dsl
 ##
@@ -162,6 +178,63 @@ proc handlePin(compVar: NimNode, stmt: NimNode): NimNode =
     result.add dispatchField(pinVar, pinKnownFields, p)
   result.copyLineInfo(stmt)
 
+proc handleSimReplacePin(replVar: NimNode, stmt: NimNode): NimNode =
+  var args: seq[NimNode]
+  for i in 1 ..< stmt.len: args.add stmt[i]
+  let (rest, blk) = stripTrailingBlock(args)
+  if blk != nil:
+    error("`pin` does not take a block", stmt)
+  if rest.len != 2:
+    error("`pin` inside `simReplace` requires exactly a pin name and a net", stmt)
+
+  let pinNameNode = rest[0]
+  let netNode = rest[1]
+  result = newAssignment(
+    newTree(nnkBracketExpr, newDotExpr(replVar, ident"pinNets"), pinNameNode),
+    newDotExpr(netNode, ident"name"))
+  result.copyLineInfo(stmt)
+
+proc handleSimReplace(compVar: NimNode, stmt: NimNode): NimNode =
+  ## Builds a `SimReplacement` and assigns it to `compVar.simReplace`. This
+  ## only ever produces a data assignment -- never a `connect`/`addPort`/
+  ## `instantiate` call -- so it doesn't touch the component being described;
+  ## the override is inert data sitting next to it (see `nimcir/spice`).
+  var args: seq[NimNode]
+  for i in 1 ..< stmt.len: args.add stmt[i]
+  let (rest, blk) = stripTrailingBlock(args)
+
+  var kindNode: NimNode = nil
+  var designatorNode: NimNode = newLit("")
+  var partNumberNode: NimNode = newLit("")
+  var fieldPairs: seq[NimNode]
+  for a in rest:
+    a.expectKind(nnkExprEqExpr)
+    case a[0].strVal
+    of "kind": kindNode = a[1]
+    of "designator": designatorNode = a[1]
+    of "partNumber": partNumberNode = a[1]
+    else: fieldPairs.add(a)
+  if kindNode == nil:
+    error("`simReplace` requires `kind = ...`", stmt)
+
+  let replVar = genSym(nskLet, "simRepl")
+  result = newStmtList()
+  result.add newLetStmt(replVar,
+    newCall(ident"newSimReplacement", kindNode, designatorNode, partNumberNode))
+  for p in fieldPairs:
+    result.add dispatchField(replVar, [], p)
+
+  if blk != nil:
+    for inner in blk:
+      if inner.kind == nnkCommentStmt: continue
+      if inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("pin"):
+        result.add handleSimReplacePin(replVar, inner)
+      else:
+        error("only `pin` statements are allowed inside a `simReplace` block", inner)
+
+  result.add newAssignment(newDotExpr(compVar, ident"simReplace"), replVar)
+  result.copyLineInfo(stmt)
+
 proc handleComponent(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
   var args: seq[NimNode]
   for i in 1 ..< stmt.len: args.add stmt[i]
@@ -190,8 +263,10 @@ proc handleComponent(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
       if inner.kind == nnkCommentStmt: continue
       if inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("pin"):
         result.add handlePin(compVar, inner)
+      elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("simReplace"):
+        result.add handleSimReplace(compVar, inner)
       else:
-        error("only `pin` statements are allowed inside a `component` block", inner)
+        error("only `pin` and `simReplace` statements are allowed inside a `component` block", inner)
   result.copyLineInfo(stmt)
 
 proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
