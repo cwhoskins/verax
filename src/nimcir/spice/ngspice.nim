@@ -9,6 +9,7 @@ import std/[streams, osproc, os, strutils, tables, tempfiles]
 import ../netlist/types
 import ../netlist/formats/spice as spiceFormat
 import ./backend
+import ./xspice/cmpath
 
 export backend
 
@@ -81,7 +82,8 @@ proc parseRawfile(path: string): SimResult =
       inc i
     inc pointIdx
 
-proc run*(nl: Netlist, cards: seq[string]): SimResult =
+proc run*(nl: Netlist, cards: seq[string],
+          codemodels: seq[string] = @[]): SimResult =
   ## Runs `nl` through ngspice in batch mode with the given analysis
   ## `cards` (at most one -- see the module/backend doc comments for why)
   ## and returns the resulting vectors.
@@ -94,6 +96,17 @@ proc run*(nl: Netlist, cards: seq[string]): SimResult =
   ## error. So the real success signal here is "a raw output file exists
   ## and parses" -- the exit code and captured log are surfaced in the
   ## error message when it doesn't.
+  ##
+  ## `codemodels` are paths to XSPICE `.cm` shared objects (see
+  ## `nimcir/spice/xspice`) holding behavioural models the deck instantiates
+  ## as `A` devices. Each is loaded with `pre_codemodel`, not `codemodel`,
+  ## because an `A` device must resolve while the netlist is being *parsed*,
+  ## which happens before the control block runs.
+  ##
+  ## Paths are routed through `deckSafeCmPath` because ngspice case-folds the
+  ## lines it pre-parses, so an uppercase character anywhere in a `.cm` path
+  ## makes it unloadable. (This does not affect the `write` line below, which
+  ## the control interpreter handles later, from the unfolded text.)
   if cards.len > 1:
     raise newException(SpiceSimError,
       "run() supports at most one analysis card per call (only the last " &
@@ -105,8 +118,14 @@ proc run*(nl: Netlist, cards: seq[string]): SimResult =
     let rawPath = tmpDir / "deck.raw"
     let logPath = tmpDir / "deck.log"
 
+    for cm in codemodels:
+      if not fileExists(cm):
+        raise newException(SpiceSimError, "no such code model: " & cm)
+
     var fullCards = cards
     fullCards.add ".control"
+    for cm in codemodels:
+      fullCards.add "pre_codemodel " & deckSafeCmPath(cm)
     fullCards.add "run"
     fullCards.add "set filetype=ascii"
     fullCards.add "write " & rawPath
