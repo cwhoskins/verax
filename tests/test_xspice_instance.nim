@@ -227,3 +227,33 @@ suite "telling the simulator which code models a netlist needs":
     let b = addNet(nl, newNet("b"))
     discard addCodeModelInstance(nl, "A1", gainSpec(), [a, b])
     check collectCodeModels(nl).len == 0
+
+test "a string parameter is quoted on the .model card, whatever its value":
+  # ngspice's pre-parser reads an unquoted token that begins with a letter as
+  # a parameter reference: `uid=deadbeef` aborts the run with `Undefined
+  # parameter [deadbeef]`. A hex string that happens to begin with a digit
+  # parses as a number and runs, so the failure depends on the *value* rather
+  # than on the declaration -- which is why the quoting cannot be left to the
+  # caller. Found by `designs/lib/m24c64.nim`, whose `uid` is exactly that.
+  let spec = ModelSpec(
+    name: "tagged", cFunction: "cm_tagged", description: "tagged",
+    ports: @[PortSpec(name: "a", dir: xdIn, default: xpV, allowed: @[xpV])],
+    params: @[
+      ParamSpec(name: "label", dataType: xtString, default: "\"x\"",
+                nullAllowed: true),
+      ParamSpec(name: "gain", dataType: xtReal, default: "1.0",
+                nullAllowed: true)])
+  let (nl, vin, _) = fixture()
+  discard addCodeModelInstance(nl, "A1", spec, [vin],
+                               {"label": "deadbeef", "gain": "2.5"})
+  check nl.models["a1"] == "tagged(label=\"deadbeef\" gain=2.5)"
+
+test "a string parameter the caller already quoted is not quoted again":
+  let spec = ModelSpec(
+    name: "tagged", cFunction: "cm_tagged", description: "tagged",
+    ports: @[PortSpec(name: "a", dir: xdIn, default: xpV, allowed: @[xpV])],
+    params: @[ParamSpec(name: "label", dataType: xtString, default: "\"x\"",
+                        nullAllowed: true)])
+  let (nl, vin, _) = fixture()
+  discard addCodeModelInstance(nl, "A1", spec, [vin], {"label": "\"ok\""})
+  check nl.models["a1"] == "tagged(label=\"ok\")"

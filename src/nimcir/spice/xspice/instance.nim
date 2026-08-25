@@ -160,6 +160,25 @@ proc collectCodeModels*(nl: Netlist): seq[string] =
     for path in collectCodeModels(child):
       if path notin result: result.add path
 
+proc paramText(spec: ModelSpec, key, value: string): string =
+  ## The parameter value as it has to appear on a `.model` card.
+  ##
+  ## Numbers, vectors and booleans reach the deck verbatim. A **string**
+  ## parameter is quoted, because ngspice's pre-parser treats an unquoted
+  ## token beginning with a letter as a parameter reference and reports
+  ## `Undefined parameter [...]` -- and then aborts the whole run. Worse, it
+  ## does not always: a hex string that happens to start with a digit parses
+  ## as a number and the deck runs, so the failure depends on the *value*
+  ## rather than on the declaration. That is the shape of misread this
+  ## codebase refuses to leave to the caller.
+  ##
+  ## An already-quoted value is passed through, so a caller that knew about
+  ## this is not double-quoted.
+  let i = spec.paramIndex(key)
+  if i < 0 or spec.params[i].dataType != xtString: return value
+  if value.len >= 2 and value[0] == '"' and value[^1] == '"': return value
+  '"' & value & '"'
+
 proc addCodeModelInstance*(nl: Netlist, designator: string, spec: ModelSpec,
                            bindings: openArray[PortBinding],
                            params: openArray[(string, string)] = [],
@@ -220,7 +239,7 @@ proc addCodeModelInstance*(nl: Netlist, designator: string, spec: ModelSpec,
   var card = spec.name & "("
   for i, (key, value) in params:
     if i > 0: card &= " "
-    card &= key & "=" & value
+    card &= key & "=" & paramText(spec, key, value)
   card &= ")"
   nl.models[inst] = card
 

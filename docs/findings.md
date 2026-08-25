@@ -59,7 +59,23 @@ is what is left.
    would be read straight out by `designs/wien_osc.nim` and
    `designs/ts808_drive.nim`, which is the useful property.
 
-5. **A start-up transient is not sampled the way a settled one is.**
+5. **A bus edge is simulated and never claimed** (§44). `designs/i2c_eeprom.nim`
+   carries a real analog I2C bus -- pull-ups, bus capacitance, a `bidi_bridge`
+   at each line -- and the exchange over it is measured end to end. The bus's
+   own *electrical* behaviour is not: SCL rises through 0.3 Vdd to 0.7 Vdd in
+   a measured 60 ns against the specification's 1 us for standard mode, and a
+   pulled-down line bottoms at 43 mV against a 400 mV VOL budget, and neither
+   number is a claim because no registered quantity fits. `rise_time_10_90`
+   belongs to `spice.startup` and wants a regulator binding.
+
+   What is missing is a quantity (`t_rise_edge`, `v_ol`), a measurement over a
+   named net's transitions in the settled window, and a parameter on the `i2c`
+   role to state the limits against. That would also close the gap the design
+   documents: `static.rc_corner` rests on an invented 10 pF per pin and says
+   so, and this is the first circuit here that could measure the real answer
+   instead of estimating it.
+
+6. **A start-up transient is not sampled the way a settled one is.**
    `analyzeStartup` derives its print step from the run length
    (`tStop / 2000`), where §23 established that the derived step is *also*
    ngspice's ceiling on its own timestep. That is defensible for a rise time,

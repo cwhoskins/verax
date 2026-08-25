@@ -17,6 +17,12 @@ nimcache/
 /tests/*
 !/tests/*.nim
 !/tests/config.nims
+# Nim reads `<file>.nim.cfg` as a per-file config, which is how a single test
+# gets a compiler switch the rest of the suite must not have --
+# `test_xspice_i2c_eeprom.nim` needs `-d:xspiceSpecOnly` because it imports
+# XSPICE code models for their `ModelSpec` and would otherwise try to build
+# their FFI against ngspice headers. It is source, not a build artefact.
+!/tests/*.nim.cfg
 /designs/*
 !/designs/*.nim
 !/designs/README
