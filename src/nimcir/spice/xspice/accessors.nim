@@ -136,3 +136,58 @@ template eventVar*(tag, timepoint: int, T: typedesc): untyped =
   ## The `T` stored in slot `tag` at `timepoint` (0 = now, 1 = previous).
   ## Assignable.
   cast[ptr T](cmEventGetPtr(tag.cint, timepoint.cint))[]
+
+# --- per-instance analog state ----------------------------------------------
+#
+# The analog counterpart of `eventAlloc`/`eventVar`, and it exists for the same
+# reason: ngspice rotates these buffers per accepted timepoint and rolls them
+# back when it rejects one, so they are the only correct home for "the value at
+# the previous timepoint" in a continuous-time model. `stateVar` (STATIC_VAR)
+# is *not* rolled back, which makes it right for something that genuinely does
+# not unwind -- a latched enable -- and wrong for anything a rejected timestep
+# must be able to undo.
+#
+# A switching converter needs both halves of this: state that survives a
+# rejected step (which cycle we are in, when the switch turned off) and a real
+# integrator for the compensation node.
+
+template analogAlloc*(tag: int, T: typedesc) =
+  ## Reserve a per-instance analog state slot big enough for a `T`. Call it
+  ## under `init`, and only outside `.ac` -- ngspice allocates the state
+  ## vectors for the analysis it is about to run.
+  cmAnalogAlloc(tag.cint, cint(sizeof(T)))
+
+template analogVar*(tag, timepoint: int, T: typedesc): untyped =
+  ## The `T` stored in slot `tag` at `timepoint` (0 = now, 1 = previous).
+  ## Assignable.
+  cast[ptr T](cmAnalogGetPtr(tag.cint, timepoint.cint))[]
+
+proc analogIntegrate*(tag: int, integrand: float, partial: var float): float
+    {.inline, discardable.} =
+  ## Integrate `integrand` into analog state slot `tag`, returning the new
+  ## value of the integral and, in `partial`, d(integral)/d(integrand).
+  ##
+  ## The slot must have been reserved by `analogAlloc` and this must run in
+  ## `.tran`: ngspice's own `cm_analog_integrate` refuses outside it, since
+  ## there is no timestep to integrate over. The integration method is the
+  ## simulator's current one, which is what makes this different from adding
+  ## `integrand * tstep` by hand -- that would be forward Euler regardless of
+  ## what the rest of the deck is being solved with.
+  let slot = cast[ptr cdouble](cmAnalogGetPtr(tag.cint, 0))
+  var pd: cdouble = 0.0
+  discard cmAnalogIntegrate(integrand.cdouble, slot, addr pd)
+  partial = pd.float
+  slot[].float
+
+template setPermBkpt*(t: float) =
+  ## Force a timepoint at `t`, permanently. A model whose behaviour changes on
+  ## a clock edge must place one on every edge: nothing else in the simulator
+  ## knows the edge is coming, and local truncation error on a node that is
+  ## flat between edges will happily step straight over one.
+  discard cmAnalogSetPermBkpt(t.cdouble)
+
+template setTempBkpt*(t: float) =
+  ## Force a timepoint at `t`, for this step only. For an edge whose time is
+  ## a prediction rather than a certainty -- it moves as the solution moves,
+  ## and a permanent breakpoint at a wrong guess would never be withdrawn.
+  discard cmAnalogSetTempBkpt(t.cdouble)

@@ -396,7 +396,11 @@ proc clone*(nl: Netlist, globalNets: var OrderedTable[string, Net]): Netlist =
   for designator, oldComp in nl.components:
     let newComp = newComponent(designator, oldComp.name, oldComp.partNumber, oldComp.kind)
     newComp.attrs = oldComp.attrs
-    newComp.simReplace = oldComp.simReplace
+    # Every model, not just the default: `simReplace` is the *default* one,
+    # and a clone that kept only that would silently drop the alternative a
+    # later analysis is about to ask for by purpose.
+    newComp.simModels = oldComp.simModels
+    newComp.simDefault = oldComp.simDefault
     newComp.netlist = result
     result.components[designator] = newComp
     compMap[designator] = newComp

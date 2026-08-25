@@ -185,7 +185,7 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
   # `materializeSimNetlist` rather than a bare `clone`: a component's own
   # `simReplace` is the design's statement of how it wants that part
   # simulated, and this analysis used to ignore it entirely.
-  let work = materializeSimNetlist(nl, cloneNets, [regulator])
+  let work = materializeSimNetlist(nl, cloneNets, [regulator], purpose = spStartup)
   discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances, regulator)
   if spec.modelUnmodelledParts:
     result.assumptions.add expandPinModels(work, spec.pinModels, [regulator])
@@ -203,7 +203,9 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
   let outNet = frag.nets[outputNet]
   let gnd = frag.nets["0"]
   let srcDesig = $spiceFormat.designatorPrefix("voltage_source") & "REG_" & regulator
-  let sr = nl.components[regulator].simReplace
+  # The same purpose the materialise above used, so the part stood up here is
+  # the one that would have been stood up there had it not been excluded.
+  let sr = selectSimModel(nl.components[regulator], spStartup)
 
   if sr != nil:
     # The user described the regulator themselves; honour it verbatim except

@@ -31,12 +31,25 @@
 ##          190 * (1 + 1M/243k) = 972 V/s -> 5.1 ms to regulation,
 ##          4.08 ms 10-90%.  Measured 4.086 ms.
 ##
-## **What this design does not claim, and why.** No phase margin and no
-## ripple. The averaged model emits the switch node's cycle average rather
-## than its waveform, so there is no ripple in it to measure, and its only
-## dynamics are the board's own L and C_OUT -- the part's internal
-## compensation is not represented. A stability claim measured against that
-## would be a claim about the model. Both are the switching model's job.
+##   output ripple: the inductor's current triangle across the output
+##          capacitor. dI = V_OUT (1 - D) / (L f) = 0.94 A at D = 0.43, into
+##          3 mohm of ESR and the capacitance left after DC-bias derating.
+##          Measured 7.12 mV.
+##
+## **Two models, and the ripple is why.** `useLt8640a` attaches both. The
+## averaged model answers the rail voltage and the start-up ramp; it emits the
+## switch node's cycle average rather than its waveform, so there is no ripple
+## in it to measure at all. The switching model answers the ripple and costs
+## about fifty timepoints per cycle for the privilege. Which one runs is not a
+## choice this file makes: `spice/transform.selectSimModel` picks by what is
+## being asked, so the `.op` behind `dc_voltage` gets the averaged one and the
+## `.tran` behind `ripple_pp` gets the switching one, in the same check.
+##
+## **What this design still does not claim, and why.** No phase margin. The
+## averaged model has no internal compensation in it, and the switching model
+## carries a compensator chosen for a sensible loop rather than fitted to the
+## part's -- which is not published. A margin measured through either would be
+## a claim about the model.
 
 import nimcir/contract/dsl
 import nimcir/verify
@@ -193,6 +206,21 @@ let d = design("lt8640a_buck"):
           id = "REQ-BUCK-VOUT-001",
           because = "R1/R2 and the 0.970 V reference are the only things " &
                     "that set this rail; there is no trim and no margin"
+
+  # The claim the switching model exists for. `tSettle` is 300 us because the
+  # model starts from the operating point rather than from zero -- there is no
+  # soft start to wait out, only the compensation loop finding the load
+  # current, which it does in about fifty microseconds at this crossover. The
+  # window is twenty switching cycles.
+  #
+  # 10 mV is the budget, and the arithmetic behind it is worth writing down
+  # because the measurement is otherwise unfalsifiable: 0.94 A of inductor
+  # ripple across 3 mohm of ESR is 2.8 mV, and the same current into the
+  # derated 65 uF for half a cycle is another 1.8 mV, with the two a quarter
+  # cycle apart. The rest is COUT2 and the ESL.
+  role "settled_rail", ripple, rail = vout,
+       tSettle = 300.0.us, tWindow = 20.0.us,
+       voltage = 4.962.V, band = 2.pct, maxRipple = 10.0.mV
 
 # Attach the behavioural model. After the block, because it sets
 # `simReplace` on the real part rather than replacing it -- everything above

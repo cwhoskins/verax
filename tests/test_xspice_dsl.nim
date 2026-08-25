@@ -12,6 +12,9 @@ import std/[os, osproc, strutils, tempfiles, unittest]
 let repoRoot = currentSourcePath().parentDir.parentDir
 let gainModel = repoRoot / "examples" / "xspice_gain.nim"
 let dffModel = repoRoot / "examples" / "xspice_dff.nim"
+let intModel = repoRoot / "examples" / "xspice_integrator.nim"
+let avgModel = repoRoot / "designs" / "lib" / "lt8640a_avg.nim"
+let swModel = repoRoot / "designs" / "lib" / "lt8640a_sw.nim"
 
 proc renderViaDsl(model: string): string =
   ## Compile the example model in interface-only mode, run it, read the
@@ -86,3 +89,31 @@ test "both example models render interfaces cmpp's grammar accepts":
     check text.startsWith("NAME_TABLE:")
     check text.count("Port_Name:") == text.count("Direction:")
     check text.count("Parameter_Name:") == text.count("Data_Type:")
+
+
+proc portNames(ifsText: string): seq[string] =
+  ## The `Port_Name:` column of a rendered interface, in declaration order --
+  ## which *is* the `conn[i]` index, and therefore the order an `A` line is
+  ## positional in.
+  for line in ifsText.splitLines:
+    let l = line.strip
+    if l.startsWith("Port_Name:"):
+      result.add l.split(':', 1)[1].strip
+
+test "a model carrying analog state renders an ordinary interface":
+  # `analogAlloc`/`analogIntegrate`/`setPermBkpt` are FFI and vanish under
+  # `-d:xspiceGenIfs`, so this proves the declaration around them is still
+  # well-formed on a machine with no ngspice headers.
+  let intIfs = renderViaDsl(intModel)
+  check portNames(intIfs) == @["inp", "outp"]
+  check "tsample" in intIfs
+
+test "the two LT8640A models declare the same ports in the same order":
+  # `designs/lib/lt8640a.nim` maps the part's datasheet pin names onto both
+  # models with one list, so swapping one for the other is a choice about
+  # fidelity rather than about wiring. If they ever diverge, an `A` line
+  # silently binds the wrong nets -- no error, just a different circuit.
+  let avg = portNames(renderViaDsl(avgModel))
+  let sw = portNames(renderViaDsl(swModel))
+  check avg == @["vin", "fb", "en", "trss", "sw", "pg", "bst"]
+  check sw == avg

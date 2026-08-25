@@ -117,7 +117,7 @@ proc analyzeDerating*(nl: Netlist, spec = defaultDeratingSpec()): AnalysisReport
   ## check is about the design as built, and a fragment terminated with ideal
   ## sources would be checking parts against voltages the boundary invented.
   var globalNets: OrderedTable[string, Net]
-  let simNl = materializeSimNetlist(root(nl), globalNets)
+  let simNl = materializeSimNetlist(root(nl), globalNets, purpose = spOperating)
   if spec.flattenHierarchy: discard flatten(simNl)
   if spec.modelUnmodelledParts:
     result.assumptions.add expandPinModels(simNl, spec.pinModels)

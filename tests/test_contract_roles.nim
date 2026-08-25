@@ -398,3 +398,53 @@ test "too little distortion can be the defect":
   check a[1].expect.satisfies(20.0)
   check not a[0].expect.satisfies(60.0)     # over the ceiling
   check not a[1].expect.satisfies(2.0)      # under the floor
+
+# --- settled_rail -----------------------------------------------------------
+
+test "a settled_rail role binds no driving part and claims nothing by default":
+  # Which is the point of it: `regulator` needs a part to stand up as a ramp
+  # and `opamp_stage` needs an amplifier, so neither reaches a charge pump, an
+  # oscillator or a converter measured cycle by cycle. This one names a net
+  # and a window.
+  let d = board()
+  discard d.addRole("settled_rail", "r", {"rail": net("vdd")},
+                    {"tSettle": "0.0003", "tWindow": "0.00002"})
+  check d.expandAll().len == 0
+
+test "a settled_rail role stamps its window into the assertion's condition":
+  let d = board()
+  discard d.addRole("settled_rail", "r", {"rail": net("vdd")},
+                    {"tSettle": "0.0003", "tWindow": "0.00002",
+                     "voltage": "4.962", "band": "0.02",
+                     "maxRipple": "0.01"})
+  let a = d.expandAll()
+  check a.len == 2
+  var byQty: Table[string, Assertion]
+  for x in a: byQty[x.quantity] = x
+  check byQty.hasKey("settled_v")
+  check byQty.hasKey("ripple_pp")
+  for x in a:
+    # The window is what was *run*, not what is claimed, so it rides in
+    # `condition` and the evaluator's setup key reads it back -- two claims
+    # over two windows have to stay two runs.
+    check x.condition["t_settle"] == "0.0003"
+    check x.condition["t_window"] == "0.00002"
+  check byQty["settled_v"].expect.satisfies(4.962 * 1.019)
+  check not byQty["settled_v"].expect.satisfies(4.962 * 1.021)
+  check byQty["ripple_pp"].expect.satisfies(0.0099)
+  check not byQty["ripple_pp"].expect.satisfies(0.0101)
+
+test "a ripple budget alone is a claim; a voltage alone is a different one":
+  let d1 = board()
+  discard d1.addRole("settled_rail", "r", {"rail": net("vdd")},
+                     {"tSettle": "0.001", "maxRipple": "0.01"})
+  let a1 = d1.expandAll()
+  check a1.len == 1
+  check a1[0].quantity == "ripple_pp"
+
+  let d2 = board()
+  discard d2.addRole("settled_rail", "r", {"rail": net("vdd")},
+                     {"tSettle": "0.001", "voltage": "3.3"})
+  let a2 = d2.expandAll()
+  check a2.len == 1
+  check a2[0].quantity == "settled_v"

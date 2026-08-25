@@ -140,7 +140,7 @@ proc analyzePdn*(nl: Netlist, powerNet: string, groundNet = "",
   # `materializeSimNetlist` rather than a bare `clone`: a component's own
   # `simReplace` is the design's statement of how it wants that part
   # simulated, and this analysis used to ignore it entirely.
-  let work = materializeSimNetlist(nl, cloneNets)
+  let work = materializeSimNetlist(nl, cloneNets, purpose = spSmallSignal)
   discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances)
   if spec.modelUnmodelledParts:
     result.assumptions.add expandPinModels(work, spec.pinModels)

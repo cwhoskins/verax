@@ -552,6 +552,67 @@ proc largeSignalExpand(inst: RoleInstance): seq[Assertion] =
            atMost(paramFloat(inst, "maxSwing", 0.0)), "V",
            "swing beyond this runs into whatever the stage feeds")
 
+proc settledRailExpand(inst: RoleInstance): seq[Assertion] =
+  ## What a node does once it has stopped changing: where it sits, and what
+  ## is left moving on it.
+  ##
+  ## **Why this is not `power_rail` with another parameter, and not
+  ## `regulator` with one either.** `power_rail`'s `dc_voltage` is an
+  ## operating point, and an operating point has no ripple in it -- a `.op`
+  ## solves one instant of a circuit that is not moving, so a switching
+  ## converter's rail reads as its average by construction and would pass any
+  ## ripple claim ever made about it. `regulator` is about the *way up*, and
+  ## binds a driving part to stand up as a ramp. This role binds nothing: it
+  ## names a net, a time by which the circuit should have settled, and what
+  ## it must then be doing. That is what makes it reach the circuits the
+  ## other two cannot -- a charge pump, an oscillator's envelope, a converter
+  ## measured cycle by cycle.
+  ##
+  ## `tSettle` and `tWindow` are **conditions, not limits**, exactly as
+  ## `large_signal`'s drive level is: they say what was run, the answer is a
+  ## function of them, and two claims at two windows are two runs. They ride
+  ## in `Assertion.condition`, and the evaluator's setup key reads them back
+  ## so the planner keeps those runs apart.
+  let rail = inst.subject("rail")
+  let tSettle = paramFloat(inst, "tSettle", 0.0)
+  let tWindow = paramFloat(inst, "tWindow", 0.0)
+
+  template settled(sfx, qty: string, e: Expectation, un, why: string;
+                   sev = sevError) =
+    var claim = Assertion(
+      id: assertionId(inst, sfx),
+      subjects: @[rail],
+      quantity: qty,
+      expect: e,
+      unit: un,
+      severity: sev,
+      rationale: why,
+      origin: inst.name)
+    claim.condition["t_settle"] = $tSettle
+    claim.condition["t_window"] = $tWindow
+    result.add claim
+
+  # Both claims are opt-in, and the role makes none of its own. A settling
+  # voltage without a stated value is not a claim, and a ripple budget is a
+  # system decision -- what the rail feeds and how much of it that load can
+  # reject -- rather than anything the circuit implies. Defaulting either
+  # would manufacture a claim nobody made and report it as theirs.
+  if hasParam(inst, "voltage"):
+    settled("settled", "settled_v",
+            nominal(paramFloat(inst, "voltage", 0.0),
+                    fracTol = paramFloat(inst, "band", 0.05)), "V",
+            "once it has settled, the rail has to sit where it was " &
+            "specified to sit -- measured over a window rather than at an " &
+            "operating point, so a rail that is still moving cannot pass by " &
+            "being sampled at the right instant")
+  if hasParam(inst, "maxRipple"):
+    settled("ripple", "ripple_pp",
+            atMost(paramFloat(inst, "maxRipple", 0.0)), "V",
+            "what is left on the rail after it has settled is what every " &
+            "load on it has to reject; a switching converter's ripple is " &
+            "invisible to an operating point and to any averaged model of " &
+            "the part", sevWarning)
+
 proc registerBuiltinRoles*() =
   ## Called at module init. Exposed so a test can prove that re-registering
   ## is idempotent, and so an application that clears the registry can put
@@ -675,6 +736,32 @@ proc registerBuiltinRoles*() =
     ],
     apply: nil,
     expand: gainStageExpand))
+
+  registerRole(RoleDef(
+    name: "settled_rail",
+    doc: "A node judged over a window at the end of a transient run: where " &
+         "it settles, and what is still moving on it.",
+    parts: @[
+      RolePart(name: "rail", kind: skNet, doc: "the net to measure"),
+    ],
+    params: @[
+      AnnDef(key: "tSettle", kind: akFloat, unit: "s", scopes: {asNet},
+             doc: "how long the circuit is given to settle before the " &
+                  "measurement window opens; everything before it is " &
+                  "simulated and discarded"),
+      AnnDef(key: "tWindow", kind: akFloat, unit: "s", scopes: {asNet},
+             doc: "length of the measurement window; omitted takes a fifth " &
+                  "of tSettle"),
+      AnnDef(key: "voltage", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "what the node must settle to; omitted means unclaimed"),
+      AnnDef(key: "band", kind: akFloat, scopes: {asNet},
+             doc: "acceptance band as a fraction of nominal; default 5%"),
+      AnnDef(key: "maxRipple", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "peak-to-peak the node may still be moving over the " &
+                  "window; omitted means unclaimed"),
+    ],
+    apply: nil,
+    expand: settledRailExpand))
 
   registerRole(RoleDef(
     name: "large_signal",

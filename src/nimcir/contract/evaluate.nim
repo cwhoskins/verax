@@ -181,9 +181,17 @@ var evaluatorRegistry: OrderedTable[string, Evaluator]
 var quantityIndex: Table[string, string]  ## quantity -> evaluator name
 
 proc registerEvaluator*(ev: Evaluator) =
-  ## Registering a quantity a previous evaluator claimed replaces it, exactly
+  ## Registering an evaluator under a name already taken replaces it, exactly
   ## as `registerRole` replaces a role -- that is how an application overrides
   ## a built-in with something better suited to its own designs.
+  ##
+  ## Claiming a quantity a **different** evaluator already produces raises.
+  ## `quantityIndex` is a flat map, so the second registration would silently
+  ## take over every claim on that quantity in every design: an assertion that
+  ## was answered by a `.ac` sweep would start being answered by something
+  ## else, with no diagnostic anywhere and the same quantity name in the
+  ## report either way. An override says so by keeping the name; a collision
+  ## is an accident, and the two are indistinguishable once it has happened.
   if ev.name.len == 0:
     raise newException(NetlistError, "evaluator name must not be empty")
   if ev.run == nil:
@@ -196,6 +204,16 @@ proc registerEvaluator*(ev: Evaluator) =
   if it.arity.a == 0 and it.arity.b == 0: it.arity = 1 .. int.high
   if it.subjectKinds == {}:
     it.subjectKinds = {skNet, skComponent, skPin, skClass, skDesign}
+
+  for q in it.produces:
+    let owner = quantityIndex.getOrDefault(q)
+    if owner.len > 0 and owner != it.name:
+      raise newException(NetlistError,
+        "evaluator '" & it.name & "' produces '" & q &
+        "', which evaluator '" & owner & "' already produces -- one quantity " &
+        "has one producer, or a claim on it silently changes which analysis " &
+        "answers it; rename the quantity, or register under '" & owner &
+        "' to replace that evaluator outright")
 
   evaluatorRegistry[it.name] = it
   for q in it.produces: quantityIndex[q] = it.name

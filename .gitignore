@@ -20,6 +20,13 @@ nimcache/
 /designs/*
 !/designs/*.nim
 !/designs/README
+# `/designs/*` excludes the `lib` *directory*, and git does not descend into an
+# excluded directory -- so `!/designs/*.nim` cannot rescue anything under it,
+# and the whole shared parts/subcircuit library was untracked. Re-include the
+# directory first, then apply the same source-only rule inside it.
+!/designs/lib/
+/designs/lib/*
+!/designs/lib/*.nim
 /templates/*
 !/templates/*.nim
 

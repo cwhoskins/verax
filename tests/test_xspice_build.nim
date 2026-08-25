@@ -1,4 +1,4 @@
-import std/[os, osproc, strutils, tables, tempfiles, unittest]
+import std/[math, os, osproc, strutils, tables, tempfiles, unittest]
 
 import nimcir/netlist/types
 import nimcir/netlist/graph
@@ -127,6 +127,57 @@ else:
 
     let res = run(nl, @[".op"], codemodels = @[cm])
     check abs(res["v(vout)"][0] - 7.0) < 1e-6
+
+  test "analog state, integration and breakpoints round-trip through a .cm":
+    # The third shape a code model comes in, after memoryless and
+    # event-driven: continuous-time with memory. `analogAlloc`/`analogVar`
+    # reserve a slot ngspice rolls back with a rejected timepoint,
+    # `analogIntegrate` integrates with the simulator's own method, and
+    # `setPermBkpt` forces a timepoint. A switching-regulator model needs all
+    # three; this checks them against a closed form instead.
+    let intCm = buildCodeModel(repoRoot / "examples" / "xspice_integrator.nim",
+                               outDir / "nimint.cm")
+    let spec = ModelSpec(
+      name: "nimint", cFunction: "cm_nimint",
+      ports: @[
+        PortSpec(name: "inp", dir: xdIn, default: xpV, allowed: @[xpV]),
+        PortSpec(name: "outp", dir: xdOut, default: xpV, allowed: @[xpV])],
+      params: @[
+        ParamSpec(name: "gain", dataType: xtReal, default: "1.0", nullAllowed: true),
+        ParamSpec(name: "out_ic", dataType: xtReal, default: "0.0", nullAllowed: true),
+        ParamSpec(name: "tsample", dataType: xtReal, default: "0.0", nullAllowed: true)])
+
+    let nl = newNetlist("xspice_integrator")
+    let gnd = addNet(nl, Net(name: "0", kind: ntGround))
+    let vin = addNet(nl, Net(name: "vin"))
+    let vout = addNet(nl, Net(name: "vout"))
+    let v1 = addComponent(nl, Component(designator: "V1", kind: "voltage_source"))
+    v1.attrs["value"] = "DC 2"
+    discard connect(v1, "+", vin)
+    discard connect(v1, "-", gnd)
+    discard addCodeModelInstance(nl, "a1", spec, [vin, vout],
+                                 {"gain": "1000.0", "tsample": "1e-4"})
+    let r1 = addComponent(nl, Component(designator: "R1", kind: "resistor"))
+    r1.attrs["value"] = "1meg"
+    discard connect(r1, "1", vout)
+    discard connect(r1, "2", gnd)
+
+    let res = run(nl, @[".tran 1u 1m"], codemodels = @[intCm])
+    let t = res["time"]
+    let v = res["v(vout)"]
+    # The integral of a constant 2 V scaled by 1000 is 2000 * t, and it holds
+    # at every sample rather than only at the end -- an integrator that had
+    # merely landed on the right final value could still be integrating the
+    # wrong thing.
+    check abs(v[0]) < 1e-9
+    for i in 0 ..< t.len:
+      check abs(v[i] - 2000.0 * t[i]) < 1e-6
+    # `tsample` forced a timepoint every 100 us; without breakpoints the
+    # solver has no reason to land on those exact times.
+    var onGrid = 0
+    for x in t:
+      if abs(x / 1.0e-4 - round(x / 1.0e-4)) * 1.0e-4 < 1.0e-12: inc onGrid
+    check onGrid >= 10
 
   test "run() rejects a code model path that does not exist":
     let nl = newNetlist("bad")

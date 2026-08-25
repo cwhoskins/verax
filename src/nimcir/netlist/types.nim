@@ -48,10 +48,29 @@ type
     subNetlist*: Netlist
       ## Set only when this component instantiates a child hierarchical
       ## netlist (e.g. a SPICE `X` device).
-    simReplace*: SimReplacement
-      ## Set only when this component has a simulation-only replacement
-      ## defined (see `nimcir/spice`). `nil` for every component that has
-      ## none -- this field never affects non-simulation use of the netlist.
+    simModels*: OrderedTable[string, SimReplacement]
+      ## Every simulation-only stand-in this component carries, keyed by the
+      ## model's own `name` and held in the order they were added. Empty for
+      ## every component that has none -- this field never affects
+      ## non-simulation use of the netlist.
+      ##
+      ## **A part may need more than one model, and which one is right depends
+      ## on the question being asked.** The LT8640A is the case that forced
+      ## it: an averaged model of a switching regulator answers "what does
+      ## this rail settle to" and "how does it start up" in a run that takes
+      ## milliseconds of wall clock, and cannot show ripple at all because the
+      ## switch node in it *is* a cycle average. A switching model shows the
+      ## ripple and costs a thousand timepoints per millisecond of circuit
+      ## time. Neither is the better model; they answer different questions,
+      ## and a design that had to pick one would be choosing which question it
+      ## is allowed to ask.
+      ##
+      ## Reach a model through `simReplace` (the default) or
+      ## `spice/transform.selectSimModel`, which picks by *purpose*.
+    simDefault*: string
+      ## Which entry of `simModels` is used when nothing states a purpose, or
+      ## when no model suits the stated one. Empty means the first one added,
+      ## which is what a part carrying exactly one model always wants.
     attrs*: OrderedTable[string, string]
 
   Net* = ref object
@@ -88,6 +107,24 @@ type
     ## with it -- but it never mutates the component itself; it only takes
     ## effect when a simulation-ready netlist is materialized from a clone
     ## (see `nimcir/spice/transform.materializeSimNetlist`).
+    name*: string
+      ## This model's name within its component, e.g. `"averaged"`. The key in
+      ## `Component.simModels`. Empty is legal and is what a part carrying a
+      ## single model gets -- it is only ever needed to tell two apart.
+    suits*: seq[string]
+      ## The purposes this model is *preferred* for, e.g.
+      ## `@[spSteadyState]`. Open strings, like `Component.kind`; the built-in
+      ## vocabulary is the `sp*` consts in `nimcir/spice/transform`, which is
+      ## also where selection lives.
+      ##
+      ## Advisory, not binding, and that asymmetry is deliberate. Naming a
+      ## purpose *wins* the selection for it; naming none means "no
+      ## preference, use me when nothing better applies". What it must never
+      ## do is refuse: a model that declared itself for steady-state only
+      ## would otherwise make a `.op` on the same design impossible, and an
+      ## analysis blocked by a preference is a worse outcome than one run
+      ## against the default. Two models claiming one purpose *does* raise --
+      ## that is an ambiguity nothing can resolve, not a preference.
     kind*: string
       ## The replacement component's `kind`, e.g. "voltage_source".
     designator*: string
@@ -122,13 +159,73 @@ type
       ## It mentions only netlist types, so this file learns nothing about
       ## XSPICE and the dependency still points the right way.
 
-proc newSimReplacement*(kind: string, designator = "", partNumber = ""): SimReplacement =
-  SimReplacement(kind: kind, designator: designator, partNumber: partNumber)
+proc newSimReplacement*(kind: string, designator = "", partNumber = "",
+                        name = "", suits: openArray[string] = []): SimReplacement =
+  SimReplacement(kind: kind, designator: designator, partNumber: partNumber,
+                 name: name, suits: @suits)
 
-proc newSimReplacement*(build: proc (nl: Netlist, old: Component): Component {.nimcall.}):
-    SimReplacement =
+proc newSimReplacement*(build: proc (nl: Netlist, old: Component): Component {.nimcall.},
+                        name = "", suits: openArray[string] = []): SimReplacement =
   ## A replacement that builds itself. See `SimReplacement.build`.
-  SimReplacement(build: build)
+  SimReplacement(build: build, name: name, suits: @suits)
+
+# --- the models a component carries -----------------------------------------
+#
+# Storage is one table and the accessors below are the only way in, rather than
+# a `simReplace` field beside a table of alternatives. Two places to look for a
+# model is exactly the drift hazard this codebase avoids everywhere else: the
+# question "what stands in for this part" would then have two answers that
+# nothing keeps in step, and every consumer would have to know which of them to
+# ask first.
+
+proc addSimModel*(c: Component, sr: SimReplacement) =
+  ## Adds one simulation model to `c`, keyed by `sr.name`.
+  ##
+  ## Raises on a duplicate name, for the reason `addComponent` raises on a
+  ## duplicate designator: silently replacing the first would change which
+  ## analysis is answering, with nothing said. Overwriting deliberately means
+  ## removing the old one first.
+  if sr == nil:
+    raise newException(NetlistError,
+      "addSimModel on " & c.designator & ": the model is nil")
+  if c.simModels.hasKey(sr.name):
+    raise newException(NetlistError,
+      "component " & c.designator & " already carries a simulation model named '" &
+      sr.name & "'" & (if sr.name.len == 0: " (an unnamed one)" else: "") &
+      "; give the second one a distinct `name`")
+  c.simModels[sr.name] = sr
+
+proc removeSimModel*(c: Component, name: string) =
+  ## Drops the named model. Silent if there is none, since "make sure this
+  ## part carries no averaged model" is a reasonable thing to ask twice.
+  c.simModels.del(name)
+  if c.simDefault == name: c.simDefault = ""
+
+proc defaultSimModel*(c: Component): SimReplacement =
+  ## The model used when nothing states a purpose: `simDefault` if it names
+  ## one, else the first added. `nil` when the component carries none.
+  if c.simModels.len == 0: return nil
+  if c.simDefault.len > 0 and c.simModels.hasKey(c.simDefault):
+    return c.simModels[c.simDefault]
+  for _, sr in c.simModels: return sr
+
+proc simReplace*(c: Component): SimReplacement =
+  ## The component's default simulation model, or `nil`.
+  ##
+  ## A proc rather than a field so that the one-model case -- which is every
+  ## caller that predates multiple models, and still most of them -- reads and
+  ## writes exactly as it did.
+  defaultSimModel(c)
+
+proc `simReplace=`*(c: Component, sr: SimReplacement) =
+  ## Makes `sr` the component's *only* model, discarding any it already had.
+  ##
+  ## "Assign the model" can only mean this: the field it replaces held one
+  ## value, so a caller writing it is saying what stands in for this part, not
+  ## adding to a set. A design carrying several says so with `addSimModel`.
+  c.simModels.clear()
+  c.simDefault = ""
+  if sr != nil: c.simModels[sr.name] = sr
 
 proc newPin*(name: string, kind: PinType = ptUnknown): Pin =
   Pin(name: name, kind: kind)

@@ -466,3 +466,42 @@ suite "designators you did not write":
     writeNetlist(nl, s)
     check "C1 " in s.data
     check "LFB1" in s.data          # prepended, not substituted
+
+test "a component may carry more than one simReplace, told apart by name":
+  # The DSL statement adds rather than assigns, which is what lets a part
+  # declare the model for each question it can be asked. `suits` is the only
+  # thing that says which is which; without it every model would be a
+  # candidate for every analysis and the choice would be an accident.
+  let nl = netlist("two models"):
+    net vout, kind = ntPower
+    net gnd, kind = ntGround, name = "0"
+    component U1, kind = "buck", simDefault = "averaged":
+      pin "OUT", vout
+      pin "GND", gnd
+      simReplace kind = "voltage_source", name = "averaged":
+        pin "+", vout
+        pin "-", gnd
+      simReplace kind = "vcvs", name = "switching", suits = "steady_state":
+        pin "+", vout
+        pin "-", gnd
+
+  let u1 = nl.components["U1"]
+  check u1.simModels.len == 2
+  check u1.simReplace.kind == "voltage_source"
+  check u1.simModels["switching"].suits == @["steady_state"]
+  check u1.simModels["averaged"].suits.len == 0
+  # And the component itself is untouched: `simReplace` is inert data beside
+  # the part, never a mutation of it.
+  check u1.kind == "buck"
+  check u1.pins.len == 2
+
+test "a model may claim several purposes":
+  let nl = netlist("multi"):
+    net a
+    net gnd, kind = ntGround, name = "0"
+    component U1, kind = "buck":
+      pin "OUT", a
+      simReplace kind = "resistor", name = "m", suits = ["startup", "steady_state"]:
+        pin "1", a
+        pin "2", gnd
+  check nl.components["U1"].simModels["m"].suits == @["startup", "steady_state"]

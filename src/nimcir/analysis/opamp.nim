@@ -338,7 +338,11 @@ proc prepare(nl: Netlist, opamp, inputNet, outputNet: string,
   # `materializeSimNetlist` rather than a bare `clone`: a component's own
   # `simReplace` is the design's statement of how it wants that part
   # simulated, and this analysis used to ignore it entirely.
-  let work = materializeSimNetlist(nl, cloneNets)
+  # `bound` is what tells a large-signal caller apart from a small-signal
+  # one, and it is also the only thing here that knows which purpose a part
+  # carrying several models should be stood in for under.
+  let work = materializeSimNetlist(nl, cloneNets,
+    purpose = (if bound: spLargeSignal else: spSmallSignal))
   discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances, opamp)
 
   # Read *after* flattening, and from the work copy. An amplifier inside a

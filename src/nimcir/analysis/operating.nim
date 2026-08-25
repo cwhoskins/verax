@@ -84,7 +84,7 @@ proc solveOperatingPoint*(nl: Netlist, spec = defaultOperatingSpec()): Operating
   ## design has to solve for itself, which is the same reasoning
   ## `contract_eval`'s `dc_voltage` has always run on.
   var globalNets: OrderedTable[string, Net]
-  let simNl = materializeSimNetlist(root(nl), globalNets)
+  let simNl = materializeSimNetlist(root(nl), globalNets, purpose = spOperating)
   if spec.flattenHierarchy: discard flatten(simNl)
   if spec.modelUnmodelledParts:
     result.assumptions.add expandPinModels(simNl, spec.pinModels)

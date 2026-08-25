@@ -396,3 +396,35 @@ test "running the plan keeps the batches the planner grouped":
   for i in 0 ..< flat.len:
     check flat[i].assertion.id == direct[i].assertion.id
     check flat[i].status == direct[i].status
+
+# --- one quantity, one producer ---------------------------------------------
+
+proc runDup(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+  for a in batch: result.add verdict(a, 1.0, "V", "test.dup")
+
+test "a second evaluator claiming an existing quantity raises":
+  # `quantityIndex` is a flat map, so the second registration would take over
+  # every claim on that quantity in every design with nothing said -- the same
+  # quantity name in the report either way, and a different analysis behind
+  # it. An override says so by keeping the name; a collision is an accident,
+  # and once it has happened the two are indistinguishable.
+  var msg = ""
+  try:
+    registerEvaluator(Evaluator(
+      name: "test.dup", produces: @["test_value"], needs: capStatic,
+      arity: 1 .. 1, subjectKinds: {skNet}, run: runDup))
+  except NetlistError as e:
+    msg = e.msg
+  check "test_value" in msg
+  check "test.fixed" in msg
+  # And the original is still the producer.
+  check evaluatorFor("test_value").get.name == "test.fixed"
+
+test "re-registering under the same name is still an override":
+  registerEvaluator(Evaluator(
+    name: "test.overridable", produces: @["test_override_q"], needs: capStatic,
+    arity: 1 .. 1, subjectKinds: {skNet}, run: runDup))
+  registerEvaluator(Evaluator(
+    name: "test.overridable", produces: @["test_override_q"], needs: capBench,
+    arity: 1 .. 1, subjectKinds: {skNet}, run: runDup))
+  check evaluatorFor("test_override_q").get.needs == capBench

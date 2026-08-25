@@ -78,7 +78,7 @@ export types, graph, annotations
 
 const
   netKnownFields = ["kind"]
-  componentKnownFields = ["name", "partNumber", "kind"]
+  componentKnownFields = ["name", "partNumber", "kind", "simDefault"]
   pinKnownFields = ["kind"]
 
 proc globalNetsTypeNode(): NimNode =
@@ -252,10 +252,16 @@ proc handleSimReplacePin(replVar: NimNode, stmt: NimNode): NimNode =
   result.copyLineInfo(stmt)
 
 proc handleSimReplace(compVar: NimNode, stmt: NimNode): NimNode =
-  ## Builds a `SimReplacement` and assigns it to `compVar.simReplace`. This
-  ## only ever produces a data assignment -- never a `connect`/`addPort`/
+  ## Builds a `SimReplacement` and adds it to `compVar.simModels`. This only
+  ## ever produces a data assignment -- never a `connect`/`addPort`/
   ## `instantiate` call -- so it doesn't touch the component being described;
   ## the override is inert data sitting next to it (see `nimcir/spice`).
+  ##
+  ## `addSimModel` rather than an assignment, so a component may carry more
+  ## than one `simReplace` block -- each with its own `name` and the `suits`
+  ## that says which question it answers. Writing two with the same name is a
+  ## runtime error naming the component, which is the same treatment a
+  ## duplicate designator gets and for the same reason.
   var args: seq[NimNode]
   for i in 1 ..< stmt.len: args.add stmt[i]
   let (rest, blk) = stripTrailingBlock(args)
@@ -263,6 +269,8 @@ proc handleSimReplace(compVar: NimNode, stmt: NimNode): NimNode =
   var kindNode: NimNode = nil
   var designatorNode: NimNode = newLit("")
   var partNumberNode: NimNode = newLit("")
+  var nameNode: NimNode = newLit("")
+  var suitsNode: NimNode = newTree(nnkBracket)
   var fieldPairs: seq[NimNode]
   for a in rest:
     a.expectKind(nnkExprEqExpr)
@@ -270,6 +278,13 @@ proc handleSimReplace(compVar: NimNode, stmt: NimNode): NimNode =
     of "kind": kindNode = a[1]
     of "designator": designatorNode = a[1]
     of "partNumber": partNumberNode = a[1]
+    of "name": nameNode = a[1]
+    of "suits":
+      # A bare string is the common case (`suits = spSteadyState`); a bracket
+      # is how a model that answers two questions says so.
+      suitsNode =
+        if a[1].kind == nnkBracket: a[1]
+        else: newTree(nnkBracket, a[1])
     else: fieldPairs.add(a)
   if kindNode == nil:
     error("`simReplace` requires `kind = ...`", stmt)
@@ -277,7 +292,8 @@ proc handleSimReplace(compVar: NimNode, stmt: NimNode): NimNode =
   let replVar = genSym(nskLet, "simRepl")
   result = newStmtList()
   result.add newLetStmt(replVar,
-    newCall(ident"newSimReplacement", kindNode, designatorNode, partNumberNode))
+    newCall(ident"newSimReplacement", kindNode, designatorNode, partNumberNode,
+            nameNode, suitsNode))
   for p in fieldPairs:
     result.add dispatchField(replVar, [], p)
 
@@ -289,7 +305,7 @@ proc handleSimReplace(compVar: NimNode, stmt: NimNode): NimNode =
       else:
         error("only `pin` statements are allowed inside a `simReplace` block", inner)
 
-  result.add newAssignment(newDotExpr(compVar, ident"simReplace"), replVar)
+  result.add newCall(ident"addSimModel", compVar, replVar)
   result.copyLineInfo(stmt)
 
 proc handleComponent(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =

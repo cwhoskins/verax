@@ -55,7 +55,7 @@ proc resolveAmbiguousDCPaths*(nl: Netlist, issues: seq[Issue]): seq[Issue] =
     return issues
 
   var globalNets: OrderedTable[string, Net]
-  let simNl = materializeSimNetlist(root(nl), globalNets)
+  let simNl = materializeSimNetlist(root(nl), globalNets, purpose = spOperating)
   discard flatten(simNl)
 
   var simResult: SimResult

@@ -11,11 +11,67 @@
 ## `simReplace` annotations (see `nimcir/netlist/dsl`) to an actual
 ## simulation-ready netlist: it clones the given netlist and applies every
 ## stored `Component.simReplace` it finds, recursing into hierarchy.
+##
+## **Which model, when a part carries several.** `Component.simModels` holds
+## every stand-in a part has and `selectSimModel` picks one, by a *purpose*
+## the caller states: what is being asked, not which SPICE card will be
+## written. The distinction is load-bearing rather than pedantic -- the two
+## LT8640A models are both `.tran` models, and the one that answers "how does
+## this rail come up" is not the one that answers "how much ripple is on it".
+## Naming the card would put them in the same bucket and leave the choice to a
+## coin toss.
 
-import std/[tables, sequtils]
+import std/[strutils, tables, sequtils]
 import ../netlist/types
 import ../netlist/graph
 import ../netlist/formats/spice as spiceFormat
+
+const
+  spOperating* = "op"
+    ## Where the circuit sits: one `.op` solve, nothing moving.
+  spSmallSignal* = "ac"
+    ## A frequency response, linearised about the operating point.
+  spStartup* = "startup"
+    ## A large-signal transient from nothing, watching something come up.
+  spSteadyState* = "steady_state"
+    ## A transient run past its settling, to look at what remains: ripple,
+    ## a limit cycle, the waveform a converter makes once it is regulating.
+  spLargeSignal* = "large_signal"
+    ## A transient driven hard enough that linearising it would be a lie --
+    ## clipping, saturation, distortion.
+
+  simPurposes* = [spOperating, spSmallSignal, spStartup, spSteadyState,
+                  spLargeSignal]
+    ## The built-in vocabulary. Not closed: `SimReplacement.suits` is a `seq`
+    ## of open strings for the same reason `Component.kind` is one, so a
+    ## third-party analysis can name its own purpose and a model can declare
+    ## itself for it without this list being edited.
+
+proc selectSimModel*(c: Component, purpose = ""): SimReplacement =
+  ## The model to stand in for `c` when the question being asked is `purpose`.
+  ##
+  ## A model naming the purpose in `suits` wins. Failing that, the component's
+  ## default -- so a design that carries one model, or that carries several
+  ## and only labelled the specialist, keeps working for every analysis. Two
+  ## models naming the same purpose raises: that is a genuine ambiguity, and
+  ## picking either would decide silently which analysis the design gets.
+  if c == nil or c.simModels.len == 0: return nil
+  if purpose.len == 0: return defaultSimModel(c)
+
+  var matched: seq[SimReplacement]
+  for _, sr in c.simModels:
+    if purpose in sr.suits: matched.add sr
+  if matched.len == 1: return matched[0]
+  if matched.len > 1:
+    var names: seq[string]
+    for sr in matched:
+      names.add (if sr.name.len > 0: "'" & sr.name & "'" else: "an unnamed model")
+    raise newException(NetlistError,
+      "component " & c.designator & " carries " & $matched.len &
+      " simulation models for the same purpose '" & purpose & "': " &
+      names.join(", ") & " -- exactly one may claim a purpose, so drop it " &
+      "from the `suits` of the others")
+  defaultSimModel(c)
 
 proc replaceComponent*(nl: Netlist, oldDesignator: string, kind: string,
                         pinNets: openArray[(string, Net)],
@@ -53,14 +109,15 @@ proc replaceComponent*(nl: Netlist, oldDesignator: string, kind: string,
   for (pinName, net) in pinNets:
     discard connect(result, pinName, net)
 
-proc applySimReplacements(nl: Netlist, exclude: openArray[string] = []) =
+proc applySimReplacements(nl: Netlist, exclude: openArray[string] = [],
+                          purpose = "") =
   var designators: seq[string]
   for designator in nl.components.keys:
     designators.add designator
   for designator in designators:
     if designator in exclude: continue
     let comp = nl.components[designator]
-    let repl = comp.simReplace
+    let repl = selectSimModel(comp, purpose)
     if repl != nil and repl.build != nil:
       # The replacement builds itself. It is handed the clone and the part it
       # stands in for, and is responsible for removing that part -- which is
@@ -77,10 +134,11 @@ proc applySimReplacements(nl: Netlist, exclude: openArray[string] = []) =
                                 newDesignator = repl.designator, partNumber = repl.partNumber,
                                 attrs = toSeq(repl.attrs.pairs))
   for _, child in nl.children:
-    applySimReplacements(child, exclude)
+    applySimReplacements(child, exclude, purpose)
 
 proc materializeSimNetlist*(nl: Netlist, globalNets: var OrderedTable[string, Net],
-                            exclude: openArray[string] = []): Netlist =
+                            exclude: openArray[string] = [],
+                            purpose = ""): Netlist =
   ## Clones `nl` (via `graph.clone` -- `nl` itself is never mutated), then
   ## recursively walks the clone (including its `children`, for nested
   ## hierarchy) applying every component's stored `simReplace`, if any.
@@ -90,5 +148,10 @@ proc materializeSimNetlist*(nl: Netlist, globalNets: var OrderedTable[string, Ne
   ## after isolation, because it takes over the designator so the inrush
   ## probe knows which branch to measure. Applying it here as well would
   ## replace the part twice.
+  ##
+  ## `purpose` says what is being asked, and only matters for a part carrying
+  ## more than one model; see `selectSimModel`. Every analysis in this library
+  ## passes its own, so a design that labels a model for one of them gets it
+  ## without any call site having to know the design.
   result = clone(nl, globalNets)
-  applySimReplacements(result, exclude)
+  applySimReplacements(result, exclude, purpose)
