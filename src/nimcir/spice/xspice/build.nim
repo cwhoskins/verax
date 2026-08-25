@@ -86,7 +86,24 @@ proc findToolchain*(ngspiceSrc = "", ngspiceBuild = ""): Toolchain =
   ## Locate and validate the ngspice source tree and `cmpp`.
   result.ngspiceSrc = if ngspiceSrc.len > 0: ngspiceSrc else: getEnv("NGSPICE_SRC")
   if result.ngspiceSrc.len == 0:
-    fail("no ngspice source tree: set $NGSPICE_SRC (or pass ngspiceSrc). " &
+    # Fall back to a tree in the cache directory. Somebody who has already
+    # unpacked and configured one should not have to remember to export a
+    # variable before every check -- and forgetting it does not fail loudly,
+    # it makes a design quietly report `not evaluated` for the one part the
+    # tree was fetched for. An explicit $NGSPICE_SRC still wins.
+    let cache = getEnv("NIMCIR_CACHE", getCacheDir() / "nimcir")
+    if dirExists(cache):
+      var best = ""
+      for kind, path in walkDir(cache):
+        if kind != pcDir: continue
+        if not path.lastPathPart.startsWith("ngspice"): continue
+        if not fileExists(path / "src/include/ngspice/config.h"): continue
+        if path > best: best = path      # newest version by name
+      result.ngspiceSrc = best
+  if result.ngspiceSrc.len == 0:
+    fail("no ngspice source tree: set $NGSPICE_SRC (or pass ngspiceSrc), or " &
+         "unpack a configured one under " &
+         (getEnv("NIMCIR_CACHE", getCacheDir() / "nimcir")) & ". " &
          "A distro -devel package is not enough -- building a .cm needs " &
          "cmpp, dlmain.c and the MIF headers, which only the source ships.")
   result.ngspiceSrc = result.ngspiceSrc.absolutePath

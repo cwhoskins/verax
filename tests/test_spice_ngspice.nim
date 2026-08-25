@@ -1,6 +1,7 @@
 import std/[os, streams, strutils, tables, unittest]
 
 import nimcir/netlist
+import nimcir/netlist/dsl
 import nimcir/spice/ngspice
 import nimcir/spice/probes
 
@@ -73,3 +74,59 @@ else:
     r1.attrs["value"] = "notanumber"
     expect(SpiceSimError):
       discard run(nl, @[".op"])
+
+suite "a rawfile is not the same as a solution":
+  # ngspice reports a failed DC solve as a *warning*, writes whatever its
+  # last iterate was, and exits zero -- so the numbers arrive looking exactly
+  # like an answer. The LT8640A reference design found this: one node left
+  # floating at DC made the matrix singular and the 5 V rail read 1.71 V, as
+  # a clean FAIL against a real number rather than as an error.
+
+  test "a node with no DC path is refused rather than reported":
+    if not haveNgspice:
+      skip()
+    else:
+      let nl = netlist("floating"):
+        net gnd, kind = ntGround, name = "0"
+        net vin, kind = ntPower
+        net orphan, kind = ntSignal
+        component V1, kind = "voltage_source", value = "DC 5":
+          pin "+", vin, kind = ptPower
+          pin "-", gnd, kind = ptGround
+        component R1, kind = "resistor", value = "1k":
+          pin "1", vin, kind = ptPassive
+          pin "2", gnd, kind = ptPassive
+        # Reachable only through capacitors, so it has no DC path anywhere.
+        component C1, kind = "capacitor", value = "100n":
+          pin "1", vin, kind = ptPassive
+          pin "2", orphan, kind = ptPassive
+        component C2, kind = "capacitor", value = "100n":
+          pin "1", orphan, kind = ptPassive
+          pin "2", gnd, kind = ptPassive
+      var raised = ""
+      try:
+        discard run(nl, @[".op"])
+      except SpiceSimError as e:
+        raised = e.msg
+      check "did not converge" in raised
+      check "no DC path" in raised
+
+  test "a circuit that does converge is unaffected":
+    if not haveNgspice:
+      skip()
+    else:
+      let nl = netlist("divider"):
+        net gnd, kind = ntGround, name = "0"
+        net vin, kind = ntPower
+        net mid, kind = ntSignal
+        component V1, kind = "voltage_source", value = "DC 10":
+          pin "+", vin, kind = ptPower
+          pin "-", gnd, kind = ptGround
+        component R1, kind = "resistor", value = "1k":
+          pin "1", vin, kind = ptPassive
+          pin "2", mid, kind = ptPassive
+        component R2, kind = "resistor", value = "1k":
+          pin "1", mid, kind = ptPassive
+          pin "2", gnd, kind = ptPassive
+      let r = run(nl, @[".op"])
+      check abs(r["v(mid)"][0] - 5.0) < 1e-6

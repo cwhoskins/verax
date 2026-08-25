@@ -81,11 +81,149 @@ test "a duplicate .MODEL name is rejected":
   expect(XspiceInstanceError):
     discard addCodeModelInstance(nl, "a2", gainSpec(), [vin, vout], modelName = "m")
 
-test "a vector port is rejected rather than silently mis-emitted":
-  # Vector ports need the bracketed %v([a b c]) syntax, which this helper
-  # does not produce.
-  var spec = gainSpec()
-  spec.ports[0].vector = true
-  let (nl, vin, vout) = fixture()
+proc bridgeSpec(): ModelSpec =
+  ## Shaped like ngspice's own `adc_bridge`: vector in, vector out.
+  ModelSpec(
+    name: "adc_bridge", cFunction: "cm_adc_bridge",
+    ports: @[
+      PortSpec(name: "inp", dir: xdIn, default: xpV, allowed: @[xpV],
+               vector: true, vectorBounds: bounds(1, 4)),
+      PortSpec(name: "outp", dir: xdOut, default: xpD, allowed: @[xpD],
+               vector: true, vectorBounds: bounds(1, 4))])
+
+proc diffSpec(): ModelSpec =
+  ModelSpec(
+    name: "diffamp", cFunction: "cm_diffamp",
+    ports: @[
+      PortSpec(name: "inp", dir: xdIn, default: xpVd, allowed: @[xpVd]),
+      PortSpec(name: "outp", dir: xdOut, default: xpV, allowed: @[xpV],
+               nullAllowed: true)])
+
+test "a vector port renders as a bracketed list":
+  let (nl, a, b) = fixture()
+  let c = addNet(nl, Net(name: "c"))
+  let d = addNet(nl, Net(name: "d"))
+  discard addCodeModelInstance(nl, "a1", bridgeSpec(),
+                               [wire([a, b]), wire([c, d])])
+  check "a1 [vin vout] [c d] a1" in render(nl)
+
+test "vector port pins are indexed, so graph walks still see real nets":
+  let (nl, a, b) = fixture()
+  let c = addNet(nl, Net(name: "c"))
+  let comp = addCodeModelInstance(nl, "a1", bridgeSpec(),
+                                  [wire([a, b]), wire([c])])
+  check toSeq(comp.pins.keys) == @["inp[0]", "inp[1]", "outp[0]"]
+  check comp.pins["inp[1]"].net.name == "vout"
+  check c.pins[0].component.designator == "a1"
+
+test "a differential port takes two nodes and splits into .p/.n pins":
+  # ngspice's parser demands an explicit second node for vd/id/gd/hd, and
+  # supplies ground as the negative node only for the single-ended types.
+  let (nl, a, b) = fixture()
+  let o = addNet(nl, Net(name: "o"))
+  let comp = addCodeModelInstance(nl, "a1", diffSpec(), [wire(a, b), wire(o)])
+  check "a1 vin vout o a1" in render(nl)
+  check toSeq(comp.pins.keys) == @["inp.p", "inp.n", "outp"]
+  check comp.pins["inp.n"].net.name == "vout"
+
+test "giving a differential port one node is rejected with its node count":
+  let (nl, a, _) = fixture()
+  let o = addNet(nl, Net(name: "o"))
   expect(XspiceInstanceError):
-    discard addCodeModelInstance(nl, "a1", spec, [vin, vout])
+    discard addCodeModelInstance(nl, "a1", diffSpec(), [wire(a), wire(o)])
+
+test "a null port renders as the literal null":
+  let (nl, a, b) = fixture()
+  discard addCodeModelInstance(nl, "a1", diffSpec(), [wire(a, b), nullPort()])
+  check "a1 vin vout null a1" in render(nl)
+
+test "a null binding on a port that is not Null_Allowed is rejected":
+  let (nl, a, b) = fixture()
+  expect(XspiceInstanceError):
+    discard addCodeModelInstance(nl, "a1", diffSpec(), [nullPort(), wire(a)])
+
+test "a null port contributes no pins":
+  let (nl, a, b) = fixture()
+  let comp = addCodeModelInstance(nl, "a1", diffSpec(), [wire(a, b), nullPort()])
+  check toSeq(comp.pins.keys) == @["inp.p", "inp.n"]
+
+test "a vector of differential elements needs a whole number of pairs":
+  var spec = bridgeSpec()
+  spec.ports[0].default = xpVd
+  spec.ports[0].allowed = @[xpVd]
+  let (nl, a, b) = fixture()
+  let c = addNet(nl, Net(name: "c"))
+  expect(XspiceInstanceError):    # 3 nets, 2 nodes per element
+    discard addCodeModelInstance(nl, "a1", spec, [wire([a, b, c]), wire([a])])
+  let comp = addCodeModelInstance(nl, "a2", spec, [wire([a, b]), wire([c])])
+  check toSeq(comp.pins.keys) == @["inp[0].p", "inp[0].n", "outp[0]"]
+
+test "Vector_Bounds are enforced on the element count, not the node count":
+  let (nl, a, b) = fixture()
+  let c = addNet(nl, Net(name: "c"))
+  let d = addNet(nl, Net(name: "d"))
+  let e = addNet(nl, Net(name: "e"))
+  expect(XspiceInstanceError):    # 5 elements, bound is [1 4]
+    discard addCodeModelInstance(nl, "a1", bridgeSpec(),
+                                 [wire([a, b, c, d, e]), wire([a])])
+
+test "an empty vector binding is rejected":
+  let (nl, a, _) = fixture()
+  expect(XspiceInstanceError):
+    discard addCodeModelInstance(nl, "a1", bridgeSpec(), [wire([]), wire([a])])
+
+test "a vnam port is rejected because it names a source, not a net":
+  var spec = diffSpec()
+  spec.ports[0].default = xpVnam
+  spec.ports[0].allowed = @[xpVnam]
+  let (nl, a, _) = fixture()
+  expect(XspiceInstanceError):
+    discard addCodeModelInstance(nl, "a1", spec, [wire(a), wire(a)])
+
+suite "telling the simulator which code models a netlist needs":
+  # The netlist that reaches ngspice is never the one the design built: it is
+  # a fragment produced by clone -> flatten -> model substitution ->
+  # isolation, three layers below whoever knew which models were used. So the
+  # answer travels on the components themselves.
+
+  test "a cm path is recorded on the component and collected back":
+    let nl = newNetlist("board")
+    let a = addNet(nl, newNet("a"))
+    let b = addNet(nl, newNet("b"))
+    discard addCodeModelInstance(nl, "A1", gainSpec(), [a, b],
+                                 cmPath = "/tmp/gain.cm")
+    check nl.components["A1"].attrs[xspiceCmAttr] == "/tmp/gain.cm"
+    check collectCodeModels(nl) == @["/tmp/gain.cm"]
+
+  test "two instances of one model are collected once":
+    let nl = newNetlist("board")
+    let a = addNet(nl, newNet("a"))
+    let b = addNet(nl, newNet("b"))
+    let c = addNet(nl, newNet("c"))
+    discard addCodeModelInstance(nl, "A1", gainSpec(), [a, b], cmPath = "/tmp/g.cm")
+    discard addCodeModelInstance(nl, "A2", gainSpec(), [b, c], cmPath = "/tmp/g.cm")
+    check collectCodeModels(nl) == @["/tmp/g.cm"]
+
+  test "a model inside a subcircuit is found too":
+    # Before flattening this is the only way to see it; after flattening the
+    # component is at the top level and the same call still finds it.
+    let child = newNetlist("CH")
+    let ci = addNet(child, newNet("i"))
+    let co = addNet(child, newNet("o"))
+    discard addCodeModelInstance(child, "A1", gainSpec(), [ci, co],
+                                 cmPath = "/tmp/inner.cm")
+    addPort(child, "I", ci)
+    addPort(child, "O", co)
+    let nl = newNetlist("top")
+    let p = addNet(nl, newNet("p"))
+    let q = addNet(nl, newNet("q"))
+    var globals: OrderedTable[string, Net]
+    discard instantiate(nl, "X1", child, @[p, q], globals)
+    check collectCodeModels(nl) == @["/tmp/inner.cm"]
+
+  test "a component with no cm path contributes nothing":
+    let nl = newNetlist("board")
+    let a = addNet(nl, newNet("a"))
+    let b = addNet(nl, newNet("b"))
+    discard addCodeModelInstance(nl, "A1", gainSpec(), [a, b])
+    check collectCodeModels(nl).len == 0

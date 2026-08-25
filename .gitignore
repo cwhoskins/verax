@@ -1,0 +1,29 @@
+# Compiled binaries. Nim names an executable after its source file with no
+# extension, so these are listed by path rather than by pattern -- there is
+# nothing about `examples/divider` that says "binary" except that
+# `examples/divider.nim` sits next to it.
+/bin/
+/mcp/nimcir_mcp
+nimcache/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Built examples, tests and designs: every .nim in these directories compiles
+# to a same-named extensionless sibling.
+/examples/*
+!/examples/*.nim
+/tests/*
+!/tests/*.nim
+!/tests/config.nims
+/designs/*
+!/designs/*.nim
+!/designs/README
+/templates/*
+!/templates/*.nim
+
+# nimble
+nimble.develop
+nimble.paths
+/nimbledeps/

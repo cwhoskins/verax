@@ -5,11 +5,12 @@
 ## installed ngspice-46 rather than assumed, because the CLI's exit code and
 ## output formats have real surprises -- see `run` and `parseRawfile`.
 
-import std/[streams, osproc, os, strutils, tables, tempfiles]
+import std/[complex, streams, osproc, os, strutils, tables, tempfiles]
 import ../netlist/types
 import ../netlist/formats/spice as spiceFormat
 import ./backend
 import ./xspice/cmpath
+import ./xspice/instance
 
 export backend
 
@@ -19,12 +20,40 @@ proc writeDeck*(nl: Netlist, cards: seq[string], s: Stream) =
 proc writeDeckFile*(nl: Netlist, cards: seq[string], path: string) =
   spiceFormat.writeNetlistFile(nl, path, cards)
 
+proc parseComplexTok(tok, path: string): Complex64 =
+  ## One `real,imag` rawfile token. Raises `SpiceSimError` rather than
+  ## `ValueError`/`IndexDefect` so a malformed complex plot surfaces the same
+  ## way every other unusable-output condition in this module does.
+  let parts = tok.split(',')
+  if parts.len != 2:
+    raise newException(SpiceSimError,
+      "malformed complex value '" & tok & "' in " & path &
+      " (expected real,imag)")
+  try:
+    complex64(parseFloat(parts[0].strip()), parseFloat(parts[1].strip()))
+  except ValueError:
+    raise newException(SpiceSimError,
+      "unparseable complex value '" & tok & "' in " & path)
+
 proc parseRawfile(path: string): SimResult =
   ## Parses the ASCII rawfile format written by ngspice's
   ## `set filetype=ascii; write <path>` inside a `.control` block. Verified
-  ## against real `.op`/`.tran` output. `Flags: complex` (produced by
-  ## `.ac`) is unimplemented -- raises `SpiceSimError` rather than silently
-  ## misreading a real/imaginary pair as a single real value.
+  ## against real `.op`/`.tran`/`.ac` output.
+  ##
+  ## `Flags: complex` (produced by `.ac`) selects the `sdComplex` branch of
+  ## `SimVector`, where each value is written as a bare `real,imag` pair with
+  ## no space around the comma:
+  ##
+  ## ```
+  ## Values:
+  ##  0\t1.000000000000000e+01,0.000000000000000e+00
+  ## \t9.999605231408795e-01,-6.282937266758387e-03
+  ## ```
+  ##
+  ## The line shape is otherwise identical between the two: the first
+  ## variable shares the point-index line, every other variable gets its own.
+  ## The flag is known before any value is read (`Flags:` precedes `Values:`),
+  ## so each vector is constructed on the correct variant branch up front.
   let lines = readFile(path).splitLines()
 
   var plotName = ""
@@ -47,9 +76,9 @@ proc parseRawfile(path: string): SimResult =
       break
     inc i
 
-  if flags.toLowerAscii() == "complex":
-    raise newException(SpiceSimError,
-      "AC analysis (Flags: complex) is not supported yet: " & path)
+  let dataKind =
+    if "complex" in flags.toLowerAscii().splitWhitespace(): sdComplex
+    else: sdReal
 
   var varNames: seq[string]
   while i < lines.len and varNames.len < numVars:
@@ -63,8 +92,9 @@ proc parseRawfile(path: string): SimResult =
   inc i
 
   result.plotName = plotName
+  result.dataKind = dataKind
   for name in varNames:
-    result.vectors[name.toLowerAscii] = SimVector(name: name)
+    result.vectors[name.toLowerAscii] = newSimVector(name, dataKind)
 
   var pointIdx = 0
   while i < lines.len and pointIdx < numPoints:
@@ -75,12 +105,44 @@ proc parseRawfile(path: string): SimResult =
     if firstToks.len < 2:
       inc i
       continue
-    result.vectors[varNames[0].toLowerAscii].values.add parseFloat(firstToks[^1])
-    inc i
-    for varIdx in 1 ..< varNames.len:
-      result.vectors[varNames[varIdx].toLowerAscii].values.add parseFloat(lines[i].strip())
+    case dataKind
+    of sdReal:
+      result.vectors[varNames[0].toLowerAscii].values.add parseFloat(firstToks[^1])
       inc i
+      for varIdx in 1 ..< varNames.len:
+        result.vectors[varNames[varIdx].toLowerAscii].values.add parseFloat(lines[i].strip())
+        inc i
+    of sdComplex:
+      result.vectors[varNames[0].toLowerAscii].cvalues.add parseComplexTok(firstToks[^1], path)
+      inc i
+      for varIdx in 1 ..< varNames.len:
+        let tok = lines[i].strip()
+        result.vectors[varNames[varIdx].toLowerAscii].cvalues.add parseComplexTok(tok, path)
+        inc i
     inc pointIdx
+
+proc keepDeck(deckPath: string) =
+  ## Copies the deck just handed to ngspice into `$NIMCIR_KEEP_DECKS`, if set.
+  ##
+  ## Every deck this module writes lives in a temporary directory that the
+  ## `finally` below deletes, which is right for a tool that runs dozens of
+  ## simulations per check and wrong for the one moment that matters: a claim
+  ## has reported a number you do not believe, and the only way to find out
+  ## whether the circuit or the fragment is at fault is to read what was
+  ## actually simulated. The fragments here are *derived* -- isolated,
+  ## terminated, model-substituted -- so they are not the netlist anyone
+  ## wrote, and reasoning about them from the design file is guesswork.
+  ##
+  ## Off unless the variable is set, and it never changes what is simulated.
+  let dir = getEnv("NIMCIR_KEEP_DECKS")
+  if dir.len == 0: return
+  try:
+    createDir(dir)
+    var i = 0
+    while fileExists(dir / ("deck" & $i & ".cir")): inc i
+    copyFile(deckPath, dir / ("deck" & $i & ".cir"))
+  except CatchableError:
+    discard  # a debugging aid must never be able to fail a simulation
 
 proc run*(nl: Netlist, cards: seq[string],
           codemodels: seq[string] = @[]): SimResult =
@@ -118,19 +180,34 @@ proc run*(nl: Netlist, cards: seq[string],
     let rawPath = tmpDir / "deck.raw"
     let logPath = tmpDir / "deck.log"
 
-    for cm in codemodels:
+    # What the deck needs is a property of the *netlist*, and by the time a
+    # fragment reaches here it has been cloned, flattened, model-substituted
+    # and isolated -- so the caller three layers up is in no position to know
+    # which code models survived. The netlist carries the answer on the
+    # components themselves, and an explicit argument still wins.
+    var allCms = @codemodels
+    for cm in collectCodeModels(nl):
+      if cm notin allCms: allCms.add cm
+
+    for cm in allCms:
       if not fileExists(cm):
-        raise newException(SpiceSimError, "no such code model: " & cm)
+        raise newException(SpiceSimError,
+          "the netlist needs XSPICE code model '" & cm & "', which does not " &
+          "exist. Build it with `nimcir/spice/xspice/build.buildCodeModel`; " &
+          "that needs $NGSPICE_SRC pointing at a configured ngspice source " &
+          "tree. Without it ngspice fails with `unable to find definition of " &
+          "model`, which names the model and not the missing file.")
 
     var fullCards = cards
     fullCards.add ".control"
-    for cm in codemodels:
+    for cm in allCms:
       fullCards.add "pre_codemodel " & deckSafeCmPath(cm)
     fullCards.add "run"
     fullCards.add "set filetype=ascii"
     fullCards.add "write " & rawPath
     fullCards.add ".endc"
     writeDeckFile(nl, fullCards, deckPath)
+    keepDeck(deckPath)
 
     let process = startProcess("ngspice", args = @["-b", "-o", logPath, deckPath],
                                 options = {poUsePath})
@@ -142,6 +219,33 @@ proc run*(nl: Netlist, cards: seq[string],
     if not fileExists(rawPath):
       raise newException(SpiceSimError,
         "ngspice produced no output (exit code " & $exitCode & "):\n" & log)
+
+    # A rawfile is not the same as a solution. ngspice reports a failed DC
+    # solve as a *warning*, writes whatever its last iterate was, and exits
+    # zero -- so the numbers arrive looking exactly like an answer. The
+    # LT8640A reference design found this: one node left floating at DC made
+    # the matrix singular and the rail read 1.71 V instead of 4.96, as a
+    # clean FAIL against a real number rather than as an error.
+    # Only markers that mean the solve *failed*, not ones that mean a strategy
+    # was tried and abandoned. ngspice attempts dynamic gmin stepping, then
+    # true gmin stepping, then source stepping, announcing each failure as it
+    # goes -- and then very often succeeds. Treating those as fatal declared
+    # the TS808's perfectly good bias-finding .op a failure, which took its
+    # large-signal drive offset to 0 V and its output swing with it.
+    for marker in ["singular matrix", "iteration limit reached",
+                   "too many iterations", "no convergence"]:
+      if marker in log.toLowerAscii:
+        var detail = ""
+        for line in log.splitLines:
+          if marker in line.toLowerAscii:
+            detail = line.strip
+            break
+        raise newException(SpiceSimError,
+          "ngspice did not converge on a solution (" & detail & "). The " &
+          "values it wrote are its last iterate, not an answer, so they are " &
+          "not reported. A singular matrix usually means a node with no DC " &
+          "path to ground -- a capacitor-only node, a bootstrap pin, or an " &
+          "AC-coupled input.")
 
     try:
       result = parseRawfile(rawPath)

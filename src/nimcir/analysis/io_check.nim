@@ -27,9 +27,11 @@
 
 import std/[strutils, tables]
 import ../netlist/types
+import ../netlist/kinds
+import ../netlist/annotations
 import ./issue
 
-export issue
+export issue, kinds
 
 proc pinLabel(p: Pin): string =
   p.component.designator & "." & p.name
@@ -75,46 +77,13 @@ proc checkOutputConflicts*(nl: Netlist, recursive = true): seq[Issue] =
     for _, child in nl.children:
       result.add checkOutputConflicts(child, recursive = true)
 
-type
-  Conductivity* = enum
-    condConductive, condBlocking, condAmbiguous
-
-const
-  conductiveKinds = ["resistor", "inductor", "voltage_source", "wire", "jumper",
-                      "ferrite_bead", "fuse"]
-    ## Ideal DC-conductive two-terminal parts. An ideal voltage source's
-    ## near-zero internal impedance ties its terminals for path-*existence*
-    ## purposes -- this check never asks about value, only reachability.
-  blockingKinds = ["capacitor", "current_source"]
-    ## `capacitor` blocks DC despite being `ptPassive`-pinned, same as a
-    ## resistor -- this is exactly why classification is keyed on
-    ## `Component.kind` (what the device physically *is*), not `Pin.kind`
-    ## (which can't distinguish a resistor from a capacitor). An ideal
-    ## current source has infinite internal impedance, the opposite of a
-    ## voltage source, so it's blocking too.
-
-proc classifyConductivity*(c: Component): Conductivity =
-  ## Never called on a component with `subNetlist != nil` -- hierarchy is
-  ## walked structurally via `Pin.hierNet`/`Netlist.instanceOf`, not by kind
-  ## lookup. Any `kind` not in the built-in tables (a diode, transistor, IC,
-  ## or custom part) is `condAmbiguous`, never silently guessed as either
-  ## conductive or blocking.
-  if c.kind in blockingKinds: condBlocking
-  elif c.kind in conductiveKinds: condConductive
-  else: condAmbiguous
-
 proc isTerminus(net: Net): bool =
-  ## A net counts as "reached" if it carries an output, or is power/ground
-  ## by either signal (`Net.kind` OR any connected pin's `kind`) -- these two
-  ## signals are populated inconsistently depending on netlist origin (a
-  ## SPICE-read netlist only sets `ntGround` for node "0" and never touches
-  ## `Pin.kind`; a DSL author might tag a pin `ptPower` without also tagging
-  ## the net, or vice versa). Requiring both (AND) would cause false
-  ## "floating input" positives on realistic partially-annotated netlists.
-  if net.kind in {ntPower, ntGround}: return true
+  ## A net counts as "reached" if it is a power/ground rail (see
+  ## `netlist/kinds.isRail` for why that test accepts either signal), or if
+  ## it carries an output pin.
+  if isRail(net): return true
   for p in net.pins:
-    if p.kind == ptOutput or p.kind in {ptPower, ptGround}:
-      return true
+    if p.kind == ptOutput: return true
   false
 
 proc dcReachable(startNet: Net): tuple[reached: bool, ambiguous: seq[Component]] =
@@ -209,5 +178,77 @@ proc checkDCPaths*(nl: Netlist, recursive = true): seq[Issue] =
     for _, child in nl.children:
       result.add checkDCPaths(child, recursive = true)
 
+proc isPort(nl: Netlist, net: Net): bool =
+  ## Whether `net` is a published port of `nl` -- compared by identity, since
+  ## `Netlist.ports` is keyed by the port's published name, which need not be
+  ## the net's own.
+  for _, p in nl.ports:
+    if p == net: return true
+  false
+
+proc checkRailVoltages*(nl: Netlist, recursive = true): seq[Issue] =
+  ## A power net whose nominal voltage nobody stated.
+  ##
+  ## Every simulation-backed analysis cuts a fragment out of the design and
+  ## has to terminate the rails at its boundary. A rail with a stated voltage
+  ## gets an ideal source there; a rail without one is **cut loose as a
+  ## floating node**. That is not a substituted value, it is a change of
+  ## topology, and it is why this is a structural finding rather than an
+  ## assumption.
+  ##
+  ## The case that put it here: `designs/ts808_drive.nim` derives its 4.5 V
+  ## bias from a divider, so no `power_rail` role fits it and it initially
+  ## carried no voltage. Cutting it loose detached the drive stage's gain leg
+  ## and measured an amplifier with a gain of 65 as a unity-gain follower --
+  ## 5.9 mdB of peaking against a real 31.6 dB. Every claim passed and the
+  ## report said `exit 0 (clean)`. The floating rail *was* reported, as one
+  ## assumption among fifteen, reading exactly like the package-typical ESR
+  ## two lines above it. Being reported and being *noticed* are different,
+  ## and the difference is which section it lands in.
+  ##
+  ## `sevWarning`, not `sevError`: a rail nothing simulates is harmless, and
+  ## a design may legitimately not know a voltage yet. It costs nothing to
+  ## state one, so the message says so; `--strict` promotes it.
+  for _, net in nl.nets:
+    if not isRail(net) or isGround(net): continue
+    if railVoltage(net).has: continue
+    # A subcircuit's *port* is not a rail of its own: it is whatever the
+    # parent wired to it, and the parent is where the voltage is stated. A
+    # stereo board instancing one channel twice would otherwise report the
+    # same missing voltage once per instance for a rail that is stated, and
+    # the finding this check exists to make -- a genuinely floating node --
+    # would be sitting among the false ones.
+    if isPort(nl, net): continue
+
+    # Naming what terminates on the rail is the actionable half. A rail
+    # carrying only power pins and bypass capacitors loses little by
+    # floating; one with a signal path returning to it loses the path.
+    var onIt: seq[string]
+    var comps: seq[Component]
+    for p in net.pins:
+      let c = p.component
+      if c == nil or c.kind == "capacitor": continue
+      if c.designator notin onIt:
+        onIt.add c.designator
+        comps.add c
+
+    var msg = "net '" & net.name & "' is a power rail with no stated " &
+      "voltage, so an analysis that cuts a fragment out around it leaves " &
+      "it floating rather than driving it -- which changes the topology " &
+      "rather than substituting a value. State it with `spec: voltage = " &
+      "...` on the net, or give it a `power_rail` role."
+    if onIt.len > 0:
+      msg &= " " & onIt.join(", ") &
+        (if onIt.len == 1: " terminates" else: " terminate") &
+        " on it and would lose that connection."
+
+    result.add newIssue("rail_voltage_unknown", sevWarning, msg,
+                        net = net, components = comps)
+
+  if recursive:
+    for _, child in nl.children:
+      result.add checkRailVoltages(child, recursive = true)
+
 proc analyzeIO*(nl: Netlist, recursive = true): seq[Issue] =
-  checkOutputConflicts(nl, recursive) & checkDCPaths(nl, recursive)
+  checkOutputConflicts(nl, recursive) & checkDCPaths(nl, recursive) &
+    checkRailVoltages(nl, recursive)

@@ -1,23 +1,38 @@
-## Static netlist-correctness checks (currently: output-net conflicts and
-## DC-path reachability for input pins).
+## Netlist-correctness checks and circuit measurements.
 ##
-## A specific simulation backend (`nimcir/spice/ngspice`, pulled in via
-## `nimcir/analysis/spice_fallback`) is opt-in per-import, mirroring how
-## `nimcir/spice/ngspice` itself is opt-in from `nimcir/spice.nim` -- this
-## hub only exports the backend-agnostic pieces: the result type
-## (`nimcir/analysis/issue`) and the static checks (`nimcir/analysis/io_check`).
+## Two kinds of answer live here, with two result types:
 ##
-## See `nimcir/analysis/io_check` for what these checks can/can't tell from
-## netlist topology alone, and `nimcir/analysis/spice_fallback` for the
-## opt-in ngspice-backed resolution of anything they can't classify
-## statically.
+## * **`Issue`** (`nimcir/analysis/issue`) -- something is wrong, here is what
+##   and where. This is what the static checks in `nimcir/analysis/io_check`
+##   return.
+## * **`AnalysisReport`** (`nimcir/analysis/report`) -- a measured curve plus
+##   the scalars extracted from it, the issues those scalars imply, and the
+##   assumptions the measurement rested on. A frequency response is not a
+##   yes/no question, so it does not fit in an `Issue`.
 ##
-## "A section of a netlist" is handled by extracting first with
-## `nimcir/spice/extract` (`extractSubcircuit`/`extractInstance`), then
-## analyzing the resulting standalone `Netlist` like any other -- no subset
-## selection is reinvented here.
+## Anything needing a simulator is **opt-in per-import**, mirroring how
+## `nimcir/spice/ngspice` is opt-in from `nimcir/spice.nim`. This hub exports
+## only what runs with no external toolchain: the two result types, the static
+## checks (`io_check`), and the pure curve math (`measure`). Import
+## `nimcir/analysis/spice_fallback`, `nimcir/analysis/pdn`,
+## `nimcir/analysis/startup` or `nimcir/analysis/opamp` directly for the
+## ngspice-backed ones:
+##
+## | module | question | analysis |
+## | --- | --- | --- |
+## | `spice_fallback` | is this ambiguous DC path real? | `.op` |
+## | `pdn` | is my decoupling adequate? | `.ac` |
+## | `startup` | does this rail come up cleanly? | `.tran` |
+## | `opamp` | gain, bandwidth and stability margin | `.ac` |
+##
+## Each of those isolates a fragment of the design with
+## `nimcir/spice/isolate` and simulates that, never the whole board and never
+## the design netlist itself. See `nimcir/analysis/io_check` for what the
+## static checks can and cannot tell from topology alone.
 
 import nimcir/analysis/issue
 import nimcir/analysis/io_check
+import nimcir/analysis/measure
+import nimcir/analysis/report
 
-export issue, io_check
+export issue, io_check, measure, report

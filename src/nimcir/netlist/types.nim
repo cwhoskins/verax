@@ -101,9 +101,34 @@ type
       ## later clone of it, which has its own distinct `Net` objects with
       ## the same names).
     attrs*: OrderedTable[string, string]
+    build*: proc (nl: Netlist, old: Component): Component {.nimcall.}
+      ## When set, this **replaces** `kind`/`pinNets`/`attrs`: the proc is
+      ## handed the materialized clone and the component to stand in for, and
+      ## returns whatever it built.
+      ##
+      ## The fields above describe a replacement as one component of one
+      ## `kind` wired by a flat pin-name-to-net-name table, which covers a
+      ## regulator becoming an ideal source and not much else. An XSPICE code
+      ## model needs three things that shape cannot express: a `.MODEL` card
+      ## registered in `Netlist.models` (without which `kinds.hasDeviceModel`
+      ## is false, the part is not passive, and `spice/isolate` drops it at
+      ## the boundary -- the exact failure the model was added to fix); an
+      ## *ordered and grouped* port binding, since a differential port takes
+      ## two nodes and a vector port is bracketed; and the rendered port text
+      ## produced from the model's own `ModelSpec` rather than hand-written,
+      ## so a wrong node count is caught here instead of surfacing as a
+      ## `MIF-ERROR` out of ngspice.
+      ##
+      ## It mentions only netlist types, so this file learns nothing about
+      ## XSPICE and the dependency still points the right way.
 
 proc newSimReplacement*(kind: string, designator = "", partNumber = ""): SimReplacement =
   SimReplacement(kind: kind, designator: designator, partNumber: partNumber)
+
+proc newSimReplacement*(build: proc (nl: Netlist, old: Component): Component {.nimcall.}):
+    SimReplacement =
+  ## A replacement that builds itself. See `SimReplacement.build`.
+  SimReplacement(build: build)
 
 proc newPin*(name: string, kind: PinType = ptUnknown): Pin =
   Pin(name: name, kind: kind)

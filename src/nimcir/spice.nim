@@ -8,12 +8,17 @@
 ## mirroring how file formats are opt-in under `nimcir/netlist/formats/` --
 ## this hub only exports the backend-agnostic pieces: the result/error types
 ## (`nimcir/spice/backend`), probes (`nimcir/spice/probes`), component
-## replacement (`nimcir/spice/transform`), and subcircuit extraction
-## (`nimcir/spice/extract`).
+## replacement (`nimcir/spice/transform`), subcircuit extraction
+## (`nimcir/spice/extract`), simulation-fragment isolation
+## (`nimcir/spice/isolate`), and simulation-only device models
+## (`nimcir/spice/models`).
 
 import nimcir/spice/backend
 import nimcir/spice/probes
 import nimcir/spice/transform
 import nimcir/spice/extract
+import nimcir/spice/isolate
+import nimcir/spice/models
+import nimcir/spice/boundary
 
-export backend, probes, transform, extract
+export backend, probes, transform, extract, isolate, models, boundary

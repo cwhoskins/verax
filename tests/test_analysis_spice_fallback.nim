@@ -12,6 +12,10 @@ proc diodeGatedNetlist(): Netlist =
   ## (an unrecognized "diode" kind) and reports `b` as ambiguous.
   result = newNetlist("diode_gated")
   let vcc = addNet(result, newNet("vcc", ntPower))
+  # Stated, because V1 drives it to 5 V and an unstated rail is its own
+  # finding now (`rail_voltage_unknown`) -- leaving it out would put a
+  # second, unrelated issue in every bundle below.
+  vcc.attrs["voltage"] = "5.0"
   let gnd = addNet(result, newNet("0", ntGround))
   let a = addNet(result, newNet("a"))
   let b = addNet(result, newNet("b"))

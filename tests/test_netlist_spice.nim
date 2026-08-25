@@ -130,3 +130,65 @@ Z1 n1 n2 n3 weirdmodel
   check z1.pins["pin1"].net.name == "n1"
   check z1.pins["pin3"].net.name == "n3"
   check z1.attrs["value"] == "weirdmodel"
+
+test "the device letter comes from kind, not from the designator":
+  # SPICE infers device type from the first letter and nothing else, so a
+  # designator that disagrees with `kind` silently simulates a different
+  # part. These are all ordinary EDA designators.
+  var nl = newNetlist("d")
+  let a = addNet(nl, newNet("a"))
+  let b = addNet(nl, newNet("0", ntGround))
+  for (desig, kind, want) in [("FB1", "inductor", "LFB1"),
+                              ("BT1", "voltage_source", "VBT1"),
+                              ("J1", "voltage_source", "VJ1"),
+                              ("VR1", "resistor", "RVR1"),
+                              ("TP1", "capacitor", "CTP1"),
+                              ("C12", "inductor", "LC12"),
+                              ("L7", "resistor", "RL7")]:
+    let c = addComponent(nl, newComponent(desig, kind = kind))
+    discard connect(c, "1", a, ptPassive)
+    discard connect(c, "2", b, ptPassive)
+    check deckDesignator(c) == want
+
+test "a designator that already agrees with its kind is left alone":
+  var nl = newNetlist("d")
+  let a = addNet(nl, newNet("a"))
+  for (desig, kind) in [("R1", "resistor"), ("C4", "capacitor"),
+                        ("L2", "inductor"), ("D3", "diode"),
+                        ("V1", "voltage_source"), ("Q7", "bjt")]:
+    let c = addComponent(nl, newComponent(desig, kind = kind))
+    discard connect(c, "1", a, ptPassive)
+    check deckDesignator(c) == desig
+
+test "a kind with no known letter keeps its designator":
+  # Nothing to correct it against. Such a part is substituted before it ever
+  # reaches a deck, or written as a subcircuit instance.
+  var nl = newNetlist("d")
+  let c = addComponent(nl, newComponent("U1", kind = "mcu"))
+  check deckDesignator(c) == "U1"
+
+test "the corrected letter is prepended, never substituted":
+  # Substituting would merge FB1 and L1 into one device on a board with both.
+  var nl = newNetlist("d")
+  let a = addNet(nl, newNet("a"))
+  let b = addNet(nl, newNet("0", ntGround))
+  for desig in ["FB1", "L1"]:
+    let c = addComponent(nl, newComponent(desig, kind = "inductor"))
+    discard connect(c, "1", a, ptPassive)
+    discard connect(c, "2", b, ptPassive)
+  check deckDesignator(nl.components["FB1"]) == "LFB1"
+  check deckDesignator(nl.components["L1"]) == "L1"
+
+test "a written deck spells every device from its kind":
+  var nl = newNetlist("d")
+  let a = addNet(nl, newNet("a"))
+  let b = addNet(nl, newNet("0", ntGround))
+  let fb = addComponent(nl, newComponent("FB1", kind = "inductor"))
+  discard connect(fb, "1", a, ptPassive)
+  discard connect(fb, "2", b, ptPassive)
+  fb.attrs["value"] = "600n"
+
+  let s = newStringStream()
+  writeNetlist(nl, s)
+  check "LFB1 a 0 600n" in s.data
+  check "\nFB1 " notin s.data

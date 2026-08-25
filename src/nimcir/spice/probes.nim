@@ -79,3 +79,37 @@ proc addCurrentProbe*(nl: Netlist, pin: Pin, designator = ""): Probe =
   discard connect(src, "-", probeNet)
 
   result = Probe(kind: pkCurrent, label: "i(" & desig & ")", net: probeNet, source: src)
+
+proc addImpedanceProbe*(nl: Netlist, net, refNet: Net, designator = "",
+                        amps = 1.0): Probe =
+  ## Wires a constant-amplitude AC current source across `refNet` -> `net` so
+  ## an `.ac` sweep reads that node's driving-point impedance directly.
+  ##
+  ## With the default 1 A drive, `v(<net>)` **is** Z in ohms -- no division,
+  ## no second probe, no scaling on the way out. That is the whole reason the
+  ## amplitude defaults to 1 rather than something physically plausible: an
+  ## `.ac` analysis is linear, so the drive level cannot affect the answer,
+  ## and 1 A makes the answer readable without arithmetic.
+  ##
+  ## The source is `DC 0` so it contributes nothing to the operating point.
+  ## Note this measures impedance *as the fragment stands*: whatever else is
+  ## connected to `net` is part of the answer, which is why the rail under
+  ## test must not also be terminated with an ideal voltage source (see
+  ## `nimcir/spice/isolate.IsolationSpec.excludeRails` -- an ideal source is a
+  ## short at AC and would report Z = 0 everywhere).
+  var desig = designator
+  if desig.len == 0:
+    desig = "IPROBE_" & net.name
+  elif desig[0] != spiceFormat.designatorPrefix("current_source"):
+    raise newException(NetlistError, "impedance probe designator must start with 'I': " & desig)
+  if nl.components.hasKey(desig):
+    raise newException(NetlistError, "designator already in use: " & desig)
+
+  let src = addComponent(nl, newComponent(desig, kind = "current_source"))
+  # SPICE current-source convention: current flows through the source from
+  # the first node to the second, i.e. it is *injected into* the second one.
+  discard connect(src, "+", refNet, ptPassive)
+  discard connect(src, "-", net, ptPassive)
+  src.attrs["value"] = "DC 0 AC " & spiceValue(amps)
+
+  result = Probe(kind: pkVoltage, label: "v(" & net.name & ")", net: net, source: src)

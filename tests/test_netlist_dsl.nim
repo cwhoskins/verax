@@ -1,6 +1,8 @@
-import std/[tables, unittest]
+import std/[strutils, streams, tables, unittest, streams]
 
 import nimcir/netlist/dsl
+import nimcir/netlist/kinds
+import nimcir/netlist/formats/spice
 
 test "flat netlist built with the DSL matches hand-built structure":
   let nl = netlist("divider"):
@@ -84,3 +86,383 @@ test "subckt template is not registered into any parent, and instance clones ind
   check top.components["X2"].pins["VDD"].net == top.nets["vddB"]
   check top.components["X1"].subNetlist.parent == top
   check top.components["X1"].subNetlist.instanceOf == top.components["X1"]
+
+test "a model statement registers a card that reaches the deck verbatim":
+  let nl = netlist("d"):
+    net a, kind = ntSignal
+    net gnd, kind = ntGround, name = "0"
+    model "1N4148", "D(IS=2.52n RS=0.568 N=1.752)"
+    component D1, kind = "diode", value = "1N4148":
+      pin "A", a, kind = ptPassive
+      pin "K", gnd, kind = ptPassive
+  check nl.models["1N4148"] == "D(IS=2.52n RS=0.568 N=1.752)"
+
+  let s = newStringStream()
+  writeNetlist(nl, s)
+  check ".MODEL 1N4148 D(IS=2.52n RS=0.568 N=1.752)" in s.data
+  check "D1 a 0 1N4148" in s.data
+
+test "a part whose value names a model is no longer unmodelled":
+  # Which is the point: without one a diode was stood in for by two
+  # resistors to ground, and `spice/isolate` would not traverse it.
+  let nl = netlist("d"):
+    net a, kind = ntSignal
+    net gnd, kind = ntGround, name = "0"
+    model "1N4148", "D(IS=2.52n)"
+    component D1, kind = "diode", value = "1N4148":
+      pin "A", a, kind = ptPassive
+      pin "K", gnd, kind = ptPassive
+    component D2, kind = "diode", value = "1N5819":
+      pin "A", a, kind = ptPassive
+      pin "K", gnd, kind = ptPassive
+  check hasDeviceModel(nl.components["D1"])
+  check isPassive(nl.components["D1"])
+  # D2 names a model nobody registered.
+  check not hasDeviceModel(nl.components["D2"])
+  check not isPassive(nl.components["D2"])
+
+test "model binding is case-insensitive, as SPICE is":
+  # A deck saying `1n4148` against a card saying `1N4148` binds in the
+  # simulator, and a check that disagreed with the simulator about the same
+  # part is the failure this area keeps producing.
+  let nl = netlist("d"):
+    net a, kind = ntSignal
+    net gnd, kind = ntGround, name = "0"
+    model "1N4148", "D(IS=2.52n)"
+    component D1, kind = "diode", value = "1n4148":
+      pin "A", a, kind = ptPassive
+      pin "K", gnd, kind = ptPassive
+  check hasDeviceModel(nl.components["D1"])
+
+test "a value that is a source spec is not mistaken for a model name":
+  let nl = netlist("d"):
+    net a, kind = ntPower
+    net gnd, kind = ntGround, name = "0"
+    model "AC", "D(IS=1n)"
+    component V1, kind = "voltage_source", value = "DC 0 AC 1":
+      pin "+", a, kind = ptPower
+      pin "-", gnd, kind = ptGround
+  check not hasDeviceModel(nl.components["V1"])
+
+test "a model needs a name":
+  var nl = newNetlist("d")
+  expect NetlistError:
+    setModel(nl, "", "D(IS=1n)")
+
+suite "control flow over DSL statements":
+  # `for`, `if`, `case` and `when` are admitted the same way: the header is
+  # passed through untouched and every branch body is expanded by the same
+  # dispatcher, so whatever is inside is still a net/component/instance/model.
+  # `for` removes repetition; `if`/`case` remove the other way a value drifts
+  # out of step -- build variants kept as two files, or as one file with the
+  # unused half commented out.
+
+  test "a repeated part is generated once and registered N times":
+    let nl = netlist("bank"):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      for i in 1 .. 8:
+        component C, designator = "C" & $i, kind = "capacitor", value = "100n":
+          pin "1", vdd, kind = ptPassive
+          pin "2", gnd, kind = ptPassive
+          spec:
+            package = "0402"
+    check nl.components.len == 8
+    check nl.components["C5"].attrs["package"] == "0402"
+    check nl.nets["vdd"].pins.len == 8
+
+  test "values, designators and spec entries may all vary per iteration":
+    let bank = @[("C10", "10u", "0805"), ("C11", "1u", "0603")]
+    let nl = netlist("bank2"):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      for (d, v, pkg) in bank:
+        component C, designator = d, kind = "capacitor", value = v:
+          pin "1", vdd, kind = ptPassive
+          pin "2", gnd, kind = ptPassive
+          spec:
+            package = pkg
+    check nl.components["C11"].attrs["value"] == "1u"
+    check nl.components["C11"].attrs["package"] == "0603"
+
+  test "nets can be generated too":
+    let nl = netlist("taps"):
+      net gnd, kind = ntGround, name = "0"
+      for i in 1 .. 4:
+        net t, name = "tap" & $i, kind = ntSignal
+    check nl.nets.len == 5
+    check nl.nets.hasKey("tap3")
+
+  test "a loop whose naming does not vary fails exactly as two literals would":
+    # `addComponent` has always raised at runtime rather than at compile time,
+    # so nothing is weakened here.
+    expect NetlistError:
+      discard netlist("dup"):
+        net gnd, kind = ntGround, name = "0"
+        net vdd, kind = ntPower
+        for i in 1 .. 3:
+          component C, kind = "capacitor", value = "100n":
+            pin "1", vdd, kind = ptPassive
+            pin "2", gnd, kind = ptPassive
+
+  test "the body stays a closed vocabulary":
+    check(not compiles(block:
+      discard netlist("bad"):
+        net gnd, kind = ntGround, name = "0"
+        for i in 1 .. 2:
+          echo "not a DSL statement"))
+
+  test "spec: keys are still validated at compile time inside a loop":
+    # The strictness that matters does not depend on how many times the body
+    # runs, so none of it is weakened by looping.
+    check(not compiles(block:
+      discard netlist("badkey"):
+        net gnd, kind = ntGround, name = "0"
+        net vdd, kind = ntPower
+        for i in 1 .. 2:
+          component C, designator = "C" & $i, kind = "capacitor", value = "1n":
+            pin "1", vdd, kind = ptPassive
+            pin "2", gnd, kind = ptPassive
+            spec:
+              ESL = 1.nH))
+
+  test "if and else each build their own variant":
+    proc board(bulk: bool): Netlist =
+      netlist("b"):
+        net gnd, kind = ntGround, name = "0"
+        net vdd, kind = ntPower
+        if bulk:
+          component C1, kind = "capacitor", value = "220u":
+            pin "1", vdd, kind = ptPassive
+            pin "2", gnd, kind = ptPassive
+            spec:
+              package = "electrolytic"
+        else:
+          component C1, kind = "capacitor", value = "10u":
+            pin "1", vdd, kind = ptPassive
+            pin "2", gnd, kind = ptPassive
+            spec:
+              package = "0805"
+    check board(true).components["C1"].attrs["value"] == "220u"
+    check board(true).components["C1"].attrs["package"] == "electrolytic"
+    check board(false).components["C1"].attrs["value"] == "10u"
+
+  test "case picks a branch, including its else":
+    proc board(v: int): Netlist =
+      netlist("b"):
+        net gnd, kind = ntGround, name = "0"
+        net vdd, kind = ntPower
+        case v
+        of 1:
+          component R1, kind = "resistor", value = "1k":
+            pin "1", vdd, kind = ptPassive
+            pin "2", gnd, kind = ptPassive
+        of 2:
+          component R1, kind = "resistor", value = "10k":
+            pin "1", vdd, kind = ptPassive
+            pin "2", gnd, kind = ptPassive
+        else:
+          component R1, kind = "resistor", value = "100k":
+            pin "1", vdd, kind = ptPassive
+            pin "2", gnd, kind = ptPassive
+    check board(1).components["R1"].attrs["value"] == "1k"
+    check board(2).components["R1"].attrs["value"] == "10k"
+    check board(9).components["R1"].attrs["value"] == "100k"
+
+  test "a for nests inside an if":
+    proc board(populate: bool): Netlist =
+      netlist("b"):
+        net gnd, kind = ntGround, name = "0"
+        net vdd, kind = ntPower
+        if populate:
+          for i in 1 .. 3:
+            component C, designator = "CD" & $i, kind = "capacitor", value = "100n":
+              pin "1", vdd, kind = ptPassive
+              pin "2", gnd, kind = ptPassive
+    check board(true).components.len == 3
+    check board(false).components.len == 0
+
+  test "when switches at compile time":
+    let nl = netlist("b"):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      when defined(nimcirNoSuchDefine):
+        component R1, kind = "resistor", value = "1k":
+          pin "1", vdd, kind = ptPassive
+          pin "2", gnd, kind = ptPassive
+      else:
+        component R1, kind = "resistor", value = "9k":
+          pin "1", vdd, kind = ptPassive
+          pin "2", gnd, kind = ptPassive
+    check nl.components["R1"].attrs["value"] == "9k"
+
+  test "a bare discard is an empty branch":
+    # `if`/`case` branches need a body, and "this variant adds no parts" is an
+    # ordinary thing for one to say.
+    proc board(extra: bool): Netlist =
+      netlist("b"):
+        net gnd, kind = ntGround, name = "0"
+        net vdd, kind = ntPower
+        if extra:
+          component R1, kind = "resistor", value = "1k":
+            pin "1", vdd, kind = ptPassive
+            pin "2", gnd, kind = ptPassive
+        else:
+          discard
+    check board(true).components.len == 1
+    check board(false).components.len == 0
+
+  test "but discard of an expression is arbitrary code wearing a keyword":
+    check(not compiles(block:
+      discard netlist("b"):
+        net gnd, kind = ntGround, name = "0"
+        if true:
+          discard openArray[int]))
+
+  test "strictness holds inside a branch, not just at the top level":
+    check(not compiles(block:
+      discard netlist("b"):
+        net gnd, kind = ntGround, name = "0"
+        if true:
+          echo "arbitrary code"))
+    check(not compiles(block:
+      discard netlist("b"):
+        net gnd, kind = ntGround, name = "0"
+        net vdd, kind = ntPower
+        case 1
+        of 1:
+          component C1, kind = "capacitor", value = "1n":
+            pin "1", vdd, kind = ptPassive
+            pin "2", gnd, kind = ptPassive
+            spec:
+              ESR = 1.mohm
+        else: discard))
+
+suite "designators you did not write":
+  # For the parts nobody ever refers to -- a decoupling bank, a termination
+  # network -- where hand-authoring twenty designators buys nothing. Safe
+  # *because* nothing addresses them: a generated designator is positional,
+  # so inserting a part earlier renumbers everything after it.
+
+  test "omitting the label generates one from kind":
+    let nl = netlist("b"):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      for i in 1 .. 3:
+        component kind = "capacitor", value = "100n":
+          pin "1", vdd, kind = ptPassive
+          pin "2", gnd, kind = ptPassive
+    check nl.components.len == 3
+    check nl.components.hasKey("C1")
+    check nl.components.hasKey("C3")
+    check nl.components["C2"].kind == "capacitor"
+
+  test "hand-authored designators are respected, not overwritten":
+    let nl = netlist("b"):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      component C1, kind = "capacitor", value = "22u":
+        pin "1", vdd, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+      component kind = "capacitor", value = "100n":
+        pin "1", vdd, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+    check nl.components["C1"].attrs["value"] == "22u"
+    check nl.components["C2"].attrs["value"] == "100n"
+
+  test "the prefix is the schematic convention, not the SPICE device letter":
+    # They genuinely disagree, and deriving either from the other is how a
+    # ferrite bead came to be simulated as a current-controlled current
+    # source. FB on a board; L in a deck.
+    let nl = netlist("b"):
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      component kind = "ferrite_bead", value = "600":
+        pin "1", a, kind = ptPassive
+        pin "2", b, kind = ptPassive
+      component kind = "opamp":
+        pin "OUT", b, kind = ptOutput
+    check nl.components.hasKey("FB1")
+    check nl.components.hasKey("U1")
+
+  test "an unregistered kind falls back to U, and can be registered":
+    let nl = netlist("b"):
+      net a, kind = ntSignal
+      component kind = "widget":
+        pin "A", a, kind = ptPassive
+    check nl.components.hasKey("U1")
+    registerDesignatorPrefix("widget", "WD")
+    let nl2 = netlist("b2"):
+      net a, kind = ntSignal
+      component kind = "widget":
+        pin "A", a, kind = ptPassive
+    check nl2.components.hasKey("WD1")
+
+  test "generated ones are marked, so a board flow can tell them apart":
+    # A designator is the join key to a layout, a BoM line and silkscreen
+    # text. One this library chose is positional and must not be trusted to
+    # be stable the way a written one is.
+    let nl = netlist("b"):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      component C1, kind = "capacitor", value = "22u":
+        pin "1", vdd, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+      component kind = "capacitor", value = "100n":
+        pin "1", vdd, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+    check generatedDesignators(nl) == @["C2"]
+
+  test "numbering is per netlist, so one module cannot renumber another":
+    proc blk(): Netlist =
+      subckt("B", [P, G]):
+        net G, kind = ntGround, name = "0"
+        net P, kind = ntSignal
+        component kind = "capacitor", value = "1n":
+          pin "1", P, kind = ptPassive
+          pin "2", G, kind = ptPassive
+    let nl = netlist("top"):
+      net gnd, kind = ntGround, name = "0", global = true
+      net a, kind = ntSignal
+      component kind = "capacitor", value = "10u":
+        pin "1", a, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+      instance XA, blk(), [a, gnd]
+      instance XB, blk(), [a, gnd]
+    # Each netlist numbers from 1 in its own scope.
+    check nl.components.hasKey("C1")
+    check nl.children["XA"].components.hasKey("C1")
+    check nl.children["XB"].components.hasKey("C1")
+
+  test "an explicit designator still wins over generation":
+    let nl = netlist("b"):
+      net a, kind = ntSignal
+      component designator = "C99", kind = "capacitor", value = "1n":
+        pin "1", a, kind = ptPassive
+    check nl.components.hasKey("C99")
+    check generatedDesignators(nl).len == 0
+
+  test "no label and no kind is a compile error, not a guess":
+    check(not compiles(block:
+      discard netlist("b"):
+        net a, kind = ntSignal
+        component value = "1n":
+          pin "1", a, kind = ptPassive))
+
+  test "a generated designator still reaches the deck as the right device":
+    # The two naming schemes stay independent all the way to the simulator:
+    # the generated designator is the board's name, and `deckDesignator`
+    # prepends the SPICE letter from `kind` on top of it.
+    let nl = netlist("b"):
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      component kind = "capacitor", value = "1n":
+        pin "1", a, kind = ptPassive
+        pin "2", b, kind = ptPassive
+      component kind = "inductor", value = "600n", designator = "FB1":
+        pin "1", b, kind = ptPassive
+        pin "2", a, kind = ptPassive
+    let s = newStringStream()
+    writeNetlist(nl, s)
+    check "C1 " in s.data
+    check "LFB1" in s.data          # prepended, not substituted

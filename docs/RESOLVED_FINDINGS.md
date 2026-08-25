@@ -1,0 +1,1498 @@
+# Resolved findings
+
+Findings that are fixed, each with what it was and what the fix was. Anything
+still open lives in `findings.md`. The numbering is shared and continuous
+across the two files, so a `§n` cross-reference means the same thing in either.
+
+---
+
+# What three real designs found
+
+Three non-trivial designs were written against this library and checked, and
+this is what checking them turned up. They live in `designs/` and all three
+pass `nimble verify` today. The point of the exercise was not to get them
+green — it was to find where a real board runs out of road, so the list of
+gaps below is the actual product.
+
+**Status: §1–§13 are fixed** (see each entry), and §14 (hierarchy) was
+decided and fixed by §16.
+Every fix carries tests; `nimble test` and `nimble verify` are green.
+
+| design | what it is | why it was chosen |
+|---|---|---|
+| `ts808_drive.nim` | Ibanez TS808 "Tube Screamer" drive stage | single-supply, AC-coupled, synthesised half-rail bias, clipping diodes in the loop |
+| `sensor_node.nim` | USB → LDO → MCU + I2C sensor, ferrite-filtered analog supply | exercises start-up, PDN and bus checks at once, and a custom role |
+| `aa_filter.nim` | 4th-order Butterworth anti-aliasing filter, split rails | DC-coupled and low-pass — the case the op-amp quantities were defined for |
+
+Where the tool is right, it is *precisely* right, and that is worth recording
+alongside the faults. Section 1 of the filter measured a 15.7 kHz corner
+against 15.63 kHz from the closed form for a 2nd-order section at
+f₀ = 21.3 kHz, Q = 0.549; section 2 measured 3.07 dB of peaking against
+2.92 dB predicted for Q = 1.291, the difference being the finite GBW of the
+macromodel. The TS808's bias node measured 4.48 V against 4.478 V hand-
+calculated for a 10k/10k divider loaded by R4 into the op-amp's input
+stand-in. Negative rails work. The planner batches correctly — the sensor
+node's 14 claims collapse into 4 simulation runs and 5 graph walks.
+
+---
+
+## 1. The deck writer spells a device from the designator, not from `kind`
+
+**Fixed.** `deckDesignator` takes the letter from `Component.kind`, prepending
+it when the designator disagrees. Tests in `tests/test_netlist_spice.nim`.
+
+**What it was: this silently simulated a different circuit.**
+
+`formatDeviceLine` emitted `comp.designator` verbatim. SPICE infers device type
+from that first letter, so the declared `kind` is discarded:
+
+```nim
+component FB1, kind = "inductor",       value = "600n"   # -> FB1 a b 600n
+component BT1, kind = "voltage_source", value = "DC 9"   # -> BT1 b 0 DC 9
+component J1,  kind = "voltage_source", value = "DC 5"   # -> J1 a 0 DC 5
+```
+
+ngspice reads those as a current-controlled current source, a behavioural
+source and a JFET. Every standard EDA designator that is not also a SPICE
+device letter collides: `FB` (ferrite), `BT` (battery), `J` (connector),
+`SW` (switch), `TP` (test point), `Y` (crystal).
+
+Those three at least fail loudly, though the message points at SPICE syntax
+rather than at the cause — the TS808 first reported `mal formed B source
+instance` and three unrelated claims came back "not evaluated". **The silent
+cases are worse:**
+
+```nim
+component C12, kind = "inductor", value = "600n"   # -> a 600 nF capacitor
+component L7,  kind = "resistor", value = "10k"    # -> a 10 kH inductor
+```
+
+Both parse, both simulate, both give a confident wrong answer, and nothing
+anywhere reports it.
+
+The invariant was already enforced for parts the tool *synthesises* —
+`spice/transform.replaceComponent` derives its prefix and `spice/probes`
+validates one — and only the authored path was unguarded. The letter now
+comes from `kind` and is **prepended, not substituted** (`FB1` → `LFB1`,
+never `L1`): designators are unique as a set and a truncated one need not be,
+so substituting would merge `FB1` and `L1` on a board carrying both.
+`deckInstanceDesignator` does the same for hierarchical instances, always
+spelling them `X`, since ngspice reads `U` as a distributed RC line.
+
+**This one had already bitten, unnoticed.** `designs/ts808_drive.nim` uses
+`VR1` for its drive pot — the standard designator for a variable resistor,
+and also SPICE's voltage source. 250 kΩ of feedback network was going out as
+a 250 kV source, so the stage measured a gain of 12 where the circuit has 65,
+and its reported peaking was 20.6 dB against a true 31.6 dB. Nothing anywhere
+said so. The design's claim was corrected along with the writer.
+
+## 2. Start-up reports impossible inrush when a downstream rail is annotated
+
+**Fixed.** `analyzeStartup` seeds and un-terminates every rail downstream of
+the regulator (`downstreamRails`). Tests in `tests/test_analysis_startup.nim`.
+
+**What it was: a wrong number, off by 17,000×.**
+
+In `sensor_node.nim`, `vdda` sits behind a 600 nH ferrite and is annotated
+`voltage = 3.3.V` because it *is* a rail. With the inrush claim's subject on
+`vdd`:
+
+```
+poweron.inrush -- inrush_peak(net 'vdd') <= 2.00 A
+    measured 2.80 kA
+```
+
+Drop the annotation and the same design measures **163 mA**.
+
+`analyzeStartup` seeds the isolation with `@[outputNet]` plus the measure net.
+A rail outside that seed set becomes a *boundary termination* — an ideal
+source — so `vdda` is held stiff at 3.3 V and drives current backwards
+through the ferrite into a rail still ramping from zero.
+
+This is the transient twin of a trap the AC path already guards against:
+`pdn.excludeRails` exists precisely because "an ideal voltage source is a
+dead short at AC". `analyzeStartup` had no equivalent. Here the answer was
+absurd enough to catch by eye; swap the ferrite for a small series resistor
+and it would have been merely plausible.
+
+The walk crosses `isPassive` parts only, so it stops dead at the regulator
+and never reaches the *input* rail — which genuinely is up before start-up
+begins and must keep its ideal source. Seeding rather than merely excluding
+is what pulls the downstream rail's own capacitor bank into the fragment,
+which the regulator really does have to charge. The inrush figure is now the
+same wherever the rail is judged, which it was not before.
+
+## 3. `phase_margin_deg` returns 450° for a Sallen-Key — and passes
+
+**Fixed.** Three validity checks; both margins now come back `NaN` with a
+`KindLoopBreakInvalid` issue. Tests in `tests/test_analysis_opamp.nim`.
+
+**What it was: a stability claim that cannot fail.**
+
+`analyzeLoopGain` breaks the loop at the amplifier's inverting input, which
+opens the only feedback path a plain amplifier has. A Sallen-Key has two:
+C1 feeds from the R1/R2 junction back to the *output*, and that positive path
+is what produces the section's Q. Breaking at the inverting input leaves it
+closed, so the measured T is not a loop transmission. Its phase starts at
+**+79°** rather than 0, and passes through +180 while |T| is still above
+0 dB:
+
+```
+      1.000 Hz  |T|  85.76 dB   phase   78.81 deg
+  1.585e+04 Hz  |T|   8.74 dB   phase  170.80 deg
+  3.162e+04 Hz  |T|   8.59 dB   phase -159.80 deg
+  1.000e+06 Hz  |T|  -0.20 dB   phase  -90.08 deg     <- crossover
+```
+
+`unwrapDeg` carries the crossover phase to +270, and `180 + phaseAtX` gives
+**450°** — which then satisfies `minPhaseMargin >= 45` without complaint.
+
+A plain follower and a gain-of-2 stage both measure a correct 90°, so the
+loop machinery is sound; it is the second feedback path it cannot see.
+
+All three guards are now in: a phase margin outside (−180, 180]; more than
+one 0 dB crossing; and a low-frequency phase not within 30° of 0 or 180,
+which is the signature of a break that actually opened the loop. Any of them
+withholds both margins and attaches an issue naming which fired.
+
+`NaN` reads as *notEvaluated* downstream, deliberately not a failure — the
+circuit may well be fine, it is this measurement that cannot say. The
+closed-loop peaking measured alongside is still a real indicator.
+
+**Two follow-on defects, found by trying to use the fix and both now fixed.**
+`verdict`'s declining paths dropped the analysis's `issues` and
+`assumptions`, and `renderResult` never printed a result's issues at all —
+so the diagnosis this fix exists to produce reached nobody, and the reader
+saw only "the quantity was not found in the range that was analysed", which
+points at the sweep range rather than the topology. Issues now print under
+failed and unchecked results, de-duplicated across the report because
+evaluation is batched. A passing result's issues stay hidden: it passed.
+
+## 4. Only one op-amp per analysis gets a macromodel
+
+**Fixed.** `opampModel` gives any unmodelled op-amp the same macromodel.
+Tests in `tests/test_spice_models.nim` and `tests/test_analysis_opamp.nim`.
+
+**What it was: multi-stage signal chains could not be measured at all.**
+
+An analysis substitutes a macromodel for the single amplifier it is named,
+and every *other* op-amp in the path goes through `expandPinModels` — 1 MΩ
+on each input, 50 Ω on the output, all to ground. That destroys the path
+through it.
+
+Measuring the 4th-order filter end-to-end (`input = vin, output = vout`)
+therefore reports **82 dB of peaking and a 2.04 MHz corner** for a circuit
+whose real answer is maximally flat to 20 kHz. Each section measured
+separately is correct to better than 1%.
+
+That blocked any active filter above 2nd order, instrumentation front ends,
+multi-stage preamps, and any buffer-plus-gain chain — most analog boards.
+The filter now measures **19.7 kHz and 655 mdB** end to end, against ~19.8 kHz
+by hand, and `designs/aa_filter.nim` makes that claim.
+
+The substitution chain now runs most-specific first, which is the shape worth
+keeping: a `subNetlist` or a `simReplace` is honoured and never reaches the
+registry; a registered kind gets its model; only a part with neither falls
+through to per-pin impedances, which is the **last** resort rather than the
+first answer.
+
+Two things had to follow. The macromodel is emitted **flat, not as an
+instance of `idealOpAmp`** — `spice/isolate` refuses to traverse anything
+carrying a `subNetlist`, so a macromodel dropped in as a subcircuit is cut at
+the very boundary it was added to bridge, which cost that filter 11 kHz
+instead of 20. And `detachDrivers` now removes whatever already drives the
+net a sweep is about to drive: a preceding stage's output is a VCVS, and
+putting the stimulus across it is two ideal sources on one node, which
+ngspice answers with a singular matrix and which surfaced as `key not found:
+frequency`.
+
+## 5. Every gain and bandwidth quantity is DC-referenced
+
+**Fixed.** `gainMax`/`bandEdges` in `measure.nim`, four new measurements plus
+`gain_at_f` in `analyzeOpAmpResponse`, and a `gain_stage` role to claim them.
+Tests in `tests/test_analysis_measure.nim`, `tests/test_analysis_opamp.nim`
+and `tests/test_contract_roles.nim`.
+
+**What it was: no AC-coupled stage could be described.**
+
+`measure.corner3dB` measures relative to *the first swept point*, documented
+as "which for a sweep started well below the corner is the DC/passband
+value". For a single-supply stage the first swept point is in the
+**stopband**, because the gain-setting leg is capacitively coupled — that is
+what makes single-supply operation possible. The TS808 drive stage reports:
+
+| quantity | measured | what it means here |
+|---|---|---|
+| `gain_dc_db` | 0.001 dB | true, and useless — the stage's actual gain is ~21 dB |
+| `bw_3db` | 710 kHz | 3 dB below *unity*, on the far side of the hump |
+| `peaking_db` | 20.6 dB | the intentional mid hump, not resonance |
+
+None of the three is wrong arithmetically and none answers a question anyone
+would ask about the circuit. Worse, `peaking_db` cannot distinguish an
+intentional band-pass shape from instability, which is exactly what it is
+used for on the `opamp_stage` role.
+
+Missing: midband/passband gain, low corner, high corner, centre frequency,
+and gain at a stated frequency. This affects essentially every audio,
+guitar-pedal and single-supply sensor front end.
+
+## 6. Ten advertised quantities cannot be claimed by anything built in
+
+**Fixed.** Reachability is reported per quantity, the common specs gained
+role parameters, and the custom-role path is documented. Tests in
+`tests/test_cli_discovery.nim`.
+
+**What it was.** `nimcir quantities` listed 26. A design with a bare `require` for all 26 gets
+**10 evaluated and 16 `not evaluable`** — the 16 need topology the assertion
+does not carry (which component drives the rail, which part is the
+amplifier), recovered from the role that expanded the claim.
+
+The built-in roles expose 6 of those 16. The remaining **ten are advertised
+and unclaimable** by any built-in path:
+
+```
+inrush_peak  t_inrush_peak  rise_time_10_90  settle_time
+crossover_hz  gain_margin_db  loop_gain_dc_db
+f_unity  gain_bw_product  gain_dc_db
+```
+
+There *is* a way through, and it works: write a role. `sensor_node.nim`
+defines a `power_on` role that reaches `inrush_peak`, `rise_time_10_90` and
+`settle_time`, and `aa_filter.nim` defines a `filter_section` role — both
+using no privileged mechanism, exactly as the design intends. But nothing
+tells a reader that. The error message says "bind a `regulator` part on the
+role that expands this claim" without mentioning that no built-in role does.
+
+Suggested: mark reachability in `nimcir quantities`; add the missing
+parameters to the built-in roles; document the custom-role path in
+`docs/authoring.md`, since it turned out to be the single most useful
+extension point and is currently undocumented.
+
+## 7. A role's always-claims cannot be declined
+
+**Fixed.** `without` is reserved on every role. Tests in
+`tests/test_contract_roles.nim`.
+
+**What it was.** `opamp_stage` claims `phase_margin_deg` unconditionally. For
+a Sallen-Key that measurement is invalid (see §3), and the only way not to
+make it was to write a whole replacement role — which is what
+`aa_filter.nim` did, for a stage that is otherwise exactly what
+`opamp_stage` describes.
+
+```nim
+  role "opamp_stage", filt, opamp = U1B, input = vin, output = vout,
+       minBandwidth = 18.kHz, maxPeaking = 1.0,
+       without = "phase_margin"
+```
+
+`without` is reserved on every role rather than declared by each one — a
+role should not have to opt into being declinable. It takes a
+comma-separated list of claim suffixes.
+
+Two things keep it from becoming a way to hide claims. Declining is
+**stated**: `explain` prints `declines phase_margin`, and everything that
+reads a design's claims goes through one `expandInstance`, so what is
+printed and what is checked cannot drift. And a suffix that matches nothing
+**raises**, naming what the role does claim — the same hazard as a
+misspelled annotation key, caught by expanding once at `addRole`, which is
+free because an expander is pure:
+
+```
+role 'opamp_stage' instance 'sec2' cannot decline 'phase_margn':
+it does not claim that. It claims phase_margin, peaking
+```
+
+`aa_filter.nim` now uses `opamp_stage` on all three stages and its custom
+`filter_section` role is gone — 7 claims, none unchecked, ~65 fewer lines.
+
+## 8. `deg` and `dB` have no unit literal
+
+**Fixed.** `Degrees` and `Decibels` in `nimcir/units`. Tests in
+`tests/test_units.nim`.
+
+**What it was.**
+`nimcir role opamp_stage` advertises `minPhaseMargin [deg]` and
+`maxPeaking [dB]`, but `nimcir/units` has no such suffix, so:
+
+```nim
+role "opamp_stage", drive, ..., minPhaseMargin = 50.deg   # compile error
+role "opamp_stage", drive, ..., minPhaseMargin = 50.0     # what you must write
+```
+
+A bare float in a list of unit literals is precisely the misread hazard the
+units module exists to remove.
+
+## 9. An `ntPower` net with no voltage is silently cut loose
+
+**Fixed.** `checkRailVoltages` reports it in STRUCTURE. Tests in
+`tests/test_analysis_io_check.nim`.
+
+**What it was.** The TS808's 4.5 V bias rail comes from a 10k/10k divider, so no `power_rail`
+role fits it and it initially carried no `voltage`. The isolation then cut it
+loose as a floating node, which detached the gain leg and turned the drive
+stage into a **unity-gain follower**. Peaking measured 5.9 mdB, bandwidth
+390 kHz, and the report said `6 passed, exit 0 (clean)`.
+
+Adding one annotation moved peaking to 20.6 dB — the real circuit.
+
+The ASSUMPTIONS section did say `rail 'vref' left floating (no nominal
+voltage known)`, so the tool was honest. But that line reads like the
+package-default ESR two lines above it, and it is not the same kind of thing:
+the others substitute a *value*, this one changes the *topology*. Being
+reported and being *noticed* are different, and the difference is which
+section it lands in.
+
+It now lands in STRUCTURE, at the top of the report, naming the components
+that would lose their connection — R6, the gain leg that was the actual
+casualty, among them:
+
+```
+STRUCTURE  1 issue(s)
+  [warning] rail_voltage_unknown
+      net 'vref' is a power rail with no stated voltage, so an analysis that
+      cuts a fragment out around it leaves it floating rather than driving it
+      -- which changes the topology rather than substituting a value. State it
+      with `spec: voltage = ...` on the net, or give it a `power_rail` role.
+      R9, R10, R1, R4, R6 terminate on it and would lose that connection.
+```
+
+Bypass capacitors are skipped from that list: a rail carrying only power pins
+and decoupling loses little by floating, one with a signal path returning to
+it loses the path. `sevWarning`, so it is visible without being fatal —
+`--strict` promotes it. Both shipped templates gained a rail voltage as a
+result, which they should have had anyway.
+
+## 10. An assertion's subject can disagree with what was measured
+
+**Fixed.** `Measurement.at` names where a number came from when that is not
+the subject. Tests in `tests/test_analysis_startup.nim`.
+
+**What it was.**
+`inrush_peak` is probed on the source driving the role's `output` net. The
+assertion's subject selects the isolation's seed set, not the probe point —
+so `inrush_peak(net 'vdda')` prints as though vdda were where the current
+was measured, and it is not. (In `sensor_node.nim` the subject must stay on
+the judged net anyway, for the reason in §2.)
+
+## 11. No device models, and no way to attach a `.MODEL` card
+
+**Fixed**, both halves — the `.MODEL` statement, and then a large-signal
+analysis to make use of it.
+Tests in `tests/test_netlist_dsl.nim` and `tests/test_spice_models.nim`.
+
+**What it was.** `Netlist.models` carried `.MODEL` cards verbatim, but the
+design DSL had no statement that wrote one. So a diode was stood in per-pin
+like any unmodelled part.
+
+```nim
+  model "1N4148", "D(IS=2.52n RS=0.568 N=1.752 CJO=4p M=0.4 VJ=0.4 " &
+                  "BV=110 IBV=100u TT=20n)"
+
+  component D1, kind = "diode", partNumber = "1N4148", value = "1N4148":
+```
+
+The card body is **never parsed** — tracking every parameter of every device
+type in every SPICE dialect means getting one wrong silently simulates a
+different part, whereas passing it through means the simulator reads exactly
+what the datasheet said. What reads it is `kinds.hasDeviceModel`, which only
+asks whether the name is present (case-insensitively, as SPICE is). That is
+what makes the statement matter beyond reaching the deck: `isPassive` accepts
+a part with a model, so `spice/models` stops standing it in and
+`spice/isolate` traverses it.
+
+**And the stand-in was not a small error.** Without a card each TS808 diode
+became two 1 MΩ resistors to ground, and the pair shunted the inverting node
+with 500 kΩ — a second gain leg, which lifted the stage's gain at the bottom
+of the sweep from unity to 4.2 dB. That is where a reported 31.6 dB of
+peaking came from, against a real 35.3.
+
+For the small-signal sweep the old behaviour was defensible — off diodes are
+approximately open — but it meant the clipping, the thing that makes an
+overdrive an overdrive, was outside what could be checked at all.
+
+### Large signal
+
+`.ac` cannot see clipping *at all*: it linearises about the operating point,
+where the diodes are off. So `analyzeLargeSignal` drives a sine and measures
+what comes out — `thd_pct`, `output_swing`, `clip_high`/`clip_low`,
+`gain_compressed_db` — claimed through a `large_signal` role where `driveV`
+and `driveF` are **conditions rather than limits**, because the answer is a
+function of them.
+
+On the TS808 drive stage at 1 kHz:
+
+| drive | swing | THD | gain |
+|---|---|---|---|
+| 10 mV | 0.55 V | 14.7% | 29.8 dB |
+| 50 mV | 0.81 V | 26.7% | 19.7 dB |
+| 200 mV | 1.24 V | 25.5% | 10.9 dB |
+
+That is the pedal: output clamped to about a diode drop either side of the
+4.5 V bias, and the gain collapsing from 35 dB small-signal as the drive
+rises. A 20× increase in drive buys 2.3× more swing.
+
+Two decisions carry it. **The stimulus carries the node's own DC bias**,
+found with a `.op` on the same fragment first — a single-supply stage sits at
+a mid-rail operating point, and a `SIN(0 ...)` source on its input would
+clamp that node to zero and measure a circuit biased into its own stop.
+(Coupling through a large capacitor also preserves the bias and is worse: the
+settling time constant becomes the input resistance times that capacitor,
+seconds for an ordinary input network.) And **the harmonic integration reads
+the samples' own timestamps** rather than resampling, because a `.tran`
+result is not uniformly sampled and ngspice takes its smallest steps exactly
+where the harmonics live.
+
+The role offers `minThd` as well as `maxThd`, which is not a slip: on an
+overdrive, too *little* distortion is the defect — a stage measuring clean
+has lost its clippers.
+
+### The amplifier can now run out of swing
+
+That limit is closed. Unbounded, the macromodel's output buffer is a VCVS —
+an ideal source, which cannot saturate however hard the loop drives it.
+Given the part's stated rails it becomes a `B` source carrying
+`min(max(V(N2), lo), hi)`. (Clamping the VCVS's *output* with diodes does
+nothing: an ideal source holds its node regardless of what is hung across
+it. The clamp has to sit between the pole and the buffer.)
+
+A gain-of-11 stage on ±5 V rails, driven at 1 V peak:
+
+| rails | swing | clip | THD |
+|---|---|---|---|
+| unstated | 22.0 V | ±11.0 V | 0.0001% |
+| stated ±5 V | 10.0 V | ±5.000 V | 42.9% |
+
+42.9% is what a hard-clipped sine gives. Small-signal results are bit-identical
+either way, so the change is invisible where the amplifier never approaches
+its rails.
+
+**The clamp is applied only by a large-signal caller**, and that is not an
+optimisation — it is required. `min`/`max` has a zero derivative at its
+limit, so an `.ac` linearisation of a stage whose operating point sits on a
+rail returns *no gain at all* rather than the small-signal gain it has. A
+single-supply stage with a ground-referenced input sits exactly there, which
+the existing test suite demonstrated immediately.
+
+Still not modelled: slew rate and output current limit. And at the default
+`vsatHeadroom` of 0 the model saturates exactly at the supply, which no real
+amplifier does — so it bounds the swing rather than predicting it, and says
+so as an assumption. The same
+applies to every transistor: `ts808_drive.nim` declares its 2SC1815 emitter
+followers as `kind = "buffer"` to keep the signal path closed, which is a
+reasonable stand-in and is not the part.
+
+Large-signal behaviour generally — clipping, slew limiting, distortion — is
+absent, and for an audio circuit that is most of what matters.
+
+## 12. Nothing bounds an I2C pull-up from below
+
+**Fixed.** A `pullup_sink_current` quantity, claimed by the `i2c` role.
+Tests in `tests/test_contract_evaluate.nim`.
+
+**What it was.**
+The `i2c` role checks `pullup_count >= 1` and `rc_corner >= 10 × fclk`, both
+of which catch a pull-up that is too *weak*. Nothing catches one too strong.
+The I2C spec requires a target to hold VOL ≤ 0.4 V while sinking 3 mA, which
+puts a floor near 1.1 kΩ at 3.3 V. `sensor_node.nim` runs 1.2 kΩ — chosen
+because 1.5 kΩ failed the RC check — and is therefore close to the opposite
+limit with nothing to say so.
+
+## 13. `assertionId` is private
+
+**Fixed.** Exported.
+
+**What it was.**
+A user-defined role must hand-build assertion ids and cannot produce the
+`<instance>.<suffix>` convention through the same helper the built-ins use.
+Both custom roles written here duplicate it as `inst.name & ".inrush"`.
+
+## 14. `isolate` refuses to traverse a subcircuit, and need not
+
+`growSelection` folds `comp.subNetlist != nil` into a variable called
+`unmodellable`, which is close to backwards — a subcircuit is the most
+thoroughly modelled thing in the graph. The consequence is that a
+hierarchically-authored board has every block cut at its boundary, so there
+is nothing left to simulate.
+
+**Nothing structural prevents it.** Flipping that one term and pushing a
+signal through a two-section Sallen-Key whose first amplifier is a
+hierarchical instance of `idealOpAmp`:
+
+| | `bw_3db` | `peaking_db` | `gain_dc_db` | dropped |
+|---|---|---|---|---|
+| today | 11.2 kHz | 0.082 dB | −3.02 dB | `XU1` |
+| flipped | **19.67 kHz** | **0.655 dB** | −0.0002 dB | none |
+
+19.67 kHz matches the flat macromodel exactly and ~19.8 kHz by hand. The
+machinery is all there already: `clone` recurses into nested hierarchy,
+`removeComponent` deletes the `children` entry, `extractSubcircuit`'s
+boundary computation is parent-level (correct — internal nets are not in the
+parent's `nets`), `terminate`/`renameNet` work at the parent level, and the
+writer already emits `.SUBCKT` blocks and `X` lines.
+
+Two real costs, neither structural:
+
+- **The model passes do not recurse into children.** `expandPinModels` and
+  `expandSourceImpedance` do not, and `expandCapacitorParasitics`
+  deliberately does not — correctly, because `idealOpAmp`'s pole capacitor
+  must not be given an ESL. But that reasoning holds for a *synthesized
+  macromodel* and fails for a *design-authored block* full of real 0402s,
+  which would silently get ideal capacitors and make a PDN sweep meaningless
+  above a megahertz. Note this hazard is **already reachable**: seed
+  designators go straight into `selected` with no passivity check, and
+  `analyzeOpAmpResponse` explicitly supports a design bringing its own
+  macromodel. The guard only stops the walk from *wandering* into one.
+- **Fan-out.** Everything traversable today is 2-terminal (R/C/L) or
+  4-terminal (a controlled source), so branching is naturally bounded. A
+  subcircuit instance is an arbitrary N-terminal element: crossing a 60-pin
+  block enqueues 60 nets in one hop. `maxHops` backstops it and rails still
+  cut, but the bound is far looser.
+
+The distinction that actually matters is **synthesized macromodel vs.
+design-authored hierarchy**. `attrs["parasitics.expanded"]` already marks
+modelling elements, so the concept exists — it is just applied per-component
+rather than per-subtree. An `IsolationSpec.traverseSubcircuits` (default
+false), plus recursion in the model passes that skips synthesized subtrees,
+is the shape.
+
+### Measured, decision deferred
+
+**No route has been chosen.** What follows is the evidence gathered so the
+choice can be made later without redoing it.
+
+A prototype flattener (inline each child, mangle internal names, keep global
+nets shared, depth-first) was run against the same two-section Sallen-Key:
+
+| | `bw_3db` | `peaking_db` | dropped |
+|---|---|---|---|
+| today | 11.2 kHz | 0.082 dB | `XU1` |
+| traversal predicate flipped | 19.67 kHz | 0.655 dB | none |
+| **flattened** | **19.67 kHz** | **0.655 dB** | **none** |
+
+Two results beyond "it gives the right answer":
+
+- **`maxHops` stops mattering.** Identical at 3, 6 and 12, nothing dropped at
+  the default. That kills the fan-out objection raised against traversal:
+  after flattening there is no N-terminal opaque element to cross, so the
+  walk sees the two-terminal passives it was designed around and the hop
+  budget means something physical again.
+- **`attrs["parasitics.expanded"]` is already per-component**, which is
+  exactly the granularity flattening needs. `idealOpAmp`'s pole capacitor
+  carries it, so flattening plus the *existing* model passes gets both cases
+  right — real 0402s inside a design-authored block get an ESR, modelling
+  elements do not. The traversal route instead needs four passes taught to
+  recurse **and** a per-subtree notion of "synthesized" that does not exist.
+
+**The one real reason to avoid it**, and it is specific rather than general:
+flattening dissolves any component something else refers to *by designator*.
+A role binds `opamp = U1`; `findOpAmpPins` needs that component present with
+named `+`/`-`/`OUT` pins; and `analyzeOpAmpResponse` has an explicit branch
+honouring a design's own subcircuit macromodel untouched. Flatten
+unconditionally and it is gone:
+
+```
+before flatten: XU1 present = true, subNetlist = true
+after flatten:  XU1 present = false
+  -> analysis FAILED: no such component: XU1
+```
+
+So the shape is `flatten(nl, keep)` — never dissolve a part a role binds or
+an analysis names, flatten everything below it. That is a constraint the
+traversal route does not have, and it is the only one found.
+
+Costs that are real but do not decide it: a block instantiated 40 times
+becomes 40 copies rather than one `.SUBCKT` and 40 `X` lines; and an issue
+points at `XU1_R1` rather than "R1 inside XU1", which a provenance attribute
+would recover. It also solves the documented "cannot probe inside a nested
+subckt instance" limit for free, since every internal node becomes a
+top-level one.
+
+**Still unchecked before shipping either:** whether `checkFeedback` can walk
+through a flattened amplifier's internal RC and report feedback that is not
+there. It skips `subNetlist` components today, and after flattening there is
+nothing to skip.
+
+**Pre-flattening, in the original framing:** Rather than
+teaching the walk to cross hierarchy, a pass that inlines every child into
+its parent — mangling internal net and designator names, hoisting the
+contents, keeping global nets shared — would let every existing pass work
+unchanged, including the model passes and their per-component
+`parasitics.expanded` marking. It is plausibly the smaller change and it
+removes a whole class of "does this pass recurse?" question rather than
+answering it once per pass. It costs the ability to report a finding against
+the hierarchy the designer wrote, which may matter for messages. Worth
+measuring both before committing: the flattener is ~one graph walk, while
+the traversal route touches four passes and an `IsolationSpec` field.
+
+---
+
+# What four more designs found
+
+`designs/charge_pump.nim`, `designs/wien_osc.nim`, `designs/riaa_preamp.nim`
+(with `designs/lib/riaa.nim`) and `designs/lt8640a_buck.nim` (with
+`designs/lib/lt8640a*.nim`). They were chosen for what they are *unlike*: the
+first three designs were all small-signal amplifiers and rails, and nothing in
+the tree switched, oscillated on purpose, transferred charge, spanned more than
+one file, or reached the simulator through a code model.
+
+Status: §15–§22, §25–§30 and §32–§38 are fixed; §31 is closed by §32 and §33.
+§23 and §24 are recorded and are not — they are in `findings.md`.
+
+## 15. `global = true` could not compile, and nobody had noticed
+
+`net gnd, name = "0", global = true` expanded to `globals[name] = net` — a bare
+`OrderedTable` assignment — so any design using it failed with
+`attempting to call undeclared routine: '[]'` unless the design file imported
+`std/tables`.
+
+This is *precisely* the hazard `graph.setModel`'s doc comment describes and
+guards against for `.MODEL` cards, in the same file. The global path was written
+the way `setModel` explicitly says not to, and it survived because **`global =
+true` is only worth stating when there is a child netlist to share a net with**,
+and no design had one until now.
+
+**Fixed** by `graph.registerGlobalNet`, which the DSL calls instead.
+
+## 16. §14, decided: flatten for simulation
+
+`spice/flatten.nim`. Depth-first, innermost first; port nets merge through
+`Pin.hierNet`; ground merges rather than becoming `XL.0`; `clone`-shared globals
+are left alone; `keep` protects an instance something names, and a `keep` entry
+matching nothing **raises**.
+
+The separator is **`.`** — `XL.U1`, `XL.XA.R1`. It is what ngspice itself
+produces when it expands a subcircuit, so this also closes the documented
+"cannot probe inside a nested subckt instance" limit; and `contract` already
+spelled `DESIGNATOR.pin` with the same meaning, so one dot uniformly means
+"descend one level". The cost is that pin resolution can no longer split on the
+first or last dot — XSPICE names a differential port's pins `name.p`/`name.n` —
+so `graph.findPin` searches split points right to left, longest component prefix
+winning.
+
+It runs **on the work clone, before any model pass**, and that ordering is the
+argument for the whole route: `expandPinModels`, `expandSourceImpedance` and
+`expandCapacitorParasitics` all walk only `nl.components`, so a part inside an
+instance is invisible to every one of them. Left un-flattened, the RIAA
+channel's op-amp never got a macromodel and reached the deck as `U1` — which
+ngspice reads as a **uniformly-distributed RC line** and rejects with `Unable to
+find definition of model vp`. Flattened, all three passes work on hierarchy
+unchanged, which is what §14 measured and predicted.
+
+**§14's open question, answered.** It asked whether `checkFeedback` could walk
+through a flattened amplifier's internal RC and report feedback that is not
+there. Not for a design-authored block: `checkFeedback` runs on the design
+netlist, before `prepare` substitutes any macromodel, so what it walks is the
+designer's own network. The case that must be guarded is a design bringing its
+*own* subcircuit macromodel, and that instance goes in `keep`.
+
+**What it does and does not resolve about designators.** The conflicts *hierarchy* creates it resolves by construction: an instance designator is a key in the parent's `components` table, so it is already unique among its siblings, and prefixing with it makes `XA.R1`/`XB.R1` distinct without any search or counter. Duplicates within one netlist never arise — `addComponent` refuses them. What it cannot resolve is a name the design already spelled the way flatten is about to generate one, and there it **raises** rather than renaming: the message names the instance being flattened *and* describes what already held the name, because a reader told only "that name is taken" has no way to see that one side of the clash was generated. See §25 for the case that survives all of this.
+
+Tests: `tests/test_spice_flatten.nim` (12), including a deck round-trip pinning
+that a flattened `XA.R1` is emitted as `RXA.R1` — `deckDesignator` prepends the
+letter from `kind`, the same invariant that turns `FB1` into `LFB1`, now
+load-bearing far more often.
+
+## 17. A role could not bind anything inside an instance
+
+`Design.resolve` looked only at `d.netlist.components`, and the identifier for a
+part inside a `subckt` in another module is not in scope at the design site. So
+a stereo board instancing one channel twice had **no way to say which
+amplifier** a claim was about.
+
+**Fixed**: `resolve` goes through `graph.findComponent`/`findNet`/`findPin`,
+which try the flat key first and then descend — so one call finds the entity
+before flattening *and* after, and nothing holding such a name has to know which
+world it is in. `Component.innerComponent`/`innerNet`/`innerPin` build the
+`Subject`, walking the child immediately so a typo raises here naming what the
+instance actually contains. A one-line `subjectOf(Subject)` identity overload
+opens the DSL's existing `when compiles(subjectOf(value))` binding test to them
+with no macro change. Tests: `tests/test_contract_dsl.nim`.
+
+## 18. An `.ac` sweep silently opened the loop it was measuring
+
+Every `.ac` proc here measures a stage by hanging an ideal source on its input
+net. An ideal source **holds that node** — which is what you want at an input
+and catastrophic at a node the feedback returns to.
+
+`designs/wien_osc.nim` is the clean case: its positive feedback lands directly
+on `IN+`. Driving there shorts the whole Wien bridge out of the circuit, and
+what got measured was a flat gain of 3.2 rolling off at GBW/3.2. The tool
+reported `f_hi_3db` of **289 kHz** for a circuit whose entire behaviour happens
+at **1.59 kHz**, the claim `fHiMin = 1.53.kHz` passed on it, and the design
+exited **0 (clean)**. A wrong number that passes is worse than no number.
+
+**Fixed** by `opamp.checkInjectionPoint`, run before the sweep. The test is a
+**conjunction** and both halves are needed: the driven net is one of the
+amplifier's own input pins' nets, *and* the output reaches it through passives.
+Either alone over-triggers — an ordinary inverting amplifier's input net reaches
+the output through `Rin`+`Rf` but is not an op-amp pin, and a non-inverting
+amplifier's input *is* `IN+` but nothing feeds back to it.
+
+The passive walk for this test additionally **refuses to traverse a rail**, the
+same rule `spice/isolate` applies. The TS808 settled that: `vout` genuinely does
+reach `vamp` through the 47 uF-bypassed 4.5 V bias rail, which is an AC ground
+and not feedback. Without that guard the fix reported five false unevaluables on
+a design that was clean.
+
+Tests: `tests/test_analysis_opamp.nim`, six cases including both over-trigger
+shapes.
+
+## 19. A subcircuit's port net was reported as a floating rail
+
+`checkRailVoltages` recurses into children, and a channel's `VP` port net
+carries no voltage of its own — the parent states it. A stereo board therefore
+reported `rail_voltage_unknown` **once per instance** for a rail that is stated.
+§9 exists to make a genuinely floating node impossible to overlook; burying it
+among false ones undoes that. **Fixed**: a net that is a port of its netlist is
+skipped, its identity being the parent's.
+
+## 20. The substituted op-amp's GBW could not be stated
+
+`spice/models.idealOpAmp` defaults to 1 MHz and `OpAmpSpec.idealGbw` is
+unreachable from a contract. The RIAA stage is 39.8 dB, so its loop gain at
+1 kHz is Aol(1k)/98 and the default cost **0.7 dB** there — against an NE5534,
+which is a 10 MHz part. Measured 39.1 dB where the network gives 39.77.
+
+Seven times the accuracy the equalisation network was designed to, and it would
+have been reported as the circuit's gain rather than the model's. **Fixed**: a
+`gbw` annotation, registered like `gain` and read in preference to the default,
+with the assumption suppressed when it is stated. `designs/lib/riaa.nim` states
+it and now measures 39.7 dB.
+
+## 21. A code model could never reach the simulator
+
+`spice/xspice` could build a `.cm` and instantiate an `A` device, and
+`ngspice.run` took a `codemodels` argument — but **none of the eight call sites
+passed it**, so no design could ever be verified through a code model. Worse,
+`kinds.hasDeviceModel` returns true for a code-model component (its `value`
+names a card in `nl.models`), so `isPassive` is true and `isolate` cheerfully
+absorbed it into a fragment that then died inside ngspice with `unable to find
+definition of model` — an error about a model name, three steps from a missing
+file path.
+
+**Fixed** by putting the answer on the component (`attrs["xspice.cm"]`, dotted
+so the registry never validates it) and having `run` union
+`instance.collectCodeModels(nl)` with its explicit argument. Every call site is
+unchanged. An attribute rather than a `Netlist` field because the netlist
+reaching ngspice is never the one the design built — it is a fragment from
+`clone` → `flatten` → `expandPinModels` → `isolate` — and `attrs` rides through
+all of those for free.
+
+Three things fell out of making it work end to end:
+
+- **`SimReplacement` could not express a code model.** Its `kind`/`pinNets`
+  shape reaches `replaceComponent`, which never touches `nl.models`, so the
+  `.MODEL` card would be lost and the part would stop being passive — the exact
+  failure the model was added to fix. Added `SimReplacement.build`, an optional
+  proc handed the materialized clone and the part to stand in for.
+- **Importing a code model dragged in the FFI**, which needs ngspice's MIF
+  headers — so a design instantiating one could not compile on a machine with
+  ngspice but not its sources. The entry point is only ever wanted by
+  `buildCodeModel`; `nimcir check` now passes `-d:xspiceSpecOnly` and gets the
+  `ModelSpec` without the implementation.
+- **`findToolchain` required `$NGSPICE_SRC`** even when a configured tree sat in
+  the cache directory. Forgetting the variable did not fail loudly, it made the
+  design quietly report `not evaluated` for the one part the tree was fetched
+  for.
+
+## 22. A failed DC solve was reported as an answer
+
+`run` treats "a parseable rawfile exists" as the success signal, because
+ngspice's exit code is not reliable. But ngspice reports a failed DC solve as a
+**warning**, writes whatever its last iterate was, and exits zero — so the
+numbers arrive looking exactly like an answer.
+
+`designs/lt8640a_buck.nim` found it. The datasheet circuit hangs C_BST between
+BST and SW and nothing else, and the averaged model had no BST pin, so that node
+had no DC path anywhere. ngspice printed `singular matrix: check node bst` and
+carried on; the 5 V rail was reported as **1.71 V**, as a clean FAIL against a
+real number.
+
+**Fixed**: the log is scanned for `singular matrix`, `iteration limit reached`,
+`too many iterations` and `no convergence`, and the run raises naming the node.
+The marker list is deliberately narrow — `gmin stepping failed` and `source
+stepping failed` are *strategy* notes, and ngspice usually recovers after them.
+Treating those as fatal declared the TS808's bias-finding `.op` a failure, which
+took its large-signal drive offset to 0 V and its output swing with it. Tests:
+`tests/test_spice_ngspice.nim`, both directions.
+
+Also added while chasing this: `$NIMCIR_KEEP_DECKS` copies each deck handed to
+ngspice into a directory. Every fragment simulated here is *derived* — isolated,
+terminated, model-substituted — so it is not the netlist anyone wrote, and
+reasoning about a surprising number from the design file alone is guesswork.
+
+## 25. Graph uniqueness does not imply deck uniqueness
+
+Asked whether flattening resolves reference-designator conflicts, and testing
+rather than reasoning about it, turned up one that survives every check above.
+
+`deckDesignator` **prepends** the device letter from `kind` rather than
+substituting it. That is deliberate and §1 explains why: substituting would
+merge `FB1` and `L1` into one device on a board carrying both. But prepending is
+**not injective**. A resistor designated `XA.R1` and a resistor designated
+`RXA.R1` are two distinct components in the graph, pass every uniqueness check
+the graph has, and emit one line:
+
+```
+graph designators: RXA.R1, XA.R1
+deck: RXA.R1 a 0 9k
+deck: RXA.R1 a 0 1k
+```
+
+ngspice sees one device defined twice. Nothing raised, and the fragment
+simulated is not the circuit.
+
+This predates flattening — the non-injectivity was always there — but it was
+unreachable in practice while every designator was hand-written and short.
+`spice/flatten` makes generated, dotted designators ordinary, which moves it
+from theoretical to reachable.
+
+**Fixed**: `writeNetlist` calls `checkDeckDesignators` on the top level and on
+each `.SUBCKT` block, raising and naming both graph designators and the deck
+spelling they share. Per level rather than per deck, because SPICE scopes
+designators inside a `.SUBCKT`. There is no safe way to guess which one was
+meant, so it refuses rather than renaming. Tests:
+`tests/test_spice_flatten.nim`.
+
+## 26. A dielectric is not paperwork -- it changes the capacitance
+
+Asked to look at ratings on passives, and measuring before designing: the same
+decoupling bank, once at its nominal values and once with its Class 2 ceramics
+where DC bias actually puts them.
+
+| | `z_max_in_band` |
+|---|---|
+| nominal 10 uF + 2x100 nF | **173 mohm** |
+| same parts, X5R at ~65% of rating | **1.23 ohm** |
+
+**Seven times**, and larger than every other correction in `spice/models` put
+together. A design claiming `targetZ = 250.mohm` passes on nominal values and
+misses by 5x on the board. That settles what category `dielectric` is in: it
+belongs beside ESR and ESL in the model-substitution path, not in a BoM field.
+
+The vocabulary gained five keys — `dielectric`, `voltage_rating`,
+`current_rating`, `isat`, `power_rating` — under a rule the existing registry
+had already broken: **a key enters the bare vocabulary only when something
+consumes it.** The evidence was sitting there. `tolerance` has been registered
+since the beginning, is stated by `designs/lt8640a_buck.nim` on its feedback
+divider, and **is read by nothing**. Five more like it would make the registry a
+place where keys go to look meaningful.
+
+`expandCapacitorParasitics` now derates before it expands.
+`dcAcrossCapacitor` takes only the unambiguous case — one plate on the
+reference, the other on a rail with a stated voltage — and returns 0 for a
+coupling capacitor between two signal nets, meaning *not known here*, because
+knowing would need an operating point this pass runs before. A package naming a
+non-ceramic family is never guessed into a ceramic. Both the assumed dielectric
+and the assumed rating are declared.
+
+**The caveat belongs with the number**: real DC-bias loss depends far more on
+case size and capacitance density than on the dielectric letter. A 10 uF 0402
+X5R can be a fifth of its label at rated voltage while a 100 nF 1206 X7R barely
+moves, and both are "Class 2". Class 1 is the exception that is exact rather
+than typical, and that is what makes a timing capacitor's C0G a physics decision
+rather than a preference.
+
+It caught a fixture immediately. `tests/test_analysis_pdn.nim` builds bare
+ceramics on a 3.3 V rail and checks closed-form identities against them --
+SRF = 1/(2*pi*sqrt(LC)), |Z| = 1/(2*pi*f*C). Those are statements about the
+capacitance a part *has*, so derating moved `f_z_min` by 25% and `z_at_100kHz`
+by 54% and the tests failed. Correctly: the fixtures are now C0G, which is what
+they always meant.
+
+## 27. Ratings had no consumer, and the check is per family
+
+`analysis/derating.nim`, one `.op` over the whole design -- **not isolated**,
+for the same reason `runDcVoltage` is not: a fragment terminated with ideal
+sources would check parts against voltages the boundary invented. It checks
+`voltage_rating` against the DC across each part and `power_rating` on a
+resistor against V^2/R, and `power_rail` gains an opt-in `maxDerating`.
+
+Ceilings are **per dielectric family**, and the reason is not tidiness: a
+tantalum is held to 50% because it fails *short* and takes the rail down with
+it, whereas a ceramic's headroom is mostly about capacitance -- which §26 now
+models directly. Applying the tantalum rule to ceramics would double-count the
+same physics under two names.
+
+A design stating no rating anywhere is **told so** rather than passed. An
+operating point cannot tell a 6.3 V part from a 50 V one, so a silent pass would
+be the tool inventing the answer.
+
+**`current_rating` and `isat` are registered, set by the part policy, and
+checked by nothing.** A branch current is not in a `.op` for anything but a
+voltage source, and an inductor's peak needs a `.tran`. That is the gap that
+matters for a converter, where saturation is the failure mode -- and it
+compounds rather than averaging out, because an inductor near saturation has
+less inductance than its label, so the ripple is larger than designed, which
+pushes it further in.
+
+## 28. A parameterized module cannot choose its own parts
+
+The question `designs/lib/filters.sallenKeyLP(fc, r, q)` could not answer: it
+computes that it needs 22.5 nF, and cannot compute *what part that is*.
+
+The asymmetry is the whole finding. The module cannot choose, because the choice
+depends on rail voltage, temperature range, space and cost, none of which it can
+see. **The board cannot choose either**, because it cannot see which of the
+module's capacitors sets a corner and which is a bypass -- and that distinction
+decides the answer: a timing capacitor must be Class 1 or its corner moves, a
+decoupling capacitor should be Class 2 because that is where the density is. So:
+**the module knows the part's function, the board knows its environment, and
+neither can choose the part alone.**
+
+Both obvious answers fail concretely. Per-component builder parameters
+(`c1Package`, `c1Dielectric`, `c1VoltageRating`, ...) multiply out with every
+part in the module *and* still leave the board guessing at function. A pass that
+annotates the netlist afterwards loses the compile-time checking a `spec:` block
+gives and has to address parts by generated name.
+
+`nimcir/parts` is the answer: the module states a `CapRequest` carrying a value
+and a **use**, the board supplies a `PartPolicy`, `applyChoice` writes the result
+as ordinary registered annotations. Proc-valued like `RoleDef`, so a policy built
+at runtime from a preferred-parts database is not second class.
+
+The default policy draws the line `spice/models` already draws for stand-ins --
+**guess where the guess is forced, refuse where it is a choice**. C0G for a
+timing part is physics and is defaulted silently. X7R for a decoupling part is a
+judgement, is defaulted, and is noted every time, because it is exactly where a
+wrong guess cost the 7x in §26. A rating is derived from the working voltage
+when the module states one and **left unset when it does not**, since a coupling
+capacitor in an unbiased stage genuinely has no known working voltage.
+
+One thing fell out that is better than what was designed. `sallenKeyLP` passes
+no `working` for its bypass capacitors -- it does not know the supply. It does
+not need to: §26's pass computes the DC across each capacitor from the netlist
+at simulation time, when rail voltages are stated. The policy answers "what kind
+of part", the netlist answers "what is across it", and neither has to know the
+other's business. An earlier sketch added a `supply` parameter to every builder;
+it is not needed and would have been a second place for the rail voltage to
+drift out of step.
+
+Measured, on the split-rail Sallen-Key: the timing capacitors come out C0G and
+the bypass capacitors X7R from the same policy call, and a deliberately
+function-blind policy makes both X7R. Worth stating plainly: on **split rails**
+the timing capacitors sit at 0 V DC, so the dielectric choice costs nothing
+there and the corner does not move either way. It is the single-supply case, and
+the bypass capacitors, where it bites -- and the tempco half of the argument for
+C0G is real and is **not modelled at all**.
+
+## 29. One operating point, shared -- and why it is not a fixed point
+
+§26 derated capacitors from a **stated** rail voltage, which meant a capacitor
+on any node nobody had annotated was not derated at all. That blind spot covers
+exactly the nodes where bias is worst: a biased single-supply stage, a
+divider-derived reference, a charge pump. Measured, a 10 uF rated 6.3 V across
+the lower leg of a 12 V / 10k / 10k divider -- 6.00 V, **95% of its rating** --
+came through at its full nominal value, because `mid` carried no `voltage`.
+
+Chaining simulations usually means iterating to a fixed point. **It does not
+here, and the reason is the whole finding: at DC a capacitor is an open circuit,
+so the operating point cannot depend on capacitance.** Verified rather than
+assumed --
+
+```
+v(mid) with 100p: 6.000000000000001   with 1000u: 6.000000000000001   identical: true
+```
+
+-- so `.op` -> derate -> `.ac` is a straight line. No convergence question, no
+ordering ambiguity, no iteration. That same capacitor now derates to **3.29 uF**,
+a factor of three that nothing could previously see.
+
+`analysis/operating.nim` solves it once. It is deliberately **not isolated**, for
+the reason `runDcVoltage` has always carried: isolation terminates a cut rail
+with an ideal source at the rail's nominal voltage, which is the number half the
+consumers are trying to find out. `voltageAt` returns **`NaN` for a node the
+solver never saw**, which is a different answer from zero and must stay one.
+
+The arithmetic came free. `dc_voltage` solved its own `.op`, `analysis/derating`
+solved one per claimed rail, and every one was the same design with the same
+answer -- `templates/rail.nim` went from three decks to two, and
+`designs/sensor_node.nim` now runs **exactly one `.op`** across two rails and
+several `dc_voltage` claims.
+
+**The cache is keyed by design identity with no content invalidation**, and that
+is a stated rule rather than an oversight: nothing inside `contract_eval` can
+tell that a caller edited a netlist between two evaluations. Within one
+`evaluate` the design does not change, so it is exactly right there;
+`verify.readiness` calls `clearSharedOperatingPoint` on both sides to make every
+entry start clean. `tests/test_analysis_operating.nim` pins that with a design
+whose source is changed between two `readiness` calls -- it would fail if those
+calls were removed.
+
+**Stated limit: a `.tran` bias moves with time.** A charge pump's flying
+capacitor and a rail that is still soft-starting have no single DC across them,
+so one number from t = 0 does not describe them. Derating those from this is
+less wrong than not derating them at all, and still wrong; anything that cares
+should recompute per operating region.
+
+## 30. Designators you did not write, and the injection that makes them safe
+
+Two features that only work together, and the reason is worth stating before
+either of them.
+
+**Post-hoc override is the only thing that forces stable identifiers.** If the
+way to vary an instantiated module is to reach into it from the board -- 
+`findComponent(d.netlist, "XA.C1")` -- then every part it might want to reach
+needs a name that is unique across the design and stable against edits. That is
+exactly the identifier nobody wants to hand-author, and generating it makes the
+handle as unstable as the generation. Name-based override and generated
+designators are in direct conflict.
+
+`instance ..., with = <proc (Netlist)>` removes the conflict rather than working
+around it. The proc runs against **that instance's own clone**, immediately after
+`instantiate` and before anything else sees it, so the variation happens at
+construction and nothing ever addresses an individual anonymous part. Inside it
+the only names are the module's **local** designators -- few, author-controlled,
+and never leaving the module. That splits one impossible namespace into two easy
+ones: hand-authored and local inside a module, generated and anonymous at board
+level, never meeting.
+
+An earlier sketch used `Component.name` as a stable handle. Rejected, and
+correctly: it replaces one globally-unique-string-you-must-invent with another.
+The distinction that matters is *who is responsible for uniqueness* -- the
+compiler or the person -- and a second string field is still the person.
+
+With that in place, `component kind = "capacitor", value = "100n":` may omit its
+label. `graph.addGenerated` picks the designator from `kind` at **construction**,
+not at macro expansion, because `kind` is an expression and a `for` loop's
+iteration count is not knowable to the macro. Numbering is **per netlist**: a
+subcircuit gets its own `C1`, so adding a part to one module cannot renumber
+another. Hand-authored designators are respected, an explicit `designator =`
+still wins, and omitting both a label and `kind` is a compile error rather than a
+guess.
+
+Generated ones are **marked** and listed by `generatedDesignators`, because a
+designator is the join key to a board (`pcb/graph.bindComponent` raises on a
+mismatch), a BoM line and silkscreen text -- and a generated one is positional.
+Safe for a part nothing names and nothing places; wrong for anything already laid
+out. That is self-selecting: needing to refer to a part is the signal to write
+its designator.
+
+The prefix table is **separate from the SPICE one and must stay separate**. They
+disagree: `FB` on a schematic and `L` in a deck, `BT` and `V`. Deriving either
+from the other is how §1 happened.
+
+## 31. `kind = "ferrite_bead"` reaches a deck as a current source -- NOT FIXED
+
+Found by a test written for §30, asserting what the documentation claims.
+
+```
+deck line: FB1 a b 600
+```
+
+`netlist/kinds.conductiveKinds` blesses `ferrite_bead` as a kind the library
+understands, but `formats/spice.deviceKindByPrefix` has no entry for it, so
+`designatorPrefix` raises, `deckDesignator` leaves the designator alone by
+design ("a `kind` with no known letter is left alone, since there is nothing to
+correct it against"), and ngspice reads the leading `F` as a
+**current-controlled current source**. Exactly the §1 hazard, still live for any
+kind the electrical classifier knows and the deck writer does not.
+
+`designs/sensor_node.nim` sidesteps it by modelling its bead as
+`kind = "inductor"` with designator `FB1`, which prepends correctly to `LFB1`.
+So no design is affected today -- but §30 makes the bad path *more* reachable,
+because generation now produces `FB1` from `kind = "ferrite_bead"` where before
+somebody had to type it.
+
+**Deliberately not fixed here, because the obvious fix is wrong.** Mapping
+`ferrite_bead -> 'L'` would emit `LFB1 a b 600`, and a bead's `value` is
+impedance at a frequency (600 ohm at 100 MHz), not inductance -- so the deck
+would say 600 **henries**. The question "what does `value` mean for a part SPICE
+has no device for" needs answering before the prefix does, and it is a different
+decision from designator generation. The same gap covers `fuse`, `wire` and
+`jumper`, which `conductiveKinds` also blesses.
+
+`checkDeckDesignators` (§25) does not catch it: there is no collision, just a
+wrong device.
+
+## 32. A ferrite bead, modelled as one -- and §31 closed
+
+§31 recorded that `kind = "ferrite_bead"` reached a deck as `FB1`, which
+ngspice reads as a current-controlled current source, and deliberately did not
+fix it: the obvious fix (map the kind to `L`) would have emitted `LFB1 a b 600`
+and a bead's `value` is impedance, not inductance, so the deck would have said
+600 **henries**. The question to answer first was what a bead actually is.
+
+It is three numbers, and they build a model exactly:
+
+    R = z_peak - dcr        L = R / (2*pi*f_peak*Q)
+                            C = Q / (2*pi*f_peak*R)
+
+a series DC resistance into a parallel R-L-C. At `f_peak` the reactances cancel
+and the impedance *is* `R`, so the peak lands where the datasheet says **by
+construction rather than by fitting**. Verified:
+
+```
+zpk = 6.00000e+02 at = 1.00000e+08      600.00 ohm at exactly 100 MHz
+zdc = 6.08171e-01                       0.61 ohm at 100 kHz -- inductive, as a bead is
+```
+
+**Why it matters that this is not an inductor.** An inductor's impedance climbs
+without limit; a bead's peaks where the core goes lossy and falls again, and that
+peak is the entire reason a bead is chosen instead of an inductor. An inductor
+model shows none of it. It also has no DC resistance, and on a supply rail that
+is a steady IR drop and a floor the filter can never get below.
+
+`Q` is the one thing the headline numbers cannot pin down -- `z_peak` and
+`f_peak` fix the height and the location of the peak, not its width -- and
+defaults to 1.0, which is broad. Beads are deliberately lossy; a high-Q bead
+would be the inductor it was chosen instead of. A datasheet's impedance curve is
+what pins it down properly.
+
+`value` is read as ohms when `z_peak` is absent, following the convention a bead
+is *sold* by, and `f_peak` defaults to the 100 MHz datasheets quote. Both are
+declared as assumptions rather than silently applied.
+
+§31 closes as a side effect rather than by a special case: after the pass there
+is no `ferrite_bead` component left for the deck writer to misletter.
+
+**Measured, on a real design.** `designs/sensor_node.nim` had modelled its bead
+as `kind = "inductor", value = "600n"` -- the inductance a 600 ohm bead has well
+below resonance -- because something had to reach the deck. Switched to the real
+part with a stated 350 mohm `dcr`:
+
+| | before | after |
+|---|---|---|
+| `overshoot_pct` on `vdda` | 109 m% | **0** |
+| `inrush_peak` | 163 mA | 161 mA |
+| `z_max_in_band` on `vdd` | 129 mohm | 125 mohm |
+
+The overshoot is the interesting one and the new answer is the right one: an
+ideal inductor into a capacitor bank is a lossless resonator, so the old model
+rang at anything. A real bead's DC resistance damps it, and against a 1 ms
+soft-start ramp -- two hundred times slower than the 196 kHz resonance -- there
+is nothing to ring.
+
+**A NaN nearly walked straight through the guard.** `parseSpiceMagnitude` sets
+its out-parameter to NaN when it refuses, and `NaN <= 0.0` is **false**, so a
+sign test alone let an unparseable `value` through and every element came out
+NaN. Caught by the test written for it, and the check is now explicit about why
+it tests for NaN as well as for sign.
+
+## 33. The rest of §31, and the invariant that should have existed first
+
+§32 modelled the ferrite bead. The obvious next step was three more
+macromodels; the useful one was asking the machine *which* kinds were exposed,
+and then pinning the answer so the question cannot come back.
+
+Enumerated rather than read off:
+
+```
+resistor R    inductor L    voltage_source V   capacitor C   current_source I
+vcvs E        vccs G        bsource B
+wire  -- NONE --   jumper -- NONE --   fuse -- NONE --
+cccs  -- NONE --   ccvs   -- NONE --
+```
+
+Two different problems wearing one symptom.
+
+**`cccs` and `ccvs` were plain omissions** from the write-side table, next to
+`vcvs`/`vccs`. Added, but for a narrower reason than those two: an `F`/`H` line
+is *not* positional over nets -- its third token names the controlling voltage
+source -- so writing one still emits the wrong arguments. Nothing synthesizes
+either kind today, so that is latent. What was not latent is the letter: a
+`cccs` designated `CCCS1` reached the deck unchanged and ngspice read the
+leading `C` as a **2 F capacitor**, silently. A loud failure about a device that
+exists beats that.
+
+**`wire`, `jumper` and `fuse` needed models**, and they collapse to the same
+resistor, differing only in where the number comes from -- which is the whole
+hazard. **A link's `value` is ohms and a fuse's is amps.** A "0 ohm jumper" is
+sold in ohms; a "2 A fuse" is sold in amps, and reading that as 2 ohms would put
+forty times its real cold resistance in series with a rail and quietly explain
+away a drop nobody would otherwise accept. So a fuse's resistance comes from
+`dcr` and its `value` is read as `current_rating` -- the same question the bead
+had to answer before it could be modelled at all.
+
+Two things deliberately not modelled, stated rather than discovered: a fuse
+**blowing** (an I^2t integral over a fault -- a design check asks whether the
+circuit works, not what it does while failing), and trace inductance (roughly a
+nanohenry a millimetre, and a netlist carries no length; that is `nimcir/pcb`'s
+question).
+
+### The part that matters
+
+`tests/test_spice_spellable.nim` holds the invariant three separate bugs had
+already violated:
+
+> A `kind` that `kinds.isPassive` accepts must be something the deck writer can
+> spell -- either `designatorPrefix` knows its device letter, or a model pass
+> rewrites it into parts that do.
+
+Passivity is what makes it load-bearing, and the reason is worth keeping
+together in one place: `expandPinModels` stands in for every part `isPassive`
+**rejects**, so those never reach a deck as themselves; `spice/isolate` absorbs
+every part it **accepts**, so those do. A kind on the accepted side with no
+device letter lands in the deck under its own first letter and is read as
+whatever that letter means.
+
+It is **generated, not listed** -- it iterates `conductiveKinds`,
+`blockingKinds` and `behaviouralKinds` rather than reciting them, for the same
+reason `verify.describeQuantities` computes reachability instead of writing it
+down: a hand-kept list is exactly the thing that drifts from the tables it is
+meant to describe. Verified to bite by adding a `solder_bridge` kind:
+
+```
+kind 'solder_bridge' has no SPICE device letter and was not expanded:
+  it reaches a deck as itself
+[FAILED] each one either has a device letter or is expanded away
+```
+
+§31 is now closed in full.
+
+## 34. A connector is a boundary, and the board behind it is a subcircuit
+
+There was no connector *type*: `"connector"` appeared in exactly one place in
+`src/`, the designator-prefix table, so `isPassive` rejected it and
+`expandPinModels` fell through to its last resort -- an independent impedance
+from each pin to ground.
+
+That is wrong in a specific way rather than approximate. `expandPinModels` is
+documented as destroying any path through the part, which is right for asking
+what a part *loads* a rail with and wrong for anything a signal must pass
+through -- and a connector is nothing but a pass-through. Measured on a USB
+inlet:
+
+```
+today, with no boundary handling:  v(vbus) = 0.0 V
+with the port driven:              v(vbus) = 4.995 V
+```
+
+Zero, because VBUS was a megohm to ground and the board had no supply at all.
+
+**The reason no macromodel fixes this**: each connector pin touches exactly one
+net, so there is nothing on the other side to pass through *to*. A connector's
+behaviour is entirely whatever is plugged into it, and only the designer knows
+that. `designs/sensor_node.nim` had already worked around it by declaring its
+USB inlet as `kind = "voltage_source"` with `rout`/`lout` -- modelling what is
+*behind* the connector rather than the connector -- which is a legitimate choice
+and also a sign the vocabulary was missing something.
+
+`spice/boundary.nim` splits it in two, and the halves are separable:
+
+* `asSubcircuit` promotes every connector pin's net to a port and drops the
+  connectors. A **composition** feature: it changes no measurement. Ports are
+  named after the **net**, matching `extract.extractSubcircuit`, because a net
+  name is already unique where `J1.VBUS` would have to be invented and checked
+  for collisions. Ground is never a port -- node `"0"` is global, so promoting
+  it would create a second reference.
+* `harness` attaches what is outside: a source of stated stiffness, a load, or
+  nothing. The **simulation** feature, and the one that turns 0 V into 4.995 V.
+
+A source is attached through its own `rout`/`lout` and never directly, for the
+reason `expandSourceImpedance` exists: an ideal source is a dead short at AC, so
+a port driven by one reports the rail behind it as 0 ohm at every frequency and
+passes any decoupling target. A port nobody described is left alone rather than
+defaulted -- inventing a supply for a pin nobody mentioned is how a rail comes
+to measure its own assumption back -- and an unknown port name raises.
+
+**`harness` does not build itself by instantiating `asSubcircuit`'s template.**
+That was the obvious implementation and it is pointless: `flatten` would undo
+the round-trip immediately and the result is identical for more work. The
+subcircuit is for export and for saying where the boundary *is*, not for making
+the sums come out. Worth writing down because the two goals sound like one.
+
+**A gap the composition half exposed**: `writeNetlist` silently drops
+`Netlist.ports`. Correct for a board -- a top-level SPICE deck has no port
+concept, so there is nowhere to put them -- and silently wrong for a template
+built to be reused, which is exactly what `asSubcircuit` returns. Added
+`formats/spice.writeSubcktDefinition`.
+
+**It is symmetric.** An *outgoing* connector -- a board that supplies something
+else -- is expressed the same way, with `driveLoad` or `driveSink` instead of
+`driveSource`. And those two are **not interchangeable**, which is worth stating
+because they agree at the operating point and nowhere else: a resistor's current
+follows the rail, so it damps the decoupling network, while a constant-current
+sink is an **open circuit at AC** and damps nothing. Measured on one board:
+
+| external load | `z_antiresonance` |
+|---|---|
+| resistive 33 ohm | 3.57 ohm |
+| constant 100 mA | **4.01 ohm** |
+
+Modelling a regulated load -- an MCU, a module with its own converter, which is
+most of what hangs off a power connector -- as a resistor therefore understates
+by 12% the very peak a PDN sweep exists to find.
+
+**Stating the drives on the design**, done, and it arrived somewhere better than
+the annotation scheme first sketched. `SimReplacement.build` is `{.nimcall.}`
+and therefore has no environment to capture a drive in -- so the drive had to
+become *data*, recorded on the `Pin` as namespaced `boundary.*` attrs. That is
+the better property regardless: it survives `clone`, it is visible in the
+netlist, and anything can read it back, where a closure could not be. Going
+through `simReplace` keeps the connector in the **design** netlist, so a BoM and
+a layout still see the part that gets soldered while only the simulation copy
+sees the supply behind it.
+
+**A prerequisite that turned out to be a real bug.** `analysis/pdn`, `startup`
+and `opamp` plain-`clone`d their work copy, so **`simReplace` was silently
+ignored by three of the six analyses** -- a component's own statement of how it
+wants to be simulated, dropped. Switched to `materializeSimNetlist`, which
+needed an `exclude` parameter because `startup` applies the regulator's
+replacement itself, on the fragment and after isolation, so it can take over the
+designator the inrush probe measures.
+
+`designs/sensor_node.nim` converted from `kind = "voltage_source"` with
+`rout`/`lout` -- which modelled what was *behind* the connector and put a part
+on the BoM nobody solders -- to a real connector plus a stated drive. **Every
+measured number is unchanged** (5.00 V, 3.30 V, 125 mohm, 0% overshoot, 161 mA,
+801 us / 981 us), which is the correct outcome: the two descriptions are the
+same electrical situation, and a refactor that moved a number would have meant
+one of them was wrong.
+## 35. Boards as a system, and boards on their own
+
+A board has to answer two questions -- what it does on the bench, and what it
+does plugged into the rest of the product -- and §34 only answered the first.
+The pieces for the second already existed (`asSubcircuit`, `graph.instantiate`,
+`flatten`); assembling two boards showed what was missing.
+
+**What system modelling actually buys**, measured on a supply board feeding a
+sensor board:
+
+| | `vout` |
+|---|---|
+| supply alone, assuming a 100 mA draw | 4.89 V |
+| supply alone, assuming 200 mA | 4.78 V |
+| supply alone, assuming 400 mA | 4.56 V |
+| **wired to the real sensor board** | **4.781 V** |
+
+The isolated answer is a function of the assumption and nothing else. Wired
+together, the sensor board's actual 24 ohm is in the circuit and the answer is
+the board's rather than the guess's. Both descriptions come from the same design
+-- the boards keep their own connectors, only the copies lose them, so nothing
+is rewritten to move between them.
+
+**The gap it exposed: ports were wired positionally.** `graph.instantiate` takes
+a bracket in port-declaration order, which is fine for a subcircuit whose ports
+a person just wrote and a trap for one produced by `asSubcircuit`, where the port
+list came from whichever nets the connectors happened to sit on. Both boards in
+this system call a port `vin`. **Swapping two same-shaped nets raises nothing
+and simulates happily.**
+
+So `graph.instantiateByPort`, and the DSL's `instance` now accepts a table as
+well as a bracket:
+
+```nim
+instance XA, asSubcircuit(supplyBoard(), "SUPPLY"), {"vin": usb, "vout": rail}
+instance XB, asSubcircuit(sensorBoard(), "SENSOR"), {"vin": rail}
+```
+
+Every port must be named. An unwired one **raises**, listing what the board
+exposes, rather than being quietly left open -- an open port on a board-to-board
+connection is a disconnected system, and the entire point of assembling one is
+that the connection exists. A named port the board does not have raises too.
+
+Ground is shared through `globalNets` as it always was, which is what keeps the
+two boards on one reference; without it they would be electrically isolated and
+every cross-board measurement meaningless.
+
+## 36. A design that is two boards, and the defect only the pair has
+
+`designs/system_sensor_rig.nim`, with the boards themselves in
+`designs/lib/carrier.nim` and `designs/lib/sensor_head.nim`. Each board is an
+ordinary `netlist` carrying no claims; `boundary.asSubcircuit` turns its
+connectors into ports and the system file wires the ports together, by name.
+
+**The boards make their own claims too** (see §37, which corrected this section's first version). A board
+checked on its own is checked against an assumed other end -- measured on
+exactly these two, the carrier alone reports its output at 4.89 V, 4.78 V or
+4.56 V depending only on the sink assumed, and none of those is a statement
+about the product.
+
+The cable is modelled explicitly, as components in the system file: 300 mm of
+28 AWG twisted pair, there and back, is about 40 mohm and 300 nH. A netlist
+carries no length so nothing else can know it is there, and joining the two
+boards port-to-port would have silently asserted a perfect connection.
+
+### What it found
+
+The sensor head first carried only 1 uF and 100 n of ceramic, on the reasoning
+that the carrier's 22 uF was "the" bulk. The system reported the head's rail
+impedance as **8.71 ohm** against a 900 mohm target.
+
+Not the cable's resistance, and not an artefact. It is the anti-resonance
+between 300 nH of cable and 886 nF of local ceramic: it lands near 1 MHz and
+peaks at `L/(R*C)` = 300n/(0.04 * 886n), about **8.5 ohm** -- damped by nothing
+but the cable's own 40 mohm. The closed form and the simulation agree.
+
+**Neither board could have found it.** The carrier's own rail is fine. The
+sensor head's own decoupling is fine. The defect exists only in the pair, and
+only once the cable between them is real.
+
+The fix is one 22 uF tantalum at the head, and a *tantalum* specifically: its
+200 mohm of ESR is what damps the peak, where a third ceramic would have added
+charge and left the ringing exactly where it was. Measured after: **211 mohm**,
+a factor of 41.
+
+### Why the claim is made at the far rail
+
+`targetZ` is claimed at the sensor head's rail rather than the carrier's,
+because once a cable is between them they are not the same rail -- and the
+carrier's is the convenient one to measure and the one that looks fine.
+Measuring it would have reported the decoupling as better than the sensor sees
+it, which is the failure mode this whole layer exists to prevent.
+
+## 37. A board is a module and a program, and §36 was half a design
+
+§36 made the two boards claim-free netlists and put every claim in the system.
+That was wrong: a board still has to be verifiable on its own, and saying it
+could not was a choice mistaken for a limitation.
+
+**`when isMainModule` is the mechanism**, and it fits the question exactly:
+"is this board the thing under test, or part of something bigger" is a property
+of how the file was compiled, so `when` answers it and nothing at runtime has to
+be told which world it is in. `designs/carrier.nim` and
+`designs/sensor_head.nim` each export a `proc` returning their netlist, and
+under `when isMainModule` state what is plugged into each connector and make
+their own claims.
+
+**The bench drives cannot leak into a system**, and that falls out rather than
+needing a guard: a drive is recorded on a connector pin, and `asSubcircuit`
+drops the connectors.
+
+### Both checks are needed, and here is the proof
+
+The sensor head, before its damping capacitor existed:
+
+| | `z_max_in_band` at its rail | |
+|---|---|---|
+| `designs/sensor_head.nim`, bench supply | **10.00 mohm** | passes by 30x, exit 0 |
+| the same board in `system_sensor_rig.nim` | **8.71 ohm** | fails by 10x, exit 1 |
+
+A board-level check on a bench supply cannot see it, because a bench supply
+sitting beside the board has none of the 300 nH the cable has. A system-level
+check alone would not have told you *which* board to change. Fixed, the same
+rail reads 9.56 mohm standalone and 211 mohm in the system -- still a factor of
+22 between the two contexts, which is the cable and is real.
+
+Boards moved from `designs/lib/` to `designs/` so that `nimble verify` -- whose
+`listFiles` is not recursive -- checks them.
+
+## 38. A drive attached at a port was given a microhenry nobody asked for
+
+Found while writing §37, by not believing a number.
+
+`boundary.attachDrives` builds a source as `V -> R -> L -> port`, so the stated
+output impedance is explicit in the netlist. But the `V` it created carried no
+`rout`/`lout` annotation, so `models.expandSourceImpedance` saw a bare
+`voltage_source` and added **its own default 10 mohm and 1 uH in series** --
+on top of the impedance already there.
+
+A microhenry is not a rounding error. A bench supply stated as 10 mohm rang
+against a board's 865 nF and reported:
+
+```
+z_max_in_band = 10.5 ohm at 178 kHz     (anti-resonance, entirely invented)
+```
+
+against a true 10.00 mohm. **A factor of a thousand**, built out of impedance
+nobody asked for, and it looked plausible -- an anti-resonant peak at a
+believable frequency is exactly what a PDN sweep is supposed to find.
+
+**Fixed** by annotating the created source `rout = 0`, `lout = 0`, which
+`models` already documents as the way to opt back into an ideal source. The
+right fix is not to suppress `expandSourceImpedance`: it exists because an
+ideal source is a dead short at AC, and every *unannotated* source should still
+get its default. What was wrong was creating a source with explicit impedance
+beside it and then not saying so.
+

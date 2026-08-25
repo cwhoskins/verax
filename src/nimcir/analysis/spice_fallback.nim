@@ -28,6 +28,7 @@ import std/tables
 import ../netlist/types
 import ../netlist/graph
 import ../spice/transform
+import ../spice/flatten
 import ../spice/ngspice
 import ./issue
 import ./io_check
@@ -55,6 +56,7 @@ proc resolveAmbiguousDCPaths*(nl: Netlist, issues: seq[Issue]): seq[Issue] =
 
   var globalNets: OrderedTable[string, Net]
   let simNl = materializeSimNetlist(root(nl), globalNets)
+  discard flatten(simNl)
 
   var simResult: SimResult
   var simErrorMsg = ""

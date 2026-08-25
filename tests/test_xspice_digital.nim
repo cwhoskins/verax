@@ -1,17 +1,21 @@
-import std/[os, osproc, strutils, tempfiles, unittest]
+import std/[os, osproc, strutils, tables, tempfiles, unittest]
 
+import nimcir/netlist/types
+import nimcir/netlist/graph
+import nimcir/spice/ngspice
+import nimcir/spice/xspice
 import nimcir/spice/xspice/build
 
 ## Event-driven (digital) code models. Gated the same way as
 ## `test_xspice_build.nim`, since producing a `.cm` needs an ngspice source
 ## tree.
 ##
-## The deck here is raw text rather than a nimcir `Netlist`, because driving a
-## digital model needs `adc_bridge`/`dac_bridge` from ngspice's stock
-## `digital.cm`, and those have **vector** ports (`[a b]`) which
-## `xspice/instance.nim` deliberately refuses to emit -- they need the
-## bracketed A-device syntax. Converting `q` back to analog via `dac_bridge`
-## is also what makes the result visible to a rawfile reader at all.
+## The raw-text deck below is kept because it pins the waveform precisely.
+## The final test builds the *same* mixed-signal circuit through
+## `netlist/graph` instead, including the vector-port `adc_bridge`/`dac_bridge`
+## instances -- which is what `xspice/instance.nim`'s vector support is for.
+## Converting `q` back to analog via `dac_bridge` is what makes the result
+## visible to a rawfile reader at all.
 
 let repoRoot = currentSourcePath().parentDir.parentDir
 let ngsSrc = getEnv("NGSPICE_SRC")
@@ -116,5 +120,66 @@ else:
     # the 50us one.
     check edges1.len == 2
     check abs(edges1[0].time - 50e-6) < 0.5e-6
+
+  test "a whole mixed-signal deck can be built through netlist/graph":
+    # adc_bridge and dac_bridge both have vector ports at both ends, so this
+    # is only expressible since instance.nim learned to emit `[a b]`.
+    proc bridge(name: string, inT, outT: PortType,
+                params: openArray[string]): ModelSpec =
+      result = ModelSpec(name: name, cFunction: "cm_" & name,
+        ports: @[
+          PortSpec(name: "in", dir: xdIn, default: inT, allowed: @[inT], vector: true),
+          PortSpec(name: "out", dir: xdOut, default: outT, allowed: @[outT], vector: true)])
+      for p in params:
+        result.params.add ParamSpec(name: p, dataType: xtReal, default: "0.0",
+                                    nullAllowed: true)
+    let dff = ModelSpec(name: "nimdff", cFunction: "cm_nimdff",
+      ports: @[
+        PortSpec(name: "d", dir: xdIn, default: xpD, allowed: @[xpD]),
+        PortSpec(name: "clk", dir: xdIn, default: xpD, allowed: @[xpD]),
+        PortSpec(name: "q", dir: xdOut, default: xpD, allowed: @[xpD])],
+      params: @[
+        ParamSpec(name: "clk_delay", dataType: xtReal, default: "1e-9", nullAllowed: true),
+        ParamSpec(name: "ic", dataType: xtInt, default: "0", nullAllowed: true)])
+
+    let nl = newNetlist("mixed")
+    let gnd = addNet(nl, Net(name: "0", kind: ntGround))
+    var n: Table[string, Net]
+    for name in ["clk_a", "dat_a", "clk_d", "dat_d", "q_d", "q_a"]:
+      n[name] = addNet(nl, Net(name: name))
+
+    for (des, net, spec) in [("Vclk", "clk_a", "PULSE(0 1 10u 1n 1n 10u 20u)"),
+                             ("Vdat", "dat_a", "PULSE(0 1 5u 1n 1n 30u 60u)")]:
+      let v = addComponent(nl, Component(designator: des, kind: "voltage_source"))
+      v.attrs["value"] = spec
+      discard connect(v, "+", n[net])
+      discard connect(v, "-", gnd)
+
+    discard addCodeModelInstance(nl, "abridge1", bridge("adc_bridge", xpV, xpD, ["in_low", "in_high"]),
+      [wire([n["clk_a"], n["dat_a"]]), wire([n["clk_d"], n["dat_d"]])],
+      {"in_low": "0.3", "in_high": "0.7"}, modelName = "adc")
+    discard addCodeModelInstance(nl, "adff", dff,
+      [wire(n["dat_d"]), wire(n["clk_d"]), wire(n["q_d"])],
+      {"clk_delay": "1n", "ic": "0"}, modelName = "dffmod")
+    discard addCodeModelInstance(nl, "abridge2", bridge("dac_bridge", xpD, xpV, ["out_low", "out_high", "t_rise", "t_fall"]),
+      [wire([n["q_d"]]), wire([n["q_a"]])],
+      {"out_low": "0", "out_high": "1", "t_rise": "1n", "t_fall": "1n"},
+      modelName = "dac")
+
+    let r1 = addComponent(nl, Component(designator: "R1", kind: "resistor"))
+    r1.attrs["value"] = "1meg"
+    discard connect(r1, "1", n["q_a"])
+    discard connect(r1, "2", gnd)
+
+    let res = run(nl, @[".tran 1u 100u"], codemodels = @[cm])
+    let q = res["v(q_a)"]
+    let t = res["time"]
+    var edges: seq[float]
+    for i in 1 ..< q.len:
+      if (q[i] > 0.5) != (q[i - 1] > 0.5): edges.add t[i]
+    check edges.len == 3
+    check abs(edges[0] - 10e-6) < 0.5e-6
+    check abs(edges[1] - 50e-6) < 0.5e-6
+    check abs(edges[2] - 70e-6) < 0.5e-6
 
   removeDir(outDir)

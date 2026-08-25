@@ -53,14 +53,20 @@ proc replaceComponent*(nl: Netlist, oldDesignator: string, kind: string,
   for (pinName, net) in pinNets:
     discard connect(result, pinName, net)
 
-proc applySimReplacements(nl: Netlist) =
+proc applySimReplacements(nl: Netlist, exclude: openArray[string] = []) =
   var designators: seq[string]
   for designator in nl.components.keys:
     designators.add designator
   for designator in designators:
+    if designator in exclude: continue
     let comp = nl.components[designator]
     let repl = comp.simReplace
-    if repl != nil:
+    if repl != nil and repl.build != nil:
+      # The replacement builds itself. It is handed the clone and the part it
+      # stands in for, and is responsible for removing that part -- which is
+      # what lets it register a `.MODEL` card and render its own ports.
+      discard repl.build(nl, comp)
+    elif repl != nil:
       var pinNets: seq[(string, Net)]
       for pinName, netName in repl.pinNets:
         if not nl.nets.hasKey(netName):
@@ -71,11 +77,18 @@ proc applySimReplacements(nl: Netlist) =
                                 newDesignator = repl.designator, partNumber = repl.partNumber,
                                 attrs = toSeq(repl.attrs.pairs))
   for _, child in nl.children:
-    applySimReplacements(child)
+    applySimReplacements(child, exclude)
 
-proc materializeSimNetlist*(nl: Netlist, globalNets: var OrderedTable[string, Net]): Netlist =
+proc materializeSimNetlist*(nl: Netlist, globalNets: var OrderedTable[string, Net],
+                            exclude: openArray[string] = []): Netlist =
   ## Clones `nl` (via `graph.clone` -- `nl` itself is never mutated), then
   ## recursively walks the clone (including its `children`, for nested
   ## hierarchy) applying every component's stored `simReplace`, if any.
+  ##
+  ## `exclude` names components to leave alone. `analysis/startup` needs it:
+  ## it applies the regulator's own `simReplace` itself, on the fragment and
+  ## after isolation, because it takes over the designator so the inrush
+  ## probe knows which branch to measure. Applying it here as well would
+  ## replace the part twice.
   result = clone(nl, globalNets)
-  applySimReplacements(result)
+  applySimReplacements(result, exclude)

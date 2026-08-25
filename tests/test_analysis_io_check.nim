@@ -1,4 +1,4 @@
-import std/[tables, unittest]
+import std/[tables, unittest, strutils]
 
 import nimcir/netlist/dsl
 import nimcir/analysis
@@ -6,7 +6,10 @@ import nimcir/analysis
 test "clean netlist: output driving input directly, proper power/ground tags -> no issues":
   let nl = netlist("clean"):
     net y, kind = ntSignal
-    net vdd, kind = ntPower
+    # Stated, because a clean netlist states it: an unnamed rail voltage is
+    # its own finding (`rail_voltage_unknown`) now that leaving one out
+    # changes the topology of anything isolated around it.
+    net vdd, kind = ntPower, voltage = "3.3"
     net gnd, kind = ntGround, name = "0"
 
     component U1, kind = "driver_ic":
@@ -159,3 +162,64 @@ test "dc-path walk crosses a hierarchical instance boundary via hierNet":
       pin "IN", b, kind = ptInput
 
   check checkDCPaths(top).len == 0
+
+# --- a power rail nobody gave a voltage --------------------------------
+
+proc biasRail(withVoltage: bool): Netlist =
+  ## A divider-derived half-rail with a signal path returning to it -- the
+  ## shape of every single-supply stage's bias node, and the one no
+  ## `power_rail` role fits.
+  result = newNetlist("b")
+  let gnd = addNet(result, newNet("0", ntGround))
+  let v9 = addNet(result, newNet("v9", ntPower))
+  let vref = addNet(result, newNet("vref", ntPower))
+  v9.attrs["voltage"] = "9.0"
+  if withVoltage: vref.attrs["voltage"] = "4.5"
+  for (desig, p1, p2, kind) in [("R9", v9, vref, "resistor"),
+                                ("R10", vref, gnd, "resistor"),
+                                ("C6", vref, gnd, "capacitor"),
+                                ("R6", vref, gnd, "resistor")]:
+    let c = addComponent(result, newComponent(desig, kind = kind))
+    discard connect(c, "1", p1, ptPassive)
+    discard connect(c, "2", p2, ptPassive)
+
+test "a power rail with no stated voltage is a structural finding":
+  # Not an assumption. A rail without a voltage is cut loose as a floating
+  # node when a fragment is isolated around it, which changes the topology
+  # rather than substituting a value -- and reported as one assumption among
+  # fifteen it reads exactly like a package-typical ESR.
+  let issues = checkRailVoltages(biasRail(withVoltage = false))
+  check issues.len == 1
+  check issues[0].kind == "rail_voltage_unknown"
+  check issues[0].severity == sevWarning
+  check issues[0].net.name == "vref"
+
+test "it names what would lose its connection, and skips the bypass caps":
+  # The actionable half: a rail carrying only power pins and bypass
+  # capacitors loses little by floating, one with a signal path returning to
+  # it loses the path.
+  let issues = checkRailVoltages(biasRail(withVoltage = false))
+  check "R9" in issues[0].message
+  check "R6" in issues[0].message
+  check "C6" notin issues[0].message
+
+test "stating the voltage clears it":
+  check checkRailVoltages(biasRail(withVoltage = true)).len == 0
+
+test "ground is never flagged, however it is spelled":
+  var nl = newNetlist("g")
+  discard addNet(nl, newNet("0", ntGround))
+  discard addNet(nl, newNet("agnd", ntGround))
+  check checkRailVoltages(nl).len == 0
+
+test "a warning here does not by itself fail a run":
+  # A rail nothing simulates is harmless, and a design may legitimately not
+  # know a voltage yet. It is visible, not fatal -- `--strict` promotes it.
+  let issues = checkRailVoltages(biasRail(withVoltage = false))
+  for i in issues: check i.severity != sevError
+
+test "analyzeIO includes it":
+  let found = analyzeIO(biasRail(withVoltage = false))
+  var kinds: seq[string]
+  for i in found: kinds.add i.kind
+  check "rail_voltage_unknown" in kinds

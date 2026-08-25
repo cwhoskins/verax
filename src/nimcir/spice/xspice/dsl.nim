@@ -42,12 +42,29 @@
 ## accessor calls listed below. Shadowing one with a local is not supported.
 
 import std/[macros, strutils]
+
+const xspiceNoFfi* = defined(xspiceGenIfs) or defined(xspiceSpecOnly)
+  ## Whether to emit the `{.exportc.}` entry point ngspice calls.
+  ##
+  ## Two situations want the declaration without the implementation, and
+  ## neither can compile the implementation at all: the interface-generating
+  ## pass of `buildCodeModel`, and **any program that merely instantiates the
+  ## model** -- a design file, above all. The entry point is FFI against
+  ## ngspice's MIF headers, which live only in a configured ngspice *source
+  ## tree*, so importing a model to read its `ModelSpec` would otherwise make
+  ## every design on the machine depend on that tree. The spec const is
+  ## emitted either way, which is all an instantiating caller needs: port
+  ## order, parameter names and the `.MODEL` card.
+  ##
+  ## `-d:xspiceSpecOnly` is what `nimcir check` passes; `-d:xspiceGenIfs`
+  ## additionally emits the `ifspec.ifs` writer.
+
 when defined(xspiceGenIfs):
   import std/cmdline  # only the interface-writer branch needs paramCount/paramStr
 import ./spec, ./ifs
 export spec
 
-when not defined(xspiceGenIfs):
+when not xspiceNoFfi:
   import ./accessors
   export accessors
 
@@ -188,7 +205,7 @@ proc handleStateVar(stmt: NimNode): StateVarSpec =
 
 # --- rewriting the eval body -------------------------------------------------
 
-when not defined(xspiceGenIfs):
+when not xspiceNoFfi:
 
   proc portOf(spec: ModelSpec, n: NimNode, ctx: string): int =
     result = spec.portIndex(identStr(n))
@@ -392,7 +409,10 @@ macro codeModel*(name: untyped, body: untyped): untyped =
   result.add newTree(nnkConstSection,
     newTree(nnkConstDef, postfix(ifsIdent, "*"), newEmptyNode(), newLit(renderIfs(spec))))
 
-  when defined(xspiceGenIfs):
+  when xspiceNoFfi and not defined(xspiceGenIfs):
+    # Spec only: the consts above are the whole module. Nothing further.
+    discard
+  elif defined(xspiceGenIfs):
     # Interface-only build: emit no FFI at all, so this compiles on a machine
     # with no ngspice headers.
     # Built with bindSym rather than `quote do`, because the emitted code lands
