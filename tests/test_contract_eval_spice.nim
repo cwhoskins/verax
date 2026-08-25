@@ -50,7 +50,7 @@ test "a simulated quantity is not *evaluated* when no simulator is offered":
   # silently start running ngspice.
   let r = resultFor(evaluate(dividerBoard("2000")), "vdd_rail.voltage")
   check r.status == esNotEvaluated
-  check "capSpiceOp" in r.reason
+  check "the .op capability" in r.reason
 
 test "one .op answers every dc_voltage claim in the design":
   let d = design("rails"):
@@ -181,3 +181,51 @@ test "a PDN target is claimed only when the designer states one":
       check a.condition.hasKey("f_from")
       check a.condition.hasKey("f_to")
   check found
+
+# --- what each simulated run says it is ---------------------------------
+#
+# Pure: `describeStep` runs off the plan and never simulates, so these hold
+# with no ngspice on the machine.
+
+test "a PDN step names the rail and the band it is judged over":
+  let d = design("pdn"):
+    net vdd, kind = ntPower
+    role "power_rail", r0, rail = vdd, voltage = 3.3.V, targetZ = 50.mohm
+  let p = plan(d, allCapabilities)
+  var text = ""
+  for s in p.steps:
+    if s.evaluator == "spice.pdn": text = describeStep(d, s)
+  check "net 'vdd'" in text
+  check "100 kHz .. 100 MHz" in text
+  # The setup key that grouped the batch is machinery, and must not be what
+  # a reader is shown: `vdd|100000.0|100000000.0` says nothing about what
+  # was simulated, or about what the sweep does and does not cover.
+  check "100000.0" notin text
+
+test "a start-up step names the part standing in for the regulator":
+  let d = design("reg"):
+    net vin, kind = ntPower
+    net vdd, kind = ntPower
+    net gnd, kind = ntGround, name = "0"
+    component U1, kind = "regulator":
+      pin "IN", vin, kind = ptPower
+      pin "OUT", vdd, kind = ptPower
+      pin "GND", gnd, kind = ptGround
+    role "regulator", vdd_reg, regulator = U1, output = vdd,
+                      voltage = 3.3.V, maxOvershoot = 5.0
+  let p = plan(d, allCapabilities)
+  var text = ""
+  for s in p.steps:
+    if s.evaluator == "spice.startup": text = describeStep(d, s)
+  check "U1" in text
+  check "soft-start" in text
+
+test "the .op step says it is not isolated, which is why the claim means anything":
+  # Isolating first would terminate the rail with an ideal source at the very
+  # voltage the claim is asking about, and pass every time.
+  let d = dividerBoard("2000")
+  let p = plan(d, allCapabilities)
+  var text = ""
+  for s in p.steps:
+    if s.evaluator == "spice.dc_voltage": text = describeStep(d, s)
+  check "not isolated" in text

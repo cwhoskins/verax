@@ -123,8 +123,19 @@ proc note*(detail: string): Assumption =
   ## A narrative assumption with no single key or magnitude behind it.
   Assumption(key: "", source: annDerived, detail: detail, value: NaN)
 
+proc note*(entity, detail: string): Assumption =
+  ## The same, about a named part.
+  ##
+  ## Reads identically to `note(entity & ": " & detail)` and is worth the
+  ## second proc because the part stays a *field*: a consumer can then group
+  ## the eight capacitors that were all derated the same way onto one line,
+  ## which it cannot do once the designator is inside the sentence.
+  Assumption(entity: entity, key: "", source: annDerived, detail: detail,
+             value: NaN)
+
 proc `$`*(a: Assumption): string =
-  if a.key.len == 0: return a.detail
+  if a.key.len == 0:
+    return (if a.entity.len > 0: a.entity & ": " & a.detail else: a.detail)
   result = a.entity & ": " & a.key & " " & eng(a.value, a.unit)
   if a.detail.len > 0:
     result &= " " & a.detail

@@ -294,18 +294,55 @@ Sections appear in order of how much they undermine everything below them:
 
 - **STRUCTURE** — annotation typos, output conflicts, missing DC paths. A
   misspelled `esr` makes every impedance number under it meaningless.
-- **PLAN** — which analyses will run. Fewer steps than assertions means claims
-  are being batched into shared simulation runs, which is the intent.
-- **FAILED** — checked, and the claim does not hold.
+- **CHECKS** — the body of the report: one block per *test*, where a test is
+  one analysis run. Fewer tests than claims means claims are being batched
+  into shared runs, which is the intent.
+- **FAILED** — checked, and the claim does not hold. A digest of the same
+  claims the check blocks already showed, with the diagnosis attached.
 - **NOT CHECKED** — *read this as carefully as the failures.* An assertion
-  nobody evaluated is not one that passed. `not evaluable` means nothing can
+  nobody evaluated is not one that passed. `[????]` means nothing can
   produce that quantity (usually a misspelling — the report suggests near
-  matches); `not evaluated` means an evaluator exists but its capability was
+  matches); `[----]` means an evaluator exists but its capability was
   withheld or the simulation did not return a number.
-- **ASSUMPTIONS** — numbers the design does not contain and the tool invented
+
+### A check block
+
+```
+  spice.pdn  [.ac]  --  1 claim(s): 1 missed
+    ran: `.ac` sweep of net 'vdd' with 1 A injected, so the node voltage *is*
+         the impedance. Everything on the rail is isolated and the supply cut
+         away -- an ideal source is a dead short at AC and would read 0 ohm
+         everywhere. Judged over 100 kHz .. 100 MHz
+    assuming 39 value(s) nobody stated:
+      - C4, C5, C7: esr 30.0 mohm from package default (0402)
+      - VU1_OUT, V_vbus, V_vdda: rout 10.0 mohm typical for a voltage_source
+      ...
+    [FAIL]  core.impedance   z_max_in_band(net 'vdd')   over 100 kHz .. 100 MHz
+             expect <= 20.0 mohm   measured 125 mohm
+             because the decoupling network must hold the rail below its
+               target impedance across the band where the capacitors control it
+```
+
+Three parts, and each answers a different question:
+
+- **`ran:`** — what was actually simulated, in words. The fragment handed to
+  ngspice is *derived* — isolated, terminated, model-substituted — so it is
+  never the netlist you wrote, and this is what says which analysis produced
+  the number and what it does and does not cover. (`NIMCIR_KEEP_DECKS=<dir>`
+  writes out the decks themselves.)
+- **`assuming:`** — numbers the design does not contain and the tool invented
   anyway: a package-typical ESR, an assumed pin capacitance, a leak resistor
-  on an open net. A measurement resting on an invented input is reported, not
-  buried.
+  on an open net. They sit **under the run that rests on them**, because which
+  number an invented value moved is the whole question — a single pooled list
+  at the foot of the report answers it for none of them. Parts assumed the
+  same thing are folded onto one line, and every one of them is named.
+- **the claims** — one line of identity (id, quantity, subjects, and the band
+  or drive level it is judged under), one line of comparison (`expect` against
+  `measured`, both numbers together), and `because …` — the rationale you gave
+  the limit — whenever the claim did not pass.
+
+A claim appears in exactly one check block. Claims that reached no test at all
+are counted at the end of CHECKS and listed in full under NOT CHECKED.
 
 ## AC-coupled stages
 
@@ -421,8 +458,8 @@ specific subset), `--verbose` (show the full plan and the passing assertions),
 ## Numbers the tool invents for you
 
 A netlist does not carry everything a simulation needs, so some values are
-substituted — and every substitution is reported in ASSUMPTIONS with where it
-came from. Three matter most:
+substituted — and every substitution is reported under the check that rests on
+it, with where the number came from. Three matter most:
 
 - **Capacitor ESR and ESL**, from `package` or a global fallback. Without
   them a capacitor has no self-resonance and a PDN sweep means nothing above
@@ -506,7 +543,8 @@ it are.
 
 Simulation-backed answers are measurements of a *fragment* the tool cut out of
 your design, with rails terminated by ideal sources and unmodellable parts cut
-away at the boundary. The ASSUMPTIONS section says which. A start-up analysis
+away at the boundary. Each check's `ran:` and `assuming:` lines say which. A
+start-up analysis
 has no control loop, no current limit and no dropout; a PDN sweep knows
 nothing about plane capacitance or via inductance. These are stated limits,
 not surprises — but a clean report is evidence, not proof.

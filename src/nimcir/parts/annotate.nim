@@ -47,4 +47,4 @@ proc choiceNotes*(designator: string, ch: Choice): seq[Assumption] =
   ## A policy's `notes` as `Assumption`s, so they surface where every other
   ## invented number does rather than being swallowed by the builder.
   for n in ch.notes:
-    result.add note(designator & ": " & n)
+    result.add note(designator, n)

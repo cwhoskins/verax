@@ -104,6 +104,11 @@ type
     ## Two assertions with the same key can be answered by one run. `nil`
     ## means "the subject names", which is the right default for anything
     ## measured per-net.
+  SetupDocProc* = proc (d: Design, batch: seq[Assertion]): string {.nimcall.}
+    ## What this run actually *is*, in one sentence, given the batch routed
+    ## to it. A proc on the data object for the same reason `run` and
+    ## `setupKey` are: an evaluator registered at runtime must be able to
+    ## describe itself exactly as a built-in does.
 
   Evaluator* = object
     name*: string
@@ -128,6 +133,16 @@ type
       ## them: `overshoot_pct(vdd)` names the rail but not the regulator
       ## driving it, and nothing in a netlist recovers that.
     setupKey*: SetupKeyProc
+    setupDoc*: SetupDocProc
+      ## Renders the run for a reader: `"one .op solve of the whole design"`,
+      ## `"an .ac sweep of net 'vdd', 1 A injected"`.
+      ##
+      ## The setup key exists to *group*, not to be read -- `vdd|100000.0|
+      ## 100000000.0` and `U1|vdda` are correct keys and say nothing about
+      ## what was simulated. A report that names the evaluator and the key is
+      ## naming the machinery; a reader needs to know which analysis produced
+      ## the number they are about to trust, because that is what says what
+      ## the number does and does not cover. `nil` falls back to the key.
     run*: EvalProc
 
   PlanStep* = object
@@ -148,6 +163,17 @@ type
     ## `design.explain` exists to prevent.
     steps*: seq[PlanStep]
     rejected*: seq[Rejection]
+
+proc capLabel*(c: Capability): string =
+  ## Short form, shared by every renderer so one capability never appears
+  ## under two names. `$capSpiceOp` is the enum identifier, which is right in
+  ## a stack trace and wrong in a sentence a designer reads.
+  case c
+  of capStatic: "static"
+  of capSpiceOp: ".op"
+  of capSpiceAc: ".ac"
+  of capSpiceTran: ".tran"
+  of capBench: "bench"
 
 # --- registry ----------------------------------------------------------
 
@@ -348,7 +374,8 @@ proc plan*(d: Design, allowed: set[Capability] = offlineCapabilities): Plan =
     if ev.needs notin allowed:
       result.rejected.add Rejection(assertion: a, status: esNotEvaluated,
         evaluator: ev.name,
-        reason: "requires " & $ev.needs & ", which was not offered")
+        reason: "needs the " & capLabel(ev.needs) &
+                " capability, which was not offered")
       continue
 
     let key = if ev.setupKey != nil: ev.setupKey(d, a) else: defaultKey(a)
@@ -377,6 +404,25 @@ proc explainPlan*(p: Plan): string =
               (if r.assertion.id.len > 0: r.assertion.id else: r.assertion.quantity) &
               " -- " & r.reason
   lines.join("\n")
+
+proc describeStep*(d: Design, s: PlanStep): string =
+  ## What one plan step will run, in the evaluator's own words.
+  ##
+  ## Falls back to the setup key, which is honest rather than helpful: an
+  ## evaluator that has not said what it does is better reported as opaque
+  ## than described by a guess made out here, where nothing knows what the
+  ## key's fields mean.
+  if not evaluatorRegistry.hasKey(s.evaluator): return s.key
+  let ev = evaluatorRegistry[s.evaluator]
+  if ev.setupDoc == nil or s.assertions.len == 0:
+    return (if s.key.len > 0: "setup " & s.key else: "")
+  try:
+    ev.setupDoc(d, s.assertions)
+  except CatchableError:
+    # A third-party evaluator whose description raises must not take down a
+    # report about its own results, exactly as `previewRole` refuses to let a
+    # bad expander make `nimcir roles` unusable.
+    (if s.key.len > 0: "setup " & s.key else: "")
 
 # --- running ------------------------------------------------------------
 
@@ -408,6 +454,27 @@ proc runStep(d: Design, step: PlanStep): seq[AssertionResult] =
       result.add notEvaluated(a, ev.name,
         "evaluator '" & ev.name & "' returned no result for this assertion")
 
+proc runPlan*(d: Design, p: Plan): seq[seq[AssertionResult]] =
+  ## One inner `seq` per plan step, in step order.
+  ##
+  ## `evaluate` flattens this and is what most callers want. Keeping the
+  ## grouping is what lets a report say *which run* produced a number and
+  ## what that run rested on: an assumption is attached to every result in a
+  ## batch, so a flat list of results cannot tell "the op-amp macromodel this
+  ## sweep substituted" from "an assumption that happens to be in the pile".
+  ## Recovering the grouping afterwards is not possible either -- a result
+  ## carries its evaluator's name but not its setup key, and two steps of one
+  ## evaluator are two different runs.
+  for step in p.steps: result.add runStep(d, step)
+
+proc rejectionResults*(p: Plan): seq[AssertionResult] =
+  ## The claims that never reached an evaluator, as results, so a caller
+  ## handles one kind of thing.
+  for rej in p.rejected:
+    result.add AssertionResult(assertion: rej.assertion, status: rej.status,
+                               value: NaN, unit: rej.assertion.unit,
+                               reason: rej.reason, evaluator: rej.evaluator)
+
 proc evaluate*(d: Design, allowed: set[Capability] = offlineCapabilities): seq[AssertionResult] =
   ## Every claim this design makes, checked as far as `allowed` permits.
   ##
@@ -416,12 +483,9 @@ proc evaluate*(d: Design, allowed: set[Capability] = offlineCapabilities): seq[A
   ## `allCapabilities` (and import `nimcir/analysis/contract_eval`) to let the
   ## simulation-backed evaluators run.
   let p = plan(d, allowed)
-  for step in p.steps:
-    for r in runStep(d, step): result.add r
-  for rej in p.rejected:
-    result.add AssertionResult(assertion: rej.assertion, status: rej.status,
-                               value: NaN, unit: rej.assertion.unit,
-                               reason: rej.reason, evaluator: rej.evaluator)
+  for batch in runPlan(d, p):
+    for r in batch: result.add r
+  for r in rejectionResults(p): result.add r
 
 # --- reading the results ------------------------------------------------
 

@@ -105,8 +105,33 @@ suite "readiness":
 
   test "sections appear in priority order":
     let text = render(readiness(bus("100k"), offlineCapabilities))
-    check text.find("PLAN") < text.find("FAILED")
-    check text.find("FAILED") < text.find("ASSUMPTIONS")
+    # Structure first (it undermines every number below it), then the tests
+    # themselves, then the digest of what did not hold -- last, so it is what
+    # is still on screen when the run ends.
+    check text.find("CHECKS") < text.find("FAILED")
+
+  test "an assumption is reported under the test that rests on it":
+    # Pooled at the foot of the report, forty invented values say that
+    # something was assumed *somewhere*, and the reader cannot tell which
+    # number each one moved.
+    let text = render(readiness(bus("2.2k"), offlineCapabilities))
+    check "ASSUMPTIONS" notin text
+    let ass = text.find("assuming")
+    check ass > text.find("CHECKS")
+    # ... inside a check block, above the claims that rest on it.
+    check ass < text.find("rc_corner(net 'sda')")
+
+  test "a claim is rendered as a comparison, both numbers on one line":
+    let text = render(readiness(bus("100k"), offlineCapabilities))
+    var cmpLine = ""
+    for line in text.splitLines():
+      if "expect" in line and "measured" in line: cmpLine = line
+    check cmpLine.len > 0
+    check cmpLine.find("expect") < cmpLine.find("measured")
+
+  test "what each test actually ran is stated in words, not as a setup key":
+    let text = render(readiness(bus("2.2k"), offlineCapabilities))
+    check "ran: a graph walk of net 'sda'" in text
 
   test "the report never carries a simulation curve":
     # `AnalysisReport.raw` holds thousands of points. `AssertionResult` has no
@@ -150,3 +175,91 @@ suite "capabilities":
     let o = parseVerifyArgs(["--something-else", "--strict"])
     check o.strict
     check o.allowed == allCapabilities
+
+suite "checks: one block per test":
+  test "results are grouped by the run that produced them, not by status":
+    let r = readiness(bus("2.2k"), offlineCapabilities)
+    check r.checks.len > 0
+    # Every result accounted for exactly once: the flat list is the checks
+    # followed by whatever reached no test at all.
+    var grouped = 0
+    for c in r.checks: grouped += c.results.len
+    check grouped + r.rejected.len == r.results.len
+    for c in r.checks:
+      check c.results.len > 0
+      check c.evaluator.len > 0
+
+  test "a check carries only the assumptions its own batch rested on":
+    let r = readiness(bus("2.2k"), offlineCapabilities)
+    # `rc_corner` invents a per-pin bus capacitance; `pullup_count` counts
+    # resistors and invents nothing. Pooling them would attribute the
+    # invented number to both.
+    var withAssumption, without: int
+    for c in r.checks:
+      if c.evaluator == "static.rc_corner":
+        check c.assumptions.len == 1
+        check c.assumptions[0].key == "bus_capacitance"
+        inc withAssumption
+      elif c.evaluator == "static.pullup_count":
+        check c.assumptions.len == 0
+        inc without
+    check withAssumption > 0
+    check without > 0
+
+  test "an assumption carries no author-stated value":
+    let r = readiness(bus("2.2k"), offlineCapabilities)
+    for c in r.checks:
+      for a in c.assumptions:
+        check a.source != annAuthored
+
+suite "folding assumptions":
+  test "one line names every part the same assumption was made about":
+    let folded = foldAssumptions(@[
+      assumption("C1", "esr", 0.03, "ohm", annDefaulted, "from package default"),
+      assumption("C2", "esr", 0.03, "ohm", annDefaulted, "from package default"),
+      assumption("C3", "esr", 0.02, "ohm", annDefaulted, "from package default")])
+    check folded.len == 2
+    check folded[0] == "C1, C2: esr 30.0 mohm from package default"
+    check folded[1] == "C3: esr 20.0 mohm from package default"
+
+  test "a differing magnitude is a different assumption, not a fold":
+    let folded = foldAssumptions(@[
+      assumption("C1", "esl", 6.0e-10, "H", annDefaulted, "0402"),
+      assumption("C2", "esl", 8.0e-10, "H", annDefaulted, "0603")])
+    check folded.len == 2
+
+  test "a narrative note folds too, when it names a part":
+    # `note` has no key and no magnitude, and its detail is a whole sentence.
+    # Folding still applies -- four capacitors derated identically are one
+    # statement about four parts.
+    let folded = foldAssumptions(@[
+      note("C1", "derates to 65% of nominal"),
+      note("C2", "derates to 65% of nominal"),
+      note("no ground reference was found")])
+    check folded.len == 2
+    check folded[0] == "C1, C2: derates to 65% of nominal"
+    check folded[1] == "no ground reference was found"
+
+suite "a claim as a comparison":
+  test "a frequency band is stated as one, not as its condition keys":
+    var a = mkAssertion("z_max_in_band", @[Subject(kind: skNet, name: "vdd")],
+                        expectMax(0.2), "ohm", id = "Z")
+    a.condition["f_from"] = "1.0e5"
+    a.condition["f_to"] = "1.0e8"
+    check conditionText(a) == "over 100 kHz .. 100 MHz"
+
+  test "an unknown condition key is passed through rather than dropped":
+    var a = mkAssertion("q", @[Subject(kind: skNet, name: "n")],
+                        expectMax(1.0), "", id = "Q")
+    a.condition["phase_of_moon"] = "gibbous"
+    check "phase_of_moon" in conditionText(a)
+
+  test "a tolerance is spelled out as the interval it accepts":
+    let a = mkAssertion("dc_voltage", @[Subject(kind: skNet, name: "vdd")],
+                        expectEq(3.3.V, 5.pct), "V", id = "V")
+    check acceptance(a) == "3.13 V .. 3.46 V"
+
+  test "a target with no tolerance says the number once":
+    let a = mkAssertion("n", @[Subject(kind: skNet, name: "sda")],
+                        expectEq(1.0, 0.pct), "", id = "N")
+    check acceptance(a) == ""

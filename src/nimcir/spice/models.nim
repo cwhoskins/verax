@@ -220,7 +220,7 @@ proc derateCapacitor(cap: Component, d: DeratingDefaults,
   cap.attrs["derating.applied"] = "true"
 
   if not stated.has:
-    result.add note(cap.designator & ": dielectric assumed " &
+    result.add note(cap.designator, "dielectric assumed " &
       d.assumeDielectric & " for a ceramic that states none. C0G/NP0 does " &
       "not bias-derate at all, so stating it is the difference between " &
       eng(nominal, "F") & " and " & eng(nominal * frac, "F") & " here")
@@ -229,7 +229,7 @@ proc derateCapacitor(cap: Component, d: DeratingDefaults,
       annDefaulted,
       "assumed as " & $d.assumeRatingFactor & "x the " & eng(working, "V") &
       " across the part")
-  result.add note(cap.designator & ": " & eng(nominal, "F") & " derates to " &
+  result.add note(cap.designator, eng(nominal, "F") & " derates to " &
     eng(nominal * frac, "F") & " (" & $int(frac * 100.0) & "% of nominal) at " &
     eng(working, "V") & " on a " & dielectric & " part rated " &
     eng(rated, "V") & "; DC-bias loss depends more on case size than on the " &

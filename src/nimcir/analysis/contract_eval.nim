@@ -161,6 +161,15 @@ proc opKey(d: Design, a: Assertion): string = ""
   ## `dc_voltage` assertion shares a step no matter which net it names. This
   ## is the harvest model at its most visible: N assertions, one simulation.
 
+proc opDoc(d: Design, batch: seq[Assertion]): string =
+  var nets: seq[string]
+  for a in batch:
+    let n = subjectNet(d, a)
+    if n.len > 0 and n notin nets: nets.add n
+  result = "one `.op` solve of the whole design -- not isolated, so each " &
+           "rail has to solve for itself rather than be told what it is"
+  if nets.len > 0: result &= ". Reading net " & nets.join(", ")
+
 proc runDcVoltage(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
   ## **Deliberately does not use `spice/isolate`**, unlike every other
   ## analysis in this submodule.
@@ -219,6 +228,16 @@ proc pdnKey(d: Design, a: Assertion): string =
   subjectNet(d, a) & "|" & $conditionFloat(a, "f_from", 0.0) &
                      "|" & $conditionFloat(a, "f_to", 0.0)
 
+proc pdnDoc(d: Design, batch: seq[Assertion]): string =
+  let rail = subjectNet(d, batch[0])
+  let spec = defaultPdnSpec()
+  let fFrom = conditionFloat(batch[0], "f_from", spec.targetFrom)
+  let fTo = conditionFloat(batch[0], "f_to", spec.targetTo)
+  "`.ac` sweep of net '" & rail & "' with 1 A injected, so the node voltage " &
+  "*is* the impedance. Everything on the rail is isolated and the supply " &
+  "cut away -- an ideal source is a dead short at AC and would read 0 ohm " &
+  "everywhere. Judged over " & eng(fFrom, "Hz") & " .. " & eng(fTo, "Hz")
+
 proc runPdn(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
   const name = "spice.pdn"
   let rail = subjectNet(d, batch[0])
@@ -252,6 +271,11 @@ proc deratingKey(d: Design, a: Assertion): string = subjectNet(d, a)
   ## which answers every net from a single run, this reduces to a *worst*
   ## over a filtered set of parts -- so one run cannot serve two subjects
   ## without returning two answers.
+
+proc deratingDoc(d: Design, batch: seq[Assertion]): string =
+  "the shared `.op`, read back as the DC actually across every part " &
+  "touching net '" & subjectNet(d, batch[0]) &
+  "', compared with the rating each part states"
 
 proc runDerating(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
   const name = "spice.derating"
@@ -289,6 +313,23 @@ proc measurementOnly(spec: var StartupSpec) =
 
 proc startupKey(d: Design, a: Assertion): string =
   bindingName(d, a, "regulator") & "|" & subjectNet(d, a)
+
+proc startupDoc(d: Design, batch: seq[Assertion]): string =
+  let a0 = batch[0]
+  let regulator = bindingName(d, a0, "regulator")
+  let measured = subjectNet(d, a0)
+  let outputNet = bindingName(d, a0, "output")
+  let driven = if outputNet.len > 0: outputNet else: measured
+  if regulator.len == 0:
+    return "a `.tran` from power-on -- but no `regulator` part is bound, so " &
+           "nothing says what drives the rail"
+  result = "`.tran` from power-on with " & regulator &
+           " stood up as an ideal source following an assumed soft-start " &
+           "ramp into net '" & driven & "'"
+  if measured.len > 0 and measured != driven:
+    result &= ", measured at net '" & measured &
+              "' on the far side of the filter"
+  result &= ". No control loop, current limit or dropout is modelled"
 
 proc runStartup(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
   const name = "spice.startup"
@@ -366,6 +407,20 @@ proc opampSetup(d: Design, a: Assertion): tuple[amp, inp, outp, reason: string] 
     return ("", "", "", "no output net to measure")
   (amp, inp, outp, "")
 
+proc opampDoc(d: Design, batch: seq[Assertion], loop: bool): string =
+  let (amp, inp, outp, reason) = opampSetup(d, batch[0])
+  if reason.len > 0: return "nothing ran: " & reason
+  if loop:
+    result = "`.ac` sweep with the loop around " & amp & " broken at its " &
+             "inverting input, giving T = -V(A)/V(B) -- a real phase margin " &
+             "rather than one read off the closed-loop curve"
+  else:
+    result = "`.ac` sweep of the closed-loop response of the stage around " &
+             amp & ", driven at net '" & inp & "' and measured at net '" &
+             outp & "'"
+  let atF = conditionFloat(batch[0], "at_f", 0.0)
+  if atF > 0.0: result &= ", with gain also read at " & eng(atF, "Hz")
+
 proc runOpAmpKind(d: Design, batch: seq[Assertion], name: string,
                   loop: bool): seq[AssertionResult] =
   let (amp, inp, outp, reason) = opampSetup(d, batch[0])
@@ -391,6 +446,17 @@ proc largeSignalKey(d: Design, a: Assertion): string =
   # two amplitudes are two runs.
   opampKey(d, a) & "|" & $conditionFloat(a, "drive_v", 0.0) &
                    "|" & $conditionFloat(a, "drive_f", 0.0)
+
+proc largeSignalDoc(d: Design, batch: seq[Assertion]): string =
+  let (amp, inp, outp, reason) = opampSetup(d, batch[0])
+  if reason.len > 0: return "nothing ran: " & reason
+  let v = conditionFloat(batch[0], "drive_v", 0.0)
+  let f = conditionFloat(batch[0], "drive_f", 1.0e3)
+  "`.tran` driving " & eng(v, "V") & " at " & eng(f, "Hz") & " into net '" &
+  inp & "' through " & amp & ", measured at net '" & outp &
+  "'. The stimulus carries the node's own DC bias, so a single-supply stage " &
+  "is measured where it actually sits. The macromodel has no slew or " &
+  "current limit, so any distortion here is the network's, not the part's"
 
 proc runLargeSignal(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
   const name = "spice.large_signal"
@@ -424,6 +490,12 @@ proc runOpAmpResponse(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
 proc runLoopGain(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
   runOpAmpKind(d, batch, "spice.loop_gain", loop = true)
 
+proc responseDoc(d: Design, batch: seq[Assertion]): string =
+  opampDoc(d, batch, loop = false)
+
+proc loopGainDoc(d: Design, batch: seq[Assertion]): string =
+  opampDoc(d, batch, loop = true)
+
 # --- registration -------------------------------------------------------
 
 proc registerSimulatedEvaluators*() =
@@ -432,40 +504,40 @@ proc registerSimulatedEvaluators*() =
   registerEvaluator(Evaluator(
     name: "spice.dc_voltage", produces: @dcVoltageQuantities,
     needs: capSpiceOp, arity: 1 .. 1, subjectKinds: {skNet},
-    setupKey: opKey, run: runDcVoltage))
+    setupKey: opKey, setupDoc: opDoc, run: runDcVoltage))
 
   registerEvaluator(Evaluator(
     name: "spice.derating", produces: @deratingQuantities,
     needs: capSpiceOp, arity: 1 .. 1, subjectKinds: {skNet},
-    setupKey: deratingKey, run: runDerating))
+    setupKey: deratingKey, setupDoc: deratingDoc, run: runDerating))
 
   registerEvaluator(Evaluator(
     name: "spice.pdn", produces: @pdnQuantities,
     needs: capSpiceAc, arity: 1 .. 1, subjectKinds: {skNet},
-    setupKey: pdnKey, run: runPdn))
+    setupKey: pdnKey, setupDoc: pdnDoc, run: runPdn))
 
   registerEvaluator(Evaluator(
     name: "spice.startup", produces: @startupQuantities,
     needs: capSpiceTran, arity: 1 .. 1, subjectKinds: {skNet},
     binds: @["regulator", "output"],
-    setupKey: startupKey, run: runStartup))
+    setupKey: startupKey, setupDoc: startupDoc, run: runStartup))
 
   registerEvaluator(Evaluator(
     name: "spice.opamp_response", produces: @responseQuantities,
     needs: capSpiceAc, arity: 1 .. 1, subjectKinds: {skNet, skComponent},
     binds: @["opamp", "input"],
-    setupKey: opampKey, run: runOpAmpResponse))
+    setupKey: opampKey, setupDoc: responseDoc, run: runOpAmpResponse))
 
   registerEvaluator(Evaluator(
     name: "spice.large_signal", produces: @largeSignalQuantities,
     needs: capSpiceTran, arity: 1 .. 1, subjectKinds: {skNet, skComponent},
     binds: @["opamp", "input"],
-    setupKey: largeSignalKey, run: runLargeSignal))
+    setupKey: largeSignalKey, setupDoc: largeSignalDoc, run: runLargeSignal))
 
   registerEvaluator(Evaluator(
     name: "spice.loop_gain", produces: @loopQuantities,
     needs: capSpiceAc, arity: 1 .. 1, subjectKinds: {skNet, skComponent},
     binds: @["opamp", "input"],
-    setupKey: opampKey, run: runLoopGain))
+    setupKey: opampKey, setupDoc: loopGainDoc, run: runLoopGain))
 
 registerSimulatedEvaluators()

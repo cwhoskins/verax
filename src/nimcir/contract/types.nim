@@ -15,7 +15,7 @@
 ## keeps the coupling honest: a quantity nothing can produce is a claim
 ## nobody can check, and that shows up immediately rather than at report time.
 
-import std/[math, strutils, tables]
+import std/[math, sets, strutils, tables]
 import ../netlist/issue
 import ../netlist/annotations
 import ../eng
@@ -146,3 +146,67 @@ proc `$`*(a: Assertion): string =
   result = describe(a)
   if a.id.len > 0:
     result = a.id & ": " & result
+
+# --- saying a claim out loud ---------------------------------------------
+#
+# `describe` above is the compact one-line form, right for a list. A report
+# that means to be read instead of scanned needs the same claim broken into
+# its parts -- what is measured, under what circumstances, and what interval
+# would be accepted -- because that is what a reader checks a measurement
+# against. Rendering them separately rather than adding a longer `describe`
+# keeps each piece placeable: a table wants them in columns, a paragraph
+# wants them in a sentence.
+
+const conditionUnits = {
+  "f_from": "Hz", "f_to": "Hz", "at_f": "Hz", "drive_f": "Hz",
+  "at_t": "s", "settle_t": "s",
+  "drive_v": "V", "temp": "degC"
+}.toTable
+
+proc conditionText*(a: Assertion): string =
+  ## The circumstances the claim is made under, in words.
+  ##
+  ## `condition` is the only channel an assertion has for a frequency band, a
+  ## drive level or an instant, and stored as raw `key=value` pairs it reads
+  ## as machinery -- `[f_from=100k, f_to=100M]` states a band without saying
+  ## it is one. A limit whose band is not obvious is a limit nobody checks
+  ## against the right part of the curve.
+  if a.condition.len == 0: return ""
+  var parts: seq[string]
+  var used: HashSet[string]
+
+  proc num(key: string): string =
+    eng(parseFloat(a.condition[key]), conditionUnits.getOrDefault(key, ""))
+
+  if a.condition.hasKey("f_from") and a.condition.hasKey("f_to"):
+    parts.add "over " & num("f_from") & " .. " & num("f_to")
+    used.incl "f_from"
+    used.incl "f_to"
+  if a.condition.hasKey("drive_v") and a.condition.hasKey("drive_f"):
+    parts.add "driven at " & num("drive_v") & ", " & num("drive_f")
+    used.incl "drive_v"
+    used.incl "drive_f"
+
+  for k, v in a.condition:
+    if k in used: continue
+    case k
+    of "at_f": parts.add "at " & num(k)
+    of "at_t": parts.add "at t = " & num(k)
+    of "temp": parts.add "at " & num(k)
+    else: parts.add k & " = " & prettyValue(v)
+  parts.join(", ")
+
+proc acceptance*(a: Assertion): string =
+  ## The accepted interval as two plain numbers, or "" when the compact form
+  ## already is one.
+  ##
+  ## Only `ekNominal` gets one: a target with a tolerance is the one shape
+  ## whose limits a reader has to compute before they can compare a
+  ## measurement against them, and `3.30 V +-2.00%` next to `measured 3.37 V`
+  ## is a comparison nobody should be doing in their head.
+  if a.expect.kind != ekNominal: return ""
+  let (lo, hi) = a.expect.bounds
+  # A target with no tolerance is already two identical numbers; printing
+  # `1.00 (1.00 .. 1.00)` says the same thing three times.
+  if lo == hi: return ""
+  eng(lo, a.unit) & " .. " & eng(hi, a.unit)

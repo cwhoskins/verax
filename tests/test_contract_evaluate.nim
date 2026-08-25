@@ -209,7 +209,9 @@ test "an evaluator whose capability was not offered is not *evaluated*":
     require test_value(a) == 42.0.V, id = "X"
   let rs = evaluate(d, {capSpiceOp})   # capStatic deliberately withheld
   check resultFor(rs, "X").status == esNotEvaluated
-  check "capStatic" in resultFor(rs, "X").reason
+  # Named by the label a designer reads (`static`, `.op`), not by the enum
+  # identifier -- the two must not drift, which is why `capLabel` is one proc.
+  check "the static capability" in resultFor(rs, "X").reason
 
 # --- planning ------------------------------------------------------------
 
@@ -334,3 +336,63 @@ test "the sink current is declined, not guessed, without a rail voltage":
   let r = resultFor(evaluate(d), "i2c0.sda.sink_current")
   check r.status == esNotEvaluable
   check "voltage" in r.reason
+
+# --- describing a run, and running it in batches -------------------------
+
+proc raisingDoc(d: Design, batch: seq[Assertion]): string =
+  raise newException(ValueError, "a third-party evaluator misbehaving")
+
+registerEvaluator(Evaluator(
+  name: "test.described", produces: @["test_described"], needs: capStatic,
+  arity: 1 .. 1, subjectKinds: {skNet}, setupKey: fixedKey,
+  setupDoc: proc (d: Design, batch: seq[Assertion]): string {.nimcall.} =
+    "a made-up walk over " & $batch.len & " claim(s)",
+  run: runFixed))
+
+registerEvaluator(Evaluator(
+  name: "test.badDoc", produces: @["test_bad_doc"], needs: capStatic,
+  arity: 1 .. 1, subjectKinds: {skNet}, setupKey: fixedKey,
+  setupDoc: raisingDoc, run: runFixed))
+
+test "an evaluator says in words what its run is":
+  let d = design("described"):
+    net a, kind = ntSignal
+    require test_described(a) == 42.0.V, id = "D"
+  let p = plan(d, {capStatic})
+  check describeStep(d, p.steps[0]) == "a made-up walk over 1 claim(s)"
+
+test "an evaluator that describes nothing falls back to its setup key":
+  # Honest rather than helpful: out here nothing knows what the key's fields
+  # mean, so a guess would be worse than saying the run is opaque.
+  let d = design("undescribed"):
+    net a, kind = ntSignal
+    require test_value(a) == 42.0.V, id = "U"
+  let p = plan(d, {capStatic})
+  check describeStep(d, p.steps[0]) == "setup shared"
+
+test "a description that raises does not take down the report":
+  # The same rule `previewRole` applies to a bad role expander: one broken
+  # third-party evaluator must not make the run unreadable.
+  let d = design("bad"):
+    net a, kind = ntSignal
+    require test_bad_doc(a) == 42.0.V, id = "B"
+  let p = plan(d, {capStatic})
+  check describeStep(d, p.steps[0]) == "setup shared"
+
+test "running the plan keeps the batches the planner grouped":
+  let d = statusBoard()
+  let p = plan(d, {capStatic})
+  let batches = runPlan(d, p)
+  check batches.len == p.steps.len
+  for i, b in batches:
+    check b.len == p.steps[i].assertions.len
+  # And flattening it is exactly what `evaluate` returns, so nothing that
+  # reads a whole run has to know the grouping exists.
+  var flat: seq[AssertionResult]
+  for b in batches: flat.add b
+  for r in rejectionResults(p): flat.add r
+  let direct = evaluate(d, {capStatic})
+  check flat.len == direct.len
+  for i in 0 ..< flat.len:
+    check flat[i].assertion.id == direct[i].assertion.id
+    check flat[i].status == direct[i].status

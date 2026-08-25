@@ -27,10 +27,28 @@
 ## `NOT CHECKED` section: an assertion nobody evaluated is not a passing
 ## assertion, and a contract layer whose silence reads as approval is the
 ## failure mode the whole layer exists to prevent.
+##
+## **The body is one block per *test*.** A test is one analysis run -- a plan
+## step, seen after it has run -- and it is the grouping the whole layer is
+## built around, because an evaluator is handed a *batch* and one simulation
+## answers every claim in it. Reported as a flat list of results instead,
+## three things a reader needs together are lost: which claims came out of
+## one run, what that run actually was, and which invented values it rested
+## on. The last is the sharpest. An assumption is attached to every result in
+## its batch, so pooling them at the foot of the report says forty numbers
+## were assumed *somewhere* and leaves the reader to work out which
+## measurement each one moved -- which is the only question worth asking
+## about an assumption.
+##
+## So `readiness` runs the plan through `runPlan` rather than `evaluate`: the
+## grouping cannot be recovered afterwards, since a result carries its
+## evaluator's name but not its setup key, and two steps of one evaluator are
+## two different runs of it.
 
 import std/[algorithm, editdistance, os, osproc, sets, strutils, tables,
             wordwrap]
 
+import ./eng
 import ./netlist/annotations
 import ./netlist/environment
 import ./analysis/io_check
@@ -39,6 +57,32 @@ import ./analysis/contract_eval
 export contract_eval, io_check, environment
 
 type
+  Check* = object
+    ## One *test*: a single analysis run, everything it rests on, and every
+    ## claim it answered.
+    ##
+    ## A plan step and a `Check` are the same grouping seen before and after
+    ## running -- which is the grouping that matters, because an evaluator is
+    ## handed a *batch* and one run answers every claim in it. Reported as a
+    ## flat list of results instead, three facts are lost that a reader needs
+    ## together: which claims came out of one simulation (so a single wrong
+    ## setup explains all of them at once), what that simulation was, and
+    ## which invented values it rested on. The last is the sharpest: an
+    ## assumption is attached to every result in its batch, so a pooled list
+    ## at the foot of a report says forty things were assumed *somewhere* and
+    ## leaves the reader to work out which number each one moved.
+    evaluator*: string
+    needs*: Capability
+    key*: string
+      ## The setup key that grouped this batch. Machinery, kept for a caller
+      ## that wants to correlate two runs; `setup` is what a person reads.
+    setup*: string
+      ## What actually ran, in the evaluator's own words.
+    results*: seq[AssertionResult]
+    assumptions*: seq[Assumption]
+      ## Deduplicated across this batch, and only what nobody stated --
+      ## `annAuthored` values are the design speaking, not the tool.
+
   Readiness* = object
     ## Everything one run of a design's contract found out.
     design*: string
@@ -66,7 +110,18 @@ type
       ## What was going to run, kept even after running: the count of analysis
       ## steps against the count of assertions is the cheapest evidence that
       ## claims are being batched rather than re-simulated one by one.
+    checks*: seq[Check]
+      ## The same steps, with what each one produced. One per plan step, in
+      ## plan order.
+    rejected*: seq[AssertionResult]
+      ## Claims no step could take: nothing produces the quantity, the
+      ## subjects are the wrong shape, or the capability was withheld. Kept
+      ## apart from `checks` because no test ran for them -- filing them
+      ## under one would say a run happened that did not.
     results*: seq[AssertionResult]
+      ## Every result flat, `checks` then `rejected`, in the order
+      ## `evaluate` would have produced them. Kept so everything that reads a
+      ## whole run -- `summary`, `failed`, `invented` -- goes on working.
 
 const
   exitClean* = 0
@@ -197,8 +252,31 @@ proc readiness*(d: Design, allowed = allCapabilities): Readiness =
   # checks. Clearing it here is what makes that rule safe: within this call
   # the design does not change, and every entry into it starts clean.
   clearSharedOperatingPoint()
-  result.results = evaluate(d, usable)
+  let batches = runPlan(d, result.plan)
   clearSharedOperatingPoint()
+
+  # Run through the plan rather than calling `evaluate`, which flattens the
+  # batches away. The grouping cannot be recovered afterwards: a result
+  # carries its evaluator's name but not its setup key, and two steps of one
+  # evaluator -- a PDN sweep of two rails, a start-up of two regulators --
+  # are two separate runs resting on two separate sets of assumptions.
+  for i, step in result.plan.steps:
+    var c = Check(evaluator: step.evaluator, needs: step.needs, key: step.key,
+                  setup: describeStep(d, step), results: batches[i])
+    var seen = initHashSet[string]()
+    for r in c.results:
+      for a in r.assumptions:
+        if a.source == annAuthored: continue
+        let text = $a
+        if text in seen: continue
+        seen.incl text
+        c.assumptions.add a
+    result.checks.add c
+    for r in batches[i]: result.results.add r
+
+  result.rejected = rejectionResults(result.plan)
+  for r in result.rejected: result.results.add r
+
   for i in claimLint(result.results): result.structural.add i
 
 proc missing*(r: Readiness): set[Capability] {.inline.} =
@@ -232,16 +310,6 @@ proc exitLabel*(code: int): string =
   else: "unknown"
 
 # --- rendering -----------------------------------------------------------
-
-proc capLabel*(c: Capability): string =
-  ## Short form, shared by the report and the CLI so one capability never
-  ## appears under two names.
-  case c
-  of capStatic: "static"
-  of capSpiceOp: ".op"
-  of capSpiceAc: ".ac"
-  of capSpiceTran: ".tran"
-  of capBench: "bench"
 
 proc capList(s: set[Capability]): string =
   var parts: seq[string]
@@ -278,13 +346,108 @@ proc indented(text: string, prefix: string, hang = "",
     result.add (if first: prefix else: cont) & line
     first = false
 
+proc foldAssumptions*(assumptions: seq[Assumption]): seq[string] =
+  ## One line per *distinct* assumption, naming every part it was made about.
+  ##
+  ## Producers emit one record per component, which is right -- a consumer
+  ## that wants to count them, or ask which parts a package default touched,
+  ## needs them separate. Printed one per line it is mostly repetition: a
+  ## four-capacitor bank contributes twelve lines that say the same three
+  ## things, and the reader who skims past them is skimming past the two
+  ## lines that were about something else. Folding on `(key, value, unit,
+  ## detail)` loses nothing -- every entity is still named -- and it is the
+  ## difference between a list worth reading and a wall.
+  var order: seq[string]
+  var entities = initTable[string, seq[string]]()
+  var first = initTable[string, Assumption]()
+  for a in assumptions:
+    let sig = a.key & "\x1f" & $a.value & "\x1f" & a.unit & "\x1f" & a.detail
+    if sig notin entities:
+      order.add sig
+      entities[sig] = @[]
+      first[sig] = a
+    if a.entity.len > 0 and a.entity notin entities[sig]:
+      entities[sig].add a.entity
+  for sig in order:
+    let a = first[sig]
+    # A narrative assumption has no key and no magnitude -- "these parts were
+    # cut at the boundary" is a real thing a result rests on -- and its
+    # `detail` is already a whole sentence. It still folds, when it names a
+    # part.
+    var body = a.detail
+    if a.key.len > 0:
+      body = a.key & " " & eng(a.value, a.unit) &
+             (if a.detail.len > 0: " " & a.detail else: "")
+    result.add (if entities[sig].len == 0: body
+                else: entities[sig].join(", ") & ": " & body)
+
+proc statusMark(st: EvalStatus): string =
+  ## Four characters, fixed width, so a column of verdicts is scannable.
+  ## `----` and `????` rather than words for the two negative statuses: they
+  ## are the same marks `$AssertionResult` already uses, and they read as
+  ## *absence* rather than as a third and fourth kind of verdict.
+  case st
+  of esPass: "PASS"
+  of esFail: "FAIL"
+  of esNotEvaluated: "----"
+  of esNotEvaluable: "????"
+
+proc renderClaim(L: var seq[string], r: AssertionResult, indent: string,
+                 verbose: bool) =
+  ## One claim as *a comparison*: what was expected, what came back.
+  ##
+  ## The two numbers go on one line together because that is the act a reader
+  ## performs, and separating them across a `describe` line and a `reason`
+  ## line -- which is what the status sections do -- makes them something to
+  ## be reassembled. The band or drive level comes first, on the heading
+  ## line, since a limit read against the wrong part of a curve is not a
+  ## check at all.
+  var head = indent & "[" & statusMark(r.status) & "]  " & label(r.assertion)
+  var subj: seq[string]
+  for sub in r.assertion.subjects: subj.add $sub
+  head &= "   " & r.assertion.quantity & "(" & subj.join(", ") & ")"
+  let conds = conditionText(r.assertion)
+  if conds.len > 0: head &= "   " & conds
+  L.add head
+
+  let deep = indent & "         "
+  var cmpLine = "expect " & `$`(r.assertion.expect, r.assertion.unit)
+  let interval = acceptance(r.assertion)
+  if interval.len > 0: cmpLine &= " (" & interval & ")"
+  case r.status
+  of esPass, esFail:
+    cmpLine &= "   measured " & eng(r.value, r.unit)
+    # `reason` carries more than the bare number when the measurement was
+    # taken somewhere the subject does not name -- `inrush_peak` is read on
+    # the rail being charged, not on the net the claim judges.
+    let at = r.reason.find(" at ")
+    if at >= 0: cmpLine &= r.reason[at .. ^1]
+  of esNotEvaluated, esNotEvaluable:
+    cmpLine &= "   not measured"
+  for line in indented(cmpLine, deep, deep & "  "): L.add line
+
+  if r.status in {esNotEvaluated, esNotEvaluable} and r.reason.len > 0:
+    for line in indented(r.reason, deep, deep & "  "): L.add line
+
+  # The most valuable field on an assertion, and until now printed nowhere:
+  # a limit whose reason is lost is the limit that gets relaxed the first
+  # time it fails. Shown wherever the reader is deciding what to do about
+  # the claim -- always when it did not pass, on request when it did.
+  if r.assertion.rationale.len > 0 and (verbose or r.status != esPass):
+    for line in indented("because " & r.assertion.rationale, deep,
+                         deep & "  "): L.add line
+
 proc renderResult(L: var seq[string], r: AssertionResult,
-                  seenIssues: var HashSet[string], tag = "",
-                  showIssues = true) =
-  L.add "  " & (if tag.len > 0: tag & " " else: "") & label(r.assertion) &
-        "  --  " & describe(r.assertion)
-  if r.reason.len > 0:
-    for line in indented(r.reason, "      "): L.add line
+                  seenIssues: var HashSet[string]) =
+  ## One claim in a status section: the same comparison the check block
+  ## printed, plus the diagnosis.
+  ##
+  ## Rendered through `renderClaim` rather than through `describe` so a
+  ## failure and the check it came out of read the same -- a band spelled
+  ## `over 100 kHz .. 100 MHz` in one place and `[f_from=100k, f_to=100M]` in
+  ## the other is two spellings of one claim, and the reader has to work out
+  ## that they are the same limit.
+  renderClaim(L, r, "  ", verbose = true)
 
   # An analysis that could not answer usually knows *why*, and says so in an
   # `Issue` rather than in `reason` -- which is a short, generic sentence
@@ -298,12 +461,64 @@ proc renderResult(L: var seq[string], r: AssertionResult,
   # De-duplicated across the whole report, because evaluation is *batched*:
   # one loop-gain run answers every claim in its batch, so its issues ride
   # on all of them and would otherwise print once per claim.
-  if not showIssues: return
   for i in r.issues:
     if i.message in seenIssues: continue
     seenIssues.incl i.message
-    L.add "      [" & sevLabel(i.severity) & "] " & i.kind
-    for line in indented(i.message, "        "): L.add line
+    L.add "           [" & sevLabel(i.severity) & "] " & i.kind
+    for line in indented(i.message, "             "): L.add line
+
+proc renderChecks(L: var seq[string], r: Readiness, verbose: bool) =
+  ## The body of the report: one block per test.
+  var walks, sims = 0
+  for c in r.checks:
+    if c.needs == capStatic: inc walks else: inc sims
+
+  var assumed = initHashSet[string]()
+  for a in invented(r.results): assumed.incl $a
+
+  var head = "CHECKS  " & $r.checks.len & " test(s)"
+  if r.checks.len > 0:
+    head &= " -- " & $walks & " graph walk(s), " & $sims & " simulation run(s)"
+  head &= ", " & $assertionCount(r.plan) & " claim(s)"
+  if assumed.len > 0: head &= ", " & $assumed.len & " assumed value(s)"
+  L.add head
+  if r.checks.len > 0:
+    L.add "        [PASS] met   [FAIL] missed   " &
+          "[----] no result came back   [????] nothing could check it"
+
+  for c in r.checks:
+    var tally: array[EvalStatus, int]
+    for res in c.results: inc tally[res.status]
+    var counts: seq[string]
+    if tally[esPass] > 0: counts.add $tally[esPass] & " met"
+    if tally[esFail] > 0: counts.add $tally[esFail] & " missed"
+    if tally[esNotEvaluated] > 0: counts.add $tally[esNotEvaluated] & " no result"
+    if tally[esNotEvaluable] > 0: counts.add $tally[esNotEvaluable] & " uncheckable"
+
+    L.add ""
+    L.add "  " & c.evaluator & "  [" & capLabel(c.needs) & "]  --  " &
+          $c.results.len & " claim(s): " & counts.join(", ")
+    if c.setup.len > 0:
+      for line in indented("ran: " & c.setup, "    ", "         "): L.add line
+
+    # Under the run that rests on them, never pooled at the foot of the
+    # report. Which number an invented value moved is the whole question, and
+    # a single list answers it for none of them.
+    if c.assumptions.len > 0:
+      L.add "    assuming " & $c.assumptions.len & " value(s) nobody stated:"
+      for text in foldAssumptions(c.assumptions):
+        for line in indented(text, "      - ", "        "): L.add line
+
+    for res in c.results: renderClaim(L, res, "    ", verbose)
+
+  # The claims no step could take are *not* listed again here. They are the
+  # whole content of `NOT CHECKED`, which prints the same comparison plus the
+  # spelling hint, and a report that says the identical thing twice teaches
+  # the reader to skip one of the two places.
+  if r.rejected.len > 0:
+    L.add ""
+    L.add "  " & $r.rejected.len & " further claim(s) reached no test at all" &
+          " -- see NOT CHECKED below"
 
 proc render*(r: Readiness, verbose = false): string =
   ## The whole finding, ordered so the actionable part cannot be missed.
@@ -339,21 +554,7 @@ proc render*(r: Readiness, verbose = false): string =
       for line in indented(i.message, "      "): L.add line
 
   L.add ""
-  var walks, sims = 0
-  for s in r.plan.steps:
-    if s.needs == capStatic: inc walks else: inc sims
-  L.add "PLAN  " & $assertionCount(r.plan) & " claim(s) via " &
-        $walks & " graph walk(s) and " & $sims & " simulation run(s)"
-  if verbose:
-    for line in explainPlan(r.plan).splitLines()[1 .. ^1]: L.add line
-  else:
-    var w = 0
-    for s in r.plan.steps: w = max(w, s.evaluator.len)
-    for s in r.plan.steps:
-      L.add "  " & s.evaluator.alignLeft(w + 2) &
-            "[" & capLabel(s.needs) & "]" &
-            (if s.key.len > 0: "  on " & s.key else: "") &
-            "  -- " & $s.assertions.len
+  renderChecks(L, r, verbose)
 
   let bad = failed(r.results)
   if bad.len > 0:
@@ -366,36 +567,14 @@ proc render*(r: Readiness, verbose = false): string =
     L.add ""
     L.add "NOT CHECKED  " & $open.len & "   <- nothing verified these claims"
     for res in open:
-      let tag = if res.status == esNotEvaluable: "[not evaluable]"
-                else: "[not evaluated]"
-      renderResult(L, res, seenIssues, tag)
+      renderResult(L, res, seenIssues)
       if res.status == esNotEvaluable and
          res.reason.startsWith("no evaluator produces"):
         let near = didYouMean(res.assertion.quantity)
         if near.len > 0:
-          L.add "      did you mean: " & near.join(", ") & "?"
+          L.add "           did you mean: " & near.join(", ") & "?"
         else:
-          L.add "      run `nimcir quantities` for what can be measured"
-
-  if verbose:
-    var good: seq[AssertionResult]
-    for res in r.results:
-      if res.status == esPass: good.add res
-    if good.len > 0:
-      L.add ""
-      L.add "PASSED  " & $good.len
-      # A passing claim's issues are noise: it passed.
-      for res in good: renderResult(L, res, seenIssues, showIssues = false)
-
-  var seen: seq[string]
-  for a in invented(r.results):
-    let text = $a
-    if text notin seen: seen.add text
-  if seen.len > 0:
-    L.add ""
-    L.add "ASSUMPTIONS  " & $seen.len & " value(s) nobody stated"
-    for text in seen:
-      for line in indented(text, "  ", "      "): L.add line
+          L.add "           run `nimcir quantities` for what can be measured"
 
   L.add ""
   if r.results.len == 0:

@@ -247,6 +247,32 @@ proc runControllerCount(d: Design, batch: seq[Assertion]): seq[AssertionResult] 
       continue
     result.add verdict(a, float(controllers.len), "", "static.controller_count")
 
+# --- what each walk is ---------------------------------------------------
+
+proc netOf(a: Assertion): string =
+  for sub in a.subjects:
+    if sub.kind == skNet: return sub.name
+  "the design"
+
+proc pullupCountDoc(d: Design, batch: seq[Assertion]): string =
+  "a graph walk of net '" & netOf(batch[0]) &
+  "', counting resistors that reach a rail from it"
+
+proc rcCornerDoc(d: Design, batch: seq[Assertion]): string =
+  "a graph walk of net '" & netOf(batch[0]) &
+  "': the parallel pull-up resistance against an *invented* per-pin bus " &
+  "capacitance, since a netlist carries neither trace nor pin capacitance"
+
+proc sinkCurrentDoc(d: Design, batch: seq[Assertion]): string =
+  "a graph walk of net '" & netOf(batch[0]) &
+  "': the rail voltage divided by the parallel pull-up resistance, which is " &
+  "what a device holding the line low has to sink"
+
+proc controllerCountDoc(d: Design, batch: seq[Assertion]): string =
+  "a graph walk of net '" & netOf(batch[0]) &
+  "', counting the parts the role named as controllers -- nothing in a " &
+  "netlist tells a controller from a target, since both have an inout pin"
+
 # --- registration -------------------------------------------------------
 
 proc registerStaticEvaluators*() =
@@ -258,6 +284,7 @@ proc registerStaticEvaluators*() =
     needs: capStatic,
     arity: 1 .. 1,
     subjectKinds: {skNet},
+    setupDoc: pullupCountDoc,
     run: runPullupCount))
 
   registerEvaluator(Evaluator(
@@ -266,6 +293,7 @@ proc registerStaticEvaluators*() =
     needs: capStatic,
     arity: 1 .. 1,
     subjectKinds: {skNet},
+    setupDoc: rcCornerDoc,
     run: runRcCorner))
 
   registerEvaluator(Evaluator(
@@ -274,6 +302,7 @@ proc registerStaticEvaluators*() =
     needs: capStatic,
     arity: 1 .. 1,
     subjectKinds: {skNet},
+    setupDoc: sinkCurrentDoc,
     run: runPullupSinkCurrent))
 
   registerEvaluator(Evaluator(
@@ -287,6 +316,7 @@ proc registerStaticEvaluators*() =
     # knows, which makes this unreachable by a bare `require` -- and worth
     # saying so in `nimcir quantities` rather than at the point of failure.
     binds: @["controller"],
+    setupDoc: controllerCountDoc,
     run: runControllerCount))
 
 registerStaticEvaluators()
