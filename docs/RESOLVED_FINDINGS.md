@@ -1496,3 +1496,154 @@ ideal source is a dead short at AC, and every *unannotated* source should still
 get its default. What was wrong was creating a source with explicit impedance
 beside it and then not saying so.
 
+
+## 24. Two evaluators producing one quantity silently overwrote
+
+`registerEvaluator` maintained `quantityIndex[q] = it.name`, a flat map. A
+second evaluator declaring an existing quantity replaced the first with no
+diagnostic, and every claim on that quantity in every design silently changed
+which analysis answered it -- reported under the same quantity name either
+way, so the report could not show the difference.
+
+Nothing did it, which is why it never bit. §39 was the first realistic chance:
+`analyzeTransient` measures a `final_v` and `spice.startup` already produces
+one.
+
+**Fixed** by raising when a quantity is already owned by a **different**
+evaluator. Re-registering under the *same* name still replaces, because that
+is the documented way an application overrides a built-in -- an override says
+so by keeping the name, and a collision is an accident. The two are
+indistinguishable after the fact, which is the whole reason to catch it at
+registration. `spice.transient` therefore declares `settled_v`, `ripple_pp`,
+`settled_min` and `settled_max` and **not** `final_v`, even though the
+analysis measures one and the report shows it.
+
+## 39. A part needs more than one model, and the choice is not the SPICE card
+
+The LT8640A design carried an averaged behavioural model (§ the design notes
+in `designs/lt8640a_buck.nim`) and could not claim its output ripple, because
+an averaged model emits the switch node's cycle *average* -- there is no
+ripple in it to find. It also could not claim it with a switching model
+instead, because a switching model runs at about fifty timepoints per cycle
+and the same design's soft-start claim needs five milliseconds of circuit
+time, which is a quarter of a million of them.
+
+So neither model is the better one, and the design was being asked to pick
+which question it was allowed to ask.
+
+**The mechanism.** `Component.simModels` is an ordered table of
+`SimReplacement`s keyed by a new `SimReplacement.name`, and `simReplace`
+became an accessor pair over it -- the getter returns the default, the setter
+still means "this is *the* model", so every call site that predates this reads
+and writes exactly as it did. One table rather than a field beside a table of
+alternatives: two places to look for a model is the drift hazard this codebase
+avoids everywhere else, and "what stands in for this part" must not have two
+answers that nothing keeps in step.
+
+**The selection.** `SimReplacement.suits` names the *purposes* a model is
+preferred for, and `spice/transform.selectSimModel(c, purpose)` picks. The
+vocabulary is `spOperating`, `spSmallSignal`, `spStartup`, `spSteadyState`,
+`spLargeSignal` -- **what is being asked, not which card gets written**, and
+that distinction is the whole design. Both LT8640A models are `.tran` models;
+naming the card would put them in one bucket and leave the choice to a coin
+toss. Every analysis in the library passes its own purpose, so a design that
+labels a model gets it without any call site knowing the design.
+
+Three rules, each chosen against a specific failure:
+
+* A model naming the purpose wins.
+* No match falls back to the default rather than refusing. `suits` is
+  advisory, because a model that declared itself for steady-state only would
+  otherwise make a `.op` on the same design impossible, and an analysis
+  blocked by a preference is worse than one run against the default.
+* **Two models naming one purpose raises**, listing both. That is not a
+  preference, it is an ambiguity, and picking either would decide silently
+  which analysis the design gets.
+
+`clone` carries every model, not just the default, or the alternative would be
+dropped one transform before the analysis that asked for it.
+
+## 40. The LT8640A switching model, and what it can and cannot be asked
+
+`designs/lib/lt8640a_sw.nim`, the counterpart §39 made reachable. Peak current
+mode, which is the part's real architecture and is also what makes the model
+work at all:
+
+* **`sw` is a conductance port, not a voltage one.** The model is a Thevenin
+  source at `son * V_IN` behind the conduction-weighted on-resistance, so the
+  switch node has a real source impedance -- and, decisively, **the model
+  knows the inductor current**, because it is the current through whichever
+  switch is conducting. A voltage-output switch node hides it and a netlist
+  has nowhere else to find it.
+* `vin` is a conductance port too and draws that current, so the input
+  capacitors see the real trapezoidal draw. Measured: 2.22 A average, 5.4 A
+  peak-to-peak, 92.4% efficiency on conduction loss alone.
+
+Four things were found by not believing a number, and each is recorded in the
+model:
+
+1. **A crossfade between two switch conductances is a shoot-through path.** At
+   the crossover point it is 105 mohm across 12 V; measured, 60 A spikes
+   through the input capacitors' ESL on every edge. The Thevenin form has no
+   such path by construction, and is identical at `son` of 0 and 1.
+2. **A linear switching edge does not converge.** Its corners are a delta in
+   the driven node's second derivative, and truncation-error control answers a
+   delta by halving the timestep until it gives up: `Timestep too small; time
+   = 2.2e-09, timestep = 3.4e-20` on the first edge of the run. A raised
+   cosine leaves the slope continuous at both ends.
+3. **Slope compensation costs command headroom.** Sized as a fraction of the
+   *current limit* rather than of the inductor's own downslope, 0.5 pinned the
+   error amplifier against its clamp and left the loop running on its
+   proportional term: a 12.7 mV static droop on a rail whose integrator should
+   leave none. 0.15 is comfortably above half the downslope here.
+4. **Breakpoints are not optional.** Between edges the interesting nodes are
+   smooth, so the step controller walks straight over a clock edge unless the
+   model places one.
+
+The `.op` and the transient's `t = 0` run the *averaged* form of the same
+arithmetic, which is what makes t = 0 continuous with the operating point
+ngspice solved just before it -- and what lets the compensation state be
+seeded from the load current the circuit is already drawing, so a run set up
+to skip a start-up transient does not open with one of the model's own.
+
+**What may be claimed from it, and what may not.** The ripple is trustworthy:
+it is set by V_IN, V_OUT, L, f and the output capacitor, all board values.
+Verified by measuring the same rail across a 4x range of `nsub`, a 4x range of
+`tedge`, half the `rzc` and half the `gmc`: **7.10 to 7.29 mV**, and 4.9618 V
+to within 0.1 mV every time. A phase margin is not: the compensation is chosen
+for a sensible loop rather than fitted to the part's, which is not published.
+`rtop`, `rbot`, `ilim`, `tedge` and `tminon` are stand-ins and say so; `vref`,
+`iss` and `iq` are datasheet figures.
+
+Supporting work in `spice/xspice`: `analogAlloc`, `analogVar`,
+`analogIntegrate`, `setPermBkpt` and `setTempBkpt` in `accessors.nim` -- the
+analog counterparts of `eventAlloc`/`eventVar`, and the third shape a code
+model comes in after memoryless and event-driven. They are rolled back with a
+rejected timepoint, which `stateVar` is not, and that is exactly what a
+cycle-by-cycle latch needs. `examples/xspice_integrator.nim` is the worked
+example and `tests/test_xspice_build.nim` checks it against a closed form.
+
+## 41. A `.tran` measurement that binds no driving part -- half of §23
+
+`analysis/transient.nim`: `analyzeTransient(nl, measureNet, spec)` and the
+`settled_rail` role, claiming `settled_v` and `ripple_pp`.
+
+Every other simulation-backed analysis binds a driving part -- `analyzeStartup`
+a regulator to stand up as a ramp, `analyzeOpAmpResponse` an amplifier and an
+input. This one binds nothing: a net, a time by which the circuit should have
+settled, and what it must then be doing. The design is simulated **as
+authored, with no isolation**, following `runDcVoltage`'s precedent -- a rail
+terminated at its nominal by the boundary would be a check that measures its
+own assumption.
+
+The window is stated rather than detected, because what counts as settled is a
+judgement about the circuit: a converter's output is settled in a hundred
+microseconds and a soft-started rail is not settled for five milliseconds, and
+a detector that guessed wrong would report a start-up transient as ripple.
+`tSettle` and `tWindow` ride in `Assertion.condition` and join the evaluator's
+setup key, so two claims over two windows stay two runs.
+
+This is §23's first half. **Still open**: no `.ic` and no initial conditions,
+so a circuit that will not start from its own operating point -- an oscillator
+at its unstable equilibrium -- remains out of reach, and `designs/wien_osc.nim`
+still cannot state what it does.

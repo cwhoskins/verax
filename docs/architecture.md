@@ -1,0 +1,670 @@
+# nimcir architecture
+
+How the submodules relate, and what happens between `nimcir check board.nim`
+and the report it prints.
+
+This is the design document. `authoring.md` is the guide for someone *writing*
+a design; this is for someone changing the library, or trying to work out why
+a number came back the way it did. `findings.md` and `RESOLVED_FINDINGS.md`
+record what checking real boards taught us, which is where most of the
+reasoning below originally came from.
+
+---
+
+## 1. The shape of the whole thing
+
+A design is an **ordinary Nim program**. It states what a circuit *is*
+(topology, part values, annotations) and what it must *do* (claims), and ends
+with `quit(verifyMain(d))`. Compiling it produces a binary; running that binary
+checks the circuit and exits with a graded code.
+
+So there are two distinct phases, and confusing them is the source of most
+questions about this codebase:
+
+| | when | what it produces | what catches a mistake |
+|---|---|---|---|
+| **Authoring** | Nim compile time | a `Design` object in memory | the Nim compiler — a misspelled net identifier, an unknown `spec:` key, a unit mismatch |
+| **Verification** | process run time | a `Readiness` report + exit code | the registries — an unknown role name, a quantity nothing produces, a claim that fails |
+
+The line between them is not arbitrary. Everything that can be a **compile
+error is made one**, because the alternative is a runtime message about a
+circuit that was never the problem. Everything that depends on a *runtime
+registry* — roles, evaluators, behavioural models, designator prefixes — cannot
+be, because a macro cannot see a table that a third party may add to at
+startup, and keeping those tables open at runtime is what makes the layer
+extensible.
+
+The invariant the whole tool exists to protect: **silence must never read as
+approval.** A claim nobody could check is not a claim that passed, and it gets
+its own report section, its own exit code, and a status that is neither pass
+nor fail.
+
+---
+
+## 2. The dependency spine
+
+Arrows point from a module to what it depends on. There are no cycles and no
+back-edges: nothing below ever learns about anything above it.
+
+```
+                          cli.nim              (the `nimcir` binary)
+                             |
+                          verify.nim           (the runner + the catalog)
+                        /            \
+                       /              \
+              contract/            analysis/   (+ analysis/contract_eval, the join)
+                       \              /
+                        \          spice/  --> spice/xspice/
+                         \          /
+                          netlist/            parts/     pcb/
+                             |     \___________|__________|
+                             |
+                    units.nim   eng.nim       (below everything)
+```
+
+Three rules produce that picture.
+
+**Two root modules sit below every submodule.** `units.nim` (typed electrical
+quantities: `Volts`, `Ohms`, `Farads`, …) and `eng.nim` (engineering-notation
+rendering for report text) are needed by more than one submodule and may be
+owned by none. `units` exists for exactly one reason: `esr = 20.mohm` cannot be
+misread, whereas `"20m"` and `"0.02"` differ by a thousand and look equally
+plausible.
+
+**One root module sits above every submodule.** `verify.nim` needs `contract`
+and `analysis` at once, and neither may depend on the other. That separation is
+load-bearing: `contract` depends only on `netlist`, which is what keeps a
+design authorable, readable and inspectable **with no simulator in the build**.
+An edge from `contract` to `analysis` would quietly destroy that property.
+
+**Everything expensive is opt-in per import.** A hub module (`netlist.nim`,
+`spice.nim`, `analysis.nim`, `contract.nim`, `pcb.nim`) exports only what runs
+with no external toolchain. The backend (`spice/ngspice`), the file formats
+(`netlist/formats/*`, `pcb/formats/*`), the simulation-backed analyses
+(`analysis/pdn`, `analysis/opamp`, …) and the XSPICE authoring tools are each
+imported by path. `src/nimcir.nim` is deliberately **not** a re-export hub for
+the same reason, and the nimble package builds its binary from
+`src/nimcir/cli.nim` so that `import nimcir` in an unrelated program does not
+drag in `osproc` and the whole analysis tree.
+
+### What each submodule owns, and what it is not allowed to know
+
+| submodule | owns | must not know about |
+|---|---|---|
+| `netlist/` | the electrical graph: nets, components, pins, hierarchy, annotations, environment, SPICE file format | simulation, geometry, intent |
+| `spice/` | turning a netlist into something a simulator can solve, and running it | what question is being asked |
+| `analysis/` | asking a question and extracting a number from the answer | what claim the number is for |
+| `contract/` | what the circuit must do, and comparing a number against it | how any number is produced |
+| `pcb/` | the physical board: layers, copper, holes, placements, BoM | anything electrical beyond a forward reference into a `Netlist` |
+| `parts/` | choosing a real part for a computed value | the circuit it lands in |
+| `verify.nim` | joining the last two, and rendering | — |
+
+Two of those are worth stating plainly because it is easy to assume otherwise:
+
+* **`pcb/` does not participate in verification today.** Nothing in `src/`
+  imports it. It is a complete data model with no readers yet, waiting on
+  `formats/kicad.nim` and `formats/odbpp.nim`. When those land, the join is
+  already designed: a `Pcb` *owns* a `Netlist` and every PCB entity holds a
+  forward reference into it, so `netlist/types.nim` stays geometry-free and a
+  layout analysis can still walk from a trace to the pins it connects.
+* **`parts/` is used by design libraries, not by the pipeline.** A
+  parameterized module states a `CapRequest` carrying a value and a *use*; a
+  board supplies a `PartPolicy` that answers with a `Choice`; `applyChoice`
+  writes the answer as ordinary registered annotations. The module knows the
+  part's function, the board knows its environment, and neither can choose
+  alone — that asymmetry is the whole reason the submodule exists.
+
+---
+
+## 3. Authoring: a `.nim` file becomes a `Design`
+
+`contract/dsl.nim`'s `design(...)` macro accepts everything `netlist/dsl.nim`'s
+`netlist(...)` accepts — by *reusing* `buildNetlistBody`, not by duplicating it
+— plus two statements of its own.
+
+```
+design("board"):
+  net / component / pin / model / instance / environment: / spec:
+        |
+        +--> expands only into calls on netlist/graph.nim
+        |
+  role "power_rail", vdd_rail, rail = vdd, voltage = 3.3.V
+        |
+        +--> design.addRole  ->  validate, tag membership, run RoleDef.apply
+        |
+  require z_max_in_band(vdd) <= 100.mohm, f_from = 100.kHz, ...
+        |
+        +--> design.assertThat
+```
+
+Four mechanisms carry most of the weight here.
+
+**The DSL only ever expands into `graph.nim` calls.** `graph.nim` is the single
+place allowed to mutate the graph's bidirectional back-references
+(`Pin.component`/`Pin.net`, `Net.pins`, `Component.pins`, parent/child). Code
+that hand-sets `.net` or `.pins` gets the two directions out of sync, and the
+graph is deliberately walkable from any starting point rather than only through
+the name-keyed tables.
+
+**Bare identifiers become real Nim `let`s.** `net vdd, ...` binds `vdd`, so a
+typo later is a compile error rather than a silently-created second net.
+
+**`spec:` is validated at compile time against `netlist/annotations`.** `attrs`
+is an open-ended `OrderedTable[string, string]` so no file format ever has to
+extend the core schema — and the price of that openness is that **a typo in a
+key is indistinguishable from an absent key**. Write `ESL` for `esl` and the
+model pass silently uses a package default *and reports it as an assumption*,
+so it looks like it worked. Inside `spec:` there is no open-ended bag for an
+unknown key to mean anything, so the strictness boundary is drawn syntactically:
+head-of-statement `key = value` pairs are permissive and land in `attrs`,
+`spec:` keys are strict. The registry is a runtime table seeded from a `const`:
+the `const` is what the macro reads at compile time, the table is what keeps
+runtime registration possible.
+
+**A role is a parameterized bundle of assertions, not a tag.** `RoleDef` has
+two halves, and the split is deliberate:
+
+* `apply(inst, netlist)` writes annotations onto the graph. This half has a
+  life independent of checking — `spice/isolate` reads
+  `Net.attrs["voltage"]` to terminate a cut rail long before anything asks
+  whether that rail is *correct*. It runs at `addRole` time, so by the time
+  the design object exists the annotations are already in the graph.
+* `expand(inst)` is pure and returns `seq[Assertion]`. It runs at plan time.
+
+Both are **proc values on a data object**, so a role built at runtime registers
+and behaves identically to a built-in. The built-in roles use no privileged
+mechanism, and a test pins that down by defining a role in the test file and
+checking it takes the identical path — a built-in that cheats makes
+user-defined roles second-class, and then nobody writes them.
+
+### What a claim actually is
+
+Three shape decisions in `contract/types.nim` carry the forward-compatibility
+story, and none of them should be traded away for convenience:
+
+* **`Assertion.subjects` is a `seq`**, not one subject plus a second-operand
+  field. Setup/hold is inherently one signal *versus* another, so a two-subject
+  quantity must not be a special case bolted on later.
+* **`Assertion.quantity` is an open string naming an analysis `Measurement`**
+  (`dc_voltage`, `bw_3db`, `z_min`). That is what turns evaluation into "run
+  whatever analysis produces this name, then compare", with one comparison
+  (`satisfies`) shared by every quantity; the failing witness comes free,
+  because the `Measurement` already exists. It also keeps the coupling honest —
+  a quantity nothing can produce is a claim nobody can check, and that shows up
+  immediately. A bench result is also a `Measurement`, so correlating measured
+  against simulated is later the same comparison with a different source.
+* **`Expectation` is a variant object**, so the cases that do not exist yet are
+  additive (see §8).
+
+A `NaN` never satisfies anything: "the measurement did not happen" must not
+read as a pass. And `Assertion.rationale` is in practice the most valuable
+field in the object — a limit whose reason is lost gets relaxed the first time
+it fails.
+
+---
+
+## 4. Verification: `verifyMain` → `readiness` → a report
+
+`verify.readiness(d, allowed)` is the whole run. It is **pure with respect to
+the design**: nothing it does mutates `d` or its netlist.
+
+```
+readiness(d, allowed)
+  |
+  1. capabilities   allowed * availableCapabilities(ngspiceVersion())
+  |
+  2. STRUCTURE      validateAnnotations(nl)      vocabulary: misspelled/wrong-scope keys
+  |                 analyzeIO(nl)                output conflicts, DC paths, rail voltages
+  |                 validateEnvironment(nl)      an inverted or half-stated ambient range
+  |
+  3. PLAN           plan(d, usable)              pure: nothing runs, nothing is simulated
+  |                   for each assertion in d.expandAll():
+  |                     evaluatorFor(quantity)   -> else rejected, esNotEvaluable
+  |                     arity / subject kinds    -> else rejected, esNotEvaluable
+  |                     needs in allowed         -> else rejected, esNotEvaluated
+  |                     group by (evaluator, setupKey(d, a))  -> one PlanStep
+  |
+  4. RUN            clearSharedOperatingPoint()
+  |                 runPlan(d, plan)             one batch of results per step
+  |                 clearSharedOperatingPoint()
+  |
+  5. COLLECT        one `Check` per step: setupDoc, deduped assumptions, results
+  |                 claimLint(results)           a claim with no unit against a measured one
+  |
+  6. RENDER         render(readiness)            +  exitCode(readiness, strict)
+```
+
+### 4.1 Structure comes first, and it is not an assumption
+
+A misspelled `esr` makes every impedance number below it meaningless, so the
+vocabulary check runs before any claim is considered.
+
+`checkRailVoltages` is the sharpest example of why this section exists
+separately from the assumption list. A rail with a stated voltage gets an ideal
+source at an isolation boundary; a rail *without* one is cut loose as a
+floating node — which changes the topology rather than substituting a value. In
+`designs/ts808_drive.nim` a divider-derived 4.5 V bias initially carried no
+voltage, so the drive stage's gain leg was detached: an amplifier with a gain
+of 65 measured as a unity-gain follower, every claim passed, exit 0. The
+floating rail *was* reported — as one assumption among fifteen, reading exactly
+like the package-typical ESR two lines above it. Being reported and being
+noticed are different things, and the difference is which section it lands in.
+
+### 4.2 The plan is pure, and separated on purpose
+
+`plan(d, allowed)` routes every assertion — authored and role-expanded alike —
+to an evaluator and groups them. Nothing runs. `explainPlan` prints it.
+
+The grouping is the interesting part. Quantity-to-evaluator is
+**many-to-one**: `analyzePdn` emits eight measurement names from a single `.ac`
+sweep. So an `EvalProc` takes a *batch*, and steps are keyed by
+`(evaluator, setupKey)`. "One analysis run per distinct setup" is therefore a
+property of the planner, provable by counting steps, rather than something each
+evaluator has to reimplement — a single `.op` answers every `dc_voltage` claim
+in a design.
+
+A rejection carries **which of two different things went wrong**, and they are
+not interchangeable:
+
+* `esNotEvaluable` — nothing can produce this quantity for these subjects. The
+  claim is unreachable as written.
+* `esNotEvaluated` — an evaluator exists but did not run or did not return a
+  number: its capability was withheld, the simulation raised, or the
+  measurement came back `NaN`.
+
+When nothing produces a quantity, `didYouMean` ranks the registered quantities
+by edit distance, because a misspelling is the likeliest way to write an
+uncheckable claim and `no evaluator produces 'z_ripple'` alone says the door is
+locked without mentioning that a door exists.
+
+### 4.3 Running: an evaluator is handed a batch
+
+`runStep` calls `ev.run(d, step.assertions)` inside a `try`. An evaluator that
+raises, or returns the wrong number of results, is a bug in the evaluator — but
+it must not take down the whole run, because then one bad plugin costs every
+other verdict in the design. Results that do come back are matched by assertion
+id and the rest are accounted for as `notEvaluated`.
+
+`verdict()` is the single place pass/fail semantics live, so every evaluator
+gets identical behaviour. Three decisions are pinned there:
+
+* a `NaN` measurement is `esNotEvaluated`, **not** `esFail` — `z_antiresonance
+  = NaN` means no interior peak was found, which is the *good* outcome;
+* a unit mismatch is `esNotEvaluable`, rather than a silent comparison of volts
+  against hertz;
+* both declining paths carry the analysis's `assumptions` **and its `issues`**
+  out with them. `reason` is written inside `verdict` and cannot name a cause
+  `verdict` does not know, while the analysis usually does know and said so in
+  an `Issue`. Dropping those once stranded a Sallen-Key's phase margin behind
+  "the quantity was not found in the range that was analysed" — true, and it
+  sends the reader to widen a sweep that is not the problem, while the issue one
+  field away said the loop break never opened the loop.
+
+**One operating point is shared across the run.** `contract_eval` owns a cache
+keyed by design identity with *no content invalidation* — nothing down there can
+tell that a caller edited a netlist between two checks — so the rule is stated
+rather than guessed at, and `readiness` calls `clearSharedOperatingPoint` on
+both sides of the run to make it safe. This can be a straight line rather than a
+fixed point because **at DC a capacitor is an open circuit, so the operating
+point cannot depend on capacitance**. Solve the `.op` first, derate every
+Class 2 ceramic from its *actual* node voltages, then run the `.ac`/`.tran`
+against the derated values. No iteration, no ordering ambiguity.
+
+### 4.4 The report is rendered fresh, and its centre of gravity is `NOT CHECKED`
+
+`render` does **not** concatenate `report`/`summary`/`explainPlan`/`explain`.
+Each of those answers one question in isolation and each re-lists the same
+assertions, so concatenating them prints one failing claim three times. The
+ordering and the de-duplication *are* the product.
+
+Sections run in order of how much each undermines everything below it:
+**structure → checks → failures → not checked.**
+
+The body is `CHECKS`: **one block per test, where a test is one analysis run.**
+That grouping is the plan step seen after running, and it recovers three facts
+a flat list of results loses — which claims came out of one simulation (so a
+single wrong setup explains all of them at once), what that simulation *was*,
+and which invented values it rested on. It cannot be recovered afterwards: an
+`AssertionResult` carries its evaluator's name but not its setup key, and two
+steps of one evaluator are two different runs. Each block carries:
+
+* **`ran:`** — from `Evaluator.setupDoc`. The setup *key* exists to group;
+  `vdd|100000.0|100000000.0` is a correct key that says nothing about what was
+  simulated, and the fragment handed to ngspice is derived rather than authored,
+  so it needs saying.
+* **`assuming:`** — the batch's own invented values, deduplicated,
+  `annAuthored` excluded. Pooled at the foot of a report they said forty values
+  were invented *somewhere*; under the run that rests on them the question of
+  which number each one moved is answered. `foldAssumptions` collapses records
+  sharing `(key, value, unit, detail)` onto one line naming every entity —
+  lossless, and worth 39 lines down to 21 on one design's PDN block.
+* **the claims** — an identity line, a comparison line putting `expect` and
+  `measured` together with the tolerance rendered as the interval it accepts,
+  and `because …` (the assertion's `rationale`) whenever the claim did not pass.
+
+`FAILED` and `NOT CHECKED` render through the same `renderClaim`, so a limit is
+never spelled two ways in one report. `NOT CHECKED` is never collapsed.
+
+A `Readiness` holds `AssertionResult`s and `Issue`s and **never an
+`AnalysisReport`** — `AssertionResult` has no field for one, so a sweep's
+thousands of curve points cannot leak into a report. A test pins the rendered
+size so that a future "attach the curve for context" change fails loudly.
+
+### 4.5 Exit codes are graded
+
+Precedence runs most-fundamental first, so a caller can branch on *why*:
+
+| code | meaning |
+|---|---|
+| 0 | clean |
+| 1 | a claim was checked and failed |
+| 2 | the netlist itself is wrong in a way that makes its numbers untrustworthy |
+| 3 | a claim nothing could check |
+| 4 | a requested capability is unavailable on this machine |
+| 5 | the design did not compile — **only `nimcir check` produces this** |
+
+5 is separate on purpose. Told only "it failed", a reader edits the circuit to
+fix what is actually a syntax error. That is also why `cli.nim` compiles and
+runs the design as **two processes, never `nim c -r`**: that would merge "this
+file does not compile" and "an assertion failed" into one exit status.
+
+`esNotEvaluated` alone stays clean — withholding a capability is a deliberate
+act, not an oversight — unless `--strict`.
+
+---
+
+## 5. Inside one simulated check: the transform chain
+
+This is where a board actually meets a simulator. Every simulation-backed
+analysis follows the same shape, and **the ordering is load-bearing at every
+step**. `analysis/pdn.analyzePdn` is the canonical one:
+
+```
+  d.netlist                        the design as authored -- never mutated, never simulated
+      |
+      | materializeSimNetlist(nl, purpose = spSmallSignal)
+      v                            clone, then apply each part's simReplace for this purpose
+  work
+      |
+      | flattenForSim(work, ...)
+      v                            dissolve subcircuit instances into the top level
+  work (flat)
+      |
+      | expandPinModels(work)
+      v                            every part isPassive rejects becomes per-pin impedances
+  work (all-passive)
+      |
+      | isolateNets(work, [rail], spec)
+      v                            grow a fragment outward; ground -> node "0";
+  frag                             other rails -> ideal sources; open nets -> 1 Gohm leak
+      |
+      | expandCapacitorParasitics(frag, bias)   C -> C + ESR + ESL, DC-bias derated
+      | expandSourceImpedance(frag)             every source gets a finite rout/lout
+      | addImpedanceProbe(frag, rail, "0")      DC 0 AC 1 across the rail
+      v
+  deck  --  writeNetlist(frag, cards = [".ac dec 20 1e3 1e9", ".control ... .endc"])
+      |
+      | ngspice -b -o log deck.cir
+      v
+  rawfile  --  parsed into SimResult / SimVector  (sdReal | sdComplex)
+      |
+      | analysis/measure.nim: pure curve math over openArray[float]
+      v
+  AnalysisReport { measurements, issues, assumptions, raw }
+      |
+      | contract_eval harvest adapter
+      v
+  seq[AssertionResult]
+```
+
+### Why that order and no other
+
+**`materializeSimNetlist`, not a bare `clone`.** A component's `simReplace` is
+the design's own statement of how it wants that part simulated. A part may
+carry *several*, because which model is right depends on the question: an
+averaged model of a switching regulator answers the rail voltage in
+milliseconds of wall clock and has no ripple in it to find, while a switching
+one answers the ripple and costs fifty timepoints a cycle. Neither is better,
+and a design forced to pick one would be choosing which question it is allowed
+to ask. `selectSimModel` picks by `purpose` — `spOperating`, `spSmallSignal`,
+`spStartup`, `spSteadyState`, `spLargeSignal` — which names **what is being
+asked, not which SPICE card gets written**. Both LT8640A models are `.tran`
+models; naming the card would put them in one bucket and leave the choice to a
+coin toss.
+
+**Flatten before any model pass.** `expandPinModels`, `expandSourceImpedance`
+and `expandCapacitorParasitics` all walk only `nl.components`, so a part inside
+a subcircuit instance is invisible to every one of them. Left un-flattened, an
+op-amp inside a subcircuit never gets a macromodel and reaches the deck as
+`U1` — which ngspice reads as a uniformly-distributed RC line. `flatten` lives
+under `spice/` rather than beside `graph.instantiate` because it destroys the
+hierarchy the designer wrote: it is a simulation-only concession, and putting
+it in `netlist/` would invite someone to flatten a real design.
+
+**Stand in for unmodellable parts *before* isolating, not after.** `isolate`
+refuses to traverse a component whose behaviour is not fully described by its
+value and records it in `dropped` — so by the time isolation has run there is
+nothing left to model. Once each such part is a per-pin impedance it is
+passive, and the rail sees what it actually hangs off instead of an open
+circuit.
+
+**Model substitution runs most-specific first.** A `subNetlist` or a
+`simReplace` is honoured and never reaches the registry; a kind registered in
+the behavioural-model registry gets its model; only a part with neither falls
+through to per-pin impedances, which is the **last** resort and not the first
+answer. `BehavioralResult.handled = false` means *leave the part exactly as it
+is* — emphatically not "fall back to per-pin impedances", because an LDO stood
+in for by two independent resistors to ground reports its rail at 0 V, which is
+a confident wrong answer where refusing to simulate was an honest one.
+
+**Parasitics after isolation, on the fragment.** They are not a refinement: an
+ideal capacitor's impedance falls monotonically forever, so a PDN sweep over
+ideal caps shows no ESR floor, no self-resonance and no anti-resonance — none of
+the three things such a sweep is run to find.
+
+### Where the boundary falls is the whole result
+
+`spice/isolate` cuts a simulatable fragment out of a full design. Two rules do
+the work, and `maxHops` is a backstop rather than the mechanism:
+
+* **a rail is a boundary and is never traversed through**, unless it was named
+  a seed — every bypass cap on a board shares VDD, so one hop through it
+  absorbs the entire design;
+* **an unmodellable component is never traversed through** either.
+
+Terminating the cut is the other half: ground becomes node `"0"`, every other
+rail gets an ideal source at its nominal voltage (from `IsolationSpec` or
+`Net.attrs["voltage"]` — never guessed), and every open or excluded net gets a
+1 Gohm leak to ground so it has a DC reference instead of producing a singular
+matrix.
+
+`excludeRails` exists because **an ideal source is a dead short at AC**.
+Terminating the rail whose impedance you are measuring would report Z = 0 at
+every frequency. The same field carries the transient twin of that hazard:
+leave a ferrite-filtered analog rail out of a start-up seed set and it becomes a
+stiff ideal source at 3.3 V driving current backwards through the filter into a
+rail still at zero — measured, **2.8 kA of inrush against a true 163 mA**.
+
+The related trap, recorded because the fix is easy to undo: `voltage_source` is
+in `conductiveKinds`, so `isPassive` accepts it and an isolation *absorbs* a
+supply rather than cutting it. Measured, the same rail read 129 mohm with no
+source and **0 ohm with one**, passing every target that could be set.
+`expandSourceImpedance` is what stops that.
+
+### What crosses the process boundary
+
+`spice/ngspice.run(nl, cards, codemodels)` takes **at most one analysis card**,
+because ngspice's default `write` only keeps the last analysis's plot. It
+synthesizes a `.control` block, sets `filetype=ascii`, writes a rawfile, and
+treats **"a parseable rawfile exists"** as the success signal rather than the
+process exit code — a clean run with benign warnings can exit non-zero, and a
+malformed deck can SIGABRT.
+
+But **a parseable rawfile is not the same as a solution**, and the difference
+cost a real answer. ngspice reports a failed DC solve as a *warning*, writes
+whatever its last iterate was, and exits zero — so the numbers arrive looking
+exactly like an answer. The LT8640A reference design's 5 V rail read **1.71 V**
+as a clean FAIL because one node had no DC path. The log is now scanned for
+`singular matrix`, `iteration limit reached`, `too many iterations` and `no
+convergence`, and the run raises naming the node. The marker list is
+deliberately narrow: `gmin stepping failed` and `source stepping failed` are
+*strategy* notes ngspice usually recovers from.
+
+`NIMCIR_KEEP_DECKS=<dir>` copies every deck handed to ngspice into a directory.
+This is the primary debugging loop, and it is not a convenience: the fragment
+simulated is *derived* — cloned, flattened, model-substituted, isolated — so it
+is not the netlist anyone wrote, and reasoning about a surprising number from
+the design file alone is guesswork.
+
+### Assumptions are the pipeline's output too
+
+Every simulation-backed analysis works by filling in data a netlist does not
+carry: an assumed soft-start ramp, a package-typical ESL, a substituted ideal
+op-amp, an ideal rail source, a leak resistor on an open port. A number derived
+from an invented input has to say so where the reader will see it.
+
+They are `Assumption` **records** from `netlist/annotations`, not prose, so a
+consumer can count them or filter by provenance. `AnnSource` distinguishes
+`annAuthored` (the design said so), `annDerived` (computed from what the design
+said) and `annDefaulted` (nobody stated this). `invented(results)` returns
+exactly the values nobody stated — a question that is unanswerable while
+assumptions are strings.
+
+Provenance lives in the accessor's **return type** (`AnnValue[T]{source,
+value}`), which is why it could not have been added later without touching every
+call site. Accessors are pure and **never default**: inventing a stand-in is a
+policy decision belonging to whichever consumer knows what a sensible stand-in
+is.
+
+---
+
+## 6. The four registries
+
+Extensibility here is uniformly "a runtime table of data objects carrying proc
+values", never a compile-time construct. The reason is a stated product goal:
+ship compiled, and let a user add their own without recompiling the library.
+
+| registry | keyed by | added with | consulted by |
+|---|---|---|---|
+| roles | role name | `registerRole(RoleDef)` | `design.addRole`, `plan` |
+| evaluators | quantity name | `registerEvaluator(Evaluator)` | `plan`, `runStep` |
+| behavioural models | `Component.kind` | `registerBehavioralModel` | `spice/models.expandPinModels` |
+| annotations | `attrs` key | `registerAnnotation(AnnDef)` | the DSL (at compile time) and `validateAnnotations` |
+
+Two guard rails matter.
+
+**`registerEvaluator` raises when a quantity is already produced by a
+*different* evaluator.** `quantityIndex` is a flat map, so a second registration
+would take over every claim on that quantity in every design, with nothing said
+— the same quantity name in the report either way, and a different analysis
+behind it. Re-registering under the *same* name still replaces, because that is
+the documented way an application overrides a built-in: an override says so by
+keeping the name, a collision is an accident, and once it has happened the two
+are indistinguishable.
+
+**`Evaluator.binds` is declared, not inferred.** It names the role *parts* an
+evaluator reads back off `Assertion.origin`, beyond the assertion's own
+subjects. Something has to answer "can a bare `require` reach this quantity?"
+*without running anything*, and only the evaluator knows. `overshoot_pct(vdd)`
+names the rail but not the regulator driving it, and nothing in a netlist
+recovers that. This is what `nimcir quantities` reports in its third column,
+and its three answers — `require`, `role: X`, `-- needs a role binding` — are
+genuinely different; conflating any two is how a reader writes a claim nothing
+will check.
+
+Setup topology is recovered the same way at run time: `roles.nim` stamps the
+role-instance name into `Assertion.origin`, so an evaluator reads the bindings
+back off `Design.roles[origin]`. Resolution order is **subjects → origin-role
+bindings → `condition` → `notEvaluable` naming what was missing**. That last
+message is the product when a claim cannot be checked.
+
+---
+
+## 7. Invariants
+
+Things that are true today, that something depends on, and that are easy to
+break silently. Most were violated at least once before being written down.
+
+1. **`graph.nim` is the only writer of back-references.** Everything else goes
+   through `addComponent`/`connect`/`adoptNet`/… or the two directions drift.
+2. **The design netlist is never mutated and never simulated.** Every analysis
+   clones first. Probe insertion and model expansion run on the clone.
+3. **A kind `isPassive` accepts must be something the deck writer can spell** —
+   either `designatorPrefix` knows its letter, or a model pass rewrites it into
+   parts that do. `expandPinModels` stands in for every part `isPassive`
+   *rejects*, so those never reach a deck as themselves; `isolate` absorbs every
+   part it *accepts*, so those do. `tests/test_spice_spellable.nim` generates
+   this from the kind tables rather than reciting a list.
+4. **The deck's device letter comes from `Component.kind`, not from the
+   authored designator.** SPICE infers device type from that first letter and
+   nothing else. `VR1` for a drive pot emitted 250 kohm of feedback network as a
+   250 kV source; the stage measured a gain of 12 instead of 65 with nothing
+   reported anywhere. The letter is **prepended, never substituted**
+   (`FB1` → `LFB1`, never `L1`), because designators are unique as a set and a
+   truncated one need not be.
+5. **A value written into a deck goes through `spiceValue`**, which always emits
+   an explicit exponent. SPICE reads a trailing letter as a unit multiplier, so
+   `15.9M` in a deck is 15.9 *milli*. `eng()` is presentation only.
+6. **Annotation values are SI base units and suffixes are rejected**
+   (`parseAnnFloat`), while deck values *are* suffixed (`parseSpiceMagnitude`).
+   `"20m"` is 20 milli in a deck and 20 units read naively; picking either
+   silently is the failure the annotations module exists to prevent.
+7. **`.MODEL` card bodies are never parsed.** Tracking every parameter of every
+   device type in every SPICE dialect means getting one wrong silently simulates
+   a different part. `kinds.hasDeviceModel` only asks whether the name is
+   present — which is what makes the statement matter beyond reaching the deck,
+   since `isPassive` accepts a part with a model.
+8. **Bare annotation key means registered, dotted means owned.** `value`,
+   `esr`, `package`, … are the shared vocabulary; `xspice.*`, `role.*`,
+   `boundary.*`, `parasitics.*`, `kicad.*` are namespaced and never validated.
+9. **Role membership lives on the entity** (`net.attrs["role.i2c0"] = "sda"`),
+   so it survives `clone`, `extractSubcircuit` and `isolate` — including
+   isolation's rename of ground to `"0"`, which a name-keyed side-car store
+   would have lost.
+
+---
+
+## 8. Deliberate non-goals
+
+Stated so nobody re-litigates them, and so the boundaries of an answer are
+legible.
+
+* **`units.nim` is not a dimensional-analysis system.** No unit arithmetic, no
+  derived units, no compile-time dimension checking. That is a much larger
+  design and buys nothing for the job at hand.
+* **The contract layer is not an expression language.** Almost every claim is
+  "quantity Q of subjects S under conditions C lies in interval I", and
+  `ExpectKind` today is exactly `ekNominal`/`ekMin`/`ekMax`/`ekRange`. When a
+  claim is not that shape, the escalation is: put the arithmetic in a Nim proc
+  emitting a *derived quantity* (an SPI setup margin is a computation over
+  datasheet numbers, not a measurement), then a planned `ekRelative` (a bound
+  referring to another measurement), then a planned `ekPredicate` (a Nim proc).
+  Neither of the last two exists yet; `Expectation` is a variant object
+  precisely so that adding them is additive rather than a redesign. **Nim is
+  the expression language** — at the cost of no parser, no evaluator and no
+  bespoke error messages.
+* **`netlist/environment` models nothing.** It carries a board's ambient range
+  and a part's rise above it, and joins them. There is no tempco here, and the
+  figures are deliberately **not** passed to the deck as `.options temp`, which
+  would change how every semiconductor behaves and silently move every number
+  this repo has measured.
+* **`pcb/Zone` models only the authored outline.** Derived fill geometry is out
+  of scope, so plane-shape, return-path and power-integrity analysis are not
+  answerable from that model yet.
+* **Reading an XSPICE `A` line back into ports is not supported** and cannot be
+  without the model's `.ifs` — with `%type` omitted the node count per port is
+  unknowable from the deck alone. Writing works.
+* **A fuse blowing is not modelled.** A design check asks whether the circuit
+  works, not what it does while failing.
+
+---
+
+## 9. Where to look next
+
+| question | file |
+|---|---|
+| how do I write a design? | `docs/authoring.md` |
+| what is still broken or unclaimable? | `docs/findings.md` |
+| what did checking real boards teach us? | `docs/RESOLVED_FINDINGS.md` |
+| what roles/quantities/annotations exist *right now*? | `nimcir roles`, `nimcir quantities`, `nimcir annotations` |
+| what was actually simulated? | `NIMCIR_KEEP_DECKS=<dir> nimcir check <design>` |

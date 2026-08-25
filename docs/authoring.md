@@ -415,6 +415,76 @@ which no real part does, so it bounds the swing rather than predicting it.
 **What it still does not model.** No slew rate and no output current limit,
 so a stage that runs out of *speed* rather than voltage reads as clean.
 
+## Settled, and what is left moving
+
+Every role above binds a driving part — an amplifier, a regulator — and that
+excludes a whole class of circuit. A charge pump has no regulator, an
+oscillator has no input, and a switching converter's rail does not settle so
+much as arrive at a limit cycle. `settled_rail` binds nothing: a net, a time
+by which the circuit should have settled, and what it must then be doing.
+
+```nim
+  role "settled_rail", ripple, rail = vout,
+       tSettle = 300.us, tWindow = 20.us,
+       voltage = 4.962.V, band = 2.pct, maxRipple = 10.mV
+```
+
+Quantities: `settled_v` (the window mean), `ripple_pp` (its peak-to-peak),
+`settled_min`, `settled_max`. Both claims are opt-in — state neither and the
+role claims nothing.
+
+`tSettle` and `tWindow` are **conditions, not limits**, like `large_signal`'s
+drive. Everything before `tSettle` is simulated and then discarded, and the
+time is *stated rather than detected* on purpose: what counts as settled is a
+judgement about your circuit, and a detector that guessed wrong would report
+a start-up transient as ripple.
+
+Why this is not `power_rail` with another parameter: `dc_voltage` is an
+operating point, and an operating point has no ripple in it. A switching
+converter's rail reads as its average by construction there and would pass
+any ripple claim you could write.
+
+The design is run **as authored, with no isolation** — nothing terminates the
+measured node with an ideal source at the value you are asking about.
+
+**Not yet**: no `.ic` and no initial conditions, so a circuit that will not
+start from its own operating point (an oscillator at its unstable
+equilibrium) is still out of reach.
+
+## More than one model for one part
+
+`simReplace` says how a part should be simulated. A part may carry **several**,
+because which model is right depends on what you are asking:
+
+```nim
+  component U1, kind = "buck", simDefault = "averaged":
+    pin "SW", sw
+    ...
+    simReplace kind = "voltage_source", name = "averaged":
+      pin "+", vout
+      pin "-", gnd
+    simReplace kind = "vcvs", name = "switching", suits = "steady_state":
+      ...
+```
+
+`suits` names the *purposes* a model is preferred for, and the analysis picks:
+`op`, `ac`, `startup`, `steady_state`, `large_signal`. That vocabulary is
+**what is being asked, not which SPICE card gets written** — an averaged and a
+switching model of a regulator are both `.tran` models, and naming the card
+would not tell them apart.
+
+- A model naming the purpose wins.
+- No match falls back to `simDefault` (or the first added). `suits` is a
+  preference, never a refusal: a model declared for `steady_state` only must
+  not make a `.op` on the same design impossible.
+- Two models naming one purpose **raises**, listing both. That is an
+  ambiguity, not a preference, and guessing would silently decide which
+  analysis your design gets.
+
+`designs/lt8640a_buck.nim` is the worked example: an averaged LT8640A model
+answers `dc_voltage` from a `.op`, and a switching one answers `ripple_pp`
+from a `.tran`, in the same check.
+
 ## Device models
 
 `model "<name>", "<card>"` registers a `.MODEL` card, passed through verbatim:

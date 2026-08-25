@@ -1,14 +1,14 @@
 # Open findings
 
 What checking real designs against this library turned up that is **still
-open**. Everything already fixed — §1–§22 and §25–§38, each with what it was
+open**. Everything already fixed — §1–§22 and §24–§41, each with what it was
 and what the fix was — lives in `RESOLVED_FINDINGS.md`, and the designs
 themselves are described there. The numbering is shared and continuous across
 the two files, so a `§n` cross-reference means the same thing in either.
 
 ---
 
-## 23. Every `.tran` quantity needs a bound driving part — NOT FIXED
+## 23. Every `.tran` quantity needs a bound driving part — PARTLY FIXED
 
 Two designs reached this from opposite directions and neither can make its
 central claim.
@@ -47,30 +47,38 @@ honouring a `simReplace`d one instead needs four changes — `sr` read through
 `findComponent`, the `build` path supported, the current probe not assuming a
 `"+"` pin, and `uic` on the `.tran` so the part's own soft start is what runs.
 
-## 24. Two evaluators producing one quantity silently overwrite — NOT FIXED
+**Half of this is now done** and is recorded as §41: `analysis/transient.nim`
+and the `settled_rail` role exist, claim `settled_v` and `ripple_pp`, and
+simulate the design as authored. That is what the LT8640A's ripple claim runs
+through. What is left is the half the shape above says is hard:
 
-`registerEvaluator` maintains `quantityIndex[q] = it.name`, a flat map. A second
-evaluator declaring an existing quantity replaces the first with no diagnostic,
-and every claim on that quantity silently changes which analysis answers it.
-Nothing does this today, which is why it has not bitten — but §23 cannot be
-implemented without knowing it, and the registry is a documented extension
-point, so a third-party evaluator can trigger it. It should raise.
+* **`charge_pump`** could state a `settled_rail` claim today — the ripple and
+  the settled voltage are exactly what it wants — and has not been converted.
+  Doing so is the smallest remaining piece.
+* **`wien_osc`** cannot, and the reason is unchanged: an oscillator does not
+  start from its operating point, so it needs `.ic` or a kick, and `run`
+  refuses more than one card. `osc_freq`/`swing_pp`/`osc_thd_pct` and the
+  `oscillator` role wait on that.
 
 ---
 
 ## What is left, in order
 
-§1–§22 and §25–§38 are done and recorded in `RESOLVED_FINDINGS.md`.
+§1–§22 and §24–§41 are done and recorded in `RESOLVED_FINDINGS.md`.
 What is left:
 
-1. **§23 — a `.tran` measurement that binds no driving part.** Two designs need
-   it and a third (`lt8640a_buck`) needs the related `analyzeStartup` change.
-   The shape is written out in §23; do not re-derive it.
-2. **§24 — `registerEvaluator` should reject a duplicate quantity.** Small, and
-   §23 introduces the first realistic chance of hitting it.
-3. **`current_rating` / `isat` have no consumer** (§27). An inductor's peak
+1. **The rest of §23 — a transient that does not start from an operating
+   point.** `analyzeTransient` and `settled_rail` shipped as §41 and cover the
+   settling-and-ripple half; `wien_osc` still needs `.ic` (and `run` accepting
+   more than one card) before an oscillator can state anything, and
+   `charge_pump` needs converting to the role that now exists. `lt8640a_buck`
+   still needs the `analyzeStartup` change to claim its soft start.
+2. **`current_rating` / `isat` have no consumer** (§27). An inductor's peak
    current needs a `.tran` and a probe; it is the check a converter most wants.
-4. **Capacitor tempco is not modelled** (§28). Half the argument for a Class 1
+   This is now much closer than it was: the LT8640A's switching model puts a
+   real 0.94 A triangle on L1, so the number exists in the simulation and only
+   the probe and the claim are missing.
+3. **Capacitor tempco is not modelled** (§28). Half the argument for a Class 1
    timing capacitor is temperature drift, and nothing here represents it. The
    inputs such a model needs now exist and are the *only* part that does:
    `netlist/environment` carries a board's ambient range (`environment:`, with
@@ -81,10 +89,12 @@ What is left:
    question for an electrolytic's ESR at the cold end. A `delta_t` is authored
    today; deriving one from a dissipation and a thermal resistance is a
    separate step, and that key stays the override when it lands.
-5. **The LT8640A switching model.** The averaged one is honest about what it
-   cannot show — ripple, and anything to do with the internal compensation. A
-   switching counterpart is what makes the 10 mV output-ripple figure and a
-   phase margin measurable.
-6. **Slew rate and output current limit.** The macromodel now saturates at its
+4. **A phase margin for the LT8640A.** §40 delivered the switching model and
+   the ripple claim with it, and deliberately stopped short of stability: the
+   compensation in that model is chosen for a sensible loop rather than fitted
+   to the part's, which ADI does not publish. Measuring a margin through it
+   would be a claim about `gmc` and `rzc`. What would make it real is either
+   the internal network or a bench correlation, and neither is a code change.
+5. **Slew rate and output current limit.** The macromodel now saturates at its
    rails, so headroom is measurable; what it still cannot do is run out of
    *speed* or *current*. Both are ordinary macromodel additions.
