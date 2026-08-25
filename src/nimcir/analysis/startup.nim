@@ -45,6 +45,32 @@ const
   KindSimulationFailed* = "startup_simulation_failed"
 
 type
+  StartupStart* = enum
+    ## What the circuit looks like at t = 0, which for a start-up measurement
+    ## is not a detail.
+    ##
+    ## A regulator this analysis stands up **itself** -- the assumed PWL ramp
+    ## -- has no state of its own, so solving the operating point first is
+    ## free and helps everything else in the fragment converge.
+    ##
+    ## A regulator that brought **its own model** is the opposite case: the
+    ## whole reason to honour that model is that it soft-starts, and its soft
+    ## start is state. Solving an operating point finds the state it settles
+    ## *to* -- reference charged, output in regulation -- and the `.tran` then
+    ## begins at the end of the ramp and reports a flat line. Measured on
+    ## `designs/lt8640a_buck.nim`, that is a `rise_time_10_90` of zero for a
+    ## part whose datasheet arithmetic says 4.08 ms.
+    ssAuto
+      ## Solve the operating point, unless the regulator stands itself up, in
+      ## which case start from zero.
+    ssOperatingPoint
+      ## Always solve the operating point first. For a vendor macromodel that
+      ## models no soft start and needs a bias to converge.
+    ssZero
+      ## Always `uic`: skip the operating-point solve and start every node at
+      ## zero. Nothing is biased, which is the honest picture of a board at
+      ## the instant power is applied and is wrong for anything already up.
+
   StartupSpec* = object
     targetV*: float
       ## Regulated output in volts. `0` means "read it from
@@ -76,13 +102,16 @@ type
       ## the simulation sees something where they sit rather than an open
       ## circuit. The part this analysis is *about* is never touched by it --
       ## that one is modelled deliberately further down.
+    startFrom*: StartupStart
+      ## Where t = 0 is. See `StartupStart`; `ssAuto` is right for everything
+      ## this analysis has been pointed at so far.
 
 proc defaultStartupSpec*(): StartupSpec =
   StartupSpec(targetV: 0.0, softStart: 1.0e-3, tStop: 0.0, tStep: 0.0,
               currentLimit: 0.0, overshootLimit: 0.05, settleTol: 0.02,
               maxHops: 3,
-              pinModels: defaultPinModels(),flattenHierarchy: true,
- modelUnmodelledParts: true)
+              pinModels: defaultPinModels(), flattenHierarchy: true,
+              modelUnmodelledParts: true, startFrom: ssAuto)
 
 proc downstreamRails(nl: Netlist, fromNet: string): seq[string] =
   ## Every rail the regulator's output reaches through passive parts.
@@ -136,7 +165,12 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
   let measured = if measureNet.len > 0: measureNet else: outputNet
   result.name = "Start-up of '" & measured & "' from " & regulator
 
-  if not nl.components.hasKey(regulator):
+  # `findComponent` rather than the flat key: a regulator on a board that is
+  # instanced into a system is addressed by a `hierSep`-separated path, and
+  # the flat key resolves first anyway, so one call serves an authored
+  # hierarchy and a flattened one alike.
+  let regComp = findComponent(nl, regulator)
+  if regComp == nil:
     raise newException(NetlistError, "no such component: " & regulator)
   if not nl.nets.hasKey(outputNet):
     raise newException(NetlistError, "no such net: " & outputNet)
@@ -205,9 +239,31 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
   let srcDesig = $spiceFormat.designatorPrefix("voltage_source") & "REG_" & regulator
   # The same purpose the materialise above used, so the part stood up here is
   # the one that would have been stood up there had it not been excluded.
-  let sr = selectSimModel(nl.components[regulator], spStartup)
+  let sr = selectSimModel(regComp, spStartup)
 
-  if sr != nil:
+  # What ends up standing in for the regulator, whatever route it took there.
+  # The inrush probe needs the component, not the designator, because a
+  # `build` model names it whatever it likes.
+  var standIn: Component = nil
+
+  if sr != nil and sr.build != nil:
+    # **The `build` route.** `kind`/`pinNets` cannot express an XSPICE code
+    # model -- there is a `.MODEL` card to register, an ordered port binding,
+    # and port text to render -- so a model that needs any of those supplies
+    # a proc instead, and it is handed the netlist and the part to stand in
+    # for. Going through `replaceComponent` here would have read an empty
+    # `kind` and an empty `pinNets` and produced a device of no type wired to
+    # nothing.
+    let old = frag.components.getOrDefault(regulator)
+    if old == nil:
+      raise newException(NetlistError,
+        "regulator " & regulator & " did not survive isolation, so its own " &
+        "model cannot be applied to the fragment")
+    standIn = sr.build(frag, old)
+    result.assumptions.add note("regulator " & regulator &
+      " modelled by its own simReplace '" & sr.name & "', which builds its " &
+      "own stand-in rather than naming a device kind")
+  elif sr != nil:
     # The user described the regulator themselves; honour it verbatim except
     # for the designator, which is taken over so the inrush probe knows which
     # branch to measure.
@@ -220,16 +276,16 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
       pinNets.add (pinName, frag.nets[netName])
     var attrs: seq[(string, string)]
     for k, v in sr.attrs: attrs.add (k, v)
-    discard replaceComponent(frag, regulator, sr.kind, pinNets,
-                             newDesignator = srcDesig, attrs = attrs)
+    standIn = replaceComponent(frag, regulator, sr.kind, pinNets,
+                               newDesignator = srcDesig, attrs = attrs)
     result.assumptions.add note("regulator " & regulator &
       " modelled by its own simReplace (kind '" & sr.kind & "')")
   else:
     let pwl = "PWL(0 0 " & spiceValue(spec.softStart) & " " & spiceValue(targetV) & ")"
-    discard replaceComponent(frag, regulator, "voltage_source",
-                             [("+", outNet), ("-", gnd)],
-                             newDesignator = srcDesig,
-                             attrs = [("value", pwl)])
+    standIn = replaceComponent(frag, regulator, "voltage_source",
+                               [("+", outNet), ("-", gnd)],
+                               newDesignator = srcDesig,
+                               attrs = [("value", pwl)])
     result.assumptions.add assumption(
       "regulator " & regulator, "softStart", spec.softStart, "s", annDerived,
       "ramp to " & eng(targetV, "V") & " by an ideal source")
@@ -238,11 +294,61 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
       " (assumed soft-start; no control loop, current limit or dropout is modelled)")
 
   let vProbe = addVoltageProbe(frag.nets[measured])
-  let iProbe = addCurrentProbe(frag, frag.components[srcDesig].pins["+"])
+
+  # **The inrush probe is conditional, and saying why is the point.** It works
+  # by splitting a pin off its net and putting a 0 V source in the gap, which
+  # needs a pin on the stand-in that actually sits on `outputNet`. The `"+"`
+  # this used to assume is the pin of the PWL source *this* analysis builds,
+  # and it is not a pin any other model has to have: a design's own
+  # `simReplace` names its pins after the datasheet, and a code model's ports
+  # cannot be re-netted at all -- an `A` line's port text is rendered from the
+  # model spec rather than from the component's pins, so moving a pin would
+  # move it in the graph and not in the deck. `spice/probes` refuses that
+  # outright now; here it is avoided one step earlier.
+  #
+  # A switching regulator is the ordinary case of a part with no such pin: the
+  # LT8640A drives a *switch node* into an inductor, so the current reaching
+  # `vout` is the inductor's and not the part's. Reporting no `inrush_peak`
+  # is the honest answer -- there is no single branch that carries the inrush
+  # -- and every other measurement here is unaffected.
+  var iProbe: Probe
+  var haveInrush = false
+  if standIn != nil and not standIn.attrs.hasKey("xspice.ports"):
+    for _, pin in standIn.pins:
+      if pin.net != nil and pin.net.name == outputNet:
+        iProbe = addCurrentProbe(frag, pin)
+        haveInrush = true
+        break
+  if not haveInrush:
+    result.assumptions.add note("no inrush current was measured: " &
+      (if standIn == nil: "nothing stood in for " & regulator
+       elif standIn.attrs.hasKey("xspice.ports"):
+         standIn.designator & " is a code model, whose ports cannot be " &
+         "split to insert a probe"
+       else:
+         standIn.designator & " has no pin on net '" & outputNet & "', so " &
+         "there is no single branch carrying the current into it"))
 
   let tStop = if spec.tStop > 0.0: spec.tStop else: spec.softStart * 5.0
   let tStep = if spec.tStep > 0.0: spec.tStep else: tStop / 2000.0
-  let card = ".tran " & spiceValue(tStep) & " " & spiceValue(tStop)
+  var card = ".tran " & spiceValue(tStep) & " " & spiceValue(tStop)
+
+  # `uic` where the part starts *itself*. See `StartupStart`: an operating
+  # point solves the state the soft start settles to, so the run would begin
+  # at the end of the ramp this analysis exists to measure.
+  let uic = case spec.startFrom
+            of ssOperatingPoint: false
+            of ssZero: true
+            of ssAuto: sr != nil
+  if uic:
+    card &= " uic"
+    result.assumptions.add note(
+      "the run starts from zero with uic rather than from a solved operating " &
+      "point, because " & regulator & " brings its own model and that model's " &
+      "soft start is the thing being measured -- an operating point would " &
+      "find the state it settles to. Nothing in the fragment is biased at " &
+      "t = 0, which is the right picture for a board at the instant power is " &
+      "applied and wrong for anything that is already up")
 
   try:
     result.raw = run(frag, @[card])
@@ -253,10 +359,6 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
 
   let t = result.raw["time"]
   let v = result.raw[vProbe.label]
-  # The probe source's branch current is signed by which pin was split, which
-  # is an artefact of probe wiring rather than anything about the circuit, so
-  # inrush is reported as a magnitude.
-  let i = result.raw[iProbe.label]
 
   let final = v[^1]
   result.add "final_v", final, "V"
@@ -264,11 +366,16 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
   result.add "overshoot_pct", overshootFrac(v, targetV) * 100.0, "%"
   result.add "settle_time", settleTime(t, v, targetV, spec.settleTol), "s"
 
-  let pk = peakAbs(t, i)
-  # Probed on the source feeding `outputNet`, which is not necessarily the
-  # net the assertion names -- see `Measurement.at`.
-  result.add "inrush_peak", abs(pk.v), "A", at = "net '" & outputNet & "'"
-  result.add "t_inrush_peak", pk.t, "s", at = "net '" & outputNet & "'"
+  # The probe source's branch current is signed by which pin was split, which
+  # is an artefact of probe wiring rather than anything about the circuit, so
+  # inrush is reported as a magnitude.
+  var pk = (t: NaN, v: NaN)
+  if haveInrush:
+    pk = peakAbs(t, result.raw[iProbe.label])
+    # Probed on the source feeding `outputNet`, which is not necessarily the
+    # net the assertion names -- see `Measurement.at`.
+    result.add "inrush_peak", abs(pk.v), "A", at = "net '" & outputNet & "'"
+    result.add "t_inrush_peak", pk.t, "s", at = "net '" & outputNet & "'"
 
   # --- issues ------------------------------------------------------------
   if abs(final - targetV) > abs(targetV) * spec.settleTol:
@@ -285,7 +392,7 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
       eng(over * 100.0) & "% above " & eng(targetV, "V") & "), past the " &
       eng(spec.overshootLimit * 100.0) & "% limit", net = nl.nets[measured])
 
-  if spec.currentLimit > 0.0 and abs(pk.v) > spec.currentLimit:
+  if haveInrush and spec.currentLimit > 0.0 and abs(pk.v) > spec.currentLimit:
     result.issues.add newIssue(KindInrushExceedsLimit, sevWarning,
       "inrush peaks at " & eng(abs(pk.v), "A") & " at " & eng(pk.t, "s") &
       ", above the " & eng(spec.currentLimit, "A") & " limit -- a regulator that " &

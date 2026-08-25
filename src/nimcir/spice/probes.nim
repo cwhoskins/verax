@@ -56,6 +56,20 @@ proc addCurrentProbe*(nl: Netlist, pin: Pin, designator = ""): Probe =
     raise newException(NetlistError,
       "cannot add a current probe to an unconnected pin: " &
       pin.component.designator & "." & pin.name)
+  # An XSPICE `A` line is not written from the component's pins: the port
+  # text was rendered from the model's own `ModelSpec` at
+  # `xspice/instance.addCodeModelInstance` time and lives verbatim in
+  # `attrs["xspice.ports"]`. Re-netting a pin therefore moves it in the
+  # graph and **not** in the deck, so the probe source would end up in
+  # series with nothing while the code model went on driving the original
+  # net -- a probe reading zero on a branch that is carrying current, which
+  # is the one failure a measurement must never have.
+  if pin.component != nil and pin.component.attrs.hasKey("xspice.ports"):
+    raise newException(NetlistError,
+      "cannot add a current probe to " & pin.component.designator & "." &
+      pin.name & ": it is an XSPICE code model, whose port text is rendered " &
+      "from the model spec rather than from its pins, so moving a pin would " &
+      "not move it in the deck. Probe a passive part in series with it instead.")
 
   var desig = designator
   if desig.len == 0:

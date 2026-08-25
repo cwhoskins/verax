@@ -382,6 +382,37 @@ test "a stated gain becomes the macromodel's open-loop gain":
   # Stated, so it is not reported as an invented value.
   check not notes.anyIt(it.key == "gain" and it.entity == "U1")
 
+test "a stated gbw becomes the macromodel's pole, and is not reported as invented":
+  # This was a `const` in `models.opampModel` until it was noticed that the
+  # assumption line reported 1 MHz as invented while a stated `gbw` sat one
+  # field away unread -- the worst shape a default can take, since the report
+  # then reads as the design not having stated one. `analysis/opamp` already
+  # honoured it, so the two paths disagreed about the same part.
+  let nl = stageWithTwoOpAmps()
+  nl.components["U1"].attrs["gain"] = "2e5"
+  nl.components["U1"].attrs["gbw"] = "3e6"
+  let notes = expandPinModels(nl, exclude = ["U2"])
+  # The pole sits at gbw/aol into a 1 kohm series resistor.
+  let rPole = parseFloat(nl.components["RU1_POLE"].attrs["value"])
+  let cPole = parseFloat(nl.components["CU1_POLE"].attrs["value"])
+  let fPole = 1.0 / (2.0 * PI * rPole * cPole)
+  check abs(fPole * 2.0e5 - 3.0e6) / 3.0e6 < 1.0e-9
+  for n in notes:
+    if n.entity == "U1" and n.key == "gbw":
+      check n.value == 3.0e6
+      check n.source == annAuthored
+
+test "an unstated gbw still defaults to 1 MHz and still says that it did":
+  let nl = stageWithTwoOpAmps()
+  let notes = expandPinModels(nl, exclude = ["U2"])
+  var seen = false
+  for n in notes:
+    if n.entity == "U1" and n.key == "gbw":
+      seen = true
+      check n.value == 1.0e6
+      check n.source == annDefaulted
+  check seen
+
 test "an amplifier whose pins cannot be identified is left alone, not grounded":
   # Tying an unrecognised part's pins to ground independently would open any
   # loop through it, which is the failure this whole registry exists to stop.

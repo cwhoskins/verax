@@ -29,7 +29,9 @@
 ##   soft start: 1.9 uA into 10 nF is 190 V/s at the pin, and TR/SS is the
 ##          reference while it is below 0.970 V, so the output ramps
 ##          190 * (1 + 1M/243k) = 972 V/s -> 5.1 ms to regulation,
-##          4.08 ms 10-90%.  Measured 4.086 ms.
+##          4.08 ms 10-90%.  Measured 4.09 ms, through the part's own model
+##          rather than through the ramp `analyzeStartup` would otherwise
+##          have assumed -- see the note above that claim.
 ##
 ##   output ripple: the inductor's current triangle across the output
 ##          capacitor. dI = V_OUT (1 - D) / (L f) = 0.94 A at D = 0.43, into
@@ -221,6 +223,42 @@ let d = design("lt8640a_buck"):
   role "settled_rail", ripple, rail = vout,
        tSettle = 300.0.us, tWindow = 20.0.us,
        voltage = 4.962.V, band = 2.pct, maxRipple = 10.0.mV
+
+  # The soft start, which is the one number on this board set by a single
+  # capacitor and by nothing else. 1.9 uA out of TR/SS into CSS is 190 V/s at
+  # the pin; TR/SS is the reference while it is below 0.970 V, so the output
+  # follows at 190 * (1 + 1M/243k) = 972 V/s, reaching regulation in 5.1 ms
+  # and passing 10-90% in 4.08 ms. Measured 4.09 ms.
+  #
+  # **This claim needed `analyzeStartup` to stop standing the regulator up
+  # itself.** Its default is an assumed PWL ramp, which is the right model
+  # for a part a netlist merely names -- and here it would have measured the
+  # ramp this tool invented rather than the one CSS sets, reporting a number
+  # that moves when you edit `StartupSpec.softStart` and not when you change
+  # the capacitor. The part carries a model, so the model runs.
+  #
+  # Two consequences of that are worth knowing, because both are visible in
+  # the report:
+  #
+  #   * the run starts from **zero with uic** rather than from a solved
+  #     operating point. It has to: an operating point finds the state the
+  #     soft start settles *to*, so the .tran would begin at the end of the
+  #     ramp and report a rise time of zero.
+  #   * **no inrush is measured.** The stand-in is a code model driving a
+  #     switch node into L1, so the current reaching VOUT is the inductor's
+  #     and there is no single branch to put a probe in series with. That is
+  #     an honest gap rather than a zero: see docs/findings.md, where the
+  #     inductor's peak current is the check a converter most wants and is
+  #     still missing.
+  #
+  # `tRun` is 8 ms, comfortably past the 5.1 ms to regulation, and is a
+  # condition rather than a limit -- it says what was run. The rise time is
+  # claimed at 5 ms rather than at the measured 4.09: CSS is a 10% part and
+  # the 1.9 uA is a typical with min and max around it, so a claim at the
+  # measured figure would be a claim about one corner of a part.
+  role "regulator", softstart, regulator = U1, output = vout,
+       voltage = 4.962.V, band = 2.pct, tRun = 8.0.ms,
+       maxRiseTime = 5.0.ms, maxOvershoot = 2.0
 
 # Attach the behavioural model. After the block, because it sets
 # `simReplace` on the real part rather than replacing it -- everything above

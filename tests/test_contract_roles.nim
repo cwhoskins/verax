@@ -448,3 +448,66 @@ test "a ripple budget alone is a claim; a voltage alone is a different one":
   let a2 = d2.expandAll()
   check a2.len == 1
   check a2[0].quantity == "settled_v"
+
+# --- oscillator -------------------------------------------------------------
+
+test "an oscillator role claims nothing by default and binds no driving part":
+  # The same rule `settled_rail` follows, and for a sharper reason: there is
+  # no default frequency for an oscillator, and defaulting one would state a
+  # claim the designer never made and then report it as theirs.
+  let d = board()
+  discard d.addRole("oscillator", "osc", {"output": net("sda")},
+                    {"tSettle": "0.15", "tWindow": "0.02"})
+  check d.expandAll().len == 0
+
+test "an oscillator role stamps its window and its kick into the condition":
+  let d = board()
+  discard d.addRole("oscillator", "osc",
+                    {"output": net("sda"), "kick": net("scl")},
+                    {"tSettle": "0.15", "tWindow": "0.02", "kickV": "0.01",
+                     "freq": "1591.55", "band": "0.02",
+                     "minSwing": "2.0", "maxSwing": "2.8", "maxThd": "6.0"})
+  let a = d.expandAll()
+  check a.len == 4
+  var byId: Table[string, Assertion]
+  for x in a: byId[x.id] = x
+  check byId.hasKey("osc.freq")
+  check byId.hasKey("osc.swing")
+  check byId.hasKey("osc.swing_max")
+  check byId.hasKey("osc.thd")
+  for x in a:
+    # Where the circuit was started from and how hard is setup, not a claim:
+    # two claims started differently have to stay two runs.
+    check x.condition["t_settle"] == "0.15"
+    check x.condition["t_window"] == "0.02"
+    check x.condition["kick_v"] == "0.01"
+  check byId["osc.freq"].expect.satisfies(1591.55 * 1.019)
+  check not byId["osc.freq"].expect.satisfies(1591.55 * 1.021)
+  check byId["osc.swing"].expect.satisfies(2.4)
+  check not byId["osc.swing"].expect.satisfies(1.9)
+  check byId["osc.thd"].expect.satisfies(4.2)
+  check not byId["osc.thd"].expect.satisfies(6.1)
+
+test "the kick is optional -- a circuit that starts by itself binds none":
+  let d = board()
+  discard d.addRole("oscillator", "osc", {"output": net("sda")},
+                    {"tSettle": "0.15", "freq": "1000.0"})
+  let a = d.expandAll()
+  check a.len == 1
+  check a[0].quantity == "osc_freq"
+  # Defaulted rather than absent, so the evaluator's setup key is total.
+  check a[0].condition["kick_v"] == "0.1"
+
+test "a regulator role stamps its run length onto every claim it makes":
+  # Four of the five assertions sit behind an `if`, so a condition applied at
+  # each `add` is how one of them ends up planned into a second run.
+  let d = board()
+  discard d.addRole("regulator", "reg",
+                    {"regulator": comp("U1"), "output": net("vdd")},
+                    {"voltage": "4.962", "tRun": "0.008",
+                     "maxRiseTime": "0.005", "maxSettleTime": "0.006",
+                     "maxInrush": "3.0"})
+  let a = d.expandAll()
+  check a.len == 5
+  for x in a:
+    check x.condition["t_run"] == "0.008"

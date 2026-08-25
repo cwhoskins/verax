@@ -323,7 +323,10 @@ proc measurementOnly(spec: var StartupSpec) =
 
 proc startupKey(ctx: EvalContext, a: Assertion): string =
   let d = ctx.design
-  bindingName(d, a, "regulator") & "|" & subjectNet(d, a)
+  # `t_run` joins the key for the reason every setup condition does: it is
+  # what was run, so two claims over two run lengths are two runs.
+  bindingName(d, a, "regulator") & "|" & subjectNet(d, a) & "|" &
+    $conditionFloat(a, "t_run", 0.0)
 
 proc startupDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
@@ -335,13 +338,31 @@ proc startupDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   if regulator.len == 0:
     return "a `.tran` from power-on -- but no `regulator` part is bound, so " &
            "nothing says what drives the rail"
-  result = "`.tran` from power-on with " & regulator &
-           " stood up as an ideal source following an assumed soft-start " &
-           "ramp into net '" & driven & "'"
+  # Which of the two things happened is not a detail a reader can be left to
+  # infer. An assumed ramp measures the *output network's* response to a ramp
+  # this tool invented; the part's own model measures the part. The rise time
+  # means something completely different in the two cases, and it is reported
+  # under the same name.
+  let c = findComponent(d.netlist, regulator)
+  let sr = if c == nil: nil else: selectSimModel(c, spStartup)
+  if sr == nil:
+    result = "`.tran` from power-on with " & regulator &
+             " stood up as an ideal source following an assumed soft-start " &
+             "ramp into net '" & driven & "'"
+  else:
+    result = "`.tran` from power-on with " & regulator &
+             " simulated through its own model" &
+             (if sr.name.len > 0: " '" & sr.name & "'" else: "") &
+             ", started from zero with uic so that model's own soft start " &
+             "is what runs, driving net '" & driven & "'"
   if measured.len > 0 and measured != driven:
     result &= ", measured at net '" & measured &
               "' on the far side of the filter"
-  result &= ". No control loop, current limit or dropout is modelled"
+  let tRun = conditionFloat(batch[0], "t_run", 0.0)
+  if tRun > 0.0:
+    result &= ", run for " & eng(tRun, "s")
+  if sr == nil:
+    result &= ". No control loop, current limit or dropout is modelled"
 
 proc runStartup(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   let d = ctx.design
@@ -365,6 +386,7 @@ proc runStartup(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
 
   var spec = defaultStartupSpec()
   measurementOnly(spec)
+  spec.tStop = conditionFloat(a0, "t_run", 0.0)
 
   var rep: AnalysisReport
   try:
@@ -432,6 +454,77 @@ proc runTransient(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult]
   except CatchableError as e:
     return failBatch(batch, name,
       "the transient run on '" & rail & "' failed: " & e.msg)
+  for a in batch: result.add harvest(a, rep, name)
+
+# --- oscillation, via .tran ---------------------------------------------
+
+const oscQuantities = ["osc_freq", "swing_pp", "osc_thd_pct"]
+  ## `swing_pp` rather than reusing `output_swing`, which `spice.large_signal`
+  ## already produces: `registerEvaluator` refuses a second producer of a
+  ## quantity outright, and the two are not the same measurement anyway --
+  ## one is the response to a stated drive, the other is what the circuit
+  ## does with no drive at all.
+
+proc oscKick(ctx: EvalContext, a: Assertion): tuple[net: string, v: float] =
+  ## The node given a starting voltage, and how much. Empty when the role
+  ## bound no `kick` part, which is right for a circuit that starts by
+  ## itself -- and is why the evaluator declares no `binds`.
+  (bindingName(ctx.design, a, "kick"), conditionFloat(a, "kick_v", 0.1))
+
+proc oscKey(ctx: EvalContext, a: Assertion): string =
+  let d = ctx.design
+  # The kick joins the key alongside the window: where a circuit is started
+  # from and how hard is part of the setup, not part of the claim, and two
+  # claims started differently are two runs.
+  let k = oscKick(ctx, a)
+  subjectNet(d, a) & "|" & $conditionFloat(a, "t_settle", 0.0) &
+                     "|" & $conditionFloat(a, "t_window", 0.0) &
+                     "|" & k.net & "|" & $k.v
+
+proc oscDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
+  let outNet = subjectNet(d, batch[0])
+  let (tSettle, tWindow) = transientWindow(batch[0])
+  let k = oscKick(ctx, batch[0])
+  result = "`.tran` over the whole design as authored -- not isolated, and " &
+           "not swept, because an oscillator has no transfer function to " &
+           "sweep and driving its input would hold the node the loop " &
+           "returns to. Reading net '" & outNet & "'"
+  if tSettle > 0.0:
+    result &= " over " & eng(tWindow, "s") & " from " & eng(tSettle, "s") &
+              ", with everything before that simulated and discarded"
+  else:
+    result &= " over the whole run"
+  if k.net.len > 0:
+    result &= ", started by putting " & eng(k.v, "V") & " on net '" & k.net &
+              "' as an initial condition with uic"
+  else:
+    result &= ", started from its own operating point -- which for anything " &
+              "that sits at a balance means it does not start at all; bind a " &
+              "`kick` net on the role if it reports a flat line"
+
+proc runOscillation(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
+  const name = "spice.oscillator"
+  let outNet = subjectNet(d, batch[0])
+  if outNet.len == 0:
+    return failBatch(batch, name, "no net subject to measure")
+
+  var spec = defaultTransientSpec()
+  measurementOnly(spec)
+  let (tSettle, tWindow) = transientWindow(batch[0])
+  spec.tSettle = tSettle
+  spec.tWindow = tWindow
+  let k = oscKick(ctx, batch[0])
+  if k.net.len > 0:
+    spec.initialConditions[k.net] = k.v
+
+  var rep: AnalysisReport
+  try:
+    rep = analyzeOscillation(d.netlist, outNet, spec)
+  except CatchableError as e:
+    return failBatch(batch, name,
+      "the oscillation run on '" & outNet & "' failed: " & e.msg)
   for a in batch: result.add harvest(a, rep, name)
 
 # --- the op-amp bundles, via .ac ----------------------------------------
@@ -611,6 +704,11 @@ proc registerSimulatedEvaluators*() =
     name: "spice.transient", produces: @transientQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
     setupKey: transientKey, setupDoc: transientDoc, run: runTransient))
+
+  registerEvaluator(Evaluator(
+    name: "spice.oscillator", produces: @oscQuantities,
+    needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
+    setupKey: oscKey, setupDoc: oscDoc, run: runOscillation))
 
   registerEvaluator(Evaluator(
     name: "spice.opamp_response", produces: @responseQuantities,

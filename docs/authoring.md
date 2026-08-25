@@ -447,9 +447,63 @@ any ripple claim you could write.
 The design is run **as authored, with no isolation** — nothing terminates the
 measured node with an ideal source at the value you are asking about.
 
-**Not yet**: no `.ic` and no initial conditions, so a circuit that will not
-start from its own operating point (an oscillator at its unstable
-equilibrium) is still out of reach.
+## Running, rather than settling
+
+An oscillator is specified the other way round from everything above: the
+loop gain must be *exactly* 1 at *exactly* 0 degrees, and everything a
+stability claim would call a defect is the product. `oscillator` measures
+what a node is running at rather than what it settled to.
+
+```nim
+  role "oscillator", tone, output = vout, kick = vp,
+       tSettle = 150.ms, tWindow = 20.ms, kickV = 10.mV,
+       freq = 1591.55.Hz, band = 2.pct,
+       minSwing = 2.V, maxSwing = 2.8.V, maxThd = 6.0
+```
+
+Quantities: `osc_freq` (Hz), `swing_pp` (V peak-to-peak) and `osc_thd_pct`
+(%). Every claim is opt-in, as with `settled_rail`: there is no default
+frequency for an oscillator, and no default amplitude or distortion budget
+either.
+
+**`kick` is what makes the start-up a stated thing.** An oscillator's
+operating point is a balance it would sit in forever, so a `.tran` from it can
+report a flat line — a lossless tank does exactly that. Binding a `kick` net
+puts `kickV` on it as an `.ic` and forces `uic`, which the circuit has to move
+away from. `uic` is not free and is reported as an assumption on every run
+that uses it: the operating-point solve is skipped, so *every* node not named
+starts at zero rather than at its bias. A circuit that starts by itself binds
+no `kick` and pays none of that.
+
+**Kick anything with excess loop gain, even if it seems to start without
+one.** `designs/wien_osc.nim` does start unkicked — ngspice's own solver
+residual seeds it, and 3.2 of loop gain grows that to full amplitude in about
+30 ms. That is a property of the solver's tolerance and not of the board: it
+puts the settling time somewhere nobody chose, and a loop with less excess
+gain would take arbitrarily longer or never arrive. Measured unkicked at
+`tSettle = 10.ms` that design's amplitude claim reads **57.4 nV** —
+oscillating, correctly reported at 1.58 kHz, and four orders of magnitude
+short. Kicked, the same window is already at full amplitude.
+
+If it did not start you get `osc_freq` back as `NaN` — never 0 Hz, which
+would be a measurement where there was none — with an issue saying which of
+the two cases it was: the node never moved (kick it), or it is moving but not
+periodically inside the window (widen `tSettle` or `tWindow`).
+
+**Do not point `opamp_stage` or `gain_stage` at an oscillator.** Both sweep by
+hanging an ideal source on the stage's input net, and a Wien bridge returns
+its positive feedback to that very node — so the source holds it and the
+bridge is shorted out of the circuit. That is refused by name now
+(`checkInjectionPoint`), but the deeper point is that there is no transfer
+function to sweep, because there is nothing to sweep it *from*.
+
+**Two settings the answer is sensitive to**, and both look like circuit
+measurements. State the amplifier's `gbw` — the substituted macromodel
+defaults to 1 MHz, and on `designs/wien_osc.nim` a TL072 left unstated reads
+0.5% low, a quarter of the claim's band. And note that the print step is also
+ngspice's ceiling on its own timestep, which is why `analyzeOscillation`
+derives ten times the sample density `analyzeTransient` does: at the ordinary
+density that same design reads 0.31% low.
 
 ## More than one model for one part
 

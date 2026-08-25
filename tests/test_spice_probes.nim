@@ -68,3 +68,18 @@ test "current probe on an unconnected pin raises":
 
   expect(NetlistError):
     discard addCurrentProbe(nl, pin)
+
+test "current probe refuses an XSPICE code model, whose ports are not its pins":
+  # An `A` line's port text is rendered from the model's own `ModelSpec` at
+  # instantiation and kept verbatim in `attrs["xspice.ports"]`. Re-netting a
+  # pin would move it in the graph and not in the deck, leaving the probe
+  # source in series with nothing while the code model went on driving the
+  # original net -- a probe reading zero on a branch that carries current.
+  let nl = newNetlist("t")
+  let sw = addNet(nl, newNet("sw", ntSignal))
+  let a1 = addComponent(nl, newComponent("AU1", kind = "code_model"))
+  a1.attrs["xspice.ports"] = "vin fb en trss sw pg bst"
+  let pin = connect(a1, "SW", sw, ptOutput)
+
+  expect(NetlistError):
+    discard addCurrentProbe(nl, pin)

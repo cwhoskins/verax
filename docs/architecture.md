@@ -509,6 +509,62 @@ supply rather than cutting it. Measured, the same rail read 129 mohm with no
 source and **0 ohm with one**, passing every target that could be set.
 `expandSourceImpedance` is what stops that.
 
+### The print step is also the solver's step ceiling
+
+Every `.tran`-backed analysis here derives a print step when the caller states
+none, and it is easy to read that as a display setting. It is not: ngspice
+defaults its own **maximum internal timestep** to the print step, so the figure
+sets how accurately the circuit is *solved* and not merely how often the answer
+is written down.
+
+Which quantities notice differs, and the split is clean. A settling voltage and
+a peak-to-peak barely do. Anything **phase-sensitive** does — a frequency
+directly, and a distortion figure through the window it integrates over.
+Measured on `designs/wien_osc.nim`, whose 20 ms window is 31 whole periods: at
+`analyzeTransient`'s thousand samples across the window the oscillation reads
+1568.4 Hz, at ten thousand 1573.26, and at a hundred thousand 1573.31. The
+ordinary default was therefore wrong by 0.31%, three times the band that
+design's frequency claim is worth stating at, and wrong in a way that looks
+like a circuit measurement rather than like a setting.
+
+So `runWindow` takes a `windowSamples` parameter and `analyzeOscillation`
+passes ten times what `analyzeTransient` does; the cost on that design is
+0.42 s against 0.06 s. `TransientSpec.tStep` and `tMax` remain the caller's
+own overrides — `tMax` in particular exists for a design where the caller
+knows the switching rate and the parts do not.
+
+The same argument has not been made for `analyzeStartup`, which still sizes
+from the run length rather than from a window; see `docs/findings.md`.
+
+### Sweeping and running are different questions
+
+The `.ac` family measures by hanging an ideal source on a stage's input net.
+That is exactly right at an input and catastrophic at a node the feedback
+returns to, because an ideal source **holds** the node: a Wien bridge returns
+its positive feedback straight to `IN+`, so driving there shorts the bridge out
+of the circuit. Before it was caught, `gain_stage` reported `f_hi_3db` of
+289 kHz for a circuit whose entire behaviour is at 1.59 kHz, and **the claim
+passed at exit 0**. `opamp.checkInjectionPoint` now refuses it by name.
+
+But the deeper point is that no version of a swept measurement answers the
+question. An oscillator has no transfer function, because there is nothing to
+sweep it *from*. So `analysis/transient` holds two analyses over one run:
+`analyzeTransient` reports what a node **settled to** and `analyzeOscillation`
+reports what it is **running at**. They share `runWindow` deliberately — having
+two questions diverge in the simulator setup as well as in the arithmetic is
+how one of them quietly measures a different circuit.
+
+Reaching a circuit that will not start is the other half.
+`TransientSpec.initialConditions` emits an `.ic` and forces `uic`, which puts
+the state somewhere the circuit has to move away from; the `oscillator` role's
+optional `kick` part is how a design says where and how hard. `uic` is not free
+— it skips the operating-point solve, so every node not named starts at zero
+rather than at its bias — and that cost is declared as an assumption on every
+run that uses it. `analyzeStartup` reaches for the same mechanism for the
+opposite reason: a regulator that brings its own model soft-starts, and an
+operating point would find the state that ramp settles *to*, so the run would
+begin at the end of the thing being measured.
+
 ### What crosses the process boundary
 
 `spice/ngspice.run(nl, analysis, setup, codemodels)` takes **one analysis card

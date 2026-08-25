@@ -1643,7 +1643,143 @@ a detector that guessed wrong would report a start-up transient as ripple.
 `tSettle` and `tWindow` ride in `Assertion.condition` and join the evaluator's
 setup key, so two claims over two windows stay two runs.
 
-This is §23's first half. **Still open**: no `.ic` and no initial conditions,
-so a circuit that will not start from its own operating point -- an oscillator
-at its unstable equilibrium -- remains out of reach, and `designs/wien_osc.nim`
-still cannot state what it does.
+This is §23's first half. The rest is §23 itself, below.
+
+## 23. Every `.tran` quantity needed a bound driving part
+
+Two designs reached this from opposite directions and neither could make its
+central claim. `designs/charge_pump.nim` settles at 9.52 V with ripple on it;
+`dc_voltage` is backed by a `.op`, and a `.op` takes a PULSE source at its DC
+value, so nothing pumped and the tool reported **4.64 V** -- exactly
+5 - 2*0.18, a perfectly correct answer to a question nobody asked, delivered
+as a FAIL against a real number. `designs/wien_osc.nim` oscillates, and not
+one of the three numbers that specify an oscillator was expressible.
+
+The gap was structural: `regulator` wants a regulator component to stand up
+as a soft-start ramp and `large_signal` wants an op-amp and an input to
+drive, so nothing could ask *"run this and tell me what this node does"*.
+
+§41 delivered the settling half (`analyzeTransient`, `settled_rail`) and
+`spice/ngspice.run(nl, analysis, setup)` plus
+`TransientSpec.initialConditions` delivered the `.ic`. **Fixed** here in
+three pieces, none of which needed a simulator change.
+
+**The measurement layer.** `analysis/measure.fundamentalFreq(t, v)` counts
+rising crossings of the window's own **mean** -- not zero, since a
+single-supply oscillator has no zero crossings at all -- with a hysteresis
+band so a harmonic-rich wave is not counted at three times its rate. It is
+deliberately not a spectral estimate: an FFT's resolution is one over the
+window, so a 20 ms window resolves 50 Hz and would place a 1.59 kHz
+oscillator to within 3%, useless against a network whose whole job is to fix
+that frequency. Crossing-counting resolves to the *timestep* instead. Fewer
+than two crossings is `NaN`, which is the answer for a circuit that did not
+start and must stay distinguishable from 0 Hz.
+
+**The analysis.** `analysis/transient.analyzeOscillation` shares
+`analyzeTransient`'s run -- same netlist, same window, same `uic`, since
+having the two questions diverge in the *simulator setup* as well as in the
+arithmetic is how one of them quietly measures a different circuit -- and
+reports `osc_freq`, `swing_pp` and `osc_thd_pct`. Frequency is measured
+first, because the distortion integral runs over whole periods of it. A
+`NaN` frequency raises `KindDidNotOscillate` naming which of the two causes
+it was: the node never moved (kick it), or it is moving but not periodically
+inside the window (widen it).
+
+**The role.** `oscillator` binds `output` and an optional `kick`, whose
+`kickV` becomes an `.ic` with `uic`. `kick` is optional and the evaluator
+therefore declares no `binds`, so a circuit that is periodic without one pays
+none of `uic`'s cost.
+
+Worth knowing, because it looks like the kick is unnecessary: `wien_osc` does
+start unkicked -- ngspice's own solver residual seeds it, and 3.2 of loop gain
+grows that to full amplitude in about 30 ms. That is a property of the
+solver's tolerance rather than of the board, it puts the settling time
+somewhere nobody chose, and a loop with less excess gain would take
+arbitrarily longer or never arrive. Measured unkicked at `tSettle = 10 ms`
+that design's amplitude claim reads **57.4 nV** -- oscillating, correctly
+reported at 1.58 kHz, and four orders of magnitude short. A lossless LC tank,
+which has no gain to amplify a residual with, stays flat forever
+(`tests/test_analysis_transient.nim`). Every claim is opt-in: there is no default frequency for an
+oscillator, and inventing one would state a claim the designer never made.
+
+**What the fix turned up on the way, and it is the part worth keeping.** The
+derived print step is **also ngspice's ceiling on its own internal timestep**,
+so it sets how accurately the circuit is *solved* and not merely how often
+the answer is written down. A peak-to-peak barely notices; a frequency does.
+On `wien_osc`, at `analyzeTransient`'s thousand samples across the window the
+oscillation reads 1568.4 Hz, at ten thousand 1573.26 and at a hundred
+thousand 1573.31 -- so the default was wrong by 0.31%, three times the band
+that design's claim is worth stating at, in a way that looks like a circuit
+measurement rather than like a setting. `runWindow` takes `windowSamples` and
+`analyzeOscillation` passes ten thousand; the cost is 0.42 s against 0.06 s.
+
+**`designs/charge_pump.nim`** now states `settled_rail` and passes -- and
+stating it immediately found something the hand-run that produced the design
+file's numbers could not see. The rail droops and recharges by 7.9 mV once a
+cycle, which is the topology's own arithmetic, and takes a **403 mV** spike a
+couple of nanoseconds wide at each clock edge. The spike is fifty times the
+droop and is entirely the output capacitor's ESR and ESL: C1's plate is
+stepped 5 V in 10 ns, so the pump current is limited only by the diodes' `RS`
+and the two ESRs, and tens of amps for a few nanoseconds cross COUT's 10 mohm
+and 1.2 nH on the way in. An ideal capacitor has neither, which is why a run
+with nominal capacitors reports 5.1 mV and reports nothing about the spike.
+What would make the smaller number the true one is a clock with a real driver
+behind it -- a 10 ns edge into 1 uF is not something an MCU pin can do -- and
+that impedance is not in the netlist because the design states the clock as
+an ideal source. The claim is stated against the circuit as authored, with
+the arithmetic written down beside it.
+
+**`designs/lt8640a_buck.nim`** now claims its soft start: 4.09 ms measured
+against the 4.08 ms the datasheet's 1.9 uA into 10 nF predicts. That needed
+four changes to `analyzeStartup`, all of which were assumptions that only
+held for the ramp it invents itself:
+
+* the regulator is resolved through `findComponent`, so a hierarchical path
+  works;
+* `SimReplacement.build` is honoured. It is the only route that can express
+  a code model, and `replaceComponent` would have read an empty `kind` and
+  an empty `pinNets` and produced a device of no type wired to nothing;
+* the inrush probe no longer assumes a pin named `"+"`. That is the pin of
+  the PWL source *this analysis* builds and no other model has to have one;
+  it now looks for a pin on the output net, and reports **no** `inrush_peak`
+  rather than a zero when there is none. A switching regulator is the
+  ordinary case: it drives a switch node into an inductor, so the current
+  reaching the rail is the inductor's and no single branch carries it.
+  `spice/probes.addCurrentProbe` additionally now **refuses** a code model
+  outright -- an `A` line's port text is rendered from the model spec rather
+  than from the component's pins, so re-netting one would move it in the
+  graph and not in the deck, leaving a probe reading zero on a branch that
+  is carrying current;
+* `StartupStart` decides where t = 0 is, and `ssAuto` starts from zero with
+  `uic` when the part brought its own model. It has to: an operating point
+  finds the state the soft start settles *to*, so the `.tran` would begin at
+  the end of the ramp and report a rise time of zero for a part that takes
+  milliseconds.
+
+`regulator` also gained `tRun`, a condition rather than a limit: the run
+length derived from this analysis's *assumed* ramp has nothing to do with
+the schedule a part's own model keeps to.
+
+## 42. A stated `gbw` was ignored and then reported as invented
+
+`spice/models.opampModel` -- the macromodel every op-amp gets when nothing
+named it deliberately -- read `gain` off the component and carried `gbw` as a
+`const 1.0e6`. The assumption line beneath it then reported that 1 MHz with
+`annDefaulted` provenance, so a design that *had* stated `gbw` was told its
+own value had not been used and that the tool had made one up.
+
+That is the worst shape a default can take. `analysis/opamp` already passed
+the annotation through to `idealOpAmp`, so the two paths disagreed about the
+same part -- and this is the *only* path for every amplifier a `.tran` sees,
+since nothing there names one stage to model deliberately.
+
+Found by `designs/wien_osc.nim`, where it is directly readable as a
+frequency: the amplifier's finite gain loads the Wien network and pulls its
+peak down, so a TL072 modelled three times too slow reported an oscillator
+0.5% low -- a quarter of the band that design's frequency claim is stated at,
+and a claim about the model wearing the clothes of a claim about the board.
+
+**Fixed**: the annotation is read, and the note's *provenance* now tells the
+truth about where the number came from (`annAuthored` when stated), which is
+what `invented()` counts on. The note itself is still always emitted, because
+the model is still a substitution even when both its numbers were stated.

@@ -212,6 +212,65 @@ proc thd*(t, v: openArray[float], f0: float, upTo = 9): float =
   for k in 1 ..< a.len: sumSq += a[k] * a[k]
   sqrt(sumSq) / a[0]
 
+proc fundamentalFreq*(t, v: openArray[float], hysteresis = 0.1): float =
+  ## The repetition rate of a settled periodic waveform, in hertz, from its
+  ## rising mean-crossings.
+  ##
+  ## **This is where an oscillator's specification starts**, and it is
+  ## deliberately not a spectral estimate. An FFT's resolution is one over
+  ## the window, so a twenty-millisecond window resolves 50 Hz and would
+  ## report a 1.59 kHz oscillator to within 3% -- useless against a network
+  ## whose whole job is to place that frequency. Counting crossings over the
+  ## same window instead gives a resolution set by the *timestep*, which is
+  ## nanoseconds, and the answer is the average over every period in the
+  ## window rather than the peak of a smeared bin.
+  ##
+  ## The crossing level is the window's own **mean**, not zero: a
+  ## single-supply oscillator sits at mid-rail and has no zero crossings at
+  ## all. `hysteresis` is a fraction of the amplitude the waveform must first
+  ## fall below before the next rising crossing is counted, which is what
+  ## keeps a harmonic-rich wave -- anything clipped, or a relaxation
+  ## oscillator's exponential -- from being counted at three times its rate
+  ## because it wobbles across the mean on the way up.
+  ##
+  ## `NaN` when fewer than two rising crossings are found. That is the answer
+  ## for a circuit that **did not start**, and it must stay distinguishable
+  ## from a frequency of zero: an oscillator sitting at its operating point
+  ## is a flat line, and reporting 0 Hz for it would be a measurement where
+  ## there was none. See `analysis/transient.analyzeOscillation`, which turns
+  ## it into an issue naming the likeliest cause.
+  checkPair(t, v, "fundamentalFreq")
+  if t.len < 4: return NaN
+
+  var lo = v[0]
+  var hi = v[0]
+  var sum = 0.0
+  for x in v:
+    if x < lo: lo = x
+    if x > hi: hi = x
+    sum += x
+  let mid = sum / float(v.len)
+  let amp = 0.5 * (hi - lo)
+  if amp <= 0.0: return NaN
+  let band = amp * max(0.0, hysteresis)
+
+  var first, last = NaN
+  var count = 0
+  var armed = false
+  for i in 1 ..< t.len:
+    if v[i] < mid - band:
+      armed = true
+    elif armed and v[i] >= mid and v[i - 1] < mid:
+      # Interpolated so the answer is set by the timestep rather than snapped
+      # to it -- on a 1.59 kHz sine sampled every 100 ns, snapping alone is
+      # worth 0.016% per crossing and it does not average out.
+      let x = lerpX(t[i - 1], t[i], v[i - 1], v[i], mid, logX = false)
+      if count == 0: first = x else: last = x
+      inc count
+      armed = false
+  if count < 2: return NaN
+  float(count - 1) / (last - first)
+
 proc swing*(v: openArray[float]): tuple[lo, hi, pp: float] =
   ## The excursion actually reached: minimum, maximum, and peak-to-peak.
   ##

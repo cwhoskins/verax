@@ -297,3 +297,45 @@ test "swing reports the excursion actually reached":
   check abs(sw.hi - 1.0) < 0.01
   check abs(sw.lo + 1.0) < 0.01
   check abs(sw.pp - 2.0) < 0.02
+
+# --- fundamentalFreq ----------------------------------------------------
+
+proc periodic(f0, offset: float; n: int; periods: float;
+              shape: proc (phase: float): float {.closure.}): tuple[t, v: seq[float]] =
+  for k in 0 .. n:
+    let t = float(k) / float(n) * periods / f0
+    result.t.add t
+    result.v.add offset + shape(2.0 * PI * f0 * t)
+
+test "fundamentalFreq recovers a sine's rate from its mean crossings":
+  let s = periodic(1584.3, 0.0, 8000, 30.0, proc (p: float): float = sin(p))
+  check abs(fundamentalFreq(s.t, s.v) - 1584.3) < 0.5
+
+test "the crossing level is the mean, not zero -- a single-supply oscillator never reaches zero":
+  # Offset well clear of ground, which is what a mid-rail-biased oscillator
+  # looks like. A zero-crossing detector finds nothing here at all.
+  let s = periodic(1584.3, 2.5, 8000, 30.0, proc (p: float): float = sin(p))
+  check abs(fundamentalFreq(s.t, s.v) - 1584.3) < 0.5
+
+test "hysteresis keeps a harmonic-rich wave from counting three times its rate":
+  # A fundamental with a 3rd harmonic 70% of it crosses the mean six times a
+  # period, not twice. Without the hysteresis band this reads 3*f0.
+  let s = periodic(1000.0, 0.0, 20000, 30.0,
+                   proc (p: float): float = sin(p) + 0.7 * sin(3.0 * p))
+  check abs(fundamentalFreq(s.t, s.v) - 1000.0) < 2.0
+
+test "a square wave is measured as readily as a sine":
+  let s = periodic(400.0, 0.0, 20000, 30.0,
+                   proc (p: float): float = (if sin(p) >= 0.0: 1.0 else: -1.0))
+  check abs(fundamentalFreq(s.t, s.v) - 400.0) < 1.0
+
+test "a flat line is NaN, not 0 Hz -- an oscillator that did not start":
+  var t, v: seq[float]
+  for k in 0 .. 1000:
+    t.add float(k) * 1e-5
+    v.add 3.3
+  check fundamentalFreq(t, v).isNaN
+
+test "less than two crossings is NaN rather than a rate from one":
+  let s = periodic(1000.0, 0.0, 400, 0.9, proc (p: float): float = sin(p))
+  check fundamentalFreq(s.t, s.v).isNaN

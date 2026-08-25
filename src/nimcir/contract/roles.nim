@@ -276,11 +276,20 @@ proc regulatorExpand(inst: RoleInstance): seq[Assertion] =
   ## `regulator` and `output` parts are what an evaluator reads back to know
   ## what to simulate -- a role knows its own topology, so its claims do not
   ## have to restate it.
+  ## `tRun` is a **condition, not a limit**, the same way `settled_rail`'s
+  ## window is: it says how long the circuit was run for, and every
+  ## measurement here is a function of it. It matters most for exactly the
+  ## case the role was extended to reach -- a regulator that brings its own
+  ## model soft-starts on its own schedule, and the run length derived from
+  ## this analysis's *assumed* ramp has nothing to do with the part's. Left
+  ## unstated the derived length stands, which is right for the assumed ramp
+  ## and only for that.
   let judged = if inst.hasPart("measure"): inst.subject("measure")
                else: inst.subject("output")
   let target = paramFloat(inst, "voltage", 0.0)
   let band = paramFloat(inst, "band", 0.05)
   let overshoot = paramFloat(inst, "maxOvershoot", 5.0)
+  let tRun = paramFloat(inst, "tRun", 0.0)
 
   if target > 0.0:
     result.add Assertion(
@@ -353,6 +362,12 @@ proc regulatorExpand(inst: RoleInstance): seq[Assertion] =
                  "which is the earliest anything downstream may be released " &
                  "from reset",
       origin: inst.name)
+
+  # Stamped in one place at the end rather than at each `add`: this proc has
+  # five exits through four `if`s, and a condition applied at four of them is
+  # a claim quietly planned into a second run.
+  for a in result.mitems:
+    a.condition["t_run"] = $tRun
 
 # --- built-in: opamp_stage ---------------------------------------------
 
@@ -497,6 +512,86 @@ proc gainStageExpand(inst: RoleInstance): seq[Assertion] =
       severity: sevError,
       rationale: "the stage must still be passing at the top of its band",
       origin: inst.name)
+
+proc oscillatorExpand(inst: RoleInstance): seq[Assertion] =
+  ## What a circuit whose intent is *instability* is specified by: what it
+  ## runs at, how big it is, and how clean.
+  ##
+  ## **Why this cannot be `opamp_stage` or `gain_stage` with a parameter.**
+  ## Both of those are backed by an `.ac` sweep, and every claim they make is
+  ## about how far the stage is from oscillating -- a phase margin, a bounded
+  ## peak, a flat passband. An oscillator is specified the other way round:
+  ## the loop gain must be *exactly* 1 at *exactly* 0 degrees, and everything
+  ## a stability claim would call a defect is here the product. Worse, the
+  ## measurement itself does not survive the change of intent: a swept
+  ## measurement drives an ideal source onto the stage input, and a Wien
+  ## bridge returns its positive feedback to that very node, so the source
+  ## holds it and the bridge is shorted out of the circuit. There is no
+  ## version of an `.ac` that answers this. The circuit has to be run.
+  ##
+  ## **What binds, and what does not.** The subject is the net the
+  ## oscillation is measured on, and nothing else is needed to *measure*.
+  ## `kick` is optional and binds the node given a stated starting voltage,
+  ## which is what a circuit sitting at an operating point it never leaves
+  ## on its own needs to start at all. A circuit that starts by itself omits
+  ## it, and gets no `uic` and no assumption about unbiased nodes with it.
+  ##
+  ## `tSettle`, `tWindow`, `kick` and `kickV` are **conditions, not limits**,
+  ## for the reason `settled_rail`'s window is and `large_signal`'s drive
+  ## level is: they say what was run, and the answer is a function of them.
+  ## An amplitude-stabilised oscillator settles to a level rather than to a
+  ## time constant, so a window opened too early reports the envelope as
+  ## distortion.
+  let outNet = inst.subject("output")
+  let tSettle = paramFloat(inst, "tSettle", 0.0)
+  let tWindow = paramFloat(inst, "tWindow", 0.0)
+  let kickV = paramFloat(inst, "kickV", 0.1)
+
+  template running(sfx, qty: string, e: Expectation, un, why: string;
+                   sev = sevError) =
+    var claim = Assertion(
+      id: assertionId(inst, sfx),
+      subjects: @[outNet],
+      quantity: qty,
+      expect: e,
+      unit: un,
+      severity: sev,
+      rationale: why,
+      origin: inst.name)
+    claim.condition["t_settle"] = $tSettle
+    claim.condition["t_window"] = $tWindow
+    claim.condition["kick_v"] = $kickV
+    result.add claim
+
+  # Every claim is opt-in and the role makes none of its own, the same rule
+  # `settled_rail` follows. There is no default frequency for an oscillator
+  # -- the network sets it and only the designer knows what it was meant to
+  # be -- and no default amplitude or distortion budget either, since both
+  # are consequences of a stabilisation scheme rather than of the topology.
+  if hasParam(inst, "freq"):
+    running("freq", "osc_freq",
+            nominal(paramFloat(inst, "freq", 0.0),
+                    fracTol = paramFloat(inst, "band", 0.05)), "Hz",
+            "the frequency is the whole specification of an oscillator, and " &
+            "it is set by the timing network alone -- a part substitution " &
+            "in that network moves it with nothing else to say so")
+  if hasParam(inst, "minSwing"):
+    running("swing", "swing_pp",
+            atLeast(paramFloat(inst, "minSwing", 0.0)), "V",
+            "an oscillator that starts but does not reach its level is a " &
+            "loop whose gain is barely above one, and it will stop over " &
+            "temperature or with a part at the other end of its tolerance")
+  if hasParam(inst, "maxSwing"):
+    running("swing_max", "swing_pp",
+            atMost(paramFloat(inst, "maxSwing", 0.0)), "V",
+            "swing beyond this is an amplitude-stabilising network that has " &
+            "stopped stabilising, and what is left is the amplifier clipping")
+  if hasParam(inst, "maxThd"):
+    running("thd", "osc_thd_pct",
+            atMost(paramFloat(inst, "maxThd", 0.0)), "%",
+            "distortion is what the amplitude-stabilising network costs, and " &
+            "it is the one figure that says whether the loop is being held " &
+            "at a gain of three or being clipped back to it", sevWarning)
 
 proc largeSignalExpand(inst: RoleInstance): seq[Assertion] =
   ## What the stage does when it is *driven*, which for anything with
@@ -685,6 +780,11 @@ proc registerBuiltinRoles*() =
       AnnDef(key: "maxSettleTime", kind: akFloat, unit: "s", scopes: {asNet},
              doc: "time until the rail stays inside its band; omitted " &
                   "means unclaimed"),
+      AnnDef(key: "tRun", kind: akFloat, unit: "s", scopes: {asNet},
+             doc: "how long to run; omitted derives it from the assumed " &
+                  "soft-start ramp, which is right for a regulator this " &
+                  "analysis stands up itself and says nothing about one " &
+                  "that brought its own model"),
     ],
     apply: nil,
     expand: regulatorExpand))
@@ -762,6 +862,45 @@ proc registerBuiltinRoles*() =
     ],
     apply: nil,
     expand: settledRailExpand))
+
+  registerRole(RoleDef(
+    name: "oscillator",
+    doc: "A circuit whose intent is instability: what it runs at, how big " &
+         "it is, and how clean.",
+    parts: @[
+      RolePart(name: "output", kind: skNet,
+               doc: "the net the oscillation is measured on"),
+      RolePart(name: "kick", kind: skNet, optional: true,
+               doc: "a node given a stated starting voltage, for a circuit " &
+                    "that sits at its operating point and will not leave it " &
+                    "without a disturbance"),
+    ],
+    params: @[
+      AnnDef(key: "tSettle", kind: akFloat, unit: "s", scopes: {asNet},
+             doc: "how long the circuit is given to reach its steady " &
+                  "amplitude before the measurement window opens; an " &
+                  "amplitude-stabilised loop is slow and this is usually " &
+                  "what sets it, not the period"),
+      AnnDef(key: "tWindow", kind: akFloat, unit: "s", scopes: {asNet},
+             doc: "length of the measurement window; make it several whole " &
+                  "periods, since the distortion figure integrates over them"),
+      AnnDef(key: "kickV", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "the starting voltage put on the `kick` node; default " &
+                  "100 mV. Unused when no `kick` part is bound"),
+      AnnDef(key: "freq", kind: akFloat, unit: "Hz", scopes: {asNet},
+             doc: "the frequency it must run at; omitted means unclaimed"),
+      AnnDef(key: "band", kind: akFloat, scopes: {asNet},
+             doc: "acceptance band on the frequency, as a fraction; " &
+                  "default 5%"),
+      AnnDef(key: "minSwing", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "smallest acceptable peak-to-peak output swing"),
+      AnnDef(key: "maxSwing", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "largest acceptable peak-to-peak output swing"),
+      AnnDef(key: "maxThd", kind: akFloat, unit: "%", scopes: {asNet},
+             doc: "most distortion tolerated on the output"),
+    ],
+    apply: nil,
+    expand: oscillatorExpand))
 
   registerRole(RoleDef(
     name: "large_signal",

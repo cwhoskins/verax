@@ -1041,9 +1041,17 @@ proc opampModel(nl: Netlist, c: Component, gnd: Net): BehavioralResult =
 
   let g = annotationFloat(c, "gain")
   let aol = if g.has and g.value > 1.0: g.value else: 1.0e5
-  const
-    gbw = 1.0e6
-    rPole = 1.0e3
+  # `gbw` was a `const` here until it was noticed that the assumption line
+  # below reported 1 MHz as invented while a stated `gbw` sat one field away
+  # unread. That is the worst shape a default can take: the value the design
+  # gave was ignored, and the report said so in a way that reads as the
+  # design not having given one. `analysis/opamp` already honoured the
+  # annotation, so the two paths disagreed about the same part -- and this is
+  # the *only* path for every amplifier a `.tran` sees, since nothing there
+  # names one stage to model deliberately.
+  let b = annotationFloat(c, "gbw")
+  let gbw = if b.has and b.value > 0.0: b.value else: 1.0e6
+  const rPole = 1.0e3
   let cPole = 1.0 / (2.0 * PI * rPole * (gbw / aol))
 
   let posNet = posPin.net
@@ -1117,7 +1125,11 @@ proc opampModel(nl: Netlist, c: Component, gnd: Net): BehavioralResult =
     result.notes.add assumption(desig, "gain", aol, "", annDefaulted,
       "open-loop gain of a substituted ideal op-amp; annotate `gain` to " &
       "state the part's own")
-  result.notes.add assumption(desig, "gbw", gbw, "Hz", annDefaulted,
+  # The model is still a substitution even when both its numbers were
+  # stated, so a note is always emitted -- but its *provenance* is the truth
+  # about where the numbers came from, and `invented()` counts on it.
+  result.notes.add assumption(desig, "gbw", gbw, "Hz",
+    (if b.has and b.value > 0.0: annAuthored else: annDefaulted),
     "of a substituted ideal single-pole op-amp (Aol " & eng(aol) & "); no " &
     "offset, slew rate, output impedance, supply rails or second pole are " &
     "represented")

@@ -1,4 +1,4 @@
-import std/[os, tables, unittest]
+import std/[math, os, sequtils, strutils, tables, unittest]
 
 import nimcir/netlist/dsl
 import nimcir/spice/transform
@@ -123,3 +123,80 @@ test "the purpose reaches the model selection":
     let r = analyzeTransient(nl, "vout", spec)
     check abs(r["settled_v"] - 5.0) < 0.05
     check abs(r["ripple_pp"] - 0.0025) / 0.0025 < 0.2
+
+# --- oscillation --------------------------------------------------------
+
+proc tank(): Netlist =
+  ## A parallel LC that rings at a frequency closed form gives exactly:
+  ## 1/(2*pi*sqrt(1m * 1u)) = 5032.92 Hz.
+  ##
+  ## Nothing drives it, which is the point -- it has no operating point to
+  ## start from and sits at zero forever unless something puts energy in.
+  result = newNetlist("tank")
+  let a = addNet(result, newNet("a"))
+  let gnd = addNet(result, newNet("0", ntGround))
+
+  let l1 = addComponent(result, newComponent("L1", kind = "inductor"))
+  discard connect(l1, "1", a)
+  discard connect(l1, "2", gnd)
+  l1.attrs["value"] = "1m"
+
+  let c1 = addComponent(result, newComponent("C1", kind = "capacitor"))
+  discard connect(c1, "1", a)
+  discard connect(c1, "2", gnd)
+  c1.attrs["value"] = "1u"
+  # Class 1 and a stated ESR, for the same reason `rcRail` states them: the
+  # package-typical defaults would put a damping term into a circuit whose
+  # answer is being checked against closed form.
+  c1.attrs["dielectric"] = "C0G"
+  c1.attrs["esr"] = "0.001"
+  c1.attrs["esl"] = "1e-12"
+
+test "an oscillator that will not start from its operating point is kicked into life":
+  if not haveNgspice:
+    skip()
+  else:
+    var spec = defaultTransientSpec()
+    spec.tSettle = 1.0e-3
+    spec.tWindow = 1.0e-2      ## about 50 periods
+    spec.initialConditions["a"] = 2.0
+    let r = analyzeOscillation(tank(), "a", spec)
+
+    check abs(r["osc_freq"] - 5032.92) / 5032.92 < 0.01
+    # 2 V of initial charge on the capacitor, swinging symmetrically.
+    check abs(r["swing_pp"] - 4.0) / 4.0 < 0.05
+    # A lossless tank is a pure sine.
+    check r["osc_thd_pct"] < 1.0
+    check r.issues.len == 0
+    # The cost of `uic` is stated on every run that uses it.
+    check r.assumptions.anyIt("uic" in it.detail)
+
+test "no kick means no oscillation, and the issue says which of the two it is":
+  if not haveNgspice:
+    skip()
+  else:
+    var spec = defaultTransientSpec()
+    spec.tSettle = 1.0e-3
+    spec.tWindow = 1.0e-2
+    let r = analyzeOscillation(tank(), "a", spec)
+
+    # `NaN` rather than 0 Hz: an oscillator sitting at its operating point is
+    # a flat line, and reporting a frequency of zero for it would be a
+    # measurement where there was none.
+    check r["osc_freq"].isNaN
+    check r.issues.len == 1
+    check r.issues[0].kind == KindDidNotOscillate
+    check "initialConditions" in r.issues[0].message
+
+test "a node driven periodically needs no kick at all":
+  if not haveNgspice:
+    skip()
+  else:
+    # The `kick` is optional on the role for this reason: plenty of circuits
+    # are periodic without one, and `uic` is not free.
+    var spec = defaultTransientSpec()
+    spec.tSettle = 5.0e-3
+    spec.tWindow = 5.0e-4      ## fifty periods of the 100 kHz drive
+    let r = analyzeOscillation(rcRail(), "vout", spec)
+    check abs(r["osc_freq"] - 1.0e5) / 1.0e5 < 0.01
+    check not r.assumptions.anyIt("uic" in it.detail)
