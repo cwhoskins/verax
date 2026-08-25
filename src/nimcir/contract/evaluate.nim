@@ -97,14 +97,51 @@ type
       ## Diagnostic context the underlying analysis reported alongside the
       ## measurement -- never a duplicate of this result's own verdict.
 
-  EvalProc* = proc (d: Design, batch: seq[Assertion]): seq[AssertionResult] {.nimcall.}
+  EvalContext* = ref object
+    ## Everything one evaluation run may see, and the **only** argument an
+    ## evaluator receives.
+    ##
+    ## This exists because `EvalProc` is the plugin ABI. An evaluator loaded
+    ## at runtime compiles against that signature, so anything an evaluator
+    ## might ever need has to be reachable through it -- and a `Design` alone
+    ## is not enough. Three things already arrived by side doors before this
+    ## type existed: a shared operating point lived in a module-level `var`
+    ## (so two designs checked in one process shared one slot, and an edited
+    ## design silently kept a stale answer), the offered capabilities were
+    ## known to the planner and not to the evaluator, and a `Pcb` or a bench
+    ## reading had no route in at all. Widening the argument once is cheap;
+    ## widening it after a third party has compiled against it is not.
+    design*: Design
+    allowed*: set[Capability]
+      ## What this run may actually do. The planner has already refused any
+      ## assertion whose evaluator needs more than this, so an evaluator sees
+      ## it only to decide how far to go *within* what it was granted --
+      ## refining a result with an extra analysis when one is offered, and
+      ## saying so rather than silently skipping it when it is not.
+    scratch*: Table[string, RootRef]
+      ## Per-run storage, owned by whoever puts something in it, keyed by a
+      ## dotted name the owner picks (`"spice.operating_point"`).
+      ##
+      ## Deliberately type-erased, and that is the whole point: `contract`
+      ## must not gain an edge to `analysis` or to `pcb`, so it cannot name
+      ## an `OperatingPoint` or a `Pcb` in a field. A module that owns such a
+      ## type declares `ref object of RootObj`, stashes it here, and downcasts
+      ## on the way out. That keeps the layering intact *and* keeps this type
+      ## from having to change again every time something new needs carrying.
+      ##
+      ## Lifetime is one run. A cache in here cannot go stale against an
+      ## edited design, because there is no run during which the design
+      ## changes -- which is what the previous module-level cache could not
+      ## promise and documented a rule about instead.
+
+  EvalProc* = proc (ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] {.nimcall.}
     ## Takes every assertion routed to this evaluator that shares a setup key,
     ## and must return one result per assertion in the batch.
-  SetupKeyProc* = proc (d: Design, a: Assertion): string {.nimcall.}
+  SetupKeyProc* = proc (ctx: EvalContext, a: Assertion): string {.nimcall.}
     ## Two assertions with the same key can be answered by one run. `nil`
     ## means "the subject names", which is the right default for anything
     ## measured per-net.
-  SetupDocProc* = proc (d: Design, batch: seq[Assertion]): string {.nimcall.}
+  SetupDocProc* = proc (ctx: EvalContext, batch: seq[Assertion]): string {.nimcall.}
     ## What this run actually *is*, in one sentence, given the batch routed
     ## to it. A proc on the data object for the same reason `run` and
     ## `setupKey` are: an evaluator registered at runtime must be able to
@@ -114,7 +151,21 @@ type
     name*: string
     produces*: seq[string]
       ## Quantity names, matching `analysis/report.Measurement.name`.
-    needs*: Capability
+    needs*: set[Capability]
+      ## Every capability a run of this evaluator actually uses -- not the
+      ## headline one.
+      ##
+      ## A set rather than a scalar because more than one built-in genuinely
+      ## needs two, and while this was a single `Capability` they had no way
+      ## to say so: `spice.pdn` declared `.ac` and solved an operating point
+      ## for its bias derating, and `spice.large_signal` declared `.tran` and
+      ## solved one to find the bias its stimulus sits on. Both ran an
+      ## analysis that `--caps` had withheld. Under-declaring is invisible
+      ## while every capability happens to be available and becomes a wrong
+      ## answer the moment one is not -- which is exactly the case a bench
+      ## host, or `--caps=ac`, is.
+      ##
+      ## Empty means `{capStatic}`; `registerEvaluator` normalises it.
     arity*: Slice[int]
       ## Accepted subject count. Left at its zero default, means `1 .. high`.
     subjectKinds*: set[SubjectKind]
@@ -148,7 +199,7 @@ type
   PlanStep* = object
     evaluator*: string
     key*: string
-    needs*: Capability
+    needs*: set[Capability]
     assertions*: seq[Assertion]
 
   Rejection* = object
@@ -174,6 +225,20 @@ proc capLabel*(c: Capability): string =
   of capSpiceAc: ".ac"
   of capSpiceTran: ".tran"
   of capBench: "bench"
+
+proc capLabel*(s: set[Capability]): string =
+  ## The set form, so a requirement of two capabilities is never rendered as
+  ## the enum's `{capSpiceOp, capSpiceAc}` in a sentence a designer reads.
+  var parts: seq[string]
+  for c in s: parts.add capLabel(c)
+  if parts.len == 0: "none" else: parts.join(" + ")
+
+proc newEvalContext*(d: Design, allowed = offlineCapabilities): EvalContext =
+  ## One context per run. Callers that hold one across `plan`, `runPlan` and
+  ## `describeStep` get the sharing this type exists for; callers that build
+  ## one per call get isolation, which is what a sweep over many candidate
+  ## designs wants.
+  EvalContext(design: d, allowed: allowed)
 
 # --- registry ----------------------------------------------------------
 
@@ -202,6 +267,11 @@ proc registerEvaluator*(ev: Evaluator) =
 
   var it = ev
   if it.arity.a == 0 and it.arity.b == 0: it.arity = 1 .. int.high
+  # An evaluator that declares nothing is a graph walk. Left as the empty
+  # set it would pass `<= allowed` against *any* offer, including `--offline`,
+  # which would make an omitted declaration mean "runs everywhere" -- the one
+  # reading a defaulted field must never have.
+  if it.needs == {}: it.needs = {capStatic}
   if it.subjectKinds == {}:
     it.subjectKinds = {skNet, skComponent, skPin, skClass, skDesign}
 
@@ -356,11 +426,13 @@ proc defaultKey(a: Assertion): string =
   for s in a.subjects: parts.add s.name
   parts.join("/")
 
-proc plan*(d: Design, allowed: set[Capability] = offlineCapabilities): Plan =
+proc plan*(ctx: EvalContext): Plan =
   ## Routes every assertion in the design -- authored and role-expanded alike
   ## -- to an evaluator, grouping into one step per `(evaluator, setup key)`.
   ##
   ## Pure: nothing runs, nothing is simulated, and the design is not touched.
+  let d = ctx.design
+  let allowed = ctx.allowed
   var stepIndex: Table[string, int]
 
   for a in d.expandAll():
@@ -389,19 +461,27 @@ proc plan*(d: Design, allowed: set[Capability] = offlineCapabilities): Plan =
         break
     if badKind: continue
 
-    if ev.needs notin allowed:
+    let missing = ev.needs - allowed
+    if missing.len > 0:
       result.rejected.add Rejection(assertion: a, status: esNotEvaluated,
         evaluator: ev.name,
-        reason: "needs the " & capLabel(ev.needs) &
-                " capability, which was not offered")
+        reason: "needs the " & capLabel(missing) &
+                (if missing.len > 1: " capabilities, which were not offered"
+                 else: " capability, which was not offered"))
       continue
 
-    let key = if ev.setupKey != nil: ev.setupKey(d, a) else: defaultKey(a)
+    let key = if ev.setupKey != nil: ev.setupKey(ctx, a) else: defaultKey(a)
     let slot = ev.name & "\x1f" & key
     if not stepIndex.hasKey(slot):
       stepIndex[slot] = result.steps.len
       result.steps.add PlanStep(evaluator: ev.name, key: key, needs: ev.needs)
     result.steps[stepIndex[slot]].assertions.add a
+
+proc plan*(d: Design, allowed: set[Capability] = offlineCapabilities): Plan =
+  ## Convenience for a caller that does not need to hold a context. Note that
+  ## nothing is shared with a later `runPlan(d, ...)`: pass one `EvalContext`
+  ## to both to share an operating point across the whole run.
+  plan(newEvalContext(d, allowed))
 
 proc assertionCount*(p: Plan): int =
   for s in p.steps: result += s.assertions.len
@@ -412,7 +492,7 @@ proc explainPlan*(p: Plan): string =
   lines.add "plan: " & $p.steps.len & " step(s), " &
             $assertionCount(p) & " assertion(s)"
   for s in p.steps:
-    lines.add "  " & s.evaluator & " [" & $s.needs & "]" &
+    lines.add "  " & s.evaluator & " [" & capLabel(s.needs) & "]" &
               (if s.key.len > 0: " on " & s.key else: "") &
               " -- " & $s.assertions.len & " assertion(s)"
     for a in s.assertions:
@@ -423,7 +503,7 @@ proc explainPlan*(p: Plan): string =
               " -- " & r.reason
   lines.join("\n")
 
-proc describeStep*(d: Design, s: PlanStep): string =
+proc describeStep*(ctx: EvalContext, s: PlanStep): string =
   ## What one plan step will run, in the evaluator's own words.
   ##
   ## Falls back to the setup key, which is honest rather than helpful: an
@@ -435,23 +515,26 @@ proc describeStep*(d: Design, s: PlanStep): string =
   if ev.setupDoc == nil or s.assertions.len == 0:
     return (if s.key.len > 0: "setup " & s.key else: "")
   try:
-    ev.setupDoc(d, s.assertions)
+    ev.setupDoc(ctx, s.assertions)
   except CatchableError:
     # A third-party evaluator whose description raises must not take down a
     # report about its own results, exactly as `previewRole` refuses to let a
     # bad expander make `nimcir roles` unusable.
     (if s.key.len > 0: "setup " & s.key else: "")
 
+proc describeStep*(d: Design, s: PlanStep): string =
+  describeStep(newEvalContext(d, allCapabilities), s)
+
 # --- running ------------------------------------------------------------
 
-proc runStep(d: Design, step: PlanStep): seq[AssertionResult] =
+proc runStep(ctx: EvalContext, step: PlanStep): seq[AssertionResult] =
   ## An evaluator that returns the wrong number of results, or raises, is a
   ## bug in the evaluator -- but it must not take down a whole run, because
   ## then one bad plugin costs every other verdict in the design.
   let ev = evaluatorRegistry[step.evaluator]
   var produced: seq[AssertionResult]
   try:
-    produced = ev.run(d, step.assertions)
+    produced = ev.run(ctx, step.assertions)
   except CatchableError as e:
     for a in step.assertions:
       result.add notEvaluated(a, ev.name,
@@ -472,7 +555,7 @@ proc runStep(d: Design, step: PlanStep): seq[AssertionResult] =
       result.add notEvaluated(a, ev.name,
         "evaluator '" & ev.name & "' returned no result for this assertion")
 
-proc runPlan*(d: Design, p: Plan): seq[seq[AssertionResult]] =
+proc runPlan*(ctx: EvalContext, p: Plan): seq[seq[AssertionResult]] =
   ## One inner `seq` per plan step, in step order.
   ##
   ## `evaluate` flattens this and is what most callers want. Keeping the
@@ -483,7 +566,12 @@ proc runPlan*(d: Design, p: Plan): seq[seq[AssertionResult]] =
   ## Recovering the grouping afterwards is not possible either -- a result
   ## carries its evaluator's name but not its setup key, and two steps of one
   ## evaluator are two different runs.
-  for step in p.steps: result.add runStep(d, step)
+  for step in p.steps: result.add runStep(ctx, step)
+
+proc runPlan*(d: Design, p: Plan): seq[seq[AssertionResult]] =
+  ## Convenience overload. Builds a fresh context, so nothing is shared with
+  ## the `plan` call that produced `p`.
+  runPlan(newEvalContext(d, allCapabilities), p)
 
 proc rejectionResults*(p: Plan): seq[AssertionResult] =
   ## The claims that never reached an evaluator, as results, so a caller
@@ -493,6 +581,17 @@ proc rejectionResults*(p: Plan): seq[AssertionResult] =
                                value: NaN, unit: rej.assertion.unit,
                                reason: rej.reason, evaluator: rej.evaluator)
 
+proc evaluate*(ctx: EvalContext): seq[AssertionResult] =
+  ## Every claim this design makes, checked as far as `ctx.allowed` permits.
+  ##
+  ## One context throughout, so every step of the run shares whatever the
+  ## first one put in `scratch` -- which is what makes "one `.op` per design"
+  ## a property of the run rather than of a module-level cache.
+  let p = plan(ctx)
+  for batch in runPlan(ctx, p):
+    for r in batch: result.add r
+  for r in rejectionResults(p): result.add r
+
 proc evaluate*(d: Design, allowed: set[Capability] = offlineCapabilities): seq[AssertionResult] =
   ## Every claim this design makes, checked as far as `allowed` permits.
   ##
@@ -500,10 +599,10 @@ proc evaluate*(d: Design, allowed: set[Capability] = offlineCapabilities): seq[A
   ## `nimcir/analysis` exports only what runs with no external toolchain: pass
   ## `allCapabilities` (and import `nimcir/analysis/contract_eval`) to let the
   ## simulation-backed evaluators run.
-  let p = plan(d, allowed)
-  for batch in runPlan(d, p):
-    for r in batch: result.add r
-  for r in rejectionResults(p): result.add r
+  ##
+  ## Each call builds its own context, so a caller sweeping many candidate
+  ## designs through this gets a clean cache every time by construction.
+  evaluate(newEvalContext(d, allowed))
 
 # --- reading the results ------------------------------------------------
 

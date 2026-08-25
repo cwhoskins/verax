@@ -1,4 +1,4 @@
-import std/[os, streams, strutils, tables, unittest]
+import std/[math, os, streams, strutils, tables, unittest]
 
 import nimcir/netlist
 import nimcir/netlist/dsl
@@ -38,13 +38,80 @@ test "writeDeck round-trips topology plus analysis cards":
   check lines[^2] == ".op" # written just before .END
 
 test "run() rejects more than one analysis card":
+  # Still true, and for the original reason: ngspice's default `write` keeps
+  # only the last analysis's plot and a SimResult holds one plot.
   let nl = dividerNetlist()
   expect(SpiceSimError):
     discard run(nl, @[".op", ".tran 1u 1m"])
+  expect(SpiceSimError):
+    discard run(nl, ".tran 1u 1m", setup = @[".op"])
+
+test "a setup card is not an analysis card":
+  # What the old guard got wrong: it counted cards, so one analysis plus one
+  # setup line was refused as "two cards". `.ic` configures the analysis that
+  # follows and produces no plot of its own.
+  check isAnalysisCard(".op")
+  check isAnalysisCard(".TRAN 1u 1m")
+  check isAnalysisCard(".ac dec 10 1 1k")
+  check not isAnalysisCard(".ic v(out)=0.1")
+  check not isAnalysisCard(".nodeset v(a)=1")
+  check not isAnalysisCard(".options reltol=1e-4")
+  check not isAnalysisCard(".temp 85")
+  check not isAnalysisCard(".param x=1")
+
+test "setup cards reach the deck ahead of the analysis":
+  let nl = dividerNetlist()
+  var s = newStringStream()
+  writeDeck(nl, @[".ic v(vout)=0.5", ".tran 1u 1m uic"], s)
+  let lines = s.data.strip().splitLines()
+  check lines[^1] == ".END"
+  check lines[^2] == ".tran 1u 1m uic"
+  check lines[^3] == ".ic v(vout)=0.5"
 
 if not haveNgspice:
   echo "SKIP: ngspice not found on PATH, skipping real-simulation tests"
 else:
+  test "an .ic kicks a circuit that will not start from its operating point":
+    # This is what `docs/findings.md` §23 called blocked. An LC tank has no
+    # source: from its own operating point it sits at 0 V forever, which is a
+    # correct answer to a question nobody asked. Kicked with an initial
+    # capacitor voltage it rings at 1/(2*pi*sqrt(LC)) = 5033 Hz.
+    let tank = netlist("tank"):
+      net gnd, kind = ntGround, name = "0"
+      net vout, kind = ntSignal
+      component L1, kind = "inductor", value = "1e-3":
+        pin "1", vout, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+      component C1, kind = "capacitor", value = "1e-6":
+        pin "1", vout, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+      component R1, kind = "resistor", value = "1e6":
+        pin "1", vout, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+
+    proc swing(r: SimResult): float =
+      let v = r["v(vout)"]
+      var lo = v[0]
+      var hi = v[0]
+      for x in v:
+        if x < lo: lo = x
+        if x > hi: hi = x
+      hi - lo
+
+    # Left to its own devices it does nothing at all.
+    check swing(run(tank, ".tran 1u 5m")) < 1e-6
+
+    let kicked = run(tank, ".tran 1u 5m uic", setup = @[".ic v(vout)=1.0"])
+    check abs(swing(kicked) - 2.0) < 0.1
+
+    let v = kicked["v(vout)"]
+    let t = kicked["time"]
+    var crossings = 0
+    for i in 1 ..< v.len:
+      if (v[i - 1] < 0.0) != (v[i] < 0.0): inc crossings
+    let f0 = float(crossings) / 2.0 / (t[^1] - t[0])
+    check abs(f0 - 5033.0) < 100.0
+
   test "real .op run against a resistive divider matches hand-calculated values":
     let nl = dividerNetlist()
     let result = run(nl, @[".op"])

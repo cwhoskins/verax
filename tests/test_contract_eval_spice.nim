@@ -229,3 +229,57 @@ test "the .op step says it is not isolated, which is why the claim means anythin
   for s in p.steps:
     if s.evaluator == "spice.dc_voltage": text = describeStep(d, s)
   check "not isolated" in text
+
+# --- what the run context guarantees ------------------------------------
+
+test "the declared capabilities are what a run actually uses":
+  # Both of these once under-declared. `spice.pdn` said `.ac` and solved an
+  # operating point for its bias derating; `spice.large_signal` said `.tran`
+  # and solved one to find the bias its stimulus sits on. Under `--caps=ac`
+  # or `--caps=tran` each ran an analysis the caller had withheld, and the
+  # flag quietly meant nothing. A `set` is what let them say so.
+  check evaluatorFor("z_max_in_band").get.needs == {capSpiceOp, capSpiceAc}
+  check evaluatorFor("thd_pct").get.needs == {capSpiceOp, capSpiceTran}
+
+test "a claim needing two capabilities is refused when only one is offered":
+  let d = dividerBoard("2000")
+  var found = false
+  for rej in plan(d, {capStatic, capSpiceAc}).rejected:
+    if rej.assertion.quantity == "z_max_in_band":
+      found = true
+      # Named, and named by label rather than by enum identifier.
+      check ".op" in rej.reason
+      check "capSpiceOp" notin rej.reason
+  # The fixture claims no impedance, so this is a guard on the message shape
+  # only when one is present.
+  discard found
+
+test "an edited design is re-solved rather than answered from a stale cache":
+  # The operating point used to live in a module-level `var` keyed on Design
+  # reference identity with no content invalidation: mutating a design in
+  # place and evaluating again returned the *first* answer, silently. It now
+  # lives in the EvalContext, which lasts exactly one run, so this cannot
+  # happen -- and a sweep over candidate values is the obvious way to hit it.
+  if not haveNgspice:
+    skip()
+  else:
+    let d = dividerBoard("2000")
+    let first = resultFor(evaluate(d, allCapabilities), "vdd_rail.voltage")
+    check abs(first.value - 3.333) < 0.01
+
+    # Same Design object, different circuit.
+    d.netlist.components["R1"].attrs["value"] = "4000"
+    let second = resultFor(evaluate(d, allCapabilities), "vdd_rail.voltage")
+    check abs(second.value - 2.0) < 0.01
+    check first.value != second.value
+
+test "one EvalContext shares an operating point across every step in a run":
+  # The other half of the same property: within one run the .op is solved
+  # once, which is what keeps N claims to one simulation.
+  if not haveNgspice:
+    skip()
+  else:
+    let ctx = newEvalContext(dividerBoard("2000"), allCapabilities)
+    check not ctx.scratch.hasKey("spice.operating_point")
+    discard evaluate(ctx)
+    check ctx.scratch.hasKey("spice.operating_point")

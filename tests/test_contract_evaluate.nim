@@ -136,7 +136,7 @@ test "with no role on the net at all, the reason explains why topology cannot sa
 
 # --- the four statuses, each reached deliberately ------------------------
 
-proc runFixed(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runFixed(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   ## A user-defined evaluator, registered from a test file through the
   ## ordinary path, exactly as `test_contract_roles.nim` does for roles.
   for a in batch:
@@ -147,7 +147,7 @@ proc runFixed(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
     else:
       result.add verdict(a, 42.0, "V", "test.fixed")
 
-proc fixedKey(d: Design, a: Assertion): string =
+proc fixedKey(ctx: EvalContext, a: Assertion): string =
   ## Everything this evaluator answers shares one setup, so one step should
   ## carry every assertion routed to it.
   "shared"
@@ -155,7 +155,7 @@ proc fixedKey(d: Design, a: Assertion): string =
 registerEvaluator(Evaluator(
   name: "test.fixed",
   produces: @["test_value", "test_nan", "test_wrong_unit"],
-  needs: capStatic,
+  needs: {capStatic},
   arity: 1 .. 1,
   subjectKinds: {skNet},
   setupKey: fixedKey,
@@ -234,7 +234,11 @@ test "distinct setups get distinct steps":
 test "a plan is printable before anything runs":
   let text = explainPlan(plan(statusBoard()))
   check "test.fixed" in text
-  check "capStatic" in text
+  # The rendered label, not the enum identifier: `capLabel` exists so one
+  # capability never appears under two names, and `$capStatic` is right in a
+  # stack trace and wrong in a line a designer reads.
+  check "[static]" in text
+  check "capStatic" notin text
   check "UNKNOWN" in text
 
 test "planning is pure -- it neither simulates nor touches the design":
@@ -339,18 +343,18 @@ test "the sink current is declined, not guessed, without a rail voltage":
 
 # --- describing a run, and running it in batches -------------------------
 
-proc raisingDoc(d: Design, batch: seq[Assertion]): string =
+proc raisingDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   raise newException(ValueError, "a third-party evaluator misbehaving")
 
 registerEvaluator(Evaluator(
-  name: "test.described", produces: @["test_described"], needs: capStatic,
+  name: "test.described", produces: @["test_described"], needs: {capStatic},
   arity: 1 .. 1, subjectKinds: {skNet}, setupKey: fixedKey,
-  setupDoc: proc (d: Design, batch: seq[Assertion]): string {.nimcall.} =
+  setupDoc: proc (ctx: EvalContext, batch: seq[Assertion]): string {.nimcall.} =
     "a made-up walk over " & $batch.len & " claim(s)",
   run: runFixed))
 
 registerEvaluator(Evaluator(
-  name: "test.badDoc", produces: @["test_bad_doc"], needs: capStatic,
+  name: "test.badDoc", produces: @["test_bad_doc"], needs: {capStatic},
   arity: 1 .. 1, subjectKinds: {skNet}, setupKey: fixedKey,
   setupDoc: raisingDoc, run: runFixed))
 
@@ -399,7 +403,7 @@ test "running the plan keeps the batches the planner grouped":
 
 # --- one quantity, one producer ---------------------------------------------
 
-proc runDup(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runDup(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   for a in batch: result.add verdict(a, 1.0, "V", "test.dup")
 
 test "a second evaluator claiming an existing quantity raises":
@@ -411,7 +415,7 @@ test "a second evaluator claiming an existing quantity raises":
   var msg = ""
   try:
     registerEvaluator(Evaluator(
-      name: "test.dup", produces: @["test_value"], needs: capStatic,
+      name: "test.dup", produces: @["test_value"], needs: {capStatic},
       arity: 1 .. 1, subjectKinds: {skNet}, run: runDup))
   except NetlistError as e:
     msg = e.msg
@@ -422,9 +426,9 @@ test "a second evaluator claiming an existing quantity raises":
 
 test "re-registering under the same name is still an override":
   registerEvaluator(Evaluator(
-    name: "test.overridable", produces: @["test_override_q"], needs: capStatic,
+    name: "test.overridable", produces: @["test_override_q"], needs: {capStatic},
     arity: 1 .. 1, subjectKinds: {skNet}, run: runDup))
   registerEvaluator(Evaluator(
-    name: "test.overridable", produces: @["test_override_q"], needs: capBench,
+    name: "test.overridable", produces: @["test_override_q"], needs: {capBench},
     arity: 1 .. 1, subjectKinds: {skNet}, run: runDup))
-  check evaluatorFor("test_override_q").get.needs == capBench
+  check evaluatorFor("test_override_q").get.needs == {capBench}

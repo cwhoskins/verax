@@ -123,46 +123,49 @@ proc bindingName(d: Design, a: Assertion, part: string): string =
 
 # --- the shared operating point -----------------------------------------
 
-var sharedOp: OperatingPoint
-var sharedOpFor: Design = nil
+const opScratchKey = "spice.operating_point"
 
-proc clearSharedOperatingPoint*() =
-  ## Drops the cached operating point. Call it after mutating a design that
-  ## has already been evaluated.
-  sharedOpFor = nil
-  sharedOp = OperatingPoint()
+type OpCacheEntry = ref object of RootObj
+  ## `EvalContext.scratch` is type-erased on purpose -- `contract` may not
+  ## name an `OperatingPoint`, which lives up here in `analysis`. So the
+  ## owning module wraps its own type and downcasts on the way out.
+  op: OperatingPoint
 
-proc sharedOperatingPoint*(d: Design): OperatingPoint =
-  ## One `.op` per design, solved on first request and reused by everything
+proc sharedOperatingPoint*(ctx: EvalContext): OperatingPoint =
+  ## One `.op` per run, solved on first request and reused by everything
   ## after it.
   ##
-  ## **The cache is keyed by design identity and is deliberately not
-  ## invalidated by content.** Nothing here can tell that a caller mutated a
-  ## netlist between two evaluations, so the rule is stated instead: within a
-  ## single `evaluate` this is exactly right, because the design does not
-  ## change under it; a caller that edits a design and evaluates again must
-  ## call `clearSharedOperatingPoint`. `verify.readiness` does.
+  ## **Scoped to the `EvalContext`, which is what makes it correct rather
+  ## than merely conventional.** This was a module-level `var` keyed on
+  ## `Design` reference identity with no content invalidation, and it carried
+  ## a documented rule instead of a guarantee: a caller that edited a design
+  ## and evaluated again got a stale operating point with no diagnostic, two
+  ## designs checked in one process shared one slot, and `verify.readiness`
+  ## had to bracket every run with a cache-clearing call to stay safe. A
+  ## context lives exactly as long as one run, and a design does not change
+  ## under a run, so there is no window in which the entry can be wrong.
   ##
-  ## Sharing it is worth the rule. `dc_voltage` solved one, `analysis/derating`
+  ## Sharing it is worth having. `dc_voltage` solved one, `analysis/derating`
   ## solved another per claimed rail, and every one of them was the same
   ## design with the same answer -- a design claiming two rails plus derating
   ## on both did three identical solves. It also makes DC-bias derating see
   ## nodes that no annotation describes, which is the blind spot that mattered.
-  if sharedOpFor != d:
-    sharedOp = solveOperatingPoint(root(d.netlist))
-    sharedOpFor = d
-  sharedOp
+  if ctx.scratch.hasKey(opScratchKey):
+    return OpCacheEntry(ctx.scratch[opScratchKey]).op
+  result = solveOperatingPoint(root(ctx.design.netlist))
+  ctx.scratch[opScratchKey] = OpCacheEntry(op: result)
 
 # --- dc_voltage, via .op ------------------------------------------------
 
 const dcVoltageQuantities = ["dc_voltage"]
 
-proc opKey(d: Design, a: Assertion): string = ""
+proc opKey(ctx: EvalContext, a: Assertion): string = ""
   ## One `.op` answers every node voltage in the design at once, so every
   ## `dc_voltage` assertion shares a step no matter which net it names. This
   ## is the harvest model at its most visible: N assertions, one simulation.
 
-proc opDoc(d: Design, batch: seq[Assertion]): string =
+proc opDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
   var nets: seq[string]
   for a in batch:
     let n = subjectNet(d, a)
@@ -171,7 +174,7 @@ proc opDoc(d: Design, batch: seq[Assertion]): string =
            "rail has to solve for itself rather than be told what it is"
   if nets.len > 0: result &= ". Reading net " & nets.join(", ")
 
-proc runDcVoltage(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runDcVoltage(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   ## **Deliberately does not use `spice/isolate`**, unlike every other
   ## analysis in this submodule.
   ##
@@ -189,13 +192,14 @@ proc runDcVoltage(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
   ## stand-ins are invented, so they ride out on every result's
   ## `assumptions`; a rail whose verdict depends on what an IC loads it with
   ## is resting on a guess and has to say so.
+  let d = ctx.design
   const name = "spice.dc_voltage"
 
   # This used to solve its own `.op`. It now reads the shared one, which is
   # the same solve on the same netlist -- `solveOperatingPoint` materializes,
   # flattens and stands in for unmodelled parts exactly as this did, and for
   # the same stated reasons.
-  let op = sharedOperatingPoint(d)
+  let op = sharedOperatingPoint(ctx)
   let stood = op.assumptions
   if not op.solved:
     # Tried and could not, which is `esNotEvaluated` -- not a failed claim.
@@ -225,11 +229,13 @@ const pdnQuantities = ["z_min", "f_z_min", "z_max_in_band", "f_z_max_in_band",
 proc measurementOnly(spec: var PdnSpec) =
   spec.targetZ = Inf  ## `pdn.nim` tests `z > targetZ`; zero would flag everything.
 
-proc pdnKey(d: Design, a: Assertion): string =
+proc pdnKey(ctx: EvalContext, a: Assertion): string =
+  let d = ctx.design
   subjectNet(d, a) & "|" & $conditionFloat(a, "f_from", 0.0) &
                      "|" & $conditionFloat(a, "f_to", 0.0)
 
-proc pdnDoc(d: Design, batch: seq[Assertion]): string =
+proc pdnDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
   let rail = subjectNet(d, batch[0])
   let spec = defaultPdnSpec()
   let fFrom = conditionFloat(batch[0], "f_from", spec.targetFrom)
@@ -239,7 +245,8 @@ proc pdnDoc(d: Design, batch: seq[Assertion]): string =
   "cut away -- an ideal source is a dead short at AC and would read 0 ohm " &
   "everywhere. Judged over " & eng(fFrom, "Hz") & " .. " & eng(fTo, "Hz")
 
-proc runPdn(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runPdn(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
   const name = "spice.pdn"
   let rail = subjectNet(d, batch[0])
   if rail.len == 0:
@@ -249,7 +256,7 @@ proc runPdn(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
   measurementOnly(spec)
   # The sweep runs against capacitances derated from the shared operating
   # point rather than from whatever the nets happened to be annotated with.
-  spec.bias = nodeVoltages(sharedOperatingPoint(d))
+  spec.bias = nodeVoltages(sharedOperatingPoint(ctx))
   let fFrom = conditionFloat(batch[0], "f_from", 0.0)
   let fTo = conditionFloat(batch[0], "f_to", 0.0)
   if fFrom > 0.0: spec.targetFrom = fFrom
@@ -267,18 +274,20 @@ proc runPdn(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
 const deratingQuantities = ["worst_voltage_derating", "worst_power_derating",
                             "parts_over_derating"]
 
-proc deratingKey(d: Design, a: Assertion): string = subjectNet(d, a)
+proc deratingKey(ctx: EvalContext, a: Assertion): string = subjectNet(ctx.design, a)
   ## Keyed by rail, so each claimed rail is one `.op`. Unlike `dc_voltage`,
   ## which answers every net from a single run, this reduces to a *worst*
   ## over a filtered set of parts -- so one run cannot serve two subjects
   ## without returning two answers.
 
-proc deratingDoc(d: Design, batch: seq[Assertion]): string =
+proc deratingDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
   "the shared `.op`, read back as the DC actually across every part " &
   "touching net '" & subjectNet(d, batch[0]) &
   "', compared with the rating each part states"
 
-proc runDerating(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runDerating(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
   const name = "spice.derating"
   let rail = subjectNet(d, batch[0])
   if rail.len == 0:
@@ -286,7 +295,7 @@ proc runDerating(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
 
   var spec = defaultDeratingSpec()
   spec.onlyTouching = rail
-  spec.precomputed = nodeVoltages(sharedOperatingPoint(d))
+  spec.precomputed = nodeVoltages(sharedOperatingPoint(ctx))
   # The ceiling belongs to the assertion, not to the analysis. Left in place
   # it would report the same claim twice, possibly at two thresholds -- the
   # same reason every other adapter here runs measurement-only.
@@ -312,10 +321,12 @@ proc measurementOnly(spec: var StartupSpec) =
   spec.overshootLimit = Inf  ## a `>` test
   spec.currentLimit = 0.0    ## explicitly gated on `> 0`
 
-proc startupKey(d: Design, a: Assertion): string =
+proc startupKey(ctx: EvalContext, a: Assertion): string =
+  let d = ctx.design
   bindingName(d, a, "regulator") & "|" & subjectNet(d, a)
 
-proc startupDoc(d: Design, batch: seq[Assertion]): string =
+proc startupDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
   let a0 = batch[0]
   let regulator = bindingName(d, a0, "regulator")
   let measured = subjectNet(d, a0)
@@ -332,7 +343,8 @@ proc startupDoc(d: Design, batch: seq[Assertion]): string =
               "' on the far side of the filter"
   result &= ". No control loop, current limit or dropout is modelled"
 
-proc runStartup(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runStartup(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
   const name = "spice.startup"
   let a0 = batch[0]
   let regulator = bindingName(d, a0, "regulator")
@@ -374,7 +386,8 @@ const transientQuantities = ["settled_v", "ripple_pp",
 proc measurementOnly(spec: var TransientSpec) =
   spec.settleTol = 0.0       ## explicitly gated on `> 0`
 
-proc transientKey(d: Design, a: Assertion): string =
+proc transientKey(ctx: EvalContext, a: Assertion): string =
+  let d = ctx.design
   # The window joins the key for the same reason the drive level does on the
   # large-signal side: it is what was run, not what is claimed, so two claims
   # over two windows are two runs rather than one run reported twice.
@@ -387,7 +400,8 @@ proc transientWindow(a: Assertion): tuple[tSettle, tWindow: float] =
   if tWindow <= 0.0 and tSettle > 0.0: tWindow = tSettle * 0.2
   (tSettle, tWindow)
 
-proc transientDoc(d: Design, batch: seq[Assertion]): string =
+proc transientDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
   let rail = subjectNet(d, batch[0])
   let (tSettle, tWindow) = transientWindow(batch[0])
   result = "`.tran` over the whole design as authored -- not isolated, so " &
@@ -399,7 +413,8 @@ proc transientDoc(d: Design, batch: seq[Assertion]): string =
   else:
     result &= " over the whole run"
 
-proc runTransient(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runTransient(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
   const name = "spice.transient"
   let rail = subjectNet(d, batch[0])
   if rail.len == 0:
@@ -443,14 +458,16 @@ proc measurementOnly(spec: var OpAmpSpec) =
   spec.minBandwidth = 0.0      ## explicitly gated on `> 0`
   spec.maxThd = 0.0            ## explicitly gated on `> 0`
 
-proc opampKey(d: Design, a: Assertion): string =
+proc opampKey(ctx: EvalContext, a: Assertion): string =
+  let d = ctx.design
   # `at_f` joins the key for the same reason `f_from`/`f_to` do on the PDN
   # side: it changes the analysis's setup, so two claims at two frequencies
   # are two runs rather than one run reported twice.
   bindingName(d, a, "opamp") & "|" & bindingName(d, a, "input") & "|" &
   subjectNet(d, a) & "|" & $conditionFloat(a, "at_f", 0.0)
 
-proc opampSetup(d: Design, a: Assertion): tuple[amp, inp, outp, reason: string] =
+proc opampSetup(ctx: EvalContext, a: Assertion): tuple[amp, inp, outp, reason: string] =
+  let d = ctx.design
   let amp = bindingName(d, a, "opamp")
   if amp.len == 0:
     return ("", "", "", "an op-amp measurement needs to know which component " &
@@ -466,8 +483,9 @@ proc opampSetup(d: Design, a: Assertion): tuple[amp, inp, outp, reason: string] 
     return ("", "", "", "no output net to measure")
   (amp, inp, outp, "")
 
-proc opampDoc(d: Design, batch: seq[Assertion], loop: bool): string =
-  let (amp, inp, outp, reason) = opampSetup(d, batch[0])
+proc opampDoc(ctx: EvalContext, batch: seq[Assertion], loop: bool): string =
+  let d = ctx.design
+  let (amp, inp, outp, reason) = opampSetup(ctx, batch[0])
   if reason.len > 0: return "nothing ran: " & reason
   if loop:
     result = "`.ac` sweep with the loop around " & amp & " broken at its " &
@@ -480,9 +498,10 @@ proc opampDoc(d: Design, batch: seq[Assertion], loop: bool): string =
   let atF = conditionFloat(batch[0], "at_f", 0.0)
   if atF > 0.0: result &= ", with gain also read at " & eng(atF, "Hz")
 
-proc runOpAmpKind(d: Design, batch: seq[Assertion], name: string,
+proc runOpAmpKind(ctx: EvalContext, batch: seq[Assertion], name: string,
                   loop: bool): seq[AssertionResult] =
-  let (amp, inp, outp, reason) = opampSetup(d, batch[0])
+  let d = ctx.design
+  let (amp, inp, outp, reason) = opampSetup(ctx, batch[0])
   if reason.len > 0:
     for a in batch: result.add notEvaluable(a, name, reason)
     return
@@ -499,15 +518,17 @@ proc runOpAmpKind(d: Design, batch: seq[Assertion], name: string,
     return failBatch(batch, name, "the op-amp sweep failed: " & e.msg)
   for a in batch: result.add harvest(a, rep, name)
 
-proc largeSignalKey(d: Design, a: Assertion): string =
+proc largeSignalKey(ctx: EvalContext, a: Assertion): string =
+  let d = ctx.design
   # The drive level is part of the *setup*, not a limit: the whole point of
   # a large-signal run is that the answer depends on it, so two claims at
   # two amplitudes are two runs.
-  opampKey(d, a) & "|" & $conditionFloat(a, "drive_v", 0.0) &
+  opampKey(ctx, a) & "|" & $conditionFloat(a, "drive_v", 0.0) &
                    "|" & $conditionFloat(a, "drive_f", 0.0)
 
-proc largeSignalDoc(d: Design, batch: seq[Assertion]): string =
-  let (amp, inp, outp, reason) = opampSetup(d, batch[0])
+proc largeSignalDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
+  let (amp, inp, outp, reason) = opampSetup(ctx, batch[0])
   if reason.len > 0: return "nothing ran: " & reason
   let v = conditionFloat(batch[0], "drive_v", 0.0)
   let f = conditionFloat(batch[0], "drive_f", 1.0e3)
@@ -517,9 +538,10 @@ proc largeSignalDoc(d: Design, batch: seq[Assertion]): string =
   "is measured where it actually sits. The macromodel has no slew or " &
   "current limit, so any distortion here is the network's, not the part's"
 
-proc runLargeSignal(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runLargeSignal(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
   const name = "spice.large_signal"
-  let (amp, inp, outp, reason) = opampSetup(d, batch[0])
+  let (amp, inp, outp, reason) = opampSetup(ctx, batch[0])
   if reason.len > 0:
     for a in batch: result.add notEvaluable(a, name, reason)
     return
@@ -543,17 +565,21 @@ proc runLargeSignal(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
     return failBatch(batch, name, "the large-signal run failed: " & e.msg)
   for a in batch: result.add harvest(a, rep, name)
 
-proc runOpAmpResponse(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
-  runOpAmpKind(d, batch, "spice.opamp_response", loop = false)
+proc runOpAmpResponse(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
+  runOpAmpKind(ctx, batch, "spice.opamp_response", loop = false)
 
-proc runLoopGain(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
-  runOpAmpKind(d, batch, "spice.loop_gain", loop = true)
+proc runLoopGain(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
+  runOpAmpKind(ctx, batch, "spice.loop_gain", loop = true)
 
-proc responseDoc(d: Design, batch: seq[Assertion]): string =
-  opampDoc(d, batch, loop = false)
+proc responseDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
+  opampDoc(ctx, batch, loop = false)
 
-proc loopGainDoc(d: Design, batch: seq[Assertion]): string =
-  opampDoc(d, batch, loop = true)
+proc loopGainDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
+  opampDoc(ctx, batch, loop = true)
 
 # --- registration -------------------------------------------------------
 
@@ -562,45 +588,45 @@ proc registerSimulatedEvaluators*() =
   ## `roles.registerBuiltinRoles` is.
   registerEvaluator(Evaluator(
     name: "spice.dc_voltage", produces: @dcVoltageQuantities,
-    needs: capSpiceOp, arity: 1 .. 1, subjectKinds: {skNet},
+    needs: {capSpiceOp}, arity: 1 .. 1, subjectKinds: {skNet},
     setupKey: opKey, setupDoc: opDoc, run: runDcVoltage))
 
   registerEvaluator(Evaluator(
     name: "spice.derating", produces: @deratingQuantities,
-    needs: capSpiceOp, arity: 1 .. 1, subjectKinds: {skNet},
+    needs: {capSpiceOp}, arity: 1 .. 1, subjectKinds: {skNet},
     setupKey: deratingKey, setupDoc: deratingDoc, run: runDerating))
 
   registerEvaluator(Evaluator(
     name: "spice.pdn", produces: @pdnQuantities,
-    needs: capSpiceAc, arity: 1 .. 1, subjectKinds: {skNet},
+    needs: {capSpiceOp, capSpiceAc}, arity: 1 .. 1, subjectKinds: {skNet},
     setupKey: pdnKey, setupDoc: pdnDoc, run: runPdn))
 
   registerEvaluator(Evaluator(
     name: "spice.startup", produces: @startupQuantities,
-    needs: capSpiceTran, arity: 1 .. 1, subjectKinds: {skNet},
+    needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
     binds: @["regulator", "output"],
     setupKey: startupKey, setupDoc: startupDoc, run: runStartup))
 
   registerEvaluator(Evaluator(
     name: "spice.transient", produces: @transientQuantities,
-    needs: capSpiceTran, arity: 1 .. 1, subjectKinds: {skNet},
+    needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
     setupKey: transientKey, setupDoc: transientDoc, run: runTransient))
 
   registerEvaluator(Evaluator(
     name: "spice.opamp_response", produces: @responseQuantities,
-    needs: capSpiceAc, arity: 1 .. 1, subjectKinds: {skNet, skComponent},
+    needs: {capSpiceAc}, arity: 1 .. 1, subjectKinds: {skNet, skComponent},
     binds: @["opamp", "input"],
     setupKey: opampKey, setupDoc: responseDoc, run: runOpAmpResponse))
 
   registerEvaluator(Evaluator(
     name: "spice.large_signal", produces: @largeSignalQuantities,
-    needs: capSpiceTran, arity: 1 .. 1, subjectKinds: {skNet, skComponent},
+    needs: {capSpiceOp, capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet, skComponent},
     binds: @["opamp", "input"],
     setupKey: largeSignalKey, setupDoc: largeSignalDoc, run: runLargeSignal))
 
   registerEvaluator(Evaluator(
     name: "spice.loop_gain", produces: @loopQuantities,
-    needs: capSpiceAc, arity: 1 .. 1, subjectKinds: {skNet, skComponent},
+    needs: {capSpiceAc}, arity: 1 .. 1, subjectKinds: {skNet, skComponent},
     binds: @["opamp", "input"],
     setupKey: opampKey, setupDoc: loopGainDoc, run: runLoopGain))
 

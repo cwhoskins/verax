@@ -144,11 +144,41 @@ proc keepDeck(deckPath: string) =
   except CatchableError:
     discard  # a debugging aid must never be able to fail a simulation
 
-proc run*(nl: Netlist, cards: seq[string],
+const analysisCards* = ["ac", "dc", "op", "tran", "noise", "disto", "pz",
+                        "sens", "tf"]
+  ## Dot cards that make ngspice *run an analysis* and produce a plot of its
+  ## own. Used only to refuse one in the `setup` slot -- nothing here tries to
+  ## decide what an unknown card is, on the same reasoning as
+  ## `parseSpiceMagnitude`: refuse what is known to be wrong rather than
+  ## require what is guessed to be right.
+
+proc isAnalysisCard*(card: string): bool =
+  let t = card.strip().toLowerAscii()
+  if not t.startsWith("."): return false
+  let word = t[1 .. ^1].split({' ', '\t'})[0]
+  word in analysisCards
+
+proc run*(nl: Netlist, analysis: string, setup: seq[string] = @[],
           codemodels: seq[string] = @[]): SimResult =
-  ## Runs `nl` through ngspice in batch mode with the given analysis
-  ## `cards` (at most one -- see the module/backend doc comments for why)
-  ## and returns the resulting vectors.
+  ## Runs `nl` through ngspice in batch mode and returns the resulting
+  ## vectors.
+  ##
+  ## **`analysis` and `setup` are separate because they are different things,
+  ## and conflating them cost a real capability.** ngspice's default `write`
+  ## keeps only the last analysis's plot, and `SimResult` holds exactly one
+  ## plot, so two *analyses* per call genuinely cannot both be returned --
+  ## that is what the old one-card-per-call rule protected. But `.ic`,
+  ## `.nodeset`, `.options`, `.param` and `.temp` are not analyses. They
+  ## configure the single analysis that follows and produce no plot at all,
+  ## and the old rule counted them anyway: `run(nl, @[".ic v(out)=0.1",
+  ## ".tran 1u 10m uic"])` was refused for being "two cards" when it is one
+  ## analysis with one setup line. `docs/findings.md` §23 attributed the
+  ## oscillator blocker to `run` needing to accept more than one card; it
+  ## needed to stop counting setup as analysis.
+  ##
+  ## Setup cards are written first, then the analysis card, then the control
+  ## block. A card in `setup` that is a *known* analysis raises, because that
+  ## is the case the original guard existed to catch.
   ##
   ## The process exit code is not a reliable success signal for ngspice: a
   ## clean run with only benign warnings can still exit non-zero (observed
@@ -169,10 +199,21 @@ proc run*(nl: Netlist, cards: seq[string],
   ## lines it pre-parses, so an uppercase character anywhere in a `.cm` path
   ## makes it unloadable. (This does not affect the `write` line below, which
   ## the control interpreter handles later, from the unfolded text.)
-  if cards.len > 1:
+  if analysis.strip().len == 0:
     raise newException(SpiceSimError,
-      "run() supports at most one analysis card per call (only the last " &
-      "analysis's plot survives ngspice's default `write`); got " & $cards.len)
+      "run() needs an analysis card (e.g. \".op\", \".tran 1u 1m\"); got an " &
+      "empty one. A deck with only setup cards computes nothing.")
+  for c in setup:
+    if isAnalysisCard(c):
+      raise newException(SpiceSimError,
+        "run() was given the analysis card '" & c.strip() & "' as *setup*, " &
+        "alongside the analysis '" & analysis.strip() & "'. Only one " &
+        "analysis can be returned per call -- ngspice's default `write` " &
+        "keeps only the last analysis's plot, and a SimResult holds one " &
+        "plot. Setup means .ic/.nodeset/.options/.param/.temp; run the " &
+        "second analysis as its own call.")
+
+  let cards = setup & @[analysis]
 
   let tmpDir = createTempDir("nimcir_spice_", "")
   try:
@@ -256,3 +297,35 @@ proc run*(nl: Netlist, cards: seq[string],
         "failed to parse ngspice output: " & e.msg & "\nngspice log:\n" & log)
   finally:
     removeDir(tmpDir)
+proc run*(nl: Netlist, cards: seq[string],
+          codemodels: seq[string] = @[]): SimResult =
+  ## The older shape, kept because every existing call site passes a
+  ## single-element seq and there is nothing wrong with those calls.
+  ##
+  ## More than one card still raises here rather than being split by
+  ## guesswork: this overload cannot know which of them the caller meant as
+  ## the analysis, and picking one would be exactly the silent decision the
+  ## rest of this module refuses to make. Say which is which by calling
+  ## `run(nl, analysis, setup = ...)` instead.
+  if cards.len == 0:
+    raise newException(SpiceSimError,
+      "run() needs an analysis card; got none")
+  if cards.len > 1:
+    var analyses, setups: seq[string]
+    for c in cards:
+      if isAnalysisCard(c): analyses.add c.strip() else: setups.add c.strip()
+    if analyses.len > 1:
+      raise newException(SpiceSimError,
+        "run() returns one plot per call and was given " & $analyses.len &
+        " analysis cards (" & analyses.join(", ") & "): only the last " &
+        "analysis's plot survives ngspice's default `write`. Run each as " &
+        "its own call.")
+    raise newException(SpiceSimError,
+      "run(nl, @[...]) does not know which of " & $cards.len & " cards is " &
+      "the analysis. This overload takes exactly one. For setup plus an " &
+      "analysis -- " & (if setups.len > 0: setups.join(", ") & " with " &
+      (if analyses.len == 1: analyses[0] else: "an analysis")
+      else: "e.g. .ic with .tran ... uic") &
+      " -- call run(nl, analysis, setup = @[...]), which says which is which.")
+  run(nl, cards[0], @[], codemodels)
+

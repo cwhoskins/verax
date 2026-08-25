@@ -35,7 +35,7 @@
 ## sitting at its unstable equilibrium -- stays out of reach. That is the
 ## remaining half of `docs/findings.md` §23.
 
-import std/[math, tables]
+import std/[math, strutils, tables]
 
 import ../netlist/types
 import ../netlist/graph
@@ -83,6 +83,21 @@ type
     flattenHierarchy*: bool
     keepInstances*: seq[string]
     modelUnmodelledParts*: bool
+    initialConditions*: OrderedTable[string, float]
+      ## Node name -> volts, emitted as an `.ic` card and forcing `uic` on the
+      ## `.tran`.
+      ##
+      ## **This is the only way to reach a circuit that will not start from
+      ## its own operating point.** An oscillator's operating point is a
+      ## balance it never leaves without a disturbance, and a `.tran` from
+      ## that point reports a flat line -- a correct answer to a question
+      ## nobody asked. `.ic` plus `uic` puts the state somewhere the circuit
+      ## has to move away from.
+      ##
+      ## `uic` is not free and the trade is worth stating: it tells ngspice to
+      ## skip the operating-point solve entirely, so *every* node not named
+      ## here starts at zero rather than at its bias. State enough of them,
+      ## or the run measures a circuit starting from somewhere it never is.
     capacitorParasitics*: bool
       ## Expand each capacitor into C + ESR + ESL before running. On by
       ## default, and load-bearing here rather than merely more accurate: an
@@ -163,8 +178,22 @@ proc analyzeTransient*(nl: Netlist, measureNet: string,
     if spec.tMax > 0.0:
       card &= " " & spiceValue(spec.tMax)
 
+  var setup: seq[string]
+  if spec.initialConditions.len > 0:
+    var terms: seq[string]
+    for node, v in spec.initialConditions:
+      terms.add "v(" & node & ")=" & spiceValue(v)
+    setup.add ".ic " & terms.join(" ")
+    # `uic` is what makes the .ic the starting state rather than a hint to
+    # the operating-point solver.
+    card &= " uic"
+    result.assumptions.add note(
+      "the run starts from stated initial conditions (" & terms.join(", ") &
+      ") with uic, so no operating point was solved and every other node " &
+      "starts at zero rather than at its bias")
+
   try:
-    result.raw = run(work, @[card])
+    result.raw = run(work, card, setup)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not run the transient: " & e.msg)

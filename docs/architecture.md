@@ -217,16 +217,16 @@ readiness(d, allowed)
   |                 analyzeIO(nl)                output conflicts, DC paths, rail voltages
   |                 validateEnvironment(nl)      an inverted or half-stated ambient range
   |
-  3. PLAN           plan(d, usable)              pure: nothing runs, nothing is simulated
+  2b. CONTEXT       ctx = newEvalContext(d, usable)   one per run, shared below
+  |
+  3. PLAN           plan(ctx)                    pure: nothing runs, nothing is simulated
   |                   for each assertion in d.expandAll():
   |                     evaluatorFor(quantity)   -> else rejected, esNotEvaluable
   |                     arity / subject kinds    -> else rejected, esNotEvaluable
-  |                     needs in allowed         -> else rejected, esNotEvaluated
-  |                     group by (evaluator, setupKey(d, a))  -> one PlanStep
+  |                     ev.needs <= allowed      -> else rejected, esNotEvaluated
+  |                     group by (evaluator, setupKey(ctx, a))  -> one PlanStep
   |
-  4. RUN            clearSharedOperatingPoint()
-  |                 runPlan(d, plan)             one batch of results per step
-  |                 clearSharedOperatingPoint()
+  4. RUN            runPlan(ctx, plan)           one batch of results per step
   |
   5. COLLECT        one `Check` per step: setupDoc, deduped assumptions, results
   |                 claimLint(results)           a claim with no unit against a measured one
@@ -263,6 +263,16 @@ property of the planner, provable by counting steps, rather than something each
 evaluator has to reimplement — a single `.op` answers every `dc_voltage` claim
 in a design.
 
+`Evaluator.needs` is a **`set[Capability]`**, and the gate is
+`ev.needs <= allowed`. It was a scalar, which forced two built-ins to
+under-declare — `spice.pdn` said `.ac` while solving an operating point for
+its bias derating, `spice.large_signal` said `.tran` while solving one to find
+its stimulus bias — so `--caps=ac` and `--caps=tran` each ran an analysis the
+caller had withheld. That is invisible while everything is available and a
+wrong answer the moment something is not, which is exactly what a bench host
+is. An omitted declaration normalises to `{capStatic}` rather than the empty
+set, since `{} <= allowed` would make "declared nothing" mean "runs anywhere".
+
 A rejection carries **which of two different things went wrong**, and they are
 not interchangeable:
 
@@ -279,7 +289,7 @@ locked without mentioning that a door exists.
 
 ### 4.3 Running: an evaluator is handed a batch
 
-`runStep` calls `ev.run(d, step.assertions)` inside a `try`. An evaluator that
+`runStep` calls `ev.run(ctx, step.assertions)` inside a `try`. An evaluator that
 raises, or returns the wrong number of results, is a bug in the evaluator — but
 it must not take down the whole run, because then one bad plugin costs every
 other verdict in the design. Results that do come back are matched by assertion
@@ -300,11 +310,19 @@ gets identical behaviour. Three decisions are pinned there:
   sends the reader to widen a sweep that is not the problem, while the issue one
   field away said the loop break never opened the loop.
 
-**One operating point is shared across the run.** `contract_eval` owns a cache
-keyed by design identity with *no content invalidation* — nothing down there can
-tell that a caller edited a netlist between two checks — so the rule is stated
-rather than guessed at, and `readiness` calls `clearSharedOperatingPoint` on
-both sides of the run to make it safe. This can be a straight line rather than a
+**One operating point is shared across the run.** The cache lives in
+`EvalContext.scratch`, so its lifetime is exactly one run — which is what makes
+it correct rather than merely conventional. It was a module-level `var` keyed on
+`Design` *reference identity* with no content invalidation, so an edited design
+silently got its first answer back, two designs checked in one process shared a
+slot, and `readiness` had to bracket every run with a clearing call. A design
+does not change under a run, so there is now no window in which the entry can be
+wrong — and a sweep over candidate component values, which is the obvious way to
+have hit the old bug, is safe by construction. `scratch` is type-erased
+(`Table[string, RootRef]`) because `contract` may not name an `OperatingPoint`
+or a `Pcb` without gaining an edge to `analysis` or `pcb`: a module owning such
+a type declares `ref object of RootObj`, stashes it under a key it owns, and
+downcasts on the way out. This can be a straight line rather than a
 fixed point because **at DC a capacitor is an open circuit, so the operating
 point cannot depend on capacitance**. Solve the `.op` first, derate every
 Class 2 ceramic from its *actual* node voltages, then run the `.ac`/`.tran`
@@ -493,9 +511,20 @@ source and **0 ohm with one**, passing every target that could be set.
 
 ### What crosses the process boundary
 
-`spice/ngspice.run(nl, cards, codemodels)` takes **at most one analysis card**,
-because ngspice's default `write` only keeps the last analysis's plot. It
-synthesizes a `.control` block, sets `filetype=ascii`, writes a rawfile, and
+`spice/ngspice.run(nl, analysis, setup, codemodels)` takes **one analysis card
+and any number of setup cards**, and the split matters. One analysis per call
+is a real limit: ngspice's default `write` keeps only the last analysis's plot,
+and a `SimResult` holds exactly one plot with one `dataKind`. But `.ic`,
+`.nodeset`, `.options`, `.param` and `.temp` are not analyses — they configure
+the analysis that follows and produce no plot — and the guard used to count
+cards, so one analysis plus one setup line was refused as "two cards". That is
+what blocked `.ic`, and `.ic` is the only way to reach a circuit that will not
+start from its own operating point: an oscillator's operating point is a
+balance it never leaves, so a `.tran` from it reports a flat line. A known
+analysis card in the `setup` slot raises; an unknown card is passed through
+rather than guessed at.
+
+`run` synthesizes a `.control` block, sets `filetype=ascii`, writes a rawfile, and
 treats **"a parseable rawfile exists"** as the success signal rather than the
 process exit code — a clean run with benign warnings can exit non-zero, and a
 malformed deck can SIGABRT.

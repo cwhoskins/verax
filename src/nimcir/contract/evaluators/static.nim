@@ -74,7 +74,8 @@ proc magnitudeOf(c: Component, value: var float): bool =
 
 # --- pullup_count -------------------------------------------------------
 
-proc runPullupCount(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runPullupCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
   for a in batch:
     let net = netSubject(d, a)
     if net.isNone:
@@ -90,7 +91,7 @@ const i2cVol = 0.4
   ## The output-low voltage an I2C target must hold, per the specification.
   ## Not a design choice, which is why it is a constant and not a parameter.
 
-proc runPullupSinkCurrent(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runPullupSinkCurrent(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   ## How much current whatever pulls the line low has to sink.
   ##
   ## The bound that `pullup_count` and `rc_corner` between them do not
@@ -107,6 +108,7 @@ proc runPullupSinkCurrent(d: Design, batch: seq[Assertion]): seq[AssertionResult
   ## rather than against one rail for the whole net -- a bus with pull-ups to
   ## two different supplies is unusual and is not a reason to report a number
   ## about neither.
+  let d = ctx.design
   const name = "static.pullup_sink_current"
   for a in batch:
     let netOpt = netSubject(d, a)
@@ -151,7 +153,8 @@ proc runPullupSinkCurrent(d: Design, batch: seq[Assertion]): seq[AssertionResult
 
 # --- rc_corner ----------------------------------------------------------
 
-proc runRcCorner(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runRcCorner(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
   for a in batch:
     let netOpt = netSubject(d, a)
     if netOpt.isNone:
@@ -208,7 +211,8 @@ proc runRcCorner(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
 
 # --- controller_count ---------------------------------------------------
 
-proc runControllerCount(d: Design, batch: seq[Assertion]): seq[AssertionResult] =
+proc runControllerCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
   for a in batch:
     let netOpt = netSubject(d, a)
     if netOpt.isNone:
@@ -254,21 +258,25 @@ proc netOf(a: Assertion): string =
     if sub.kind == skNet: return sub.name
   "the design"
 
-proc pullupCountDoc(d: Design, batch: seq[Assertion]): string =
+proc pullupCountDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
   "a graph walk of net '" & netOf(batch[0]) &
   "', counting resistors that reach a rail from it"
 
-proc rcCornerDoc(d: Design, batch: seq[Assertion]): string =
+proc rcCornerDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
   "a graph walk of net '" & netOf(batch[0]) &
   "': the parallel pull-up resistance against an *invented* per-pin bus " &
   "capacitance, since a netlist carries neither trace nor pin capacitance"
 
-proc sinkCurrentDoc(d: Design, batch: seq[Assertion]): string =
+proc sinkCurrentDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
   "a graph walk of net '" & netOf(batch[0]) &
   "': the rail voltage divided by the parallel pull-up resistance, which is " &
   "what a device holding the line low has to sink"
 
-proc controllerCountDoc(d: Design, batch: seq[Assertion]): string =
+proc controllerCountDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
   "a graph walk of net '" & netOf(batch[0]) &
   "', counting the parts the role named as controllers -- nothing in a " &
   "netlist tells a controller from a target, since both have an inout pin"
@@ -281,7 +289,7 @@ proc registerStaticEvaluators*() =
   registerEvaluator(Evaluator(
     name: "static.pullup_count",
     produces: @["pullup_count"],
-    needs: capStatic,
+    needs: {capStatic},
     arity: 1 .. 1,
     subjectKinds: {skNet},
     setupDoc: pullupCountDoc,
@@ -290,7 +298,7 @@ proc registerStaticEvaluators*() =
   registerEvaluator(Evaluator(
     name: "static.rc_corner",
     produces: @["rc_corner"],
-    needs: capStatic,
+    needs: {capStatic},
     arity: 1 .. 1,
     subjectKinds: {skNet},
     setupDoc: rcCornerDoc,
@@ -299,7 +307,7 @@ proc registerStaticEvaluators*() =
   registerEvaluator(Evaluator(
     name: "static.pullup_sink_current",
     produces: @["pullup_sink_current"],
-    needs: capStatic,
+    needs: {capStatic},
     arity: 1 .. 1,
     subjectKinds: {skNet},
     setupDoc: sinkCurrentDoc,
@@ -308,7 +316,7 @@ proc registerStaticEvaluators*() =
   registerEvaluator(Evaluator(
     name: "static.controller_count",
     produces: @["controller_count"],
-    needs: capStatic,
+    needs: {capStatic},
     arity: 1 .. 1,
     subjectKinds: {skNet},
     # Every device on an I2C bus has an inout data pin, so nothing in a

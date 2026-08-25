@@ -72,7 +72,7 @@ type
     ## at the foot of a report says forty things were assumed *somewhere* and
     ## leaves the reader to work out which number each one moved.
     evaluator*: string
-    needs*: Capability
+    needs*: set[Capability]
     key*: string
       ## The setup key that grouped this batch. Machinery, kept for a caller
       ## that wants to correlate two runs; `setup` is what a person reads.
@@ -245,15 +245,15 @@ proc readiness*(d: Design, allowed = allCapabilities): Readiness =
   result.hottest = describeHottest(d.netlist, result.environment)
 
   let usable = allowed * result.available
-  result.plan = plan(d, usable)
-  # The simulated evaluators share one operating point across the whole run,
-  # and its cache is keyed by design identity with no content invalidation --
-  # nothing down there can tell that a caller edited a netlist between two
-  # checks. Clearing it here is what makes that rule safe: within this call
-  # the design does not change, and every entry into it starts clean.
-  clearSharedOperatingPoint()
-  let batches = runPlan(d, result.plan)
-  clearSharedOperatingPoint()
+  # One context for the whole run, and that is the point of it: the simulated
+  # evaluators share an operating point through `EvalContext.scratch`, so
+  # planning, running and describing all have to be the same run. It lives
+  # exactly as long as this call, so nothing it caches can outlive the design
+  # state it was computed from -- which a module-level cache could only
+  # promise by asking every caller to remember to clear it.
+  let ctx = newEvalContext(d, usable)
+  result.plan = plan(ctx)
+  let batches = runPlan(ctx, result.plan)
 
   # Run through the plan rather than calling `evaluate`, which flattens the
   # batches away. The grouping cannot be recovered afterwards: a result
@@ -262,7 +262,7 @@ proc readiness*(d: Design, allowed = allCapabilities): Readiness =
   # are two separate runs resting on two separate sets of assumptions.
   for i, step in result.plan.steps:
     var c = Check(evaluator: step.evaluator, needs: step.needs, key: step.key,
-                  setup: describeStep(d, step), results: batches[i])
+                  setup: describeStep(ctx, step), results: batches[i])
     var seen = initHashSet[string]()
     for r in c.results:
       for a in r.assumptions:
@@ -471,7 +471,7 @@ proc renderChecks(L: var seq[string], r: Readiness, verbose: bool) =
   ## The body of the report: one block per test.
   var walks, sims = 0
   for c in r.checks:
-    if c.needs == capStatic: inc walks else: inc sims
+    if c.needs <= {capStatic}: inc walks else: inc sims
 
   var assumed = initHashSet[string]()
   for a in invented(r.results): assumed.incl $a

@@ -37,8 +37,9 @@ two questions the way `opamp_stage`/`gain_stage` split theirs: `settled_rail`
 claiming `settled_v`/`ripple_pp`, and `oscillator` claiming
 `osc_freq`/`swing_pp`/`osc_thd_pct`. Names must be new: see §24. The open
 question is start-up initial conditions — an oscillator does not start from an
-operating point, and `run` currently refuses more than one card, which `.ic`
-would need.
+operating point, and at the time this was written `run` refused more than one
+card, which `.ic` was thought to need. (That diagnosis was wrong and is
+corrected below.)
 
 This also blocks the LT8640A's soft-start claim, which is measured (**4.086 ms**
 10–90%, against the 4.08 ms the datasheet's 1.9 µA into 10 nF predicts) but
@@ -55,10 +56,32 @@ through. What is left is the half the shape above says is hard:
 * **`charge_pump`** could state a `settled_rail` claim today — the ripple and
   the settled voltage are exactly what it wants — and has not been converted.
   Doing so is the smallest remaining piece.
-* **`wien_osc`** cannot, and the reason is unchanged: an oscillator does not
-  start from its operating point, so it needs `.ic` or a kick, and `run`
-  refuses more than one card. `osc_freq`/`swing_pp`/`osc_thd_pct` and the
-  `oscillator` role wait on that.
+* **`wien_osc`** cannot yet state its claims, but **the mechanism it was
+  waiting on now exists**, and the diagnosis recorded here was wrong. This
+  said `run` had to accept more than one card. It did not: ngspice's default
+  `write` keeps only the last *analysis*'s plot and a `SimResult` holds one
+  plot, so that limit is real -- but `.ic` is not an analysis. It configures
+  the analysis that follows and produces no plot, and the old guard counted
+  cards rather than analyses, so one analysis plus one setup line was refused
+  as "two cards". `spice/ngspice.run` now takes `run(nl, analysis, setup =
+  @[...])`, refuses a known analysis card in the `setup` slot, and
+  `analysis/transient.TransientSpec.initialConditions` emits the `.ic` and
+  forces `uic`. Verified end to end on an LC tank, which sits at 0 V forever
+  from its own operating point and rings at 5000 Hz measured (5033 Hz ideal)
+  when kicked -- `tests/test_spice_ngspice.nim`.
+
+  What is left for `wien_osc` is the measurement layer, not the simulator:
+  `osc_freq`/`swing_pp`/`osc_thd_pct` need extracting from the settled window
+  (`analysis/measure` already has `thd` and the zero-crossing arithmetic is
+  ordinary), and the `oscillator` role needs writing. Names must be new: see
+  §24. The one judgement to make is which node to kick and by how much, which
+  is a condition on the claim in the sense §23 already describes for
+  `tSettle` -- it says what was run, and the answer is a function of it.
+
+  Note the honest cost of `uic`, which the role will have to state: it skips
+  the operating-point solve, so every node not named in the `.ic` starts at
+  zero rather than at its bias. `analyzeTransient` reports that as an
+  assumption on every run that uses it.
 
 ---
 
@@ -69,10 +92,13 @@ What is left:
 
 1. **The rest of §23 — a transient that does not start from an operating
    point.** `analyzeTransient` and `settled_rail` shipped as §41 and cover the
-   settling-and-ripple half; `wien_osc` still needs `.ic` (and `run` accepting
-   more than one card) before an oscillator can state anything, and
-   `charge_pump` needs converting to the role that now exists. `lt8640a_buck`
-   still needs the `analyzeStartup` change to claim its soft start.
+   settling-and-ripple half. **The `.ic` half now exists too** —
+   `run(nl, analysis, setup = @[...])` and `TransientSpec.initialConditions`,
+   verified on an LC tank — so what `wien_osc` still needs is the *measurement*
+   layer (`osc_freq`/`swing_pp`/`osc_thd_pct`) and an `oscillator` role, not a
+   simulator change. `charge_pump` needs converting to the `settled_rail` role
+   that now exists. `lt8640a_buck` still needs the `analyzeStartup` change to
+   claim its soft start.
 2. **`current_rating` / `isat` have no consumer** (§27). An inductor's peak
    current needs a `.tran` and a probe; it is the check a converter most wants.
    This is now much closer than it was: the LT8640A's switching model puts a
