@@ -119,6 +119,40 @@ test "an undriven rail measures zero and fails, which is a real verdict":
     check r.status == esFail
     check abs(r.value) < 1.0e-9
 
+test "a claim about a net inside a subcircuit instance is checked, not shrugged at":
+  if not haveNgspice:
+    skip()
+  else:
+    # `design.innerNet` builds the subject and `resolve` accepts it when the
+    # claim is attached, so a flat-key lookup inside the evaluator made such a
+    # claim representable, bindable and then uncheckable -- reporting `needs a
+    # net subject that exists in this design` about a net that does. The name
+    # is also what `spice/flatten` calls that net, which is the netlist the
+    # operating point was solved on.
+    let leg = subckt("LEG", [TOP, BOT]):
+      net TOP, kind = ntSignal
+      net BOT, kind = ntSignal
+      net mid, kind = ntSignal
+      component R1, kind = "resistor", value = "1000":
+        pin "1", TOP, kind = ptPassive
+        pin "2", mid, kind = ptPassive
+      component R2, kind = "resistor", value = "1000":
+        pin "1", mid, kind = ptPassive
+        pin "2", BOT, kind = ptPassive
+
+    let d = design("hier"):
+      net vin, kind = ntPower
+      net gnd, kind = ntGround, name = "0", global = true
+      component V1, kind = "voltage_source", value = "DC 10":
+        pin "+", vin, kind = ptPower
+        pin "-", gnd, kind = ptGround
+      instance XL, leg, [vin, gnd]
+      require dc_voltage(XL.innerNet("mid")) == 5.0.V, id = "INNER"
+
+    let r = resultFor(evaluate(d, allCapabilities), "INNER")
+    check r.status == esPass
+    check abs(r.value - 5.0) < 1.0e-3
+
 # --- setup recovered from the role that made the claim -------------------
 
 test "a start-up claim with no regulator bound says exactly what is missing":

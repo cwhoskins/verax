@@ -1783,3 +1783,52 @@ and a claim about the model wearing the clothes of a claim about the board.
 truth about where the number came from (`annAuthored` when stated), which is
 what `invented()` counts on. The note itself is still always emitted, because
 the model is still a substitution even when both its numbers were stated.
+
+---
+
+# What two parameterized-network designs found
+
+`designs/divider_net.nim` and `designs/adj_regulator.nim` were written to push
+on *composition*: building a network from a total and a ratio rather than from
+resistor values, and attaching an IC's design equations to the part they
+belong to. They found one thing.
+
+| design | what it is | why it was chosen |
+|---|---|---|
+| `divider_net.nim` | a two-resistor voltage divider and the three-resistor network that replaces its bottom leg with a current divider | two builders parameterized the same way, so the composed network can be claimed against the same numbers as the plain one |
+| `adj_regulator.nim` | two LM317 rails, 5 V and 12 V, sized from the datasheet equations | the equations, the part's constraints and the loop that makes them true all have to live in one place |
+
+## 43. A claim about a net inside a subcircuit could be written but not checked
+
+**Fixed.** `analysis/contract_eval.subjectNet` resolves through
+`graph.findNet` instead of a flat key lookup. Test in
+`tests/test_contract_eval_spice.nim`.
+
+`contract/design.innerNet` builds a `Subject` naming a net inside a
+subcircuit instance, `resolve` accepts it when the claim is attached, and
+`spice/flatten` names the flattened net by exactly that path -- so
+`require dc_voltage(XN.innerNet("XI", "sns")) == 30.mV` is spelled
+correctly, binds correctly, and is simulated correctly.
+
+It was then reported as:
+
+```
+[????]  REQ-DIV-SPLIT-001   dc_voltage(net 'XN.XI.sns')
+         dc_voltage needs a net subject that exists in this design
+```
+
+which is false about a net that does exist, and the reader's only available
+response is to delete a correct claim. `subjectNet` asked
+`d.netlist.nets.hasKey(s.name)`, and `nets` is keyed flat -- the same
+distinction `graph.findNet` was written for, and which `§17` had already
+resolved for role bindings without this path being revisited.
+
+It matters beyond neatness because a subcircuit's *internal* nodes are
+frequently the only witnesses it has. `divider_net` is the case: both legs of
+its current divider return to the same ground, so no node in the parent
+netlist depends on how the current divided, and the one node that does is
+two levels down inside the instance.
+
+**Fixed** by resolving through `findNet`, which tries the flat key first and
+then descends -- so the same call serves a hierarchical name and a flattened
+one alike, which is what the rest of the library already relies on.

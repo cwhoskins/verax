@@ -109,8 +109,19 @@ proc failBatch(batch: seq[Assertion], evaluator, reason: string,
 
 proc subjectNet(d: Design, a: Assertion): string =
   ## The first net-shaped subject's name, or empty.
+  ##
+  ## Resolved through `findNet` rather than by a flat key lookup, so a subject
+  ## naming a net *inside* a subcircuit instance -- `XA.XI.sns`, which is what
+  ## `design.innerNet` builds and what `resolve` already accepts when the role
+  ## or requirement is attached -- is found here too. A flat lookup made that
+  ## subject representable, bindable and then uncheckable, reporting `needs a
+  ## net subject that exists in this design` about a net that does.
+  ##
+  ## The name is returned exactly as written, because `spice/flatten` names
+  ## the same net by the same path once the hierarchy is gone -- and the
+  ## flattened netlist is the one the operating point was solved on.
   for s in a.subjects:
-    if s.kind == skNet and d.netlist.nets.hasKey(s.name): return s.name
+    if s.kind == skNet and findNet(d.netlist, s.name) != nil: return s.name
   ""
 
 proc bindingName(d: Design, a: Assertion, part: string): string =

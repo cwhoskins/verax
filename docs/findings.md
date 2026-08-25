@@ -1,7 +1,7 @@
 # Open findings
 
 What checking real designs against this library turned up that is **still
-open**. Everything already fixed — §1–§42, each with what it was and what the
+open**. Everything already fixed — §1–§43, each with what it was and what the
 fix was — lives in `RESOLVED_FINDINGS.md`, and the designs themselves are
 described there. The numbering is shared and continuous across the two files,
 so a `§n` cross-reference means the same thing in either.

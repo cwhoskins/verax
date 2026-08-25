@@ -14,9 +14,14 @@
 ##   * `policy` -- `defaultPolicy()`, and the rule about what it may guess.
 ##   * `annotate` -- `applyChoice`, which writes a `Choice` onto a component
 ##     as ordinary registered annotations.
+##   * `series` -- the preferred-value ladders (E12/E24/E96) and the
+##     `PreferredSeries` hook a builder takes, for the other half of the same
+##     question: not which *kind* of part, but which of the values that part
+##     is actually sold in.
 
 import ./parts/types
 import ./parts/policy
 import ./parts/annotate
+import ./parts/series
 
-export types, policy, annotate
+export types, policy, annotate, series
