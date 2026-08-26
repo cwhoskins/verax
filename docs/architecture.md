@@ -565,6 +565,51 @@ opposite reason: a regulator that brings its own model soft-starts, and an
 operating point would find the state that ramp settles *to*, so the run would
 begin at the end of the thing being measured.
 
+### A difference is not a bias
+
+Every analysis above answers a question at *one* operating point.
+`analysis/operating` solves a single `.op` and `analysis/derating` reads it
+back; `analysis/pdn` and `analysis/opamp` linearise about it. So the whole
+family answers "what does this do *there*" — and a large part of what a
+datasheet specifies is instead a difference between two biases: line
+regulation, load regulation, dropout, a divider's ratio, an output resistance.
+None of those is in an operating point however many of them you solve, which
+is why `capSpiceDc` is its own capability rather than a mode of `capSpiceOp`.
+
+`analysis/dcsweep` has two procs, and the split is about **where the stimulus
+comes from**. `analyzeLineSweep` sweeps a source the design already contains,
+resolved through `findComponent` after flattening and identified by
+`deckDesignator`, so a source inside an instance works and a part whose `kind`
+does not reach the deck as a `V` line is refused by name rather than swept as
+whatever letter it got. `analyzeLoadSweep` sweeps a constant-current sink it
+**injects** at the measured node — the same idiom `probes.addImpedanceProbe`
+uses for an `.ac`, and for the same reason: a test load belongs to the
+measurement, not to the board, and a part added to the netlist to be swept
+would be a part on the BoM and in the layout. A sink and not a resistor,
+because a resistor's current follows the node it hangs on, so sweeping one
+sweeps the load and the drive together.
+
+Neither expands capacitor parasitics — at DC a capacitor is an open circuit,
+so its ESR is in series with nothing — and neither expands source impedance,
+because `expandSourceImpedance`'s default 10 mohm is an *invented* series
+resistance that a load sweep would add to the very output resistance it is
+measuring. And neither isolates, following `runDcVoltage`'s precedent: a cut
+rail is terminated at its nominal, which on a regulation measurement is the
+answer.
+
+Two results are worth stating because they are decisions rather than
+arithmetic. **`dropout_v` is `NaN` when the output never left regulation**,
+with an issue saying to sweep lower: "no dropout was found" and "the dropout
+is small" are opposite conclusions, and `verdict` reads a `NaN` as
+*notEvaluated* rather than as a pass. That is also exactly what an idealised
+regulator model reports over any range at all, which is the honest outcome
+rather than a flattering one. And **the swept range joins the setup key**, so
+two claims over two ranges are two runs: on `templates/dc_sweep.nim` the same
+Zener reference measures 1.67% of line regulation over its specified 6–16 V
+and 41.6% over 3–16 V, because most of the wider range is below the knee.
+Neither number is wrong; they are answers to different questions, and a
+planner that pooled them would report one of them as the other.
+
 ### What crosses the process boundary
 
 `spice/ngspice.run(nl, analysis, setup, codemodels)` takes **one analysis card

@@ -1832,3 +1832,83 @@ two levels down inside the instance.
 **Fixed** by resolving through `findNet`, which tries the flat key first and
 then descends -- so the same call serves a hierarchical name and a flattened
 one alike, which is what the rest of the library already relies on.
+
+## 45. No `.dc` capability at all
+
+**Fixed.** `capSpiceDc`, `analysis/dcsweep.nim`, the `spice.dc_sweep`
+evaluator, and the `source_sweep` / `load_sweep` roles. Tests in
+`tests/test_analysis_dcsweep.nim`; worked examples in
+`templates/dc_sweep.nim` and `designs/divider_net.nim`.
+
+`Capability` was `capStatic`, `capSpiceOp`, `capSpiceAc`, `capSpiceTran` and
+`capBench`, and nothing above the backend had ever emitted a `.dc` — even
+though `spice/backend` already documented `sdReal` as covering it,
+`ngspice.analysisCards` already listed it, and `realPlotAnalyses` already
+admitted it for `--save-currents`. So the backend was never the gap.
+
+**What that cost.** Every analysis in the library answers a question at *one*
+bias: `analysis/operating` solves a single `.op` and `analysis/derating` reads
+it back, while `pdn` and `opamp` linearise about it. A large part of what a
+datasheet specifies is instead a **difference between two** biases — line
+regulation, load regulation, dropout, a comparator's trip point, an input
+offset, a plain transfer curve — and no number of operating points contains
+one. That is why the capability is its own enum member rather than a mode of
+`capSpiceOp`: a host that can solve an operating point can also sweep one, but
+an evaluator that says `.op` while running N of them is under-declaring in
+exactly the way §24's `set[Capability]` was introduced to stop.
+
+**Two procs, split by where the stimulus comes from.** `analyzeLineSweep`
+sweeps a source the design already has — resolved through `findComponent`
+after flattening, so a source inside an instance works, and identified by
+`deckDesignator`, so a part that would not reach the deck as a `V` line is
+refused by name rather than swept as whatever letter it got.
+`analyzeLoadSweep` sweeps a constant-current sink it **injects** at the
+measured node, which is the same idiom `probes.addImpedanceProbe` uses for an
+`.ac` and rests on the same argument: a test load belongs to the measurement,
+not to the board, and a part put in the netlist to be swept is a part on the
+BoM and in the layout. A sink and not a resistor for the reason
+`spice/boundary` already gives — a resistor's current follows the node it
+hangs on, so sweeping one sweeps the load and the drive together.
+
+Neither expands capacitor parasitics (at DC a capacitor is an open circuit, so
+its ESR is in series with nothing), neither expands source impedance (the
+default 10 mohm is an invented series resistance, and a load sweep would add
+it to the very output resistance being measured), and neither isolates —
+`runDcVoltage`'s precedent, since a cut rail is terminated at its nominal and
+that is the answer a regulation measurement is looking for.
+
+**Quantities**: `dc_transfer` (V/V), `line_reg_pct` (%), `line_reg_pct_per_v`
+(%/V), `dropout_v` (V), `load_reg_pct` (%), `z_out_dc` (ohm), and
+`dc_out_min` / `dc_out_max` / `dc_out_delta` (V). All nine come from one
+evaluator, because `registerEvaluator` allows one producer per quantity and
+the three envelope figures genuinely come out of either sweep; which one ran
+is decided by a `sweep` condition the role stamps, not by the quantity.
+
+**Two decisions worth keeping.** `dropout_v` comes back `NaN` — read
+downstream as *not evaluated* — when the output never left regulation, with an
+issue saying to sweep lower. "No dropout was found" and "the dropout is small"
+are opposite conclusions and must not share a number, and the `NaN` is also
+precisely what an idealised regulator model reports over any range at all:
+`designs/lib/adjreg.nim` states in as many words that its error amplifier
+driving an ideal source holds its target from an input below it, so no sweep
+will find a dropout the model does not have. And **the swept range joins the
+setup key**, so two claims over two ranges are two runs. That is not a
+technicality: on `templates/dc_sweep.nim`'s 5.1 V Zener reference, line
+regulation over the specified 6–16 V measures **1.67%** and over 3–16 V
+measures **41.6%**, because most of the wider range is below the knee where
+the "reference" is the supply arriving through a resistor. Both are right;
+pooling them would report one as the other.
+
+**What it found on a design already in the repository.** `divider_net` claimed
+its two taps at 2.5 V, which is one point on a line — a network with the wrong
+ratio and a compensating error passes it. Swept, the tap's *slope* is the
+ratio itself: 250.0 m for both the plain divider and the composed
+three-resistor one. And `z_out_dc` measures 18 750 ohm at both taps, which is
+the other half of substitutability and the half no node voltage witnesses: the
+composed network has to present the same **impedance** as the resistor it
+stands in for, not merely the same tap, and if `currentDividerLegs` were wrong
+`RA || RB` would not be the 25 k the tap needs. Neither number appears in the
+design file or in any component value.
+
+§63 (`comparator_threshold`) and §65 (`esd_clamp`) were blocked on this and are
+now unblocked; both remain open as roles to write.

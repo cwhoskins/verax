@@ -168,8 +168,11 @@ suite "capabilities":
     check parseCapabilities(".op") == {capStatic, capSpiceOp}
 
   test "an unknown capability is rejected rather than ignored":
+    # `dc` used to be the example here, which is what an enum member's
+    # arrival looks like from a test: the word stopped being unknown.
+    check parseCapabilities("dc") == {capStatic, capSpiceDc}
     expect ValueError:
-      discard parseCapabilities("dc")
+      discard parseCapabilities("noise")
 
   test "unrecognised flags are left for the design file":
     let o = parseVerifyArgs(["--something-else", "--strict"])

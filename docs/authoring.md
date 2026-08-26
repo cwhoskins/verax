@@ -555,6 +555,87 @@ ngspice's ceiling on its own timestep, which is why `analyzeOscillation`
 derives ten times the sample density `analyzeTransient` does: at the ordinary
 density that same design reads 0.31% low.
 
+## Sweeping something, rather than solving at one bias
+
+Everything above answers a question at one operating point. A large part of
+what a datasheet specifies is instead a *difference* between two — line
+regulation, load regulation, dropout, a divider's ratio, an output
+resistance — and none of those is in a `.op`, however many of them you solve.
+A source sweep is where they come from, and there are two roles for it
+because there are two things you can sweep.
+
+**`source_sweep` sweeps a source the design already has.**
+
+```nim
+  role "source_sweep", line, source = V1, output = vref,
+       vFrom = 6.V, vTo = 16.V,
+       maxLineReg = 2.5, maxLineRegPerV = 0.25, minOut = 5.V
+```
+
+Quantities: `dc_transfer` (V/V), `line_reg_pct` (%), `line_reg_pct_per_v`
+(%/V), `dropout_v` (V), and `dc_out_min`/`dc_out_max`/`dc_out_delta` (V).
+Every one is opt-in, and note that the percentage parameters take a **bare
+number**: `maxLineReg = 2.5.pct` is the fraction 0.025 and would be wrong by
+a hundred, exactly as it would be for `maxOvershoot`.
+
+**`ratio` and `maxLineReg` are the same measurement asked by opposite
+circuits.** A regulator's specification is that its output does *not* follow
+its input, which is quoted as a percentage of the output and wants to be
+small. A divider's is that it follows exactly, by a stated ratio, which is
+quoted as a slope and wants to be right. `designs/divider_net.nim` claims the
+second: sweeping the supply from zero measures the divider's *slope*, which is
+the ratio the design equations computed — where a tap that reads 2.5 V at
+10 V in is one point on a line that a wrong network with a compensating error
+still passes.
+
+**`load_sweep` sweeps a current sink the analysis injects**, and binds no part
+at all:
+
+```nim
+  role "load_sweep", load, output = vref,
+       iFrom = 0.A, iTo = 2.mA,
+       maxZOut = 10.ohm, maxLoadReg = 0.5, minOut = 5.V
+```
+
+Quantities: `load_reg_pct` (%), `z_out_dc` (ohm), and the same three envelope
+figures. There is nothing in the design to bind because a test load is not a
+part anybody solders — putting one in the netlist would put it on the BoM and
+in the layout. It is a current sink rather than a resistor for the reason
+`driveSink` is: a resistor's current follows the node it hangs on, so sweeping
+one sweeps the load and the drive together.
+
+`z_out_dc` reaches further than a regulator. It is the Thevenin resistance
+looking back into the node, which for a divider built from a stated total and
+a stated ratio is a number the design equations fix and that appears in no
+component value — the other half of substitutability, and one that no node
+voltage witnesses.
+
+**The range is a condition, not a limit**, exactly as `settled_rail`'s window
+is: every quantity here is a difference taken across the sweep, so two claims
+over two ranges are two runs and their answers are not comparable. State them
+as two role instances and the planner keeps them apart.
+
+That is not a technicality. On `templates/dc_sweep.nim` — a 5.1 V Zener shunt
+reference — line regulation over the specified 6 V to 16 V is **1.67%**; over
+3 V to 16 V it is **41.6%**. The second is not a worse reference, it is a
+different measurement: most of that range is below the Zener's knee, where the
+"reference" is the supply arriving through a resistor. The lower range is
+where the template's `dropout_v` of 567 mV comes from, and it is the only
+place it can come from.
+
+**`dropout_v` comes back not evaluated, never zero, when the sweep never left
+regulation.** "No dropout was found" and "the dropout is small" are opposite
+conclusions, so they must not share a number; an issue says to sweep lower.
+That is also what an idealised regulator model reports over any range at all —
+`designs/lib/adjreg.nim` says so in as many words, and an error amplifier
+driving an ideal source holds its target from an input below it.
+
+A `.dc` is one operating point per step, which makes it the cheapest simulated
+capability here. The default is fifty-one steps across the range; state
+`vStep` when you are claiming `dropout_v`, which is the one quantity read off
+a threshold crossing rather than off the endpoints, so its precision *is* the
+step.
+
 ## More than one model for one part
 
 `simReplace` says how a part should be simulated. A part may carry **several**,
@@ -625,7 +706,7 @@ one that passed.
 
 ## Flags
 
-`--offline` (graph walks only, no simulator), `--caps=op,ac,tran` (offer a
+`--offline` (graph walks only, no simulator), `--caps=op,dc,ac,tran` (offer a
 specific subset), `--verbose` (show the full plan and the passing assertions),
 `--strict` (promote warnings and un-evaluated claims to failures).
 

@@ -33,6 +33,23 @@
 ## so 30 uA through leg A, and 30 uA through 1 k is 30 mV. Every one of those
 ## numbers follows from the four parameters the two `instance` lines state;
 ## none of them is a component value.
+##
+## ## Two properties an operating point cannot witness
+##
+## A tap reading 2.5 V at 10 V in is **one point on a line**, and a network
+## with the wrong ratio and a compensating error passes it. `source_sweep`
+## sweeps the supply from zero and measures the *slope*, which is the ratio
+## itself: 250.0 m for both networks, against the 25% the `instance` lines
+## stated.
+##
+## And substitutability is a claim about **impedance**, not only about the
+## tap. `load_sweep` draws a swept current out of each tap and reports what
+## it is looking back into: 18.75 k, which is 75 k over 25 k in parallel, and
+## which appears in neither this file nor the netlist. The composed network
+## has to present the same figure as the two-resistor one, and it does only
+## because `currentDividerLegs` makes `RA || RB` the 25 k the tap was sized
+## for. The load is a sink the analysis injects; nothing here is a test load,
+## because a test load is not a part anybody solders.
 
 import nimcir/contract/dsl
 import nimcir/verify
@@ -90,5 +107,36 @@ let d = design("divider_net"):
                     "that leg A's sense element accounts for -- the one " &
                     "node in the network whose voltage depends on how the " &
                     "current divided rather than on where the tap sits"
+
+  # --- the same two properties, swept rather than sampled -----------------
+  #
+  # A tap that reads 2.5 V at 10 V in is one point on a line, and a network
+  # with the wrong ratio and a compensating error still passes it. Sweeping
+  # the supply from zero measures the *slope*, which is the ratio itself --
+  # the same number the two `instance` lines stated, and still nothing
+  # compared against a component value.
+  role "source_sweep", "vdiv_line", source = V1, output = tapv,
+       vFrom = 0.0.V, vTo = 10.0.V,
+       ratio = 25.pct, band = 1.pct
+  role "source_sweep", "ndiv_line", source = V1, output = tapn,
+       vFrom = 0.0.V, vTo = 10.0.V,
+       ratio = 25.pct, band = 1.pct
+
+  # And the other half of substitutability, which no node voltage witnesses:
+  # a network standing in for a resistor has to present the same *impedance*,
+  # not merely the same tap. 100 k split at 25% is 75 k over 25 k, so the tap
+  # looks back into 18.75 k -- a number the design equations fix and that
+  # appears nowhere in this file or in the netlist. Both taps have to show
+  # it, and if `currentDividerLegs` were wrong XN's would not.
+  #
+  # The load is a swept current sink the analysis injects at the node; there
+  # is nothing here to bind it to, because a test load is not a part anybody
+  # solders.
+  role "load_sweep", "vdiv_load", output = tapv,
+       iFrom = 0.0.A, iTo = 10.uA,
+       zOut = 18.75.kohm, band = 1.pct
+  role "load_sweep", "ndiv_load", output = tapn,
+       iFrom = 0.0.A, iTo = 10.uA,
+       zOut = 18.75.kohm, band = 1.pct
 
 quit(verifyMain(d))

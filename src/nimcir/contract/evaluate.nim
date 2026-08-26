@@ -66,14 +66,16 @@ type
     ## belong on a later field of `Evaluator`, not as more members here.
     capStatic     ## a graph walk; no external tool
     capSpiceOp
+    capSpiceDc    ## a source sweep: N operating points, one per swept value
     capSpiceAc
     capSpiceTran
     capBench      ## a measurement on real hardware
 
 const
-  simCapabilities* = {capSpiceOp, capSpiceAc, capSpiceTran}
+  simCapabilities* = {capSpiceOp, capSpiceDc, capSpiceAc, capSpiceTran}
   offlineCapabilities* = {capStatic}
-  allCapabilities* = {capStatic, capSpiceOp, capSpiceAc, capSpiceTran}
+  allCapabilities* = {capStatic, capSpiceOp, capSpiceDc, capSpiceAc,
+                      capSpiceTran}
     ## Everything reachable without hardware. `capBench` is deliberately left
     ## out: it is opt-in, because offering it means a person is standing at a
     ## bench.
@@ -222,6 +224,7 @@ proc capLabel*(c: Capability): string =
   case c
   of capStatic: "static"
   of capSpiceOp: ".op"
+  of capSpiceDc: ".dc"
   of capSpiceAc: ".ac"
   of capSpiceTran: ".tran"
   of capBench: "bench"

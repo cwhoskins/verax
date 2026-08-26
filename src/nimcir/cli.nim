@@ -169,7 +169,7 @@ proc cmdEnv(): int =
   let sim = ngspiceVersion()
   echo "simulator   ", (if sim.len > 0: sim else: "none (no ngspice on PATH)")
   echo "library     ", (if lib.len > 0: lib else: "(none needed)"), "  -- ", how
-  echo "capabilities", "  ", $availableCapabilities(sim)
+  echo "capabilities", "  ", capList(availableCapabilities(sim))
   echo "roles       ", registeredRoles().len, " registered"
   echo "quantities  ", evaluableQuantities().len, " measurable"
   exitClean
@@ -210,7 +210,8 @@ usage:
 
 check flags (forwarded to the design file):
   --offline          graph walks only; do not simulate
-  --caps=op,ac,tran  offer a specific subset
+  --caps=op,dc,ac,tran
+                     offer a specific subset
   --verbose          show the full plan and the passing claims
   --strict           treat warnings and unevaluated claims as failures
   --keep-runs=<dir>  archive every simulation there: the deck handed to

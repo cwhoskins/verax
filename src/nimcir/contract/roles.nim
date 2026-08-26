@@ -708,6 +708,167 @@ proc settledRailExpand(inst: RoleInstance): seq[Assertion] =
             "invisible to an operating point and to any averaged model of " &
             "the part", sevWarning)
 
+# --- built-in: source_sweep / load_sweep -------------------------------
+
+proc sourceSweepExpand(inst: RoleInstance): seq[Assertion] =
+  ## What a node does as a source in the design is swept.
+  ##
+  ## **Why the sweep is a condition and not a claim.** `vFrom`/`vTo`/`vStep`
+  ## say what was run: every quantity below is a difference taken across that
+  ## range, so two claims over two ranges are two runs and the answers are not
+  ## comparable. They ride in `Assertion.condition` exactly as
+  ## `settled_rail`'s window does, and the evaluator's setup key reads them
+  ## back so the planner keeps the runs apart.
+  ##
+  ## **Why `ratio` and `maxLineReg` are both here.** They are the same
+  ## measurement asked by two opposite circuits. A regulator's specification
+  ## is that the output does *not* follow its input, which is quoted as a
+  ## percentage of the output and wants to be small; a divider's is that it
+  ## follows exactly, by a stated ratio, which is quoted as a slope and wants
+  ## to be right. A role offering only one would make the other state its
+  ## specification as its counterpart's failure.
+  let outNet = inst.subject("output")
+  let vFrom = paramFloat(inst, "vFrom", 0.0)
+  let vTo = paramFloat(inst, "vTo", 0.0)
+  let vStep = paramFloat(inst, "vStep", 0.0)
+
+  template swept(sfx, qty: string, e: Expectation, un, why: string;
+                 sev = sevError) =
+    var claim = Assertion(
+      id: assertionId(inst, sfx),
+      subjects: @[outNet],
+      quantity: qty,
+      expect: e,
+      unit: un,
+      severity: sev,
+      rationale: why,
+      origin: inst.name)
+    claim.condition["sweep"] = "source"
+    claim.condition["sweep_from"] = $vFrom
+    claim.condition["sweep_to"] = $vTo
+    claim.condition["sweep_step"] = $vStep
+    if hasParam(inst, "nominal"):
+      claim.condition["v_nominal"] = $paramFloat(inst, "nominal", 0.0)
+    result.add claim
+
+  # Every claim is opt-in and the role makes none of its own. A sweep with no
+  # claim on it is a curve nobody asked a question about, and there is no
+  # default answer for what a node should do as its supply moves: for a
+  # regulator the right answer is "nothing", for a divider it is "follow", and
+  # inventing either would manufacture a claim and report it as the
+  # designer's.
+  if hasParam(inst, "ratio"):
+    swept("transfer", "dc_transfer",
+          nominal(paramFloat(inst, "ratio", 0.0),
+                  fracTol = paramFloat(inst, "band", 0.05)), "",
+          "the output has to follow the input by the ratio the design " &
+          "equations computed -- measured as a slope across the whole swept " &
+          "range rather than as one node voltage at one bias, which a wrong " &
+          "network can still get right")
+  if hasParam(inst, "maxLineReg"):
+    swept("line_reg", "line_reg_pct",
+          atMost(paramFloat(inst, "maxLineReg", 0.0)), "%",
+          "how far the output moves across the whole input range, as a " &
+          "percentage of the output -- which is what a supply's own " &
+          "tolerance has to be budgeted against")
+  if hasParam(inst, "maxLineRegPerV"):
+    swept("line_reg_per_v", "line_reg_pct_per_v",
+          atMost(paramFloat(inst, "maxLineRegPerV", 0.0)), "%/V",
+          "the datasheet form of the same figure, which unlike the total " &
+          "does not change with how wide the sweep was")
+  if hasParam(inst, "maxDropout"):
+    swept("dropout", "dropout_v",
+          atMost(paramFloat(inst, "maxDropout", 0.0)), "V",
+          "the input-to-output differential the part still regulates at; " &
+          "below it the rail follows the supply down and every claim made " &
+          "about the rail stops holding")
+  if hasParam(inst, "minOut"):
+    swept("out_min", "dc_out_min",
+          atLeast(paramFloat(inst, "minOut", 0.0)), "V",
+          "the lowest the output reaches anywhere in the swept range, which " &
+          "is what anything downstream has to tolerate")
+  if hasParam(inst, "maxOut"):
+    swept("out_max", "dc_out_max",
+          atMost(paramFloat(inst, "maxOut", 0.0)), "V",
+          "the highest the output reaches anywhere in the swept range, " &
+          "which is what anything downstream has to survive")
+  if hasParam(inst, "maxDelta"):
+    swept("delta", "dc_out_delta",
+          atMost(paramFloat(inst, "maxDelta", 0.0)), "V",
+          "how far the output moves across the whole range, in volts -- the " &
+          "same figure `maxLineReg` states as a percentage, for a node that " &
+          "has a budget rather than a nominal to be a fraction of")
+
+proc loadSweepExpand(inst: RoleInstance): seq[Assertion] =
+  ## What a node does as current is drawn out of it.
+  ##
+  ## **This role binds no part, and that is the point.** The stimulus is a
+  ## constant-current sink the analysis injects at the measured node; there is
+  ## deliberately nothing in the design to bind, because a test load is not a
+  ## part anybody solders and putting one in the netlist would put it on the
+  ## BoM and in the layout. So the role names a node, a current range, and
+  ## what the node must then do -- which is also what lets it reach a network
+  ## that has no load port at all, where `z_out_dc` is the Thevenin
+  ## resistance the design equations computed and the netlist never states.
+  let outNet = inst.subject("output")
+  let iFrom = paramFloat(inst, "iFrom", 0.0)
+  let iTo = paramFloat(inst, "iTo", 0.0)
+  let iStep = paramFloat(inst, "iStep", 0.0)
+
+  template swept(sfx, qty: string, e: Expectation, un, why: string;
+                 sev = sevError) =
+    var claim = Assertion(
+      id: assertionId(inst, sfx),
+      subjects: @[outNet],
+      quantity: qty,
+      expect: e,
+      unit: un,
+      severity: sev,
+      rationale: why,
+      origin: inst.name)
+    claim.condition["sweep"] = "load"
+    claim.condition["sweep_from"] = $iFrom
+    claim.condition["sweep_to"] = $iTo
+    claim.condition["sweep_step"] = $iStep
+    if hasParam(inst, "nominal"):
+      claim.condition["v_nominal"] = $paramFloat(inst, "nominal", 0.0)
+    result.add claim
+
+  if hasParam(inst, "maxLoadReg"):
+    swept("load_reg", "load_reg_pct",
+          atMost(paramFloat(inst, "maxLoadReg", 0.0)), "%",
+          "how far the output sags across the whole load range, as a " &
+          "percentage of the output at light load")
+  if hasParam(inst, "zOut"):
+    swept("z_out", "z_out_dc",
+          nominal(paramFloat(inst, "zOut", 0.0),
+                  fracTol = paramFloat(inst, "band", 0.05)), "ohm",
+          "the resistance looking back into the node, which for anything " &
+          "built from a stated total and a stated ratio is a number the " &
+          "design equations fix and no component value in the file says")
+  if hasParam(inst, "maxZOut"):
+    swept("z_out_max", "z_out_dc",
+          atMost(paramFloat(inst, "maxZOut", 0.0)), "ohm",
+          "how stiff the node has to be: everything hung on it sees this " &
+          "resistance in series with whatever it draws")
+  # The same three the source sweep offers, and the natural way to state a
+  # load claim: what the node must still be at when the heaviest load in the
+  # range is drawn from it.
+  if hasParam(inst, "minOut"):
+    swept("out_min", "dc_out_min",
+          atLeast(paramFloat(inst, "minOut", 0.0)), "V",
+          "the lowest the node reaches at the heaviest load in the range, " &
+          "which is the voltage everything on it has to keep working at")
+  if hasParam(inst, "maxOut"):
+    swept("out_max", "dc_out_max",
+          atMost(paramFloat(inst, "maxOut", 0.0)), "V",
+          "the highest the node reaches anywhere in the load range")
+  if hasParam(inst, "maxDelta"):
+    swept("delta", "dc_out_delta",
+          atMost(paramFloat(inst, "maxDelta", 0.0)), "V",
+          "how far the node sags across the whole load range, in volts -- " &
+          "the same figure `maxLoadReg` states as a percentage")
+
 proc registerBuiltinRoles*() =
   ## Called at module init. Exposed so a test can prove that re-registering
   ## is idempotent, and so an application that clears the registry can put
@@ -930,5 +1091,104 @@ proc registerBuiltinRoles*() =
     ],
     apply: nil,
     expand: largeSignalExpand))
+
+  registerRole(RoleDef(
+    name: "source_sweep",
+    doc: "A source in the design swept at DC: what the output does across " &
+         "the whole input range, rather than at one bias.",
+    parts: @[
+      RolePart(name: "source", kind: skComponent,
+               doc: "the voltage source to sweep"),
+      RolePart(name: "output", kind: skNet, doc: "the net to measure"),
+      RolePart(name: "input", kind: skNet, optional: true,
+               doc: "the node the part actually works from, when that is " &
+                    "past a lead resistance or a filter -- the differential " &
+                    "a dropout figure is measured across"),
+    ],
+    params: @[
+      AnnDef(key: "vFrom", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "low end of the swept input range"),
+      AnnDef(key: "vTo", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "high end of the swept input range"),
+      AnnDef(key: "vStep", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "sweep step; omitted takes fifty-one points across the " &
+                  "range, which is a cheap curve -- a .dc is one operating " &
+                  "point per step"),
+      AnnDef(key: "nominal", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "the output the percentage figures are quoted against; " &
+                  "omitted takes the output at the high-line end"),
+      AnnDef(key: "ratio", kind: akFloat, scopes: {asNet},
+             doc: "the slope the output must follow the input by, in V/V; " &
+                  "omitted means unclaimed"),
+      AnnDef(key: "band", kind: akFloat, scopes: {asNet},
+             doc: "acceptance band on `ratio`, as a fraction; default 5%"),
+      AnnDef(key: "maxLineReg", kind: akFloat, unit: "%", scopes: {asNet},
+             doc: "most the output may move across the whole range, as a " &
+                  "percentage of nominal; omitted means unclaimed"),
+      AnnDef(key: "maxLineRegPerV", kind: akFloat, unit: "%/V", scopes: {asNet},
+             doc: "the same figure per volt of input, which is how a " &
+                  "datasheet quotes it; omitted means unclaimed"),
+      AnnDef(key: "maxDropout", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "largest input-to-output differential the part may need " &
+                  "to still regulate; omitted means unclaimed. Reported as " &
+                  "unchecked when the sweep never went low enough to find " &
+                  "one, which is not the same as a small dropout"),
+      AnnDef(key: "minOut", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "lowest the output may reach anywhere in the range; " &
+                  "omitted means unclaimed"),
+      AnnDef(key: "maxOut", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "highest the output may reach anywhere in the range; " &
+                  "omitted means unclaimed"),
+      AnnDef(key: "maxDelta", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "most the output may move across the range, in volts -- " &
+                  "`maxLineReg` in absolute terms, for a node with a budget " &
+                  "rather than a nominal; omitted means unclaimed"),
+    ],
+    apply: nil,
+    expand: sourceSweepExpand))
+
+  registerRole(RoleDef(
+    name: "load_sweep",
+    doc: "A node loaded by a swept current sink the analysis injects: how " &
+         "far it sags, and how stiff it is.",
+    parts: @[
+      RolePart(name: "output", kind: skNet,
+               doc: "the net the load is drawn from and measured at"),
+    ],
+    params: @[
+      AnnDef(key: "iFrom", kind: akFloat, unit: "A", scopes: {asNet},
+             doc: "light-load end of the swept range; usually zero, since " &
+                  "the percentage figure is quoted against the output there"),
+      AnnDef(key: "iTo", kind: akFloat, unit: "A", scopes: {asNet},
+             doc: "heaviest load the node is specified to hold up under"),
+      AnnDef(key: "iStep", kind: akFloat, unit: "A", scopes: {asNet},
+             doc: "sweep step; omitted takes fifty-one points"),
+      AnnDef(key: "nominal", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "the output the percentage figure is quoted against; " &
+                  "omitted takes the output at the light-load end"),
+      AnnDef(key: "maxLoadReg", kind: akFloat, unit: "%", scopes: {asNet},
+             doc: "most the output may sag across the load range, as a " &
+                  "percentage of nominal; omitted means unclaimed"),
+      AnnDef(key: "zOut", kind: akFloat, unit: "ohm", scopes: {asNet},
+             doc: "the resistance looking back into the node, when it is a " &
+                  "number the design fixes rather than a limit; omitted " &
+                  "means unclaimed"),
+      AnnDef(key: "band", kind: akFloat, scopes: {asNet},
+             doc: "acceptance band on `zOut`, as a fraction; default 5%"),
+      AnnDef(key: "maxZOut", kind: akFloat, unit: "ohm", scopes: {asNet},
+             doc: "highest output resistance tolerated; omitted means " &
+                  "unclaimed"),
+      AnnDef(key: "minOut", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "lowest the node may reach at the heaviest load in the " &
+                  "range; omitted means unclaimed"),
+      AnnDef(key: "maxOut", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "highest the node may reach anywhere in the load range; " &
+                  "omitted means unclaimed"),
+      AnnDef(key: "maxDelta", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "most the node may sag across the range, in volts -- " &
+                  "`maxLoadReg` in absolute terms; omitted means unclaimed"),
+    ],
+    apply: nil,
+    expand: loadSweepExpand))
 
 registerBuiltinRoles()

@@ -1,8 +1,8 @@
 # Open findings
 
-What is **still open**. Everything already fixed — §1–§43, each with what it
-was and what the fix was — lives in `RESOLVED_FINDINGS.md`, and the designs
-themselves are described there. The numbering is shared and continuous across
+What is **still open**. Everything already fixed — §1–§43 and §45, each with
+what it was and what the fix was — lives in `RESOLVED_FINDINGS.md`, and the
+designs themselves are described there. The numbering is shared and continuous across
 the two files, so a `§n` cross-reference means the same thing in either.
 
 **Two kinds of entry, deliberately not mixed into one list.** Everything up to
@@ -17,8 +17,11 @@ it should be rewritten as a finding and moved up.
 §23 was the last structural gap and is closed: `analyzeOscillation` and the
 `oscillator` role reach a circuit whose intent is instability, `charge_pump`
 and `wien_osc` state their central claims, and `analyzeStartup` honours a
-regulator's own model so the LT8640A can claim its soft start. What is below
-is what is left.
+regulator's own model so the LT8640A can claim its soft start. §45 is the
+first proposal to be built: there is a `.dc` capability now, so line
+regulation, load regulation, dropout, a transfer ratio and a DC output
+resistance are all claimable, and §63 and §65 are unblocked. What is below is
+what is left.
 
 ---
 
@@ -123,26 +126,13 @@ is what is left.
 
 ## Feature gaps
 
-Proposals, from §45. No design has failed for want of any of these; each is a
-thing the library cannot currently be asked. Ordered roughly by value per unit
+Proposals, from §46 — §45 was the first of them and is now built, in
+`RESOLVED_FINDINGS.md`. No design has failed for want of any of these; each is
+a thing the library cannot currently be asked. Ordered roughly by value per unit
 of work rather than by size, and several of them are each other's
 prerequisites — the dependencies are stated where they exist.
 
-7. **No `.dc` capability at all** (§45). `Capability` is `capStatic`,
-   `capSpiceOp`, `capSpiceAc`, `capSpiceTran` and `capBench`, and there is no
-   `.dc`. The backend is not the gap: `spice/backend` already documents `sdReal`
-   as covering `.op`, `.tran` **and** `.dc`, `ngspice.analysisCards` already
-   lists `dc`, and `realPlotAnalyses` already admits it for `--save-currents`.
-   Nothing above the backend has ever emitted one.
-
-   A source sweep is where line regulation, load regulation, dropout voltage, a
-   comparator's trip point and hysteresis width, an input offset and a plain
-   transfer curve all come from. `designs/adj_regulator.nim` is specified on two
-   of those and can claim neither. One enum member, one analysis module and one
-   evaluator — and it is the prerequisite for §63 and §65, which have no
-   workaround without it. Best leverage per line on this list.
-
-8. **`tolerance` is written by the part policy and read by nothing** (§46).
+7. **`tolerance` is written by the part policy and read by nothing** (§46).
    `parts/annotate.applyChoice` sets it on every part the policy chooses,
    `annotations.nim` registers it, and no analysis, evaluator or report ever
    looks at it — the same registered-and-unconsumed smell as `current_rating`
@@ -161,7 +151,7 @@ prerequisites — the dependencies are stated where they exist.
    argument for §51, because it multiplies run count by exactly the factor
    caching would absorb. §62 is the design that would prove it.
 
-9. **`environment:` is stated, validated, and consumed by nothing** (§47).
+8. **`environment:` is stated, validated, and consumed by nothing** (§47).
    `validateEnvironment` checks what was stated, `partTemperatureRange` joins
    an ambient range to a part's rise, and no analysis reads the result. §28 is
    the expensive way to fix that — a capacitance-versus-temperature curve per
@@ -177,14 +167,14 @@ prerequisites — the dependencies are stated where they exist.
    its first consumer, gives `delta_t` something to be checked against rather
    than merely authored, and leaves §28 exactly where it is.
 
-10. **No machine-readable report output** (§48). `verify.readiness` renders one
-    text report and there is no other shape. A `--format=json` (or `--junit`)
-    carrying each claim's id, quantity, subjects, expectation, measurement,
-    status and assumptions makes the tool CI-native, costs nothing electrical,
-    and cannot move a number. It is also the precondition for §49, which is
-    where the real value is. Smallest item on this list.
+9. **No machine-readable report output** (§48). `verify.readiness` renders one
+   text report and there is no other shape. A `--format=json` (or `--junit`)
+   carrying each claim's id, quantity, subjects, expectation, measurement,
+   status and assumptions makes the tool CI-native, costs nothing electrical,
+   and cannot move a number. It is also the precondition for §49, which is
+   where the real value is. Smallest item on this list.
 
-11. **A claim that passes by 40% and one that passes by 0.5% print
+10. **A claim that passes by 40% and one that passes by 0.5% print
     identically** (§49). The report says `PASS` and moves on, so the single
     most useful piece of information about a healthy design — how close it is
     to not being one — is computed and thrown away on every run. `acceptance`
@@ -198,7 +188,7 @@ prerequisites — the dependencies are stated where they exist.
     the phase margin while leaving it above 45°. Neither is worth much without
     the other.
 
-12. **`explainPlan` is written and has no caller** (§50). `plan` is pure and
+11. **`explainPlan` is written and has no caller** (§50). `plan` is pure and
     `explainPlan` renders it, both for the stated reason that an assertion set
     you cannot inspect before it executes is the failure mode this layer
     exists to prevent — and nothing in `cli.nim`, `verify.nim` or any design
@@ -207,7 +197,7 @@ prerequisites — the dependencies are stated where they exist.
     through the LT8640A's switching model at fifty timepoints a cycle is not
     free, and the tool already knows the bill before it runs up.
 
-13. **Nothing is cached; every run re-simulates from scratch** (§51). The
+12. **Nothing is cached; every run re-simulates from scratch** (§51). The
     derived deck is a deterministic function of the design and the analysis
     setup, and `--keep-runs` already writes it *before* handing it to ngspice —
     which means the exact bytes that determine the answer are already in hand
@@ -218,7 +208,7 @@ prerequisites — the dependencies are stated where they exist.
     theoretical. The invalidation story is unusually clean here because the
     hash is over the derived artifact rather than over the source.
 
-14. **`ekRelative` and `ekPredicate` are documented as the escalation path and
+13. **`ekRelative` and `ekPredicate` are documented as the escalation path and
     do not exist** (§52). `contract/types.nim` names both in a comment
     explaining that the `Expectation` variant is what makes them additive
     rather than a redesign; the variant has `ekNominal`, `ekMin`, `ekMax` and
@@ -234,7 +224,7 @@ prerequisites — the dependencies are stated where they exist.
     which is a planner question rather than a types question, and that is the
     part nobody has thought through.
 
-15. **No quantity takes more than one subject** (§53). `Assertion.subjects` is
+14. **No quantity takes more than one subject** (§53). `Assertion.subjects` is
     a `seq` for the explicit reason that setup/hold is inherently one signal
     *versus* another and must not be a special case bolted on later — and every
     registered evaluator, built-in and static alike, declares `arity: 1 .. 1`.
@@ -246,7 +236,7 @@ prerequisites — the dependencies are stated where they exist.
     and can say nothing whatever about the pair, which is the single most
     obvious thing to want to know about a stereo board.
 
-16. **Noise** (§54). No capability, no analysis, no quantity. For
+15. **Noise** (§54). No capability, no analysis, no quantity. For
     `designs/riaa_preamp.nim` this is not a refinement, it is *the*
     specification — a phono preamp is chosen on its input-referred noise —
     and the library cannot express the claim at all. `ngspice.analysisCards`
@@ -256,7 +246,7 @@ prerequisites — the dependencies are stated where they exist.
     of them is the spectral density. Quantities: `vn_out_rms` over a band,
     `vn_density_at_f`, and a noise figure if a source resistance is stated.
 
-17. **Nothing sweeps a parameter** (§55). The `EvalContext` refactor was
+16. **Nothing sweeps a parameter** (§55). The `EvalContext` refactor was
     justified in part by making a sweep over candidate designs *safe* — the
     shared operating point is scoped to one run, so two designs checked in one
     process can no longer share a cached solve — and nothing sweeps.
@@ -269,7 +259,7 @@ prerequisites — the dependencies are stated where they exist.
     or `verifyMain` grows a way to be called more than once with different
     bindings. Wants §51 to be affordable.
 
-18. **Two missing CLI surfaces** (§56), both small and neither electrical.
+17. **Two missing CLI surfaces** (§56), both small and neither electrical.
     `nimcir bom <design>` — `pcb/bom.buildBom` exists and the part policy
     computes real choices with real provenance, and there is no way to print
     any of it without writing a program. And `nimcir netlist <design> [-o
@@ -289,7 +279,7 @@ one not "how" but "what does it bind, and what does the evaluator underneath
 it still lack". Two more roles are described where their blocking finding is:
 `current_path` under §27, and `logic_net` under §44.
 
-19. **`passive_filter`** (§57) — the response role with no amplifier binding.
+18. **`passive_filter`** (§57) — the response role with no amplifier binding.
     `opamp_stage` and `gain_stage` both require an `opamp` component and the
     evaluators behind them declare `binds: @["opamp", "input"]`, so an LC EMI
     filter, a ferrite-and-capacitor rail filter, an RC anti-alias front end, or
@@ -304,7 +294,7 @@ it still lack". Two more roles are described where their blocking finding is:
     handle the two ways driving a net goes wrong. Probably the largest increase
     in what the library can be pointed at, per line of code, on either list.
 
-20. **`load_step`** (§58) — the time-domain twin of `targetZ`, and the thing a
+19. **`load_step`** (§58) — the time-domain twin of `targetZ`, and the thing a
     target impedance is a *proxy* for. Bind the rail and the sink; params
     `iFrom`, `iTo`, `tEdge`, `maxDroop`, `maxOvershoot`, `maxRecover`.
     `spice/boundary.driveSink` already builds a constant-current sink and
@@ -314,7 +304,7 @@ it still lack". Two more roles are described where their blocking finding is:
     It answers "does the rail hold up when the MCU wakes" directly, instead of
     by an impedance argument the reader has to complete themselves.
 
-21. **`sequencing`** (§59) — two rails and an ordering claim: core up before
+20. **`sequencing`** (§59) — two rails and an ordering claim: core up before
     I/O, or the two within 10 ms of each other. A real and common way to
     destroy an FPGA or a PHY, and nothing here can currently express it.
     Multi-subject, so it is blocked on §53, and the natural first customer for
@@ -323,37 +313,45 @@ it still lack". Two more roles are described where their blocking finding is:
     `t_reach_frac` per rail, over the start-up run `analyzeStartup` already
     performs.
 
-22. **`channel_match`** (§60) — bind two nets, claim `gain_delta_db <= 0.5 dB`,
+21. **`channel_match`** (§60) — bind two nets, claim `gain_delta_db <= 0.5 dB`,
     or two corner frequencies within a ratio band. Blocked on §53. The
     motivating design is already in the repository and already instances one
     channel twice, which makes this the cheapest way to prove the multi-subject
     path works on something real rather than on a fixture.
 
-23. **`bias_point`** (§61) — bind a three-terminal device; claim `v_ce` or
+22. **`bias_point`** (§61) — bind a three-terminal device; claim `v_ce` or
     `v_ds`, `i_c`, and headroom to the rail. Pure reads off the shared `.op`,
     no new analysis, no new capability, and it is what a discrete stage is
     designed around in the first place. The natural home, later, for "this
     device is in its active region" as a derived quantity rather than something
     the reader infers from two voltages.
 
-24. **`precision_divider`** (§62) — `designs/divider_net.nim`'s claims as a
+23. **`precision_divider`** (§62) — `designs/divider_net.nim`'s claims as a
     role: bind top, tap and bottom; params `ratio`, `band`, `zOut`,
     `maxLoadCurrent`. Reachable through the existing `dc_voltage` evaluator
     with no new analysis at all, so the work is the role definition and
     nothing else. Two reasons it is worth more than its size suggests: it turns
     a substitutability property that design currently measures by hand into one
     line, and a divider's ratio is exactly where component tolerance bites, so
-    it is the right first design to point §46 at.
+    it is the right first design to point §46 at. Two of the four claims it
+    would bundle now exist: §45's `source_sweep` measures the ratio as a slope
+    and `load_sweep` measures the output resistance, and `divider_net` states
+    both, so the role is now mostly a matter of bundling what is there.
 
-25. **`comparator_threshold`** (§63) — trip point and hysteresis width from a
-    `.dc` sweep, so blocked on §45. Worth listing separately from the
-    `.dc` gap because it is a hole with no workaround at all today:
+24. **`comparator_threshold`** (§63) — trip point and hysteresis width from a
+    `.dc` sweep. **No longer blocked**: §45 shipped the capability, the
+    analysis and the `source_sweep` role, so what is left is the role and the
+    two quantities under it. A trip point is a threshold crossing on a curve
+    `analyzeLineSweep` already produces; a hysteresis width is the same
+    crossing found sweeping the other way, so it needs two runs rather than
+    one, and that is the interesting part of the work. Still a hole with no
+    workaround today:
     `spice/models.opampModel` is deliberately *not* registered for
     `comparator`, on the grounds that the macromodel is linear and a
     comparator's entire behaviour is that it is not. So a comparator currently
     falls through to per-pin impedances, which deletes the part.
 
-26. **`switching_converter`** (§64) — bind the switch node and the output;
+25. **`switching_converter`** (§64) — bind the switch node and the output;
     params `fSw`, `dutyRange`, `minEfficiency`, `maxRipple`. Ripple is already
     claimable through `settled_rail`, and duty and switching frequency fall out
     of the same window. Efficiency does not: it needs an input current and an
@@ -362,10 +360,12 @@ it still lack". Two more roles are described where their blocking finding is:
     "measure the inductor current" is a much less motivating way to describe
     the same task.
 
-27. **`esd_clamp` / `protection`** (§65) — bind the protected net and the
+26. **`esd_clamp` / `protection`** (§65) — bind the protected net and the
     clamp; sweep past the clamp voltage and claim the clamped level and the
-    leakage below it. Blocked on §45, and the third role that one enum member
-    unlocks.
+    leakage below it. **No longer blocked** either: §45's `source_sweep` and
+    its `dc_out_max` already reach the clamped level, so what is missing is a
+    role saying which net is protected, plus a leakage quantity — and leakage
+    is a branch current, so that half lands on §27 rather than here.
 
 ---
 
@@ -375,9 +375,12 @@ it still lack". Two more roles are described where their blocking finding is:
 and margin-to-limit is information the tool computes and discards on every
 passing claim today.
 
-**Best leverage from one small change:** §45. One capability enum member and
-one analysis module unlock §63 and §65 outright, plus line regulation, load
-regulation and dropout on a design already in the repository.
+**Best leverage from one small change:** was §45, and it was spent — one
+capability enum member and one analysis module, and it unblocked §63 and §65
+and turned `divider_net`'s ratio and output resistance from asserted numbers
+into measured ones. Of what is left, §61 (`bias_point`) is the closest
+equivalent: pure reads off the shared `.op`, no new analysis and no new
+capability, for the thing a discrete stage is designed around.
 
 **Highest value overall:** §27 with `current_path`, which closes the oldest
 open finding, makes the registered-and-unchecked `isat` mean something, and

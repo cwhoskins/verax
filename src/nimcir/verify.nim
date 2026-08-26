@@ -311,7 +311,12 @@ proc exitLabel*(code: int): string =
 
 # --- rendering -----------------------------------------------------------
 
-proc capList(s: set[Capability]): string =
+proc capList*(s: set[Capability]): string =
+  ## A capability set as a comma list of the labels a designer reads, so a
+  ## report and `nimcir env` never spell the same set two ways. Exported
+  ## because the CLI echoed `$s` and printed the enum identifiers -- which is
+  ## right in a stack trace and wrong in the one line meant to tell somebody
+  ## what this machine can do.
   var parts: seq[string]
   for c in s: parts.add capLabel(c)
   if parts.len == 0: "none" else: parts.join(", ")
@@ -622,13 +627,14 @@ proc parseCapabilities*(text: string): set[Capability] =
     of "": discard
     of "static": discard
     of "op": result.incl capSpiceOp
+    of "dc": result.incl capSpiceDc
     of "ac": result.incl capSpiceAc
     of "tran": result.incl capSpiceTran
     of "all", "sim": result = result + simCapabilities
     else:
       raise newException(ValueError,
         "unknown capability '" & raw.strip() &
-        "'; expected any of static, op, ac, tran, all")
+        "'; expected any of static, op, dc, ac, tran, all")
 
 proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
   ## Flags a design file understands. Unrecognised arguments are left alone,
@@ -689,16 +695,23 @@ proc describeRole*(name: string): string =
     raise newException(ValueError,
       "no role named '" & name & "'; `nimcir roles` lists them")
   let def = roleDef(name)
+  # Widened to the longest name actually present rather than a constant: a
+  # column that a name overruns runs the name into the next one, and
+  # `maxLineRegPerV%/V` is what that reads as.
+  var w = 12
+  for p in def.parts: w = max(w, p.name.len)
+  for p in def.params: w = max(w, p.key.len)
+  w += 2
   var L = @["role " & def.name & " -- " & def.doc, "", "parts"]
   for p in def.parts:
-    L.add "  " & p.name.alignLeft(14) &
+    L.add "  " & p.name.alignLeft(w) &
           ($p.kind)[2 .. ^1].toLowerAscii.alignLeft(11) &
           (if p.optional: "optional  " else: "required  ") & p.doc
   if def.params.len > 0:
     L.add ""
     L.add "params"
     for p in def.params:
-      L.add "  " & p.key.alignLeft(14) &
+      L.add "  " & p.key.alignLeft(w) &
             (if p.unit.len > 0: p.unit else: "-").alignLeft(11) & p.doc
 
   let base = previewRole(def)
