@@ -16,12 +16,13 @@
 ##     `.op` gives every node voltage, so this needs nothing extra.
 ##   * `power_rating` on a resistor, against V^2/R.
 ##
-## `current_rating` and `isat` are registered keys that the part policy sets
-## and that **nothing checks yet**, because a branch current is not in a `.op`
-## for anything but a voltage source: getting one needs a probe inserted per
-## part, and getting an inductor's peak needs a `.tran`. That is a real gap
-## and it is the one that matters for a converter, where saturation is the
-## failure mode.
+## `current_rating` and `isat` are **not** checked here, and the reason is the
+## `.op`: a branch current is not in an operating point for anything but a
+## voltage source, and an inductor's peak is a property of a waveform rather
+## than of an instant. Both are checked by `analysis/transient.analyzeCurrent`
+## over a settled `.tran` window instead, which is where the current exists --
+## see the `current_path` role. This module stays what its capability says it
+## is: what one `.op` can answer about every part at once.
 ##
 ## Ceilings are per dielectric family because the reason to derate differs:
 ## a tantalum is derated to half because it fails *short* and takes the rail

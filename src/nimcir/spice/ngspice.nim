@@ -232,10 +232,10 @@ proc currentParamsFor(letter: char): seq[string] =
   ## ngspice's own table in `src/frontend/inp.c` (`inp_savecurrents`).
   ##
   ## `v` is deliberately absent: a voltage source's branch current is an MNA
-  ## unknown and is already in the default saved set as `v1#branch`. So are
-  ## `x` (a subcircuit instance) and `a` (an XSPICE code model), neither of
-  ## which has terminal currents to ask for -- ngspice's walk skips both the
-  ## same way, through its `default: continue`.
+  ## unknown and is already in the default saved set. So are `x` (a subcircuit
+  ## instance) and `a` (an XSPICE code model), neither of which has terminal
+  ## currents to ask for -- ngspice's walk skips both the same way, through
+  ## its `default: continue`.
   case letter
   of 'r', 'c', 'l', 'b', 'f', 'g', 'w', 's': @["i"]
   of 'd': @["id"]
@@ -245,12 +245,58 @@ proc currentParamsFor(letter: char): seq[string] =
   of 'i': @["current"]
   else: @[]
 
+proc branchCurrentVector*(desig: string): tuple[vector, saveTerm, reason: string] =
+  ## Where the current through the device written as `desig` shows up in a
+  ## rawfile, and what has to be asked for to make it show up at all.
+  ##
+  ## **Two shapes, and the split is not cosmetic**: it is whether the current
+  ## is an *unknown of the matrix* or a quantity computed from the solution
+  ## afterwards. A voltage source, an inductor and the two controlled sources
+  ## that carry a branch equation (`E`, `H`) are solved *for* their current,
+  ## so it is in the default saved set under `i(l1)` and needs no `.save`.
+  ## Every other device's terminal current is derived from the node voltages
+  ## after the fact, never appears unless named, and reads back as
+  ## `i(@r1[i])`. Both spellings verified against ngspice-46 rather than taken
+  ## from the manual, which documents the *vector namespace* names (`l1#branch`,
+  ## `@r1[i]`) rather than the ones the rawfile writer emits.
+  ##
+  ## An empty `vector` means there is no single current to ask for, and
+  ## `reason` says why in the terms a reader can act on. **Refusing is the
+  ## point for a three-terminal device**: a transistor has a collector, an
+  ## emitter and a base current, "the current through Q1" does not say which,
+  ## and picking one silently would answer a question nobody asked.
+  if desig.len == 0:
+    return ("", "", "the part has no deck designator, so nothing in the deck " &
+                    "carries its current")
+  let letter = desig[0].toLowerAscii
+  case letter
+  of 'v', 'l', 'e', 'h':
+    ("i(" & desig & ")", "", "")
+  of 'r', 'c', 'd', 'b', 'f', 'g', 'w', 's', 'i':
+    let p = currentParamsFor(letter)[0]
+    ("i(@" & desig & "[" & p & "])", "@" & desig & "[" & p & "]", "")
+  of 'q', 'm', 'j':
+    ("", "", "'" & desig & "' is a three-terminal device and carries more " &
+             "than one current (" & currentParamsFor(letter).join(", ") &
+             "); a single current quantity cannot say which one is meant")
+  of 'x':
+    ("", "", "'" & desig & "' is a subcircuit instance, which is a hierarchy " &
+             "boundary rather than a device -- it has no terminal current of " &
+             "its own. Name the part inside it")
+  of 'a':
+    ("", "", "'" & desig & "' is an XSPICE code model, whose ports are the " &
+             "model's own and are not addressable as a device current")
+  else:
+    ("", "", "ngspice defines no terminal current for a '" & desig[0] &
+             "' device")
+
 proc saveCurrentsCard*(nl: Netlist, analysis: string): string =
   ## A `.save` card naming every device terminal current in `nl`, or `""`.
   ##
   ## **What ngspice saves by default is already everything it has as an
   ## unknown** -- every node voltage plus every voltage-source and inductor
-  ## `#branch` current -- because with no `save` at all the output stage
+  ## branch current (written `i(v1)`, `i(l1)`; see `branchCurrentVector`)
+  ## -- because with no `save` at all the output stage
   ## starts at `saveall` and only drops to an allowlist once one exists. So
   ## this exists for the one category that is genuinely absent: device
   ## *internals* (`@r1[i]`, `@d2[id]`), which are computed from the solution

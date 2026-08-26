@@ -555,6 +555,71 @@ ngspice's ceiling on its own timestep, which is why `analyzeOscillation`
 derives ten times the sample density `analyzeTransient` does: at the ordinary
 density that same design reads 0.31% low.
 
+## What flows through a part
+
+Everything above is about a **node** — what voltage it settles to, what is
+still moving on it, what it is running at. A net has one voltage and every
+part on it shares it. A net has no *current* at all: only the several
+different currents of the parts hanging off it, which is why `current_path`
+is the one built-in role whose subject is a component.
+
+```nim
+  component L1, kind = "inductor", value = "3.3u":
+    pin "1", sw, kind = ptPassive
+    pin "2", vout, kind = ptPassive
+    spec:
+      isat = 11.A
+      current_rating = 6.5.A
+
+  role "current_path", inductor, part = L1,
+       tSettle = 300.us, tWindow = 20.us,
+       iRipple = 0.879.A, band = 15.pct,
+       iAvgMax = 5.2.A,
+       maxIsatDerating = 0.6, maxRmsDerating = 0.85
+```
+
+Quantities: `i_peak`, `i_rms`, `i_avg` (all three **magnitudes**), `i_pp`, and
+the signed `i_min`/`i_max`. Every claim is opt-in, as with `settled_rail` —
+there is no default current for a part. `tSettle` and `tWindow` mean exactly
+what they mean there, and one `.tran` answers every part claimed over the same
+window, so claiming an inductor and an input capacitor together costs one run
+rather than two.
+
+**State the ratings on the part, not in the claim.** `maxIsatDerating` and
+`maxRmsDerating` name no current: they claim `i_peak_derating` and
+`i_rms_derating`, which are the fraction of the part's *own* `isat` and
+`current_rating`. Those are properties of the component somebody chose, so
+writing them once on the part means a substitution changes the limit in one
+place instead of two — and a part that states neither reports the derating as
+unchecked rather than as passing, because a part nobody has chosen yet is not
+one with infinite headroom. `iRipple` is the other kind of limit and belongs
+in the claim: `dI = Vout(1−D)/(L·f)` is a number the *circuit* fixes, and it
+is what catches a wrong inductor value by something other than the rail
+looking slightly worse.
+
+**Peak, RMS and average are three different questions and you want all
+three.** The peak is where an inductor saturates, at the top of the triangle
+rather than at its middle. The RMS is what heats the part, and it is what a
+continuous rating and a temperature rise are both quoted against — a
+peak-only claim misses it entirely on a waveform that spends most of its time
+near zero. The average is what a fuse, a trace width and a connector contact
+are sized by.
+
+**The sign is a deck convention, so no claim turns on it.** An inductor's
+branch current follows whichever pin you wrote first, and ngspice reports a
+voltage source's positive when it flows *into* its + terminal — so a supply
+delivering 330 mA reads −330 mA. That is why the three rating-facing figures
+are magnitudes. `i_min` and `i_max` keep the signed shape, and a current that
+reverses shows as `i_min < 0 < i_max`.
+
+**Not every part has one current.** A transistor has a collector, an emitter
+and a base current, and "the current through Q1" does not say which, so a
+`Q`/`M`/`J` comes back unchecked with a message naming the three rather than
+being answered with a guess. A subcircuit instance and an XSPICE code model
+have no terminal current of their own either — name the part inside the
+instance. Everything else works, including a resistor or a capacitor, whose
+current has to be asked for by name in the deck and is.
+
 ## Sweeping something, rather than solving at one bias
 
 Everything above answers a question at one operating point. A large part of

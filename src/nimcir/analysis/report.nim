@@ -98,7 +98,12 @@ proc worstSeverity*(r: AnalysisReport): Severity =
     if i.severity > result: result = i.severity
 
 proc `$`*(m: Measurement): string =
-  m.name & " = " & eng(m.value, m.unit)
+  ## `at` is printed when it is set, because an analysis that measures the
+  ## same quantity for several subjects (`analyzeCurrent`, one `i_peak` per
+  ## part) otherwise prints identical-looking lines with no way to tell which
+  ## part each belongs to.
+  result = m.name & " = " & eng(m.value, m.unit)
+  if m.at.len > 0: result &= "  [" & m.at & "]"
 
 proc `$`*(r: AnalysisReport): string =
   ## Ready to print as-is, same convention as `Issue`.

@@ -339,3 +339,63 @@ test "a flat line is NaN, not 0 Hz -- an oscillator that did not start":
 test "less than two crossings is NaN rather than a rate from one":
   let s = periodic(1000.0, 0.0, 400, 0.9, proc (p: float): float = sin(p))
   check fundamentalFreq(s.t, s.v).isNaN
+
+# --- time-weighted window statistics -----------------------------------
+
+test "timeMean weights by elapsed time, not by sample count":
+  # A square wave, 25% high at 4 V and 75% low at 0, sampled *densely* over
+  # the high part and sparsely over the low part -- which is what ngspice
+  # does around an edge. The time-weighted answer is 1 V; a plain mean over
+  # these samples is 2.9 V, because most of the samples sit on the quarter of
+  # the period that is high.
+  var t, v: seq[float]
+  for k in 0 .. 100:                      # 0 .. 25 us, dense
+    t.add float(k) * 0.25e-6
+    v.add 4.0
+  for k in 1 .. 5:                        # 25 .. 100 us, sparse
+    t.add 25.0e-6 + float(k) * 15.0e-6
+    v.add 0.0
+  # The step down lands between two samples, so the trapezoid spreads it over
+  # the first sparse interval: 4 V for 25 us plus the ramp's 15 us at a mean
+  # of 2 V, over 100 us.
+  check abs(timeMean(t, v) - 1.3) < 1e-9
+  var plain = 0.0
+  for x in v: plain += x
+  check plain / float(v.len) > 2.5        # what sample-counting would say
+
+test "timeRms integrates the square exactly for a triangle":
+  # A symmetric triangle of amplitude 1 has an RMS of 1/sqrt(3), and it is the
+  # shape a converter's inductor ripple takes -- sampled coarsely between
+  # corners, which is exactly where the trapezoid rule over v*v is worst.
+  # Four samples per period is deliberately brutal.
+  var t, v: seq[float]
+  let period = 1.0e-6
+  for k in 0 .. 40:
+    t.add float(k) * period / 4.0
+    v.add(case k mod 4
+          of 0: 0.0
+          of 1: 1.0
+          of 2: 0.0
+          else: -1.0)
+  check abs(timeRms(t, v) - 1.0 / sqrt(3.0)) < 1e-9
+  # What a trapezoid over v*v would have said, for contrast: the square of a
+  # triangle is a parabola, and joining its samples with straight lines
+  # overestimates by 22% -- 0.7071 against 0.5774, which would read as a part
+  # running hotter than it does.
+  var trap = 0.0
+  for i in 0 ..< t.len - 1:
+    trap += 0.5 * (t[i + 1] - t[i]) * (v[i] * v[i] + v[i + 1] * v[i + 1])
+  check abs(sqrt(trap / (t[^1] - t[0])) - 1.0 / sqrt(2.0)) < 1e-9
+
+test "a DC level is its own mean and its own RMS":
+  var t, v: seq[float]
+  for k in 0 .. 50:
+    t.add float(k) * 1e-6
+    v.add(-2.5)
+  check abs(timeMean(t, v) + 2.5) < 1e-12
+  check abs(timeRms(t, v) - 2.5) < 1e-12
+
+test "a window of no elapsed time is NaN, not zero":
+  check timeMean([1.0], [3.0]).isNaN
+  check timeRms([1.0], [3.0]).isNaN
+  check timeMean([1.0, 1.0], [3.0, 3.0]).isNaN

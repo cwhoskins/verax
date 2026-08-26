@@ -286,6 +286,53 @@ proc swing*(v: openArray[float]): tuple[lo, hi, pp: float] =
     if x > hi: hi = x
   (lo: lo, hi: hi, pp: hi - lo)
 
+proc timeMean*(t, v: openArray[float]): float =
+  ## The average of `v` **weighted by time**, not by sample count.
+  ##
+  ## A `.tran` result is not uniformly sampled -- ngspice takes its smallest
+  ## steps exactly where the waveform moves fastest -- so a plain arithmetic
+  ## mean over the samples weights an edge far above the flat part either side
+  ## of it. On a switching converter's inductor current the two disagree by
+  ## whatever the solver felt like doing, which is a number about the timestep
+  ## rather than about the circuit. Trapezoidal integration over the samples'
+  ## own timestamps is exact for the piecewise-linear waveform the simulator
+  ## actually reported, and is the same argument `harmonicAmplitudes` makes.
+  ##
+  ## `NaN` for fewer than two samples or a zero-length window: an average over
+  ## no elapsed time is not zero, it is unmeasured.
+  checkPair(t, v, "timeMean")
+  if t.len < 2: return NaN
+  let span = t[^1] - t[0]
+  if span <= 0.0: return NaN
+  var acc = 0.0
+  for i in 0 ..< t.len - 1:
+    let dt = t[i + 1] - t[i]
+    if dt <= 0.0: continue
+    acc += 0.5 * dt * (v[i] + v[i + 1])
+  acc / span
+
+proc timeRms*(t, v: openArray[float]): float =
+  ## Root-mean-square of `v` over the window, time-weighted as `timeMean` is.
+  ##
+  ## The square is integrated **exactly** for the piecewise-linear waveform
+  ## rather than by trapezoid over `v*v`: over one segment the integral of
+  ## `(v0 + s*(v1-v0))^2` is `dt*(v0^2 + v0*v1 + v1^2)/3`, which costs the
+  ## same arithmetic and does not systematically overestimate a triangle. On
+  ## a converter's inductor ripple -- a triangle wave sampled coarsely between
+  ## corners, which is precisely the shape the trapezoid rule is worst at --
+  ## that is the difference between an RMS figure and a sampling artefact.
+  checkPair(t, v, "timeRms")
+  if t.len < 2: return NaN
+  let span = t[^1] - t[0]
+  if span <= 0.0: return NaN
+  var acc = 0.0
+  for i in 0 ..< t.len - 1:
+    let dt = t[i + 1] - t[i]
+    if dt <= 0.0: continue
+    acc += dt * (v[i] * v[i] + v[i] * v[i + 1] + v[i + 1] * v[i + 1]) / 3.0
+  let ms = acc / span
+  if ms <= 0.0: 0.0 else: sqrt(ms)
+
 proc localMaxima*(x, y: openArray[float]): seq[tuple[x, y: float]] =
   ## Strict interior maxima, at sweep resolution -- no parabolic refinement,
   ## so a reported peak is always an actually-simulated point rather than an

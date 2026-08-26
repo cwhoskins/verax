@@ -317,3 +317,112 @@ test "one EvalContext shares an operating point across every step in a run":
     check not ctx.scratch.hasKey("spice.operating_point")
     discard evaluate(ctx)
     check ctx.scratch.hasKey("spice.operating_point")
+
+# --- device currents ----------------------------------------------------
+
+proc currentBoard(): Design =
+  ## A square wave through a series R-L into a resistive load. The chain is
+  ## 200 ohm across a 10 V 50% square, so it settles to 25 mA with a triangle
+  ## on it -- an average, a peak and an RMS that are three different numbers.
+  design("current_board"):
+    net vin, kind = ntPower
+    net mid, kind = ntSignal
+    net vout, kind = ntPower
+    net gnd, kind = ntGround, name = "0"
+
+    component V1, kind = "voltage_source", value = "PULSE(0 10 0 1n 1n 5u 10u)":
+      pin "+", vin, kind = ptPower
+      pin "-", gnd, kind = ptGround
+    component R1, kind = "resistor", value = "100":
+      pin "1", vin, kind = ptPassive
+      pin "2", mid, kind = ptPassive
+    component L1, kind = "inductor", value = "10m":
+      pin "1", mid, kind = ptPassive
+      pin "2", vout, kind = ptPassive
+      spec:
+        isat = 250.mA
+        current_rating = 100.mA
+    component C1, kind = "capacitor", value = "100u":
+      pin "1", vout, kind = ptPassive
+      pin "2", gnd, kind = ptPassive
+      spec:
+        dielectric = "C0G"
+        esr = 1.mohm
+        esl = 1.pH
+    component RL, kind = "resistor", value = "100":
+      pin "1", vout, kind = ptPassive
+      pin "2", gnd, kind = ptPassive
+
+    role "current_path", coil, part = L1,
+         tSettle = 50.0.ms, tWindow = 100.0.us,
+         iAvgMax = 30.mA, iRmsMax = 40.mA,
+         maxIsatDerating = 0.5, maxRmsDerating = 0.9
+    role "current_path", cap, part = C1,
+         tSettle = 50.0.ms, tWindow = 100.0.us,
+         iAvgMax = 1.mA
+
+test "a current quantity is reachable, and its subject is a component":
+  check isEvaluable("i_peak")
+  check isEvaluable("i_rms_derating")
+  check "spice.current_path" in registeredEvaluators()
+  let ev = evaluatorFor("i_peak")
+  check ev.isSome
+  check ev.get.subjectKinds == {skComponent}
+  # **No `binds`.** The subject *is* the part, so a bare
+  # `require i_peak(L1) <= 6.A` reaches this with no role at all.
+  check ev.get.binds.len == 0
+
+test "two parts over one window are one run, not one run per part":
+  # The setup is the window and nothing else. Keyed by part instead, this
+  # design would `.tran` twice to read one set of waveforms two ways -- which
+  # on a design whose parts carry switching models is the whole cost.
+  let d = currentBoard()
+  let p = plan(d, allCapabilities)
+  var steps = 0
+  for s in p.steps:
+    if s.evaluator == "spice.current_path": steps += 1
+  check steps == 1
+
+test "the current claims are checked against the parts that carry them":
+  if not haveNgspice:
+    skip()
+  else:
+    let rs = evaluate(currentBoard(), allCapabilities)
+
+    # 2.5 V average across 100 ohm, fed through 100 ohm.
+    check resultFor(rs, "coil.i_avg").status == esPass
+    check abs(resultFor(rs, "coil.i_avg").value - 0.025) / 0.025 < 0.02
+    check resultFor(rs, "coil.i_rms").status == esPass
+
+    # **One run, two parts, and the numbers do not get crossed.** The
+    # capacitor carries the ripple and none of the DC; the inductor carries
+    # both. A harvest by quantity name alone would answer the capacitor's
+    # claim with the inductor's 25 mA and fail it.
+    check resultFor(rs, "cap.i_avg").status == esPass
+    check resultFor(rs, "cap.i_avg").value < 0.001
+
+test "a derating claim reads the part's own rating rather than restating it":
+  if not haveNgspice:
+    skip()
+  else:
+    let rs = evaluate(currentBoard(), allCapabilities)
+    # L1 states isat = 250 mA; the peak is around 27 mA, so about 11%.
+    let dr = resultFor(rs, "coil.isat_derating")
+    check dr.status == esPass
+    check dr.value > 0.0 and dr.value < 0.2
+    check resultFor(rs, "coil.rms_derating").status == esPass
+
+test "a current claim on a net says a current is carried by a part":
+  # The subject kind is checked by the evaluator's own `subjectKinds`, so a
+  # net-subject claim never reaches the run -- and the message has to say
+  # what to write instead rather than only that this one is wrong.
+  let d = design("net_current"):
+    net vdd, kind = ntPower
+    net gnd, kind = ntGround, name = "0"
+    component V1, kind = "voltage_source", value = "DC 5":
+      pin "+", vdd, kind = ptPower
+      pin "-", gnd, kind = ptGround
+    require i_peak(vdd) <= 1.0.A, id = "REQ-NET-CURRENT"
+
+  let rs = evaluate(d, allCapabilities)
+  check resultFor(rs, "REQ-NET-CURRENT").status == esNotEvaluable

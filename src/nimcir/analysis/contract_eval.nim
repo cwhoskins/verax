@@ -585,6 +585,110 @@ proc runTransient(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult]
       "the transient run on '" & rail & "' failed: " & e.msg)
   for a in batch: result.add harvest(a, rep, name)
 
+# --- device currents, via .tran -----------------------------------------
+
+const currentQuantities = ["i_peak", "i_rms", "i_avg", "i_pp",
+                           "i_min", "i_max",
+                           "i_peak_derating", "i_rms_derating"]
+
+proc subjectComponent(d: Design, a: Assertion): string =
+  ## The first component-shaped subject's designator, or empty. The
+  ## counterpart of `subjectNet`, resolved the same way and for the same
+  ## reason: a part *inside* a subcircuit instance is named by a
+  ## `hierSep`-separated path, and `spice/flatten` keeps that path.
+  for s in a.subjects:
+    if s.kind == skComponent and findComponent(d.netlist, s.name) != nil:
+      return s.name
+  ""
+
+proc currentKey(ctx: EvalContext, a: Assertion): string =
+  ## **Deliberately not keyed by the part.** One `.tran` answers every part in
+  ## the design at once -- the currents are all readings of the same set of
+  ## waveforms -- so the setup is the window and nothing else. Keying by part
+  ## would simulate a switching model once per claimed part to read one run
+  ## several ways, which on `lt8640a_buck` is fifty timepoints a cycle paid
+  ## twice for an inductor and its input capacitor.
+  $conditionFloat(a, "t_settle", 0.0) & "|" &
+  $conditionFloat(a, "t_window", 0.0)
+
+proc currentParts(ctx: EvalContext, batch: seq[Assertion]): seq[string] =
+  for a in batch:
+    let p = subjectComponent(ctx.design, a)
+    if p.len > 0 and p notin result: result.add p
+
+proc currentDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let parts = currentParts(ctx, batch)
+  let (tSettle, tWindow) = transientWindow(batch[0])
+  result = "`.tran` over the whole design as authored -- not isolated, so " &
+           "each part carries what the circuit actually pushes through it. " &
+           "Reading the branch current of " &
+           (if parts.len > 0: parts.join(", ") else: "no resolvable part")
+  if tSettle > 0.0:
+    result &= " over " & eng(tWindow, "s") & " from " & eng(tSettle, "s") &
+              ", with everything before that simulated and discarded"
+  else:
+    result &= " over the whole run"
+  result &= ". Peak, RMS and average are magnitudes: the sign of a branch " &
+            "current is a deck convention, not a fact about the circuit"
+
+proc harvestPart(a: Assertion, rep: AnalysisReport, part, evaluator: string):
+    AssertionResult =
+  ## `harvest`, restricted to the measurements belonging to one part.
+  ##
+  ## One run produces `i_peak` for every claimed part, so a lookup by quantity
+  ## alone would answer a claim about the input capacitor with the inductor's
+  ## number. `Measurement.at` carries the designator, and matching on it is
+  ## what keeps the batching honest.
+  for m in rep.measurements:
+    if m.name == a.quantity and m.at == part:
+      return verdict(a, m.value, m.unit, evaluator, rep.assumptions,
+                     rep.issues)
+  var produced: seq[string]
+  for m in rep.measurements:
+    if m.at == part and m.name notin produced: produced.add m.name
+  result = notEvaluable(a, evaluator,
+    (if produced.len == 0:
+       "the run measured nothing through '" & part & "'"
+     else:
+       "the analysis produced no '" & a.quantity & "' for '" & part &
+       "'; it measured " & produced.join(", ")))
+  result.assumptions = rep.assumptions
+  result.issues = rep.issues
+
+proc runCurrent(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
+  const name = "spice.current_path"
+  let parts = currentParts(ctx, batch)
+  if parts.len == 0:
+    for a in batch:
+      result.add notEvaluable(a, name,
+        "a current is carried by a part, not by a net: this claim's subject " &
+        "has to be a component that exists in this design. State it through " &
+        "the `current_path` role, or write `require i_peak(L1) <= ...`")
+    return
+
+  var spec = defaultTransientSpec()
+  measurementOnly(spec)
+  let (tSettle, tWindow) = transientWindow(batch[0])
+  spec.tSettle = tSettle
+  spec.tWindow = tWindow
+
+  var rep: AnalysisReport
+  try:
+    rep = analyzeCurrent(d.netlist, parts, spec)
+  except CatchableError as e:
+    return failBatch(batch, name,
+      "the transient run measuring " & parts.join(", ") & " failed: " & e.msg)
+
+  for a in batch:
+    let part = subjectComponent(d, a)
+    if part.len == 0:
+      result.add notEvaluable(a, name,
+        "this claim names no component that exists in this design, so there " &
+        "is nothing to measure a current through")
+      continue
+    result.add harvestPart(a, rep, part, name)
+
 # --- oscillation, via .tran ---------------------------------------------
 
 const oscQuantities = ["osc_freq", "swing_pp", "osc_thd_pct"]
@@ -839,6 +943,11 @@ proc registerSimulatedEvaluators*() =
     name: "spice.transient", produces: @transientQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
     setupKey: transientKey, setupDoc: transientDoc, run: runTransient))
+
+  registerEvaluator(Evaluator(
+    name: "spice.current_path", produces: @currentQuantities,
+    needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skComponent},
+    setupKey: currentKey, setupDoc: currentDoc, run: runCurrent))
 
   registerEvaluator(Evaluator(
     name: "spice.oscillator", produces: @oscQuantities,

@@ -1912,3 +1912,126 @@ design file or in any component value.
 
 §63 (`comparator_threshold`) and §65 (`esd_clamp`) were blocked on this and are
 now unblocked; both remain open as roles to write.
+
+---
+
+## 27. `current_rating` and `isat` had no consumer, and current was not a quantity
+
+The oldest open finding, and the one a converter most wants. Both keys were
+registered in `netlist/annotations`, both were set by `parts/policy` on every
+inductor it chose, and **nothing read either**. `analysis/derating` said so in
+its own module doc and explained why: a branch current is not in a `.op` for
+anything but a voltage source, so an operating point — the only thing that
+walked every part against its ratings — had no current to compare an `isat`
+against.
+
+The general shape was worse than one missing check. **Current was not a
+first-class quantity anywhere here.** `inrush_peak` and `t_inrush_peak` were
+the entire inventory, both belonging to `spice.startup`; everything else this
+library measured was a voltage. `--save-currents` existed and put `@r1[i]` into
+an archived rawfile for a *person* to load in ngspice, and no evaluator had
+ever asked for one — the plumbing that gets a device current out of a run was
+built and tested and had no consumer above it.
+
+### What was added
+
+**`analysis/transient.analyzeCurrent(nl, parts, spec)`** — a third analysis
+beside `analyzeTransient` and `analyzeOscillation`, sharing their run. It
+reports, per part: `i_peak`, `i_rms`, `i_avg`, `i_pp`, `i_min`, `i_max`, plus
+`i_peak_derating` and `i_rms_derating`. The **`current_path` role** binds a
+part (`isat`, `iRmsMax`, `iAvgMax`, `iRipple`, `maxIsatDerating`,
+`maxRmsDerating`, plus the `tSettle`/`tWindow` pair `settled_rail` spells), and
+`spice.current_path` evaluates it under `capSpiceTran`.
+
+`measure.timeMean` and `measure.timeRms` are the arithmetic, weighted by
+*elapsed time* rather than by sample count, on the same argument
+`harmonicAmplitudes` already made: a `.tran` takes its smallest steps exactly
+where the waveform moves fastest, so a plain mean over the samples weights an
+edge far above the flat part either side of it. `timeRms` integrates the square
+exactly for the piecewise-linear waveform the simulator reported — over one
+segment `∫(v0 + s·Δ)² = dt·(v0² + v0·v1 + v1²)/3` — because a triangle sampled
+coarsely between its corners is precisely the shape a trapezoid over `v·v` is
+worst at, and a converter's ripple is that shape. Measured on a four-samples-
+per-period triangle, the trapezoid says 0.707 against a true 0.577 -- **22%
+high**, which would read as a part running hotter than it does.
+
+### The four decisions worth keeping
+
+**The subject is the part, not a net.** Every other quantity in this library is
+about a node, and that is not stylistic: a net has one voltage that every part
+on it shares, and no current at all — only the several different currents of
+the parts hanging off it. An inductor's peak, an input capacitor's RMS and a
+sense resistor's average are three claims about three parts on two nets, and
+naming the net could not tell them apart. `spice.current_path` therefore
+declares `subjectKinds: {skComponent}` and `binds: @[]`, so a bare
+`require i_peak(L1) <= 6.A` reaches it with no role at all, and a claim
+written against a net is refused with the sentence that says what to write
+instead.
+
+**The three figures a rating is quoted against are magnitudes, because a
+rating is.** `i_peak`, `i_rms` and `i_avg` are all sign-free. The sign of a
+branch current is a *deck* convention and no claim should turn on it: an
+inductor's follows whichever pin the design happened to write first, and
+ngspice reports a voltage source's current positive when it flows **into** the
++ terminal, so a supply delivering 330 mA reads −330 mA — verified against
+ngspice-46, not assumed. What the sign does carry is the waveform's shape, and
+`i_min`/`i_max` keep it: a current that reverses has `i_min < 0 < i_max`, which
+no magnitude shows.
+
+**One run answers every part.** The setup key is the window and nothing else,
+so a batch of claims about different parts is one `.tran`. Keyed by part
+instead — which is what every other evaluator here does, because every other
+subject *is* a different setup — `lt8640a_buck` would simulate its switching
+model at fifty timepoints a cycle once for the inductor and again for the input
+capacitor, to read one set of waveforms two ways. `Measurement.at` carries the
+designator and `harvestPart` matches on it, which is what stops one part's
+claim being answered with another's number.
+
+**A three-terminal device is refused, not guessed at.**
+`ngspice.branchCurrentVector` maps a deck designator to the rawfile vector that
+holds its current, and the split it encodes is whether that current is an
+*unknown of the matrix* or a quantity computed from the solution afterwards: a
+voltage source, an inductor and the two controlled sources carrying a branch
+equation (`E`, `H`) come back as `i(l1)` in the default saved set, while
+everything else is `i(@r1[i])` and needs naming in a `.save` — with `all`
+leading it, for the reason `saveCurrentsCard` already states. Both spellings
+were verified against ngspice-46 rather than taken from the manual, which
+documents the *vector namespace* names (`l1#branch`, `@r1[i]`) and not the ones
+the rawfile writer emits; the old doc comment here said `#branch` and was
+wrong. A `Q`/`M`/`J` has a collector, an emitter and a base current, "the
+current through Q1" does not say which, and picking one silently would answer a
+question nobody asked — so it comes back with a reason naming the three, and
+the rest of the batch is measured anyway. The same applies to a part that is
+simply *gone* by the time there is a current to read: the netlist reaching the
+deck is a materialized, flattened, model-substituted copy, so an op-amp is a
+macromodel and a ferrite bead is three elements, and neither leaves a device
+carrying the original designator. That is a per-probe reason, not a raise —
+one unmeasurable subject must not sink a batch. A **voltage** probe still
+raises on a name that resolves to nothing, and the asymmetry is deliberate: it
+names the one net the whole analysis is about, so there is no partial answer
+to give.
+
+### What it measures on the design it was written for
+
+`designs/lt8640a_buck.nim` claimed a 7.12 mV output ripple, and that figure is
+0.94 A of inductor triangle across 3 mohm of ESR — so a claim on the **rail**
+rested entirely on a current nothing was checking. L1 now states the two
+ratings a real part is bought by (11 A saturation, 6.5 A continuous), and the
+design claims:
+
+| quantity | expected | measured |
+|---|---|---|
+| `i_pp` | 879 mA ±15% from `dI = Vout(1−D)/(L·f)` | **905 mA** |
+| `i_avg` | ≤ 5.2 A (the 5 A load) | **4.96 A** |
+| `i_peak_derating` | ≤ 0.6 of L1's own `isat` | **0.492** (5.41 A of 11 A) |
+| `i_rms_derating` | ≤ 0.85 of L1's own `current_rating` | **0.764** (4.97 A of 6.5 A) |
+
+The two derating claims state no current at all — they read L1's `isat` and
+`current_rating` back off the part. That is what those keys were registered
+for, and it is why the role offers both spellings: a limit the *circuit* fixes
+(`iRipple` comes out of the design equations) is stated in the design file,
+while a limit the *part* fixes is stated once, on the part, where a
+substitution changes it.
+
+§64 (`switching_converter`) was blocked on this for its efficiency figure and
+§65's leakage half lands here too; both remain open.

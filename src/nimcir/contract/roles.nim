@@ -708,6 +708,99 @@ proc settledRailExpand(inst: RoleInstance): seq[Assertion] =
             "invisible to an operating point and to any averaged model of " &
             "the part", sevWarning)
 
+proc currentPathExpand(inst: RoleInstance): seq[Assertion] =
+  ## What is flowing **through a part** once the circuit has settled.
+  ##
+  ## **The one built-in role whose subject is a component rather than a net.**
+  ## Every other quantity this library measures is a voltage, and that is not
+  ## a stylistic accident -- a branch current is not in an operating point for
+  ## anything but a voltage source, so until there was a `.tran` reading
+  ## device currents there was nothing for a current claim to be checked
+  ## against. `current_rating` and `isat` were registered and set by the part
+  ## policy the whole time and read by nobody, which is the shape of gap that
+  ## looks like coverage from the outside.
+  ##
+  ## **Why the part and not the net it feeds.** A net has one voltage and
+  ## every part on it shares it; a net has no current at all, only the several
+  ## different currents of the parts hanging off it. An inductor's peak, an
+  ## input capacitor's RMS and a sense resistor's average are three claims
+  ## about three parts on two nets, and naming the net could not tell them
+  ## apart.
+  ##
+  ## `tSettle` and `tWindow` are **conditions, not limits**, exactly as
+  ## `settled_rail`'s are and for the same reason: they say what was run, the
+  ## answer is a function of them, and two claims at two windows are two runs.
+  let part = inst.subject("part")
+  let tSettle = paramFloat(inst, "tSettle", 0.0)
+  let tWindow = paramFloat(inst, "tWindow", 0.0)
+
+  template carried(sfx, qty: string, e: Expectation, un, why: string;
+                   sev = sevError) =
+    var claim = Assertion(
+      id: assertionId(inst, sfx),
+      subjects: @[part],
+      quantity: qty,
+      expect: e,
+      unit: un,
+      severity: sev,
+      rationale: why,
+      origin: inst.name)
+    claim.condition["t_settle"] = $tSettle
+    claim.condition["t_window"] = $tWindow
+    result.add claim
+
+  # Every claim is opt-in and the role makes none of its own, the same rule
+  # `settled_rail` and `oscillator` follow. There is no default current for a
+  # part: what an inductor may carry is a property of the part somebody chose,
+  # and what it *does* carry is a property of the circuit -- neither implies a
+  # budget, and inventing one would manufacture a claim and report it as the
+  # designer's.
+  if hasParam(inst, "isat"):
+    carried("isat", "i_peak",
+            atMost(paramFloat(inst, "isat", 0.0)), "A",
+            "past saturation an inductor's inductance collapses, so every " &
+            "figure that depends on it -- the ripple, the crossover, the " &
+            "efficiency -- stops describing the part on the board. It is a " &
+            "peak rather than an average because saturation happens at the " &
+            "top of the triangle, not at its middle")
+  if hasParam(inst, "iRmsMax"):
+    carried("i_rms", "i_rms",
+            atMost(paramFloat(inst, "iRmsMax", 0.0)), "A",
+            "RMS is what heats the part, so this is the figure a continuous " &
+            "rating and a temperature rise are both quoted against -- and " &
+            "the one a peak-only claim misses on a waveform that spends most " &
+            "of its time near zero")
+  if hasParam(inst, "iAvgMax"):
+    carried("i_avg", "i_avg",
+            atMost(paramFloat(inst, "iAvgMax", 0.0)), "A",
+            "the DC component the part carries, which is what a fuse, a " &
+            "trace width and a connector contact are sized by")
+  if hasParam(inst, "iRipple"):
+    carried("ripple", "i_pp",
+            nominal(paramFloat(inst, "iRipple", 0.0),
+                    fracTol = paramFloat(inst, "band", 0.05)), "A",
+            "the peak-to-peak the design equations fix -- for a converter " &
+            "dI = Vout(1-D)/(Lf), which sets the output ripple, the current " &
+            "limit headroom and whether the part saturates. Claiming it is " &
+            "how a wrong inductor value is caught by something other than " &
+            "the rail looking slightly worse")
+  # The two claims that read the *part's own* rating rather than restating it
+  # in the design file. That is the point of `isat` and `current_rating`
+  # having been registered: the number is a property of the part somebody
+  # chose, so a design that states it again has two copies to drift apart.
+  if hasParam(inst, "maxIsatDerating"):
+    carried("isat_derating", "i_peak_derating",
+            atMost(paramFloat(inst, "maxIsatDerating", 0.0)), "",
+            "how much of the part's *own* stated saturation current the peak " &
+            "reaches -- nobody runs an inductor to its knee, and this is the " &
+            "headroom stated once rather than copied out of the datasheet " &
+            "into the design file", sevWarning)
+  if hasParam(inst, "maxRmsDerating"):
+    carried("rms_derating", "i_rms_derating",
+            atMost(paramFloat(inst, "maxRmsDerating", 0.0)), "",
+            "the same headroom against the part's stated continuous rating, " &
+            "which is what its temperature rise was specified at", sevWarning)
+
 # --- built-in: source_sweep / load_sweep -------------------------------
 
 proc sourceSweepExpand(inst: RoleInstance): seq[Assertion] =
@@ -1023,6 +1116,48 @@ proc registerBuiltinRoles*() =
     ],
     apply: nil,
     expand: settledRailExpand))
+
+  registerRole(RoleDef(
+    name: "current_path",
+    doc: "A part carrying current, judged over a window at the end of a " &
+         "transient run: peak, RMS and average, against what the part can " &
+         "take.",
+    parts: @[
+      RolePart(name: "part", kind: skComponent,
+               doc: "the part the current flows through"),
+    ],
+    params: @[
+      AnnDef(key: "tSettle", kind: akFloat, unit: "s", scopes: {asComponent},
+             doc: "how long the circuit is given to settle before the " &
+                  "measurement window opens; everything before it is " &
+                  "simulated and discarded"),
+      AnnDef(key: "tWindow", kind: akFloat, unit: "s", scopes: {asComponent},
+             doc: "length of the measurement window; omitted takes a fifth " &
+                  "of tSettle. Make it several switching cycles"),
+      AnnDef(key: "isat", kind: akFloat, unit: "A", scopes: {asComponent},
+             doc: "highest peak the part may reach -- an inductor's " &
+                  "saturation current; omitted means unclaimed"),
+      AnnDef(key: "iRmsMax", kind: akFloat, unit: "A", scopes: {asComponent},
+             doc: "highest RMS the part may carry, which is what heats it; " &
+                  "omitted means unclaimed"),
+      AnnDef(key: "iAvgMax", kind: akFloat, unit: "A", scopes: {asComponent},
+             doc: "highest DC component the part may carry; omitted means " &
+                  "unclaimed"),
+      AnnDef(key: "iRipple", kind: akFloat, unit: "A", scopes: {asComponent},
+             doc: "peak-to-peak the current must swing, when that is a " &
+                  "number the design equations fix; omitted means unclaimed"),
+      AnnDef(key: "band", kind: akFloat, scopes: {asComponent},
+             doc: "acceptance band on `iRipple`, as a fraction; default 5%"),
+      AnnDef(key: "maxIsatDerating", kind: akFloat, scopes: {asComponent},
+             doc: "highest fraction of the part's *own* stated `isat` the " &
+                  "peak may reach; unchecked when the part states none"),
+      AnnDef(key: "maxRmsDerating", kind: akFloat, scopes: {asComponent},
+             doc: "highest fraction of the part's *own* stated " &
+                  "`current_rating` the RMS may reach; unchecked when the " &
+                  "part states none"),
+    ],
+    apply: nil,
+    expand: currentPathExpand))
 
   registerRole(RoleDef(
     name: "oscillator",

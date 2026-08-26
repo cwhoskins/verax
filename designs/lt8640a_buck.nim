@@ -143,9 +143,18 @@ let d = design("lt8640a_buck"):
       package = "0402"
 
   # --- output -----------------------------------------------------------
+  # The datasheet's 3.3 uH, and the two ratings a real part is bought by.
+  # They are stated on the *part* rather than in the claim below because that
+  # is where they belong -- they describe the component somebody chose, not
+  # the circuit -- and `current_path`'s derating claims read them back, so
+  # the numbers appear once. A Wurth 74438357033 is 11 A saturation, 6.5 A
+  # continuous at 40 degC rise.
   component L1, kind = "inductor", value = "3.3u":
     pin "1", sw, kind = ptPassive
     pin "2", vout, kind = ptPassive
+    spec:
+      isat = 11.0.A
+      current_rating = 6.5.A
 
   component COUT, kind = "capacitor", value = "100u":
     pin "1", vout, kind = ptPassive
@@ -223,6 +232,27 @@ let d = design("lt8640a_buck"):
   role "settled_rail", ripple, rail = vout,
        tSettle = 300.0.us, tWindow = 20.0.us,
        voltage = 4.962.V, band = 2.pct, maxRipple = 10.0.mV
+
+  # The inductor's current, over the same window as the ripple claim above --
+  # and the reason that ripple figure is believable at all. 7.12 mV of output
+  # ripple is 0.94 A of inductor triangle across 3 mohm of ESR plus what the
+  # capacitance does with it, so a claim on the *rail* rests entirely on a
+  # current nothing was checking. dI = Vout(1-D)/(L f) with D = Vout/Vin =
+  # 0.413 is 0.879 A at 12 V in, and the average is the 5 A load, so the peak
+  # is 5.44 A.
+  #
+  # The two derating claims state no current at all: they read L1's own
+  # `isat` and `current_rating` back off the part. That is what those two
+  # keys were registered for -- the part policy has been setting them since
+  # it existed and nothing read either, so an inductor run past its knee was
+  # invisible to a design that otherwise checked everything. 60% of
+  # saturation is the usual place to sit; past the knee the inductance
+  # collapses and the ripple this run measured stops describing the part.
+  role "current_path", inductor, part = L1,
+       tSettle = 300.0.us, tWindow = 20.0.us,
+       iRipple = 0.879.A, band = 15.pct,
+       iAvgMax = 5.2.A,
+       maxIsatDerating = 0.6, maxRmsDerating = 0.85
 
   # The soft start, which is the one number on this board set by a single
   # capacitor and by nothing else. 1.9 uA out of TR/SS into CSS is 190 V/s at

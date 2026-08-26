@@ -548,11 +548,12 @@ passed at exit 0**. `opamp.checkInjectionPoint` now refuses it by name.
 
 But the deeper point is that no version of a swept measurement answers the
 question. An oscillator has no transfer function, because there is nothing to
-sweep it *from*. So `analysis/transient` holds two analyses over one run:
-`analyzeTransient` reports what a node **settled to** and `analyzeOscillation`
-reports what it is **running at**. They share `runWindow` deliberately — having
-two questions diverge in the simulator setup as well as in the arithmetic is
-how one of them quietly measures a different circuit.
+sweep it *from*. So `analysis/transient` holds three analyses over one run:
+`analyzeTransient` reports what a node **settled to**, `analyzeOscillation`
+reports what it is **running at**, and `analyzeCurrent` reports what is
+flowing **through a part**. They share `runWindow` deliberately — having the
+questions diverge in the simulator setup as well as in the arithmetic is how
+one of them quietly measures a different circuit.
 
 Reaching a circuit that will not start is the other half.
 `TransientSpec.initialConditions` emits an `.ic` and forces `uic`, which puts
@@ -564,6 +565,36 @@ run that uses it. `analyzeStartup` reaches for the same mechanism for the
 opposite reason: a regulator that brings its own model soft-starts, and an
 operating point would find the state that ramp settles *to*, so the run would
 begin at the end of the thing being measured.
+
+### A current is not a node
+
+Everything else this library measures is a voltage, and for a long time that
+was not a choice so much as a consequence: a branch current is not in a `.op`
+for anything but a voltage source, so `current_rating` and `isat` sat
+registered, set by the part policy on every inductor it chose, and read by
+nobody. For a converter that is the check that matters most, because
+saturation is its failure mode.
+
+`analyzeCurrent` closes it, and the shape of the fix is dictated by one fact:
+**a net has one voltage that every part on it shares, and no current at all**
+— only the several different currents of the parts hanging off it. So
+`spice.current_path` is the only evaluator here declaring
+`subjectKinds: {skComponent}`, and its setup key is the measurement window and
+*nothing else*: one `.tran` answers every claimed part, because the currents
+are all readings of one set of waveforms. Keyed by part, as every other
+evaluator here is keyed by its subject, `lt8640a_buck` would run its switching
+model twice at fifty timepoints a cycle to read one run two ways.
+`Measurement.at` carries the designator through the batch, which is what stops
+one part's claim being answered with another's number.
+
+Two smaller decisions carry the honesty. The three figures a rating is quoted
+against — `i_peak`, `i_rms`, `i_avg` — are **magnitudes**, because a rating is
+one and the sign of a branch current is a deck convention: an inductor's
+follows whichever pin the design wrote first, and ngspice reports a voltage
+source's current positive when it flows *into* the + terminal. And a device
+with more than one terminal current is **refused rather than resolved** —
+"the current through Q1" does not say collector, emitter or base, and the rest
+of the batch is measured anyway.
 
 ### A difference is not a bias
 

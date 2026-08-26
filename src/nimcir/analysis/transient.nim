@@ -10,13 +10,15 @@
 ## asked the one question that would answer all three: **run this and tell me
 ## what this node does once it has stopped changing.**
 ##
-## So nothing here binds a driving part. Each analysis takes a netlist and a
-## net, runs a `.tran`, and reports what the net does over a stated window at
-## the end of the run. There are two, because there are two shapes of answer:
-## `analyzeTransient` reports where a node **settled** and what is still
-## moving on it, and `analyzeOscillation` reports what a node is **running
-## at** -- rate, size and purity -- for a circuit whose whole intent is not to
-## settle. They share the run and differ only in what is read off the window.
+## So nothing here binds a driving part. Each analysis runs a `.tran` and
+## reports what was happening over a stated window at the end of it. There are
+## three, because there are three shapes of answer: `analyzeTransient` reports
+## where a node **settled** and what is still moving on it,
+## `analyzeOscillation` reports what a node is **running at** -- rate, size and
+## purity -- for a circuit whose whole intent is not to settle, and
+## `analyzeCurrent` reports what is flowing **through a part**, which is the
+## one question in this library that is not about a node at all. They share
+## the run and differ only in what is read off the window.
 ##
 ## **The design is simulated as authored -- no isolation.** That follows
 ## `runDcVoltage`'s precedent rather than `analyzePdn`'s, and for the same
@@ -61,6 +63,8 @@ const
   KindNotSettled* = "transient_not_settled"
   KindDidNotOscillate* = "transient_did_not_oscillate"
   KindSimulationFailed* = "transient_simulation_failed"
+  KindNoCurrent* = "transient_no_current"
+  KindOverCurrent* = "part_over_current_rating"
 
 type
   TransientSpec* = object
@@ -134,21 +138,87 @@ proc windowOf(t: openArray[float], fromT: float): Slice[int] =
   lo .. t.high
 
 type
+  ProbeKind = enum
+    pkVoltage    ## a node voltage, `v(<net>)`
+    pkCurrent    ## the current through one part, `i(<desig>)` or `i(@<desig>[i])`
+
+  Probe = object
+    ## What to read off the run, named the way the *design* names it -- a net
+    ## name or a designator, hierarchical path and all. Resolving it to a
+    ## rawfile vector has to wait until the work netlist has been
+    ## materialized, flattened and model-substituted, because that is when the
+    ## part that reaches the deck exists and knows its deck designator.
+    kind: ProbeKind
+    target: string
+
+  ProbeResult = object
+    vector*: string
+      ## The rawfile vector this probe resolved to; empty when it could not.
+    saveTerm*: string
+      ## What has to be named in a `.save` for that vector to exist at all.
+      ## Empty when ngspice writes it anyway -- see `branchCurrentVector`.
+    values*: seq[float]
+      ## The whole run, not the window -- `WindowRun.w` cuts it.
+    reason*: string
+      ## Why `values` is empty. A voltage probe never gets one (a missing net
+      ## raises), a current probe can: a three-terminal device, an `X`
+      ## instance, an XSPICE model.
+
   WindowRun = object
     ## What a `.tran` gave back, cut to the measurement window.
     ##
-    ## The run is shared between `analyzeTransient` and `analyzeOscillation`
-    ## because it genuinely is the same run: the same netlist, the same
-    ## window, the same `uic`. Only what is read off it differs, and having
-    ## the two questions diverge in the *simulator setup* as well as in the
-    ## arithmetic is how one of them ends up quietly measuring a different
-    ## circuit.
-    t*, v*: seq[float]
+    ## The run is shared between `analyzeTransient`, `analyzeOscillation` and
+    ## `analyzeCurrent` because it genuinely is the same run: the same
+    ## netlist, the same window, the same `uic`. Only what is read off it
+    ## differs, and having the questions diverge in the *simulator setup* as
+    ## well as in the arithmetic is how one of them ends up quietly measuring
+    ## a different circuit.
+    ##
+    ## **More than one probe per run, and that is what makes a current claim
+    ## affordable.** A converter is claimed on its inductor's peak *and* its
+    ## input capacitor's RMS, and both are the same `.tran` over the same
+    ## window; one probe per run would simulate a switching model twice at
+    ## fifty timepoints a cycle to answer two readings of one waveform set.
+    t*: seq[float]
+    probes*: seq[ProbeResult]
     w*: Slice[int]
     ok*: bool
 
-proc runWindow(nl: Netlist, measureNet: string, spec: TransientSpec,
-               rep: var AnalysisReport, windowSamples = 1000): WindowRun =
+proc resolveProbe(work: Netlist, p: Probe): ProbeResult =
+  ## Which rawfile vector answers this probe, against the netlist that will
+  ## actually be written to the deck.
+  ##
+  ## **The two kinds fail differently on purpose.** A voltage probe names the
+  ## one net the whole analysis is about, so a name that resolves to nothing
+  ## raises: there is no partial answer to give. A current probe is one of
+  ## several in a batch, and a part that cannot be measured must not take the
+  ## rest of the batch with it -- so it comes back with a `reason` and the
+  ## other parts are measured anyway.
+  case p.kind
+  of pkVoltage:
+    let n = findNet(work, p.target)
+    if n == nil:
+      raise newException(NetlistError,
+        "no such net: " & p.target & " (transient)")
+    ProbeResult(vector: "v(" & n.name & ")")
+  of pkCurrent:
+    let c = findComponent(work, p.target)
+    if c == nil:
+      # Not necessarily a typo: a part the design really has can be gone by
+      # now, because the netlist reaching the deck is a materialized,
+      # flattened, model-substituted copy. An op-amp becomes a macromodel and
+      # a ferrite bead becomes three elements, and neither leaves a device
+      # carrying the original designator's current.
+      return ProbeResult(reason:
+        "'" & p.target & "' is not in the netlist that reaches the deck; a " &
+        "model pass stood it in for, or dissolved it into, something else")
+    let (vector, saveTerm, reason) =
+      branchCurrentVector(spiceFormat.deckDesignator(c))
+    ProbeResult(vector: vector, saveTerm: saveTerm, reason: reason)
+
+proc runWindow(nl: Netlist, probes: openArray[Probe], spec: TransientSpec,
+               rep: var AnalysisReport, windowSamples = 1000,
+               label = ""): WindowRun =
   ## Simulates the design as authored and returns the window.
   ##
   ## Assumptions and issues go onto `rep` as they are produced, including on
@@ -166,10 +236,8 @@ proc runWindow(nl: Netlist, measureNet: string, spec: TransientSpec,
   if spec.capacitorParasitics:
     rep.assumptions.add expandCapacitorParasitics(work)
 
-  let measured = findNet(work, measureNet)
-  if measured == nil:
-    raise newException(NetlistError,
-      "no such net: " & measureNet & " (transient)")
+  for p in probes:
+    result.probes.add resolveProbe(work, p)
 
   let tWindow =
     if spec.tWindow > 0.0: spec.tWindow
@@ -227,19 +295,48 @@ proc runWindow(nl: Netlist, measureNet: string, spec: TransientSpec,
       ") with uic, so no operating point was solved and every other node " &
       "starts at zero rather than at its bias")
 
+  # A terminal current is computed from the solution rather than being part of
+  # it, so it never reaches the rawfile unless it is named. `all` has to lead
+  # the list for the reason `saveCurrentsCard` states: naming any vector turns
+  # the default set off, and a card saying only `@l1[i]` would keep the
+  # inductor's current and throw the rail it feeds away.
+  var saveTerms: seq[string]
+  for pr in result.probes:
+    if pr.saveTerm.len > 0 and pr.saveTerm notin saveTerms:
+      saveTerms.add pr.saveTerm
+  if saveTerms.len > 0:
+    setup.add ".save " & (@["all"] & saveTerms).join(" ")
+
+  let runLabel =
+    if label.len > 0: label
+    elif probes.len > 0: "transient:" & probes[0].target
+    else: "transient"
   try:
-    rep.raw = run(work, card, setup, label = "transient:" & measureNet)
+    rep.raw = run(work, card, setup, label = runLabel)
   except SpiceSimError as e:
     rep.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not run the transient: " & e.msg)
     return
 
   result.t = rep.raw["time"]
-  result.v = rep.raw["v(" & measured.name & ")"]
-  if result.t.len == 0 or result.v.len == 0:
+  if result.t.len == 0:
     rep.issues.add newIssue(KindSimulationFailed, sevWarning,
-      "the transient produced no samples for net '" & measureNet & "'")
+      "the transient produced no samples")
     return
+
+  for i in 0 ..< result.probes.len:
+    if result.probes[i].vector.len == 0: continue
+    try:
+      result.probes[i].values = rep.raw[result.probes[i].vector]
+    except KeyError:
+      # The vector was asked for and did not come back. That is a statement
+      # about the deck rather than about the circuit, so it says which vector
+      # rather than reporting an empty measurement.
+      result.probes[i].reason =
+        "the run produced no vector '" & result.probes[i].vector & "'"
+    if result.probes[i].values.len == 0 and result.probes[i].reason.len == 0:
+      result.probes[i].reason =
+        "the run produced no samples for '" & result.probes[i].vector & "'"
 
   # `tstart` is honoured by ngspice, but a deck that stated none still has the
   # whole run in the output, so the window is applied here too. Doing it in
@@ -253,11 +350,24 @@ proc runWindow(nl: Netlist, measureNet: string, spec: TransientSpec,
     return
   result.ok = true
 
-proc slice(r: WindowRun): tuple[t, v: seq[float]] =
-  ## The window as two plain seqs, which is what `analysis/measure` takes.
-  for i in r.w:
-    result.t.add r.t[i]
-    result.v.add r.v[i]
+proc slice(r: WindowRun, i = 0): tuple[t, v: seq[float]] =
+  ## Probe `i`'s window as two plain seqs, which is what `analysis/measure`
+  ## takes.
+  for k in r.w:
+    result.t.add r.t[k]
+    result.v.add r.probes[i].values[k]
+
+proc measured(r: WindowRun, i: int, rep: var AnalysisReport,
+              what: string): bool =
+  ## Whether probe `i` came back with samples, reporting why not if it did
+  ## not. `runWindow` succeeds as long as the *run* did, because a batch of
+  ## current probes may have one part in it that cannot be measured -- so a
+  ## single-probe analysis has to ask about its own probe before reading it.
+  if r.probes[i].values.len > 0: return true
+  rep.issues.add newIssue(KindSimulationFailed, sevWarning,
+    "the transient measured nothing for " & what &
+    (if r.probes[i].reason.len > 0: ": " & r.probes[i].reason else: ""))
+  false
 
 proc analyzeTransient*(nl: Netlist, measureNet: string,
                        spec = defaultTransientSpec()): AnalysisReport =
@@ -267,23 +377,26 @@ proc analyzeTransient*(nl: Netlist, measureNet: string,
   ## peak-to-peak), `settled_min`, `settled_max` and `final_v`.
   result.name = "transient"
 
-  let r = runWindow(nl, measureNet, spec, result)
+  let r = runWindow(nl, [Probe(kind: pkVoltage, target: measureNet)],
+                    spec, result)
   if not r.ok: return
+  if not measured(r, 0, result, "net '" & measureNet & "'"): return
+  let v = r.probes[0].values
 
-  var lo = r.v[r.w.a]
-  var hi = r.v[r.w.a]
+  var lo = v[r.w.a]
+  var hi = v[r.w.a]
   var sum = 0.0
   for i in r.w:
-    if r.v[i] < lo: lo = r.v[i]
-    if r.v[i] > hi: hi = r.v[i]
-    sum += r.v[i]
+    if v[i] < lo: lo = v[i]
+    if v[i] > hi: hi = v[i]
+    sum += v[i]
   let mean = sum / float(r.w.b - r.w.a + 1)
 
   result.add "settled_v", mean, "V"
   result.add "ripple_pp", hi - lo, "V"
   result.add "settled_min", lo, "V"
   result.add "settled_max", hi, "V"
-  result.add "final_v", r.v[^1], "V"
+  result.add "final_v", v[^1], "V"
 
   if spec.settleTol > 0.0 and abs(mean) > 0.0:
     let band = abs(mean) * spec.settleTol
@@ -332,8 +445,10 @@ proc analyzeOscillation*(nl: Netlist, measureNet: string,
   # distortion figure through the window it integrates over -- where a
   # settling voltage and a ripple are not. The cost on `wien_osc` is 0.42 s
   # against 0.06 s, for a frequency that stops moving with the setting.
-  let r = runWindow(nl, measureNet, spec, result, windowSamples = 10_000)
+  let r = runWindow(nl, [Probe(kind: pkVoltage, target: measureNet)],
+                    spec, result, windowSamples = 10_000)
   if not r.ok: return
+  if not measured(r, 0, result, "net '" & measureNet & "'"): return
   let (wt, wv) = r.slice()
 
   let sw = swing(wv)
@@ -366,3 +481,104 @@ proc analyzeOscillation*(nl: Netlist, measureNet: string,
          "within this window, so it is still starting up, has stopped, or " &
          "the window is shorter than a period. Widen tSettle or tWindow."),
       net = nl.nets.getOrDefault(measureNet))
+
+proc analyzeCurrent*(nl: Netlist, parts: openArray[string],
+                     spec = defaultTransientSpec()): AnalysisReport =
+  ## Runs the design once and reports the current **through each part** over
+  ## the settled window.
+  ##
+  ## Measurements, per part and tagged with its designator in
+  ## `Measurement.at`: `i_peak`, `i_rms`, `i_avg`, `i_pp`, `i_min`, `i_max`,
+  ## plus `i_peak_derating` and `i_rms_derating` when the part states a rating
+  ## to be a fraction of.
+  ##
+  ## **This is the analysis `current_rating` and `isat` were waiting for.**
+  ## Both keys have been registered and set by the part policy since the
+  ## policy existed, and nothing read either: a branch current is not in a
+  ## `.op` for anything but a voltage source, so an inductor's peak -- the
+  ## check a converter most wants, since saturation is its failure mode --
+  ## had no route to a claim. It is a `.tran` question, and this is the same
+  ## `.tran` `analyzeTransient` already runs for the rail's ripple.
+  ##
+  ## **The three figures a rating is quoted against are magnitudes, because a
+  ## rating is.** `i_peak`, `i_rms` and `i_avg` are all sign-free. The sign of
+  ## a branch current is a *deck* convention and no claim should turn on it:
+  ## an inductor's follows whichever pin the design happened to write first,
+  ## and ngspice reports a voltage source's current positive when it flows
+  ## *into* the + terminal, so a supply delivering 330 mA reads -330 mA. What
+  ## the sign does carry is the waveform's shape, and `i_min`/`i_max` keep
+  ## that -- a current that changes direction has `i_min < 0 < i_max`, which
+  ## no magnitude shows.
+  ##
+  ## **Every part is read off one run.** A converter is claimed on its
+  ## inductor's peak and its input capacitor's RMS at once, and those are two
+  ## readings of one set of waveforms; one run per part would simulate a
+  ## switching model twice over.
+  result.name = "current"
+  # Nothing to read means nothing to run: a `.tran` costs whatever the design
+  # costs, and there would be no measurement at the end of it.
+  if parts.len == 0: return
+
+  var probes: seq[Probe]
+  for p in parts: probes.add Probe(kind: pkCurrent, target: p)
+
+  let r = runWindow(nl, probes, spec, result,
+                    label = "current:" & (if parts.len > 0: parts[0] else: ""))
+  if not r.ok: return
+
+  for i, part in parts:
+    if r.probes[i].values.len == 0:
+      # Named, run, and still nothing to measure. Which part it was and why
+      # has to be said here: downstream this is one `notEvaluated` among
+      # several from the same batch, and "no measurement" without a subject
+      # sends the reader to the wrong part.
+      result.issues.add newIssue(KindNoCurrent, sevWarning,
+        "no current could be measured through '" & part & "': " &
+        (if r.probes[i].reason.len > 0: r.probes[i].reason
+         else: "the probe resolved to nothing"),
+        components = (block:
+          let c = findComponent(nl, part)
+          if c == nil: @[] else: @[c]))
+      continue
+
+    let (wt, wv) = r.slice(i)
+    let sw = swing(wv)
+    let peak = max(abs(sw.lo), abs(sw.hi))
+    let rms = timeRms(wt, wv)
+    let avg = abs(timeMean(wt, wv))
+
+    result.add "i_peak", peak, "A", at = part
+    result.add "i_rms", rms, "A", at = part
+    result.add "i_avg", avg, "A", at = part
+    result.add "i_pp", sw.pp, "A", at = part
+    result.add "i_min", sw.lo, "A", at = part
+    result.add "i_max", sw.hi, "A", at = part
+
+    # The part's own ratings, finally read. `NaN` where the part states none,
+    # which reads downstream as *not evaluated* rather than as a pass -- a
+    # part with no `isat` on it is one nobody has chosen yet, not one with
+    # infinite headroom.
+    let c = findComponent(nl, part)
+    let isat = if c == nil: AnnValue[float](source: annAbsent)
+               else: annotationFloat(c, "isat")
+    let icont = if c == nil: AnnValue[float](source: annAbsent)
+                else: annotationFloat(c, "current_rating")
+    result.add "i_peak_derating",
+      (if isat.has and isat.value > 0.0: peak / isat.value else: NaN),
+      "", at = part
+    result.add "i_rms_derating",
+      (if icont.has and icont.value > 0.0: rms / icont.value else: NaN),
+      "", at = part
+
+    if isat.has and isat.value > 0.0 and peak > isat.value:
+      result.issues.add newIssue(KindOverCurrent, sevError,
+        "'" & part & "' peaks at " & eng(peak, "A") & " against a stated " &
+        "saturation current of " & eng(isat.value, "A") & " -- past it the " &
+        "inductance collapses, so the ripple this run measured is not the " &
+        "ripple the part would produce",
+        components = (if c == nil: @[] else: @[c]))
+    elif icont.has and icont.value > 0.0 and rms > icont.value:
+      result.issues.add newIssue(KindOverCurrent, sevWarning,
+        "'" & part & "' carries " & eng(rms, "A") & " RMS against a stated " &
+        "continuous rating of " & eng(icont.value, "A"),
+        components = (if c == nil: @[] else: @[c]))
