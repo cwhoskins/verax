@@ -65,6 +65,8 @@ const
   KindSimulationFailed* = "transient_simulation_failed"
   KindNoCurrent* = "transient_no_current"
   KindOverCurrent* = "part_over_current_rating"
+  KindStepNotSeen* = "load_step_not_seen"
+  KindStepNoRecovery* = "load_step_no_recovery"
 
 type
   TransientSpec* = object
@@ -218,7 +220,8 @@ proc resolveProbe(work: Netlist, p: Probe): ProbeResult =
 
 proc runWindow(nl: Netlist, probes: openArray[Probe], spec: TransientSpec,
                rep: var AnalysisReport, windowSamples = 1000,
-               label = ""): WindowRun =
+               label = "",
+               mutate: proc (work: Netlist) {.closure.} = nil): WindowRun =
   ## Simulates the design as authored and returns the window.
   ##
   ## Assumptions and issues go onto `rep` as they are produced, including on
@@ -235,6 +238,13 @@ proc runWindow(nl: Netlist, probes: openArray[Probe], spec: TransientSpec,
     rep.assumptions.add expandPinModels(work, spec.pinModels)
   if spec.capacitorParasitics:
     rep.assumptions.add expandCapacitorParasitics(work)
+
+  # Anything an analysis has to *add* to the circuit before it runs -- a
+  # pulsed load, a ripple source -- goes in here, after every model pass and
+  # before the probes resolve. After, because a stimulus is not a part of the
+  # design and must not be handed to `expandPinModels`; before, because a
+  # probe on the thing just added has to find it.
+  if mutate != nil: mutate(work)
 
   for p in probes:
     result.probes.add resolveProbe(work, p)
@@ -582,3 +592,290 @@ proc analyzeCurrent*(nl: Netlist, parts: openArray[string],
         "'" & part & "' carries " & eng(rms, "A") & " RMS against a stated " &
         "continuous rating of " & eng(icont.value, "A"),
         components = (if c == nil: @[] else: @[c]))
+
+# --- a load step ------------------------------------------------------------
+
+const loadStepDesignator = "ILOADSTEP"
+
+type
+  LoadStepSpec* = object
+    ## A current step at a node, and the window either side of it.
+    iFrom*, iTo*: float
+      ## The load before and after the edge, in amps. `iTo > iFrom` is the
+      ## ordinary direction -- a part waking up -- and the reverse is legal
+      ## and measures the release instead.
+    tSettle*: float
+      ## When the circuit has arrived and the baseline may be read. Stated,
+      ## not detected, for the reason every window here is: a rail still
+      ## soft-starting is not a rail whose droop means anything.
+    tBaseline*: float
+      ## How long to average before the edge for the pre-step level. 0 takes
+      ## a tenth of `tSettle`, or `tRecover` when there is no settle time.
+    tEdge*: float
+      ## Rise and fall time of the step. 0 takes 1 us. **Not cosmetic**: a
+      ## load's slew is what decides whether the droop is set by the output
+      ## capacitor's ESR or by the loop's bandwidth, and an unrealistically
+      ## fast edge asks the decoupling for something no real load demands.
+    tHold*: float
+      ## How long the load stays at `iTo` before returning to `iFrom`.
+      ## 0 holds to the end of the run and never measures a release.
+    tRecover*: float
+      ## How long after each edge to watch. 0 takes ten times `tEdge`.
+    settleTol*: float
+      ## Fractional band the rail must re-enter and stay inside for
+      ## `step_recover_s` to be a number. 0 takes 1%.
+    pinModels*: PinModelDefaults
+    flattenHierarchy*: bool
+    keepInstances*: seq[string]
+    modelUnmodelledParts*: bool
+    capacitorParasitics*: bool
+    windowSamples*: int
+      ## Points across the *recovery* window. 0 takes 2000. A droop is an
+      ## excursion between two samples if the sampling is coarse, so this is
+      ## higher than `analyzeTransient`'s default and lower than
+      ## `analyzeOscillation`'s -- and, as there, the derived print step is
+      ## also ngspice's ceiling on its own timestep, so it sets how well the
+      ## edge is *solved* and not merely how often it is written down.
+
+proc defaultLoadStepSpec*(): LoadStepSpec =
+  LoadStepSpec(iFrom: 0.0, iTo: 0.0, tSettle: 0.0, tBaseline: 0.0,
+               tEdge: 0.0, tHold: 0.0, tRecover: 0.0, settleTol: 0.0,
+               pinModels: defaultPinModels(), flattenHierarchy: true,
+               modelUnmodelledParts: true, capacitorParasitics: true,
+               windowSamples: 0)
+
+proc edgeOf*(spec: LoadStepSpec): float =
+  ## The step's rise and fall time, with the default resolved. Exported
+  ## because a report has to be able to say what a claim that stated no edge
+  ## actually ran with.
+  if spec.tEdge > 0.0: spec.tEdge else: 1.0e-6
+
+proc recoverOf*(spec: LoadStepSpec): float =
+  ## How long is watched after each edge, with the default resolved.
+  if spec.tRecover > 0.0: spec.tRecover else: 10.0 * edgeOf(spec)
+
+proc baselineOf*(spec: LoadStepSpec): float =
+  ## How long is averaged before the edge for the pre-step level.
+  if spec.tBaseline > 0.0: spec.tBaseline
+  elif spec.tSettle > 0.0: spec.tSettle * 0.1
+  else: recoverOf(spec)
+
+proc holdOf*(spec: LoadStepSpec): float =
+  ## How long the load stays applied.
+  if spec.tHold > 0.0: spec.tHold else: recoverOf(spec)
+
+proc stopOf(spec: LoadStepSpec): float =
+  ## The step lands at `tSettle`; everything after it is the measurement.
+  spec.tSettle + holdOf(spec) + recoverOf(spec) + 2.0 * edgeOf(spec)
+
+proc pulseValue(spec: LoadStepSpec): string =
+  ## `PULSE(i1 i2 td tr tf pw per)`. The period is set past the end of the
+  ## run so the pulse happens exactly once: this measures one step, and a
+  ## second edge arriving inside the recovery window would be measured as
+  ## part of the first one's ringing.
+  let e = edgeOf(spec)
+  let stop = stopOf(spec)
+  "PULSE(" & spiceValue(spec.iFrom) & " " & spiceValue(spec.iTo) & " " &
+  spiceValue(spec.tSettle) & " " & spiceValue(e) & " " & spiceValue(e) & " " &
+  spiceValue(holdOf(spec)) & " " & spiceValue(10.0 * stop) & ")"
+
+proc toTransient(spec: LoadStepSpec): TransientSpec =
+  ## The run is described to `runWindow` as one whose window opens at the
+  ## *baseline*, not at the step: the pre-step level is measured data, not an
+  ## assumption, so it has to be inside what comes back.
+  result = defaultTransientSpec()
+  result.tSettle = max(0.0, spec.tSettle - baselineOf(spec))
+  result.tWindow = stopOf(spec) - result.tSettle
+  result.tStop = stopOf(spec)
+  result.tStep = recoverOf(spec) /
+                 float(max(1, (if spec.windowSamples > 0: spec.windowSamples
+                               else: 2000)))
+  result.pinModels = spec.pinModels
+  result.flattenHierarchy = spec.flattenHierarchy
+  result.keepInstances = spec.keepInstances
+  result.modelUnmodelledParts = spec.modelUnmodelledParts
+  result.capacitorParasitics = spec.capacitorParasitics
+
+proc sliceBetween(t, v: openArray[float], fromT, toT: float):
+    tuple[t, v: seq[float]] =
+  for i in 0 ..< t.len:
+    if t[i] >= fromT and t[i] <= toT:
+      result.t.add t[i]
+      result.v.add v[i]
+
+proc analyzeLoadStep*(nl: Netlist, measureNet: string,
+                      spec = defaultLoadStepSpec()): AnalysisReport =
+  ## What a rail does when the load jumps, and how long it takes to get over
+  ## it.
+  ##
+  ## **The time-domain twin of a target impedance, and the thing a target
+  ## impedance is a proxy for.** `analyzePdn` answers "how low is this rail's
+  ## impedance across the band", which is a real question and an indirect
+  ## one: what the board actually has to do is hold the rail up when the MCU
+  ## wakes, and getting from an impedance curve to that answer is an argument
+  ## the reader has to complete. This asks it directly.
+  ##
+  ## The stimulus is a **constant-current sink the analysis injects**, pulsed,
+  ## and both halves of that are deliberate. Injected, because a test load is
+  ## not a part anybody solders -- putting one in the design would put it on
+  ## the BoM and in the layout, which is the same argument `analyzeLoadSweep`
+  ## makes for its own sink. A sink and not a resistor, because a resistor's
+  ## current follows the rail: it would *damp* the very network being
+  ## measured, and a droop measured against one is smaller than the real
+  ## thing by however much the rail sagged. `spice/boundary` measured that
+  ## difference at 12% on an anti-resonant peak, and a droop is the same
+  ## effect in the time domain.
+  ##
+  ## **The design is simulated as authored -- no isolation**, on
+  ## `analyzeTransient`'s reasoning: a rail terminated at its nominal by a
+  ## boundary source cannot droop.
+  ##
+  ## Capacitor parasitics are on and load-bearing rather than merely more
+  ## accurate. The first thing a step does is pull its current through the
+  ## output capacitor's ESR, and that step is instantaneous and is often most
+  ## of the droop; an ideal capacitor has no ESR and reports a droop that
+  ## rises smoothly from zero, which is the wrong shape and the wrong number.
+  ##
+  ## Reports `step_droop_v`/`step_droop_pct` (how far the rail fell below
+  ## where it was), `step_overshoot_v`/`step_overshoot_pct` (how far it rose
+  ## above on the release), `step_recover_s`, and the signed envelope
+  ## `step_v_min`/`step_v_max`. Anything the run could not see is `NaN` with
+  ## an issue, never zero: a droop of zero and a droop nobody measured are
+  ## opposite conclusions.
+  result.name = "load step"
+
+  if spec.iTo == spec.iFrom:
+    result.issues.add newIssue(KindStepNotSeen, sevWarning,
+      "a load step from " & eng(spec.iFrom, "A") & " to " &
+      eng(spec.iTo, "A") & " is not a step. Every quantity here is a " &
+      "difference across the edge, so there is no default magnitude to " &
+      "assume and nothing to measure at this one")
+    return
+
+  let tSpec = toTransient(spec)
+  let sink = spec           # captured by the closure below
+
+  var injected = false
+  let r = runWindow(nl, [Probe(kind: pkVoltage, target: measureNet)],
+                    tSpec, result, label = "load step:" & measureNet,
+                    mutate = proc (work: Netlist) =
+      let node = findNet(work, measureNet)
+      if node == nil:
+        raise newException(NetlistError,
+          "no such net: " & measureNet & " (load step)")
+      let gnd = findNet(work, "0")
+      if gnd == nil:
+        raise newException(NetlistError,
+          "no ground node '0' to pull a load step into on '" & measureNet &
+          "'. A step needs a reference for the current it draws.")
+      if work.components.hasKey(loadStepDesignator):
+        raise newException(NetlistError,
+          "the design already contains '" & loadStepDesignator &
+          "', which is the designator a load step injects its own sink under")
+      # `+` on the measured node and `-` on the reference, as
+      # `analyzeLoadSweep` does: SPICE runs positive current from `+` through
+      # the source to `-`, so a positive value pulls current out of the node.
+      let src = addComponent(work, newComponent(loadStepDesignator,
+                                                kind = "current_source"))
+      discard connect(src, "+", node, ptPassive)
+      discard connect(src, "-", gnd, ptPassive)
+      src.attrs["value"] = pulseValue(sink)
+      injected = true)
+
+  if injected:
+    result.assumptions.add note(loadStepDesignator,
+      "a constant-current sink stepped from " & eng(spec.iFrom, "A") &
+      " to " & eng(spec.iTo, "A") & " in " & eng(edgeOf(spec), "s") &
+      " at " & eng(spec.tSettle, "s") & ", injected at net '" & measureNet &
+      "' by the analysis. It is not in the design: a test load is not a part " &
+      "anybody solders, and a resistor would sag with the rail and damp the " &
+      "network being measured")
+
+  if not r.ok: return
+  if not measured(r, 0, result, "net '" & measureNet & "'"): return
+
+  let (wt, wv) = r.slice()
+  if wt.len < 4:
+    result.issues.add newIssue(KindStepNotSeen, sevWarning,
+      "the run produced " & $wt.len & " sample(s) around the step, which is " &
+      "too few to measure an excursion between")
+    return
+
+  let e = edgeOf(spec)
+  let tStep = spec.tSettle
+  let tRel = spec.tSettle + edgeOf(spec) + holdOf(spec)
+
+  # The pre-step level, time-weighted over the baseline window rather than
+  # taken as one sample: whatever ripple the rail already carries is not part
+  # of the droop, and reading a single point would fold it in whole.
+  let (bt, bv) = sliceBetween(wt, wv, tStep - baselineOf(spec), tStep)
+  let baseline = if bt.len >= 2: timeMean(bt, bv)
+                 elif bv.len > 0: bv[^1]
+                 else: NaN
+
+  # The loaded window: the edge itself plus the recovery after it.
+  let (lt, lv) = sliceBetween(wt, wv, tStep, tStep + e + recoverOf(spec))
+  let loaded = swing(lv)
+
+  result.add "step_v_min", loaded.lo, "V"
+  result.add "step_v_max", loaded.hi, "V"
+
+  if baseline.isNaN or lt.len < 2:
+    result.issues.add newIssue(KindStepNotSeen, sevWarning,
+      "the run did not produce samples either side of the edge at " &
+      eng(tStep, "s") & ": the baseline window is " &
+      eng(baselineOf(spec), "s") & " and the recovery window " &
+      eng(recoverOf(spec), "s"))
+    return
+
+  # Which way the rail moves is decided by which way the load moved, not by
+  # the sign of the excursion: a step *up* in current droops the rail and a
+  # step down lifts it, and calling the second one a droop would report a
+  # release as a failure.
+  let rising = spec.iTo > spec.iFrom
+  let droop = if rising: baseline - loaded.lo else: loaded.hi - baseline
+  result.add "step_droop_v", max(droop, 0.0), "V"
+  result.add "step_droop_pct",
+    (if abs(baseline) > 0.0: 100.0 * max(droop, 0.0) / abs(baseline) else: NaN),
+    "%"
+
+  # Where the rail settles *under* the new load, which is not where it
+  # started: load regulation moves it, and crediting that shift to the
+  # transient would report a permanent offset as a droop that never
+  # recovered.
+  let (ft, fv) = sliceBetween(wt, wv,
+                              tStep + e + recoverOf(spec) * 0.75,
+                              tStep + e + recoverOf(spec))
+  let settled = if ft.len >= 2: timeMean(ft, fv)
+                elif fv.len > 0: fv[^1]
+                else: baseline
+
+  let tol = if spec.settleTol > 0.0: spec.settleTol else: 0.01
+  if abs(settled) > 0.0:
+    let back = settleTime(lt, lv, settled, tol)
+    if back.isNaN:
+      result.add "step_recover_s", NaN, "s"
+      result.issues.add newIssue(KindStepNoRecovery, sevWarning,
+        "'" & measureNet & "' had not come back inside " &
+        eng(tol * 100.0) & "% of " & eng(settled, "V") & " by the end of the " &
+        eng(recoverOf(spec), "s") & " recovery window -- either it is still " &
+        "ringing, or it is not going to. Widen the window before reading " &
+        "this as instability",
+        net = nl.nets.getOrDefault(measureNet))
+    else:
+      result.add "step_recover_s", max(back - tStep, 0.0), "s"
+  else:
+    result.add "step_recover_s", NaN, "s"
+
+  # The release, and only when there was one. A hold that runs to the end of
+  # the record has no falling edge in it, and reporting the last sample as an
+  # overshoot would invent one.
+  if spec.tHold > 0.0 and tRel + recoverOf(spec) <= wt[^1]:
+    let (rt, rv) = sliceBetween(wt, wv, tRel, tRel + e + recoverOf(spec))
+    if rt.len >= 2:
+      let rel = swing(rv)
+      let over = if rising: rel.hi - baseline else: baseline - rel.lo
+      result.add "step_overshoot_v", max(over, 0.0), "V"
+      result.add "step_overshoot_pct",
+        (if abs(baseline) > 0.0: 100.0 * max(over, 0.0) / abs(baseline)
+         else: NaN), "%"

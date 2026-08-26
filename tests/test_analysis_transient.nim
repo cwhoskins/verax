@@ -415,3 +415,163 @@ suite "analyzeCurrent":
       check not valueFor(r, "i_rms", "L1").isNaN
       check valueFor(r, "i_rms", "FB1").isNaN
       check r.issues.anyIt(it.kind == KindNoCurrent and "FB1" in it.message)
+
+# --- load step --------------------------------------------------------------
+
+proc lcRail(l = "10u", c = "100u", esr = "1e-3"): Netlist =
+  ## An ideal 5 V source through an inductor into a capacitor bank: a rail
+  ## whose step response is closed form.
+  ##
+  ## A current step `dI` into an undamped LC excites a ring of amplitude
+  ## `dI * sqrt(L/C)` about the new operating point, at
+  ## `1 / (2*pi*sqrt(L*C))`. With 10 uH and 100 uF that is a characteristic
+  ## impedance of 316 mohm and 5033 Hz, so a 1 A step droops 316 mV and rings
+  ## with a 199 us period -- numbers this file can assert against arithmetic
+  ## rather than against a previous run of itself.
+  result = newNetlist("lc")
+  let vin = addNet(result, newNet("vin"))
+  let vout = addNet(result, newNet("vout"))
+  let gnd = addNet(result, newNet("0", ntGround))
+
+  let v1 = addComponent(result, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", vin)
+  discard connect(v1, "-", gnd)
+  v1.attrs["value"] = "DC 5"
+  # Ideal on purpose: `expandSourceImpedance`'s default 10 mohm + 1 uH would
+  # sit in series with the inductor below and move both numbers.
+  v1.attrs["rout"] = "0"
+  v1.attrs["lout"] = "0"
+
+  let l1 = addComponent(result, newComponent("L1", kind = "inductor"))
+  discard connect(l1, "1", vin)
+  discard connect(l1, "2", vout)
+  l1.attrs["value"] = l
+
+  let c1 = addComponent(result, newComponent("C1", kind = "capacitor"))
+  discard connect(c1, "1", vout)
+  discard connect(c1, "2", gnd)
+  c1.attrs["value"] = c
+  c1.attrs["dielectric"] = "C0G"   ## no bias derating under the arithmetic
+  c1.attrs["esr"] = esr
+  c1.attrs["esl"] = "1e-12"
+
+test "a load step droops the rail by dI * sqrt(L/C)":
+  if not haveNgspice:
+    skip()
+  else:
+    var spec = defaultLoadStepSpec()
+    spec.iFrom = 0.0
+    spec.iTo = 1.0
+    spec.tSettle = 1.0e-3       ## well past any start-up
+    spec.tEdge = 1.0e-7         ## fast against a 199 us ring
+    spec.tHold = 1.0e-3
+    spec.tRecover = 6.0e-4      ## three ring periods
+    let r = analyzeLoadStep(lcRail(), "vout", spec)
+
+    # dI * sqrt(L/C) = 1 * sqrt(10u/100u) = 316 mV.
+    let z0 = sqrt(10.0e-6 / 100.0e-6)
+    check abs(r["step_droop_v"] - z0) / z0 < 0.12
+    # The ring is about the new operating point, and with an ideal source and
+    # a lossless inductor that point is still 5 V -- so the excursion is
+    # symmetric and the rail comes back *above* where it started.
+    check r["step_v_min"] < 5.0 - 0.5 * z0
+    check r["step_v_max"] > 5.0
+
+test "a load step reports the release as an overshoot":
+  if not haveNgspice:
+    skip()
+  else:
+    # **Damped on purpose, and the reason is worth writing down.** On the
+    # lossless rail above the ring never decays, so a release timed a whole
+    # number of periods after the step arrives exactly out of phase with it
+    # and *cancels* it: measured, a 316 mV droop released after three periods
+    # gives 40 mV of overshoot. That is a correct answer about a circuit
+    # nobody would build, and it makes the release amplitude a function of
+    # the hold time rather than of the step. 200 mohm of ESR puts the ring's
+    # Q near 1.6, so each edge is its own transient and the two are mirror
+    # images -- which is what the check below is.
+    var spec = defaultLoadStepSpec()
+    spec.iFrom = 0.0
+    spec.iTo = 1.0
+    spec.tSettle = 1.0e-3
+    spec.tEdge = 1.0e-7
+    spec.tHold = 1.0e-3         ## five ring periods; long since decayed
+    spec.tRecover = 6.0e-4
+    let r = analyzeLoadStep(lcRail(esr = "0.2"), "vout", spec)
+
+    check r.hasMeasurement("step_overshoot_v")
+    check r["step_overshoot_v"] > 0.0
+    # Mirror images of one another, so the release is the droop to within
+    # what the load regulation shifts between them.
+    check abs(r["step_overshoot_v"] - r["step_droop_v"]) /
+          r["step_droop_v"] < 0.25
+
+test "a load step that holds to the end of the run reports no release":
+  if not haveNgspice:
+    skip()
+  else:
+    var spec = defaultLoadStepSpec()
+    spec.iFrom = 0.0
+    spec.iTo = 0.5
+    spec.tSettle = 1.0e-3
+    spec.tEdge = 1.0e-7
+    spec.tRecover = 3.0e-4
+    let r = analyzeLoadStep(lcRail(), "vout", spec)
+    # `tHold` was left at zero, so there is no falling edge in the record and
+    # an overshoot would have to be invented to report one.
+    check not r.hasMeasurement("step_overshoot_v")
+    check r.hasMeasurement("step_droop_v")
+
+test "a resistive rail droops by dI * R and recovers at once":
+  if not haveNgspice:
+    skip()
+  else:
+    # A source behind 1 ohm with a big, low-ESR bank: the droop is the load
+    # regulation, dI * R, approached with tau = R*C, and there is no ring to
+    # recover from.
+    let nl = newNetlist("r")
+    let vin = addNet(nl, newNet("vin"))
+    let vout = addNet(nl, newNet("vout"))
+    let gnd = addNet(nl, newNet("0", ntGround))
+    let v1 = addComponent(nl, newComponent("V1", kind = "voltage_source"))
+    discard connect(v1, "+", vin)
+    discard connect(v1, "-", gnd)
+    v1.attrs["value"] = "DC 5"
+    v1.attrs["rout"] = "0"
+    v1.attrs["lout"] = "0"
+    let r1 = addComponent(nl, newComponent("R1", kind = "resistor"))
+    discard connect(r1, "1", vin)
+    discard connect(r1, "2", vout)
+    r1.attrs["value"] = "1"
+    let c1 = addComponent(nl, newComponent("C1", kind = "capacitor"))
+    discard connect(c1, "1", vout)
+    discard connect(c1, "2", gnd)
+    c1.attrs["value"] = "100u"
+    c1.attrs["dielectric"] = "C0G"
+    c1.attrs["esr"] = "1e-3"
+    c1.attrs["esl"] = "1e-12"
+
+    var spec = defaultLoadStepSpec()
+    spec.iFrom = 0.0
+    spec.iTo = 0.1
+    spec.tSettle = 1.0e-3
+    spec.tEdge = 1.0e-7
+    spec.tRecover = 1.0e-3      ## ten time constants
+    let r = analyzeLoadStep(nl, "vout", spec)
+
+    # dI * R = 100 mV, and the rail is monotone, so the worst excursion is
+    # the new operating point itself.
+    check abs(r["step_droop_v"] - 0.1) / 0.1 < 0.05
+    check abs(r["step_v_min"] - 4.9) < 0.01
+    # Measured against where it settles *under the new load*, not against
+    # where it started -- so a permanent offset is not a failure to recover.
+    check r["step_recover_s"] < 5.0e-4
+
+test "a load step of zero magnitude is refused rather than measured":
+  var spec = defaultLoadStepSpec()
+  spec.iFrom = 0.5
+  spec.iTo = 0.5
+  spec.tSettle = 1.0e-3
+  let r = analyzeLoadStep(lcRail(), "vout", spec)
+  check not r.hasMeasurement("step_droop_v")
+  check r.issues.anyIt(it.kind == KindStepNotSeen)

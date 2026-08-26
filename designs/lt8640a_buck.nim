@@ -120,6 +120,11 @@ let d = design("lt8640a_buck"):
     pin "GND",   gnd,  kind = ptGround
     spec:
       voltage = 4.962.V
+      # The datasheet's headline: a 42 V, **5 A** synchronous step-down.
+      # Stated on the part rather than in a claim because that is what it
+      # describes, and `maxOutputDerating` below reads it back -- so fitting
+      # a different converter changes the limit in one place.
+      current_rating = 5.0.A
 
   component CBST, kind = "capacitor", value = "100n":
     pin "1", bst, kind = ptPassive
@@ -218,77 +223,123 @@ let d = design("lt8640a_buck"):
           because = "R1/R2 and the 0.970 V reference are the only things " &
                     "that set this rail; there is no trim and no margin"
 
-  # The claim the switching model exists for. `tSettle` is 300 us because the
-  # model starts from the operating point rather than from zero -- there is no
-  # soft start to wait out, only the compensation loop finding the load
-  # current, which it does in about fifty microseconds at this crossover. The
-  # window is twenty switching cycles.
+  # --- one role for the converter ---------------------------------------
   #
-  # 10 mV is the budget, and the arithmetic behind it is worth writing down
-  # because the measurement is otherwise unfalsifiable: 0.94 A of inductor
-  # ripple across 3 mohm of ESR is 2.8 mV, and the same current into the
-  # derated 65 uF for half a cycle is another 1.8 mV, with the two a quarter
-  # cycle apart. The rest is COUT2 and the ESL.
-  role "settled_rail", ripple, rail = vout,
-       tSettle = 300.0.us, tWindow = 20.0.us,
-       voltage = 4.962.V, band = 2.pct, maxRipple = 10.0.mV
+  # `switching_regulator` bundles what `regulator`, `settled_rail` and
+  # `current_path` were stating separately here, and the reason to bundle is
+  # not brevity. Those three were describing one part, and the *window* they
+  # share had to be written out three times with nothing keeping the copies
+  # in step -- edit one and two claims quietly start describing a different
+  # twenty microseconds from the third.
+  #
+  # Everything below is opt-in: the role claims nothing it was not given a
+  # number for.
+  #
+  # **The window is 20 us from 300 us, and it may not be anything else.**
+  # That is not a preference. `spice/transform.selectSimModel` gives a
+  # steady-state question the switching model, whose forced sub-steps sit on
+  # a `1 / (fsw * nsub)` grid -- 20 ns here -- and ngspice only survives a
+  # print step that lands on it: measured, this design's `.tran` fails
+  # outright at 30 ns, 15 ns, 12 ns and 10 ns and succeeds at exactly 20 ns.
+  # `analyzeTransient` derives its step as `tWindow / 1000`, so 20 us is the
+  # window that works. See `docs/findings.md`; until the model is fixed,
+  # every steady-state number on this design rests on that arithmetic.
+  #
+  # It is also why **no `fSw` claim appears below**, though the role offers
+  # one and the switch node is bound for it: `analyzeOscillation` samples a
+  # window ten thousand times, because a frequency read off too few points is
+  # wrong in a way that looks like a circuit measurement -- and 20 us over
+  # ten thousand points is 2 ns, which this model cannot take.
+  role "switching_regulator", converter,
+       regulator = U1, output = vout,
+       switch = sw, inductor = L1, sense = L1,
+       source = V1, input = vin,
 
-  # The inductor's current, over the same window as the ripple claim above --
-  # and the reason that ripple figure is believable at all. 7.12 mV of output
-  # ripple is 0.94 A of inductor triangle across 3 mohm of ESR plus what the
-  # capacitance does with it, so a claim on the *rail* rests entirely on a
-  # current nothing was checking. dI = Vout(1-D)/(L f) with D = Vout/Vin =
-  # 0.413 is 0.879 A at 12 V in, and the average is the 5 A load, so the peak
-  # is 5.44 A.
-  #
-  # The two derating claims state no current at all: they read L1's own
-  # `isat` and `current_rating` back off the part. That is what those two
-  # keys were registered for -- the part policy has been setting them since
-  # it existed and nothing read either, so an inductor run past its knee was
-  # invisible to a design that otherwise checked everything. 60% of
-  # saturation is the usual place to sit; past the knee the inductance
-  # collapses and the ripple this run measured stops describing the part.
-  role "current_path", inductor, part = L1,
-       tSettle = 300.0.us, tWindow = 20.0.us,
-       iRipple = 0.879.A, band = 15.pct,
-       iAvgMax = 5.2.A,
-       maxIsatDerating = 0.6, maxRmsDerating = 0.85
-
-  # The soft start, which is the one number on this board set by a single
-  # capacitor and by nothing else. 1.9 uA out of TR/SS into CSS is 190 V/s at
-  # the pin; TR/SS is the reference while it is below 0.970 V, so the output
-  # follows at 190 * (1 + 1M/243k) = 972 V/s, reaching regulation in 5.1 ms
-  # and passing 10-90% in 4.08 ms. Measured 4.09 ms.
-  #
-  # **This claim needed `analyzeStartup` to stop standing the regulator up
-  # itself.** Its default is an assumed PWL ramp, which is the right model
-  # for a part a netlist merely names -- and here it would have measured the
-  # ramp this tool invented rather than the one CSS sets, reporting a number
-  # that moves when you edit `StartupSpec.softStart` and not when you change
-  # the capacitor. The part carries a model, so the model runs.
-  #
-  # Two consequences of that are worth knowing, because both are visible in
-  # the report:
-  #
-  #   * the run starts from **zero with uic** rather than from a solved
-  #     operating point. It has to: an operating point finds the state the
-  #     soft start settles *to*, so the .tran would begin at the end of the
-  #     ramp and report a rise time of zero.
-  #   * **no inrush is measured.** The stand-in is a code model driving a
-  #     switch node into L1, so the current reaching VOUT is the inductor's
-  #     and there is no single branch to put a probe in series with. That is
-  #     an honest gap rather than a zero: see docs/findings.md, where the
-  #     inductor's peak current is the check a converter most wants and is
-  #     still missing.
-  #
-  # `tRun` is 8 ms, comfortably past the 5.1 ms to regulation, and is a
-  # condition rather than a limit -- it says what was run. The rise time is
-  # claimed at 5 ms rather than at the measured 4.09: CSS is a 10% part and
-  # the 1.9 uA is a typical with min and max around it, so a claim at the
-  # measured figure would be a claim about one corner of a part.
-  role "regulator", softstart, regulator = U1, output = vout,
+       # The way up. The soft start is the one number on this board set by a
+       # single capacitor and by nothing else: 1.9 uA out of TR/SS into CSS
+       # is 190 V/s at the pin, and TR/SS is the reference while it is below
+       # 0.970 V, so the output follows at 190 * (1 + 1M/243k) = 972 V/s,
+       # reaching regulation in 5.1 ms and passing 10-90% in 4.08 ms.
+       #
+       # The rise time is claimed at 5 ms rather than at the measured 4.08:
+       # CSS is a 10% part and the 1.9 uA is a typical with a min and a max
+       # around it, so a claim at the measured figure would be a claim about
+       # one corner of one part. `tRun` is a condition rather than a limit --
+       # it says how long the run was, not how long the ramp may be -- and
+       # 8 ms is comfortably past the 5.1 ms to regulation.
+       #
+       # Two consequences of the part carrying its own model are visible in
+       # the report. The run starts from **zero with uic** rather than from a
+       # solved operating point: it has to, because an operating point finds
+       # the state a soft start settles *to*, so the run would begin at the
+       # end of the ramp and report a rise time of zero. And **no inrush is
+       # measured** -- the stand-in drives a switch node into L1, so the
+       # current reaching VOUT is the inductor's and there is no single
+       # branch to put a probe in series with. An honest gap rather than a
+       # zero.
        voltage = 4.962.V, band = 2.pct, tRun = 8.0.ms,
-       maxRiseTime = 5.0.ms, maxOvershoot = 2.0
+       maxRiseTime = 5.0.ms, maxOvershoot = 2.0,
+
+       # The settled window, shared by every steady-state claim below.
+       tSettle = 300.0.us, tWindow = 20.0.us,
+
+       # What is left moving on the rail. 10 mV is the budget, and the
+       # arithmetic behind it is worth writing down because the measurement
+       # is otherwise unfalsifiable: 0.94 A of inductor ripple across 3 mohm
+       # of ESR is 2.8 mV, and the same current into the derated 65 uF for
+       # half a cycle is another 1.8 mV, with the two a quarter cycle apart.
+       # The rest is COUT2 and the ESL.
+       maxRipple = 10.0.mV,
+
+       # The inductor's current, over that same window -- and the reason the
+       # ripple figure above is believable at all. 6.95 mV of output ripple
+       # is a current triangle across an ESR, so a claim on the *rail* rests
+       # entirely on a current nothing was checking. dI = Vout(1-D)/(L f)
+       # with D = Vout/Vin = 0.413 is 0.879 A at 12 V in.
+       #
+       # `maxIsatDerating` states no current at all: it reads L1's own `isat`
+       # back off the part. 60% of saturation is the usual place to sit; past
+       # the knee the inductance collapses and the ripple this run measured
+       # stops describing the part that is fitted.
+       iRipple = 0.879.A, iRippleBand = 15.pct,
+       maxIsatDerating = 0.6,
+
+       # What the part is delivering, against what the part is rated for.
+       # `maxOutputDerating` names no current either -- it reads U1's own
+       # `current_rating` -- and it is measured through L1 because a code
+       # model has no terminal current of its own to probe. The average is
+       # the 5 A load; the peak is the top of the same triangle.
+       maxOutputCurrent = 5.6.A, maxOutputAvg = 5.2.A,
+       maxOutputDerating = 0.85,
+
+       # Ripple rejection, by the **tone** method and necessarily so: an
+       # `.ac` sweep sees exactly nothing through an XSPICE code model,
+       # because a code model contributes to the AC matrix only if it sets
+       # AC_GAIN and neither of this part's does. Measured here at 71.9 dB.
+       #
+       # 100 kHz is a tenth of the switching frequency, which is where input
+       # ripple on a board like this actually lives -- it is what the input
+       # capacitors leave behind. 1 V of it is large, and deliberately: at
+       # 500 mV the tone at the output is not clearly above the converter's
+       # own broadband content and the measurement is refused rather than
+       # guessed at, which is the analysis working. The window is eight
+       # periods at 500 points each, which is the same 20 ns step everything
+       # else here needs.
+       minPsrrDb = 60.dB, psrrAtF = 100.kHz, psrrRippleV = 1.0.V,
+       psrrPeriods = 8, psrrPoints = 500,
+
+       # A load step on top of the 5 A the front page is specified at: 2 A
+       # arriving in a microsecond, which is an ordinary FPGA or radio
+       # waking up. What holds the rail through it is COUT and the loop, in
+       # that order -- the first microsecond is the capacitor alone, because
+       # a loop crossing over at tens of kilohertz has not noticed yet.
+       #
+       # `stepPoints` is 2000 across a 40 us recovery window, which is again
+       # 20 ns. `tHold` is left unstated, so the load stays on and there is
+       # no release edge to measure an overshoot at; that halves the run.
+       iFrom = 0.0.A, iTo = 2.0.A, tEdge = 1.0.us,
+       tStepAt = 300.0.us, tRecover = 40.0.us, stepPoints = 2000,
+       maxDroop = 60.mV, maxRecover = 30.us
 
 # Attach the behavioural model. After the block, because it sets
 # `simReplace` on the real part rather than replacing it -- everything above

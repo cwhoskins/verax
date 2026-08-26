@@ -15,7 +15,9 @@
 ##     so the output ramps at the rate the board's own capacitor sets
 ##   * EN/UV, with its 1.00 V rising / 0.96 V falling hysteresis
 ##   * PG, asserting once FB is within +-8% of regulation
-##   * the duty limit: SW cannot be driven above V_IN or below ground
+##   * the duty limit -- the loop commands a *duty*, clamped to `dmax`, and
+##     the switch node is that duty times V_IN, so SW can never be driven
+##     above the input or below ground
 ##
 ## **What it does not.** The switch node is emitted as its cycle *average*,
 ## not as a waveform, so there is no ripple, no inductor current ripple and
@@ -25,6 +27,21 @@
 ## trustworthy for **DC regulation and start-up** and *not* for loop
 ## stability, and a design using it must not claim a phase margin from it.
 ## `lt8640a_sw` is the counterpart that does switch.
+##
+## It also draws no input current: `vin` is a voltage-sense port, so nothing
+## flows in it. What the part takes from the supply is a question for the
+## switching model, whose `vin` is a conductance port and carries the real
+## trapezoidal draw.
+##
+## **Line rejection is finite here, and that is deliberate.** Because the
+## loop commands a duty rather than a voltage, the switch node follows V_IN
+## at a fixed duty and the loop's own gain is what rejects a change in it --
+## so a ripple-rejection figure measured through this model is the loop gain
+## and rolls off with it. Commanding a voltage instead, as this model once
+## did, makes `d(sw)/d(vin)` exactly zero everywhere but the duty limit and
+## reports *infinite* rejection: a claim that cannot fail, which is worse
+## than no claim. What it still cannot show is anything a switching cycle
+## does with the ripple, which is `lt8640a_sw`'s to answer.
 ##
 ## Datasheet figures (LT8640A Rev. 0) are the parameter defaults, so a deck
 ## that states nothing gets the real part.
@@ -55,6 +72,7 @@ codeModel "lt8640a_avg":
   param ven_th,   float, default = 1.00,   description = "en/uv rising threshold (V)"
   param ven_hyst, float, default = 0.04,   description = "en/uv hysteresis (V)"
   param pg_band,  float, default = 0.08,   description = "pg window, fraction of vref"
+  param dmax,     float, default = 0.95,   description = "maximum duty cycle"
   param vpg,      float, default = 3.4,    description = "pg high level (V)"
   param rss_dis,  float, default = 200.0,  description = "tr/ss pull-down when off (ohm)"
   param rbst,     float, default = 1.0e5,  description = "bootstrap DC load (ohm)"
@@ -97,6 +115,10 @@ codeModel "lt8640a_avg":
       # rather than from wherever the capacitor was left.
       output(sw) = 0.0
       partial(sw, fb) = 0.0
+      # Explicitly zero, not merely unset: the regulating branch below writes
+      # a non-zero input term every call, and a partial nobody overwrites is
+      # a partial that persists.
+      partial(sw, vin) = 0.0
       output(trss) = vt / param(rss_dis)
       partial(trss, trss) = 1.0 / param(rss_dis)
       output(pg) = 0.0
@@ -128,19 +150,40 @@ codeModel "lt8640a_avg":
       let vr =
         if analysis == maDc: param(vref)
         else: min(param(vref), vt)
-      var vs = param(aol) * (vr - vf)
-      var slope = -param(aol)
-      if vs > vi:
-        vs = vi
-        slope = 0.0
-      elif vs < 0.0:
-        vs = 0.0
-        slope = 0.0
-      output(sw) = vs
-      partial(sw, fb) = slope
-      # The Jacobian entry for the duty limit: once the loop is against the
-      # input rail, SW follows V_IN rather than the error.
-      partial(sw, vin) = (if slope == 0.0 and vs > 0.0: 1.0 else: 0.0)
+
+      # **The loop commands a duty cycle, and the switch node is that duty
+      # times the input.** That is a different model from commanding a
+      # voltage directly, and the difference is the whole of this part's line
+      # behaviour.
+      #
+      # Commanding a voltage, `sw = aol * (vref - fb)`, makes the switch node
+      # independent of V_IN everywhere except at the duty limit -- so
+      # `partial(sw, vin)` is zero through the entire regulating range and
+      # the model rejects input ripple *perfectly*. That is not what a buck
+      # converter does and it is not a harmless simplification: it reads as
+      # infinite rejection rather than as a model with nothing to say, and a
+      # ripple-rejection claim measured through it could never fail.
+      #
+      # A real converter's control loop sets a duty and the input sets what
+      # that duty is worth. Rejection is then the loop gain -- finite, and
+      # falling as the loop rolls off -- which is the physically right shape
+      # and is derived here rather than stated: `d` moves to hold FB, and
+      # `d * V_IN` is what the inductor sees.
+      var d = param(aol) * (vr - vf)
+      var dSlope = -param(aol)
+      if d > param(dmax):
+        d = param(dmax)
+        dSlope = 0.0
+      elif d < 0.0:
+        d = 0.0
+        dSlope = 0.0
+      output(sw) = d * vi
+      partial(sw, fb) = dSlope * vi
+      # The input term, and it is present through the *whole* regulating
+      # range rather than only at the duty limit: at a fixed duty the switch
+      # node follows V_IN one for one, and what the loop then does about it
+      # is the rejection.
+      partial(sw, vin) = d
 
       output(pg) =
         if abs(vf - param(vref)) < param(pg_band) * param(vref): param(vpg)

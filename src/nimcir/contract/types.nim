@@ -160,7 +160,14 @@ proc `$`*(a: Assertion): string =
 const conditionUnits = {
   "f_from": "Hz", "f_to": "Hz", "at_f": "Hz", "drive_f": "Hz",
   "at_t": "s", "settle_t": "s",
-  "drive_v": "V", "temp": "degC"
+  "drive_v": "V", "temp": "degC",
+  # The load step's and the ripple tone's, added with them. A step magnitude
+  # printed as a bare `1.0` in a report about a rail is exactly the misread
+  # the units module exists to remove.
+  "step_from": "A", "step_to": "A",
+  "step_edge": "s", "step_at": "s", "step_hold": "s", "step_recover": "s",
+  "ripple_f": "Hz", "ripple_v": "V",
+  "t_settle": "s", "t_window": "s", "t_run": "s"
 }.toTable
 
 proc conditionText*(a: Assertion): string =

@@ -54,6 +54,7 @@ import ./operating
 import ./dcsweep
 import ./startup
 import ./transient
+import ./psrr
 import ./opamp
 
 export evaluate, static
@@ -589,7 +590,31 @@ proc runTransient(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult]
 
 const currentQuantities = ["i_peak", "i_rms", "i_avg", "i_pp",
                            "i_min", "i_max",
-                           "i_peak_derating", "i_rms_derating"]
+                           "i_peak_derating", "i_rms_derating",
+                           "i_out_derating"]
+  ## `i_out_derating` is the odd one out and is here rather than in an
+  ## evaluator of its own for one reason: it is read off the **same run**.
+  ##
+  ## The other two derating figures divide a part's measured current by a
+  ## rating that part states. This one divides it by a rating a *different*
+  ## part states -- the regulator's, against the current measured through
+  ## whatever carries its output (a buck's inductor, a linear's pass
+  ## element). `analyzeCurrent` cannot compute it, because it is handed
+  ## designators and knows nothing about roles; the adapter below can,
+  ## because it has both the subject and the role binding. Registering a
+  ## second evaluator for it would double the `.tran` -- and on
+  ## `designs/lt8640a_buck.nim` that run is the switching model at fifty
+  ## timepoints a cycle, which is most of the check.
+  ##
+  ## The price is one line of honesty in `nimcir quantities`. `binds` is a
+  ## property of an *evaluator*, not of a quantity, so declaring
+  ## `binds: @["regulator"]` here would mark `i_peak` and the rest as
+  ## reachable only through a role -- which is false and is exactly the
+  ## conflation that column exists to prevent. Left empty, the table reports
+  ## `i_out_derating` as "`require` / role: regulator" where only the second
+  ## half is true. The runtime message covers the difference: a bare
+  ## `require i_out_derating(L1)` comes back naming the missing binding
+  ## rather than failing obscurely.
 
 proc subjectComponent(d: Design, a: Assertion): string =
   ## The first component-shaped subject's designator, or empty. The
@@ -655,6 +680,58 @@ proc harvestPart(a: Assertion, rep: AnalysisReport, part, evaluator: string):
   result.assumptions = rep.assumptions
   result.issues = rep.issues
 
+proc harvestOutputDerating(d: Design, a: Assertion, rep: AnalysisReport,
+                           part, evaluator: string): AssertionResult =
+  ## The sense part's RMS current as a fraction of the **regulator's** own
+  ## continuous rating.
+  ##
+  ## Both halves are deliberate. The current is read where it actually flows:
+  ## a regulator that reaches the deck as a code model or a subcircuit has no
+  ## terminal current of its own, so a converter's output current is its
+  ## inductor's and a linear's is its pass element's, and the role says which
+  ## by binding `sense`. The rating is read off the regulator, because that
+  ## is the part it describes -- a 5 A converter's limit is not a property of
+  ## the inductor somebody chose to put after it, and writing it on the
+  ## inductor would put the wrong number in the BoM.
+  ##
+  ## `NaN` when the regulator states no `current_rating`, on the rule
+  ## `current_path` already follows: a part nobody has chosen yet reads as
+  ## *not evaluated*, never as infinite headroom.
+  var rms = NaN
+  for m in rep.measurements:
+    if m.name == "i_rms" and m.at == part:
+      rms = m.value
+      break
+  if rms.isNaN:
+    result = notEvaluable(a, evaluator,
+      "no RMS current was measured through '" & part & "', so there is " &
+      "nothing to compare against a rating")
+    result.assumptions = rep.assumptions
+    result.issues = rep.issues
+    return
+
+  let regName = bindingName(d, a, "regulator")
+  let reg = if regName.len == 0: nil else: findComponent(d.netlist, regName)
+  if reg == nil:
+    result = notEvaluable(a, evaluator,
+      "this claim states a fraction of the regulator's own current rating, " &
+      "and no `regulator` part is bound on the role that expanded it -- so " &
+      "there is no part to read a rating off")
+    result.assumptions = rep.assumptions
+    result.issues = rep.issues
+    return
+
+  let rating = annotationFloat(reg, "current_rating")
+  let frac = if rating.has and rating.value > 0.0: rms / rating.value else: NaN
+  result = verdict(a, frac, "", evaluator, rep.assumptions, rep.issues)
+  if frac.isNaN:
+    result.reason = "'" & regName & "' states no `current_rating`, so how " &
+      "much of it the " & eng(rms, "A") & " through '" & part & "' uses up " &
+      "is not a question this design has answered yet"
+  else:
+    result.reason &= " of " & regName & "'s stated " &
+      eng(rating.value, "A") & ", measured through " & part
+
 proc runCurrent(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   let d = ctx.design
   const name = "spice.current_path"
@@ -686,6 +763,9 @@ proc runCurrent(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
       result.add notEvaluable(a, name,
         "this claim names no component that exists in this design, so there " &
         "is nothing to measure a current through")
+      continue
+    if a.quantity == "i_out_derating":
+      result.add harvestOutputDerating(d, a, rep, part, name)
       continue
     result.add harvestPart(a, rep, part, name)
 
@@ -907,6 +987,237 @@ proc loopGainDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
   opampDoc(ctx, batch, loop = true)
 
+# --- a load step --------------------------------------------------------
+
+const loadStepQuantities = ["step_droop_v", "step_droop_pct",
+                            "step_overshoot_v", "step_overshoot_pct",
+                            "step_recover_s", "step_v_min", "step_v_max"]
+  ## Deliberately none of `overshoot_pct` or `settle_time`, which
+  ## `spice.startup` already produces and `registerEvaluator` would refuse a
+  ## second producer of. That refusal is right here rather than merely
+  ## procedural: a start-up overshoot is what a rail does on the way up from
+  ## nothing, and a step overshoot is what it does on the way back down from
+  ## a load. Two different measurements about two different events, and one
+  ## name for both would let a claim about one be answered with the other.
+
+proc measurementOnly(spec: var LoadStepSpec) =
+  ## `analyzeLoadStep` states no limits of its own -- every figure it emits is
+  ## a measurement and the assertion is the only judge -- so there is nothing
+  ## to disable. Present so the module's shape holds and so a limit field
+  ## added later cannot be forgotten here.
+  discard spec
+
+proc loadStepKey(ctx: EvalContext, a: Assertion): string =
+  let d = ctx.design
+  # Everything that changes the run joins the key. The step *magnitude* in
+  # particular: two claims at two magnitudes are two different questions --
+  # a rail that holds up under 1 A may not under 3 A -- and pooling them
+  # would answer one with the other's number, which is exactly what the
+  # swept range does for `spice.dc_sweep`.
+  subjectNet(d, a) & "|" & $conditionFloat(a, "step_from", 0.0) &
+    "|" & $conditionFloat(a, "step_to", 0.0) &
+    "|" & $conditionFloat(a, "step_edge", 0.0) &
+    "|" & $conditionFloat(a, "step_at", 0.0) &
+    "|" & $conditionFloat(a, "step_hold", 0.0) &
+    "|" & $conditionFloat(a, "step_recover", 0.0) &
+    "|" & $conditionFloat(a, "step_points", 0.0)
+
+proc loadStepSpecOf(a: Assertion): LoadStepSpec =
+  result = defaultLoadStepSpec()
+  measurementOnly(result)
+  result.iFrom = conditionFloat(a, "step_from", 0.0)
+  result.iTo = conditionFloat(a, "step_to", 0.0)
+  result.tEdge = conditionFloat(a, "step_edge", 0.0)
+  result.tSettle = conditionFloat(a, "step_at", 0.0)
+  result.tHold = conditionFloat(a, "step_hold", 0.0)
+  result.tRecover = conditionFloat(a, "step_recover", 0.0)
+  result.windowSamples = int(conditionFloat(a, "step_points", 0.0))
+
+proc loadStepDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
+  let rail = subjectNet(d, batch[0])
+  let spec = loadStepSpecOf(batch[0])
+  result = "`.tran` over the whole design as authored -- not isolated, so " &
+           "the rail has to hold itself up rather than be held by a boundary " &
+           "source. A constant-current sink injected at net '" & rail &
+           "' steps from " & eng(spec.iFrom, "A") & " to " &
+           eng(spec.iTo, "A") & " in " & eng(edgeOf(spec), "s") & " at " &
+           eng(spec.tSettle, "s")
+  if spec.tHold > 0.0:
+    result &= ", holds for " & eng(spec.tHold, "s") & " and is released again"
+  else:
+    result &= " and stays there"
+  result &= ", with " & eng(recoverOf(spec), "s") & " watched after each " &
+            "edge. Nothing is added to the design: a test load is not a part " &
+            "anybody solders, and a resistor would sag with the rail and damp " &
+            "the network being measured"
+
+proc runLoadStep(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  let d = ctx.design
+  const name = "spice.load_step"
+  let rail = subjectNet(d, batch[0])
+  if rail.len == 0:
+    return failBatch(batch, name, "no net subject to measure")
+
+  let spec = loadStepSpecOf(batch[0])
+  if spec.iFrom == spec.iTo:
+    for a in batch:
+      result.add notEvaluable(a, name,
+        "a load step needs two currents and this claim carries " &
+        eng(spec.iFrom, "A") & " twice. Every quantity here is a difference " &
+        "across the edge, so there is no default magnitude to assume -- " &
+        "state `iFrom` and `iTo` on the role that expands this claim")
+    return
+
+  var rep: AnalysisReport
+  try:
+    rep = analyzeLoadStep(d.netlist, rail, spec)
+  except CatchableError as e:
+    return failBatch(batch, name,
+      "the load step on '" & rail & "' failed: " & e.msg)
+  for a in batch: result.add harvest(a, rep, name)
+
+# --- supply rejection ---------------------------------------------------
+
+const psrrToneQuantities = ["psrr_db", "in_ripple_v", "out_ripple_v"]
+const psrrAcQuantities = ["psrr_min_db", "f_psrr_min", "psrr_at_f"]
+  ## **Two evaluators and two disjoint quantity sets, not one of each.**
+  ##
+  ## `spice.dc_sweep` is one evaluator for two sweeps and the precedent does
+  ## not carry: both of *its* modes are `.dc`, while these need different
+  ## capabilities, and `Evaluator.needs` is a single set. One evaluator would
+  ## have to declare `{capSpiceAc, capSpiceTran}` and would then be refused
+  ## on a host offering only one of them -- under-serving both to serve
+  ## neither.
+  ##
+  ## The names differ for a reason beyond the mechanics, too. A swept curve's
+  ## worst point and a single tone's rejection are different measurements,
+  ## and one name for both would let a claim about a band be answered with a
+  ## number from one frequency.
+
+proc measurementOnly(spec: var PsrrSpec) =
+  ## Nothing to disable: every figure `analysis/psrr` emits is a measurement
+  ## and its only limit -- the noise floor and the signal-to-noise margin --
+  ## decides whether a number exists at all, not whether it passes.
+  discard spec
+
+proc psrrParts(d: Design, a: Assertion): tuple[src, inp, outp, reason: string] =
+  ## The supply to ripple, the node the ripple is quoted at, and the node it
+  ## is quoted against.
+  ##
+  ## `output` is the assertion's own subject; the other two come off the role
+  ## that expanded it, because an assertion carries subjects and nothing
+  ## else. Rejection is a relation between two nodes and a stimulus, and none
+  ## of the three is recoverable from a netlist: which of a board's several
+  ## sources is "the supply" is a design statement.
+  result.outp = subjectNet(d, a)
+  result.src = bindingName(d, a, "source")
+  result.inp = bindingName(d, a, "input")
+  if result.outp.len == 0:
+    result.reason = "no net subject to measure the rejected ripple on"
+  elif result.src.len == 0:
+    result.reason = "a rejection measurement needs the supply whose ripple " &
+      "it injects, and this claim names only the node it is measured at. " &
+      "Bind a `source` part on the role that expands it"
+  elif result.inp.len == 0:
+    result.reason = "a rejection measurement is a ratio between two nodes " &
+      "and this claim names one of them. Bind an `input` net on the role " &
+      "that expands it -- the regulator's own input pin, so that whatever " &
+      "the board's input filter removes counts to the filter and not to the " &
+      "part"
+
+proc psrrSpecOf(a: Assertion): PsrrSpec =
+  result = defaultPsrrSpec()
+  measurementOnly(result)
+  result.fStart = conditionFloat(a, "f_from", 0.0)
+  result.fStop = conditionFloat(a, "f_to", 0.0)
+  result.atF = conditionFloat(a, "at_f", 0.0)
+  result.rippleF = conditionFloat(a, "ripple_f", 0.0)
+  result.rippleV = conditionFloat(a, "ripple_v", 0.0)
+  result.tSettle = conditionFloat(a, "t_settle", 0.0)
+  result.periods = int(conditionFloat(a, "ripple_periods", 0.0))
+  result.samplesPerPeriod = int(conditionFloat(a, "ripple_points", 0.0))
+
+proc psrrToneKey(ctx: EvalContext, a: Assertion): string =
+  let d = ctx.design
+  let p = psrrParts(d, a)
+  # The amplitude joins the key and that is not over-caution: a `.tran` is
+  # not linear, so a tone big enough to move a converter's duty cycle gets a
+  # different answer, which is the whole reason to run one instead of a
+  # sweep.
+  p.src & "|" & p.inp & "|" & p.outp & "|" &
+    $conditionFloat(a, "ripple_f", 0.0) & "|" &
+    $conditionFloat(a, "ripple_v", 0.0) & "|" &
+    $conditionFloat(a, "t_settle", 0.0) & "|" &
+    $conditionFloat(a, "ripple_periods", 0.0) & "|" &
+    $conditionFloat(a, "ripple_points", 0.0)
+
+proc psrrAcKey(ctx: EvalContext, a: Assertion): string =
+  let d = ctx.design
+  let p = psrrParts(d, a)
+  # The amplitude is absent on purpose: an `.ac` analysis is linear, so it
+  # cannot move the answer and two claims that differ only in it are one run.
+  p.src & "|" & p.inp & "|" & p.outp & "|" &
+    $conditionFloat(a, "f_from", 0.0) & "|" & $conditionFloat(a, "f_to", 0.0)
+
+proc psrrToneDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
+  let p = psrrParts(d, batch[0])
+  let spec = psrrSpecOf(batch[0])
+  let f = (if spec.rippleF > 0.0: spec.rippleF else: 120.0)
+  let v = (if spec.rippleV > 0.0: spec.rippleV else: 0.1)
+  result = "`.tran` with " & eng(v, "V") & " of real ripple at " &
+           eng(f, "Hz") & " injected in series with " &
+           (if p.src.len > 0: p.src else: "an unbound source") &
+           ", reading the amplitude at exactly that frequency on net '" &
+           p.inp & "' and net '" & p.outp & "'. One run answers one " &
+           "frequency, which is what buys the two things a sweep cannot " &
+           "reach: a switching converter, whose rejection has no meaningful " &
+           "linearisation, and an XSPICE code model, which contributes " &
+           "nothing to an AC matrix unless it sets AC_GAIN and none here " &
+           "does. The input amplitude is measured rather than assumed, so " &
+           "whatever the board's input filter removed counts to the filter"
+
+proc psrrAcDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  let d = ctx.design
+  let p = psrrParts(d, batch[0])
+  let spec = psrrSpecOf(batch[0])
+  let f0 = (if spec.fStart > 0.0: spec.fStart else: 10.0)
+  let f1 = (if spec.fStop > 0.0: spec.fStop else: 1.0e7)
+  result = "`.ac` sweep from " & eng(f0, "Hz") & " to " & eng(f1, "Hz") &
+           " with 1 V of AC ripple in series with " &
+           (if p.src.len > 0: p.src else: "an unbound source") &
+           ", reading net '" & p.inp & "' against net '" & p.outp &
+           "'. The sweep is linear, so the drive level cannot move the " &
+           "answer. The design is simulated as authored -- not isolated, " &
+           "since a rail held at its nominal by a boundary source cannot " &
+           "ripple"
+
+template psrrRun(evName: string, analyze: untyped) =
+  ## The two adapters differ only in which proc they call, so the resolution,
+  ## the refusals and the harvest are written once.
+  let d {.inject.} = ctx.design
+  let p {.inject.} = psrrParts(d, batch[0])
+  if p.reason.len > 0:
+    for a in batch: result.add notEvaluable(a, evName, p.reason)
+    return
+  let spec {.inject.} = psrrSpecOf(batch[0])
+  var rep: AnalysisReport
+  try:
+    rep = analyze
+  except CatchableError as e:
+    return failBatch(batch, evName,
+      "the supply-rejection run on '" & p.outp & "' failed: " & e.msg)
+  for a in batch: result.add harvest(a, rep, evName)
+
+proc runPsrrTone(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  psrrRun("spice.psrr_tone",
+          analyzePsrrTone(d.netlist, p.src, p.inp, p.outp, spec))
+
+proc runPsrrAc(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  psrrRun("spice.psrr_ac",
+          analyzePsrrAc(d.netlist, p.src, p.inp, p.outp, spec))
+
 # --- registration -------------------------------------------------------
 
 proc registerSimulatedEvaluators*() =
@@ -948,6 +1259,23 @@ proc registerSimulatedEvaluators*() =
     name: "spice.current_path", produces: @currentQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skComponent},
     setupKey: currentKey, setupDoc: currentDoc, run: runCurrent))
+
+  registerEvaluator(Evaluator(
+    name: "spice.load_step", produces: @loadStepQuantities,
+    needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
+    setupKey: loadStepKey, setupDoc: loadStepDoc, run: runLoadStep))
+
+  registerEvaluator(Evaluator(
+    name: "spice.psrr_tone", produces: @psrrToneQuantities,
+    needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
+    binds: @["source", "input"],
+    setupKey: psrrToneKey, setupDoc: psrrToneDoc, run: runPsrrTone))
+
+  registerEvaluator(Evaluator(
+    name: "spice.psrr_ac", produces: @psrrAcQuantities,
+    needs: {capSpiceAc}, arity: 1 .. 1, subjectKinds: {skNet},
+    binds: @["source", "input"],
+    setupKey: psrrAcKey, setupDoc: psrrAcDoc, run: runPsrrAc))
 
   registerEvaluator(Evaluator(
     name: "spice.oscillator", produces: @oscQuantities,

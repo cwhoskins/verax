@@ -26,11 +26,14 @@
 ##
 ## ## Two things this design states that the equations then use
 ##
-## The **input current** is declared, not derived: there is no pass element
-## in the loop model, so the regulator's draw is stated once as a
-## constant-current sink. That is what puts a real drop across the 1 ohm of
-## supply lead below -- and the claim on `vboard` is what tests it, since a
-## model that quietly drew nothing would report the full 15 V there.
+## The **input current** is derived, not declared. The loop model's pass
+## element sits in series with the input pin, so every milliamp the rail
+## delivers -- the load's, and the programming divider's -- is drawn through
+## it out of `vboard`; only the part's quiescent draw is stated. That is what
+## puts a real drop across the 1 ohm of supply lead below, and the claim on
+## `vboard` is what tests it: the figure this file predicts has to include
+## the two programming dividers, which is exactly the term a hand calculation
+## forgets.
 ##
 ## The **dissipation** is where the interesting answer is. The 5 V rail burns
 ## (14.8 - 5) V at the 100 mA of load plus the 5.2 mA the divider programs --
@@ -45,12 +48,15 @@
 ##
 ## ## What this design deliberately does not claim
 ##
-## No PDN sweep, and no start-up claim. The loop model's error amplifier
-## drives its output through an ideal source, which is a dead short at AC and
-## has no ramp at t = 0: a `z_max_in_band` claim against either rail would
-## report 0 ohm and pass any target that could be set, and a `regulator` role
-## would measure the soft start of a part that has none. Both are stated in
-## `lib/adjreg.nim` as limits of the model rather than left to be discovered.
+## No PDN sweep and no start-up ramp. The pass element is a controlled
+## source, so the rail is stiff at every frequency the loop still holds and a
+## `z_max_in_band` claim would pass any target that could be set; and the
+## part has no soft start, so there is no ramp at t = 0 to measure. No
+## dropout claim either -- nothing clamps the pass element below the input,
+## so this rail never leaves regulation and `dropout_v` comes back *not
+## evaluated* rather than as a number. All three are stated in
+## `lib/adjreg.nim` as limits of the model rather than left to be
+## discovered.
 
 import nimcir/contract/dsl
 import nimcir/verify
@@ -74,7 +80,16 @@ let
   # headroom check inside the builder has to be given. Getting this wrong is
   # how a 12 V rail out of a 15 V supply passes on paper and drops out on the
   # bench.
-  iTotal = Amps(float(i5) + float(i12) + 2.0 * float(iQ))
+  #
+  # The programming divider is part of the draw and not an afterthought: at
+  # 240 R the loop pushes `Vref / rSet` through it whatever the load is
+  # doing, and there is one on each rail. Leave it out and the predicted
+  # board voltage is 10 mV high -- which the claim below now catches,
+  # because the loop model draws its output current *through* the input pin
+  # rather than declaring it.
+  iProg = programmingCurrent(lm317, 240.ohm)
+  iTotal = Amps(float(i5) + float(i12) + 2.0 * float(iQ) +
+                2.0 * float(iProg))
   vBoardNominal = Volts(float(vSupply) - float(iTotal) * float(rLead))
 
 let d = design("adj_regulator"):
