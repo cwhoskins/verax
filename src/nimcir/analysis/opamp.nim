@@ -486,7 +486,8 @@ proc analyzeOpAmpResponse*(nl: Netlist, opamp, inputNet, outputNet: string,
   src.attrs["value"] = "DC 0 AC 1"
 
   try:
-    result.raw = run(p.frag, @[acCard(spec)])
+    result.raw = run(p.frag, @[acCard(spec)],
+                     label = "closed loop:" & opamp)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not sweep the isolated op-amp stage: " & e.msg)
@@ -622,7 +623,7 @@ proc analyzeLoopGain*(nl: Netlist, opamp, inputNet, outputNet: string,
   inj.attrs["value"] = "DC 0 AC 1"
 
   try:
-    result.raw = run(p.frag, @[acCard(spec)])
+    result.raw = run(p.frag, @[acCard(spec)], label = "loop gain:" & opamp)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not sweep the broken loop: " & e.msg)
@@ -786,7 +787,7 @@ proc analyzeLargeSignal*(nl: Netlist, opamp, inputNet, outputNet: string,
   # that node.
   var bias = 0.0
   try:
-    let op = run(p.frag, @[".op"])
+    let op = run(p.frag, @[".op"], label = "large signal bias:" & opamp)
     bias = op["v(" & inputNet & ")"][0]
   except CatchableError:
     result.assumptions.add note("the operating point of '" & inputNet &
@@ -814,7 +815,7 @@ proc analyzeLargeSignal*(nl: Netlist, opamp, inputNet, outputNet: string,
     spiceFormat.spiceValue(stop) & " " & spiceFormat.spiceValue(settle)
 
   try:
-    result.raw = run(p.frag, @[card])
+    result.raw = run(p.frag, @[card], label = "large signal:" & opamp)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not drive the stage: " & e.msg)

@@ -19,10 +19,24 @@ const
   # Read at compile time, so the binary carries them and neither `docs/` nor
   # `templates/` needs to survive installation.
   guideText = staticRead("../../docs/authoring.md")
+  # Ordered the way a reader should meet them rather than alphabetically:
+  # `nimcir new` with an unknown name lists these, and that list is the only
+  # menu most people will ever see. `templates/README.md` says what each one
+  # is for.
   templates = {
     "blank": staticRead("../../templates/blank.nim"),
+    "divider": staticRead("../../templates/divider.nim"),
     "rail": staticRead("../../templates/rail.nim"),
+    "regulator": staticRead("../../templates/regulator.nim"),
+    "settled_rail": staticRead("../../templates/settled_rail.nim"),
+    "derating": staticRead("../../templates/derating.nim"),
+    "opamp": staticRead("../../templates/opamp.nim"),
+    "gain_stage": staticRead("../../templates/gain_stage.nim"),
+    "sallen_key": staticRead("../../templates/sallen_key.nim"),
+    "large_signal": staticRead("../../templates/large_signal.nim"),
+    "oscillator": staticRead("../../templates/oscillator.nim"),
     "i2c": staticRead("../../templates/i2c.nim"),
+    "subcircuit": staticRead("../../templates/subcircuit.nim"),
   }
   builtinLibDir = currentSourcePath().parentDir.parentDir
 
@@ -199,6 +213,11 @@ check flags (forwarded to the design file):
   --caps=op,ac,tran  offer a specific subset
   --verbose          show the full plan and the passing claims
   --strict           treat warnings and unevaluated claims as failures
+  --keep-runs=<dir>  archive every simulation there: the deck handed to
+                     ngspice, its raw results, its log, and an index.txt
+                     saying which run is which
+  --save-currents    with --keep-runs, also save device terminal currents
+                     (.op/.tran/.dc only; node voltages are saved anyway)
   --path:<dir>       where nimcir's sources live (usually found automatically)
 
 exit codes:
@@ -223,10 +242,18 @@ proc main(): int =
 
   case cmd
   of "check":
-    if rest.len == 0:
+    # The file is the first argument that is not a flag, rather than simply
+    # the first one: every flag here is forwarded to the design binary, so
+    # both orders are natural to type and `check --offline foo.nim` used to
+    # report `no such file: --offline`.
+    var file = ""
+    var forward: seq[string]
+    for a in rest:
+      if file.len == 0 and not a.startsWith("-"): file = a
+      else: forward.add a
+    if file.len == 0:
       raise newException(ValueError, "check needs a file: nimcir check <file.nim>")
-    let file = rest[0]
-    cmdCheck(file, pathFlag, rest[1 .. ^1])
+    cmdCheck(file, pathFlag, forward)
   of "new":
     if rest.len == 0:
       raise newException(ValueError, "new needs a template name; try `blank`")

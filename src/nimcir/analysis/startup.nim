@@ -351,7 +351,7 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
       "applied and wrong for anything that is already up")
 
   try:
-    result.raw = run(frag, @[card])
+    result.raw = run(frag, @[card], label = "startup:" & measured)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not run the isolated start-up fragment: " & e.msg)

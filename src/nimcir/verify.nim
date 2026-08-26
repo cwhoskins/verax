@@ -605,6 +605,12 @@ type
   VerifyOptions* = object
     allowed*: set[Capability]
     verbose*, strict*: bool
+    keepRuns*: string
+      ## Where to archive each simulation (deck, rawfile, ngspice log and an
+      ## index). Empty means keep nothing, which is the default.
+    saveCurrents*: bool
+      ## Ask ngspice for device terminal currents as well as the node
+      ## voltages it saves anyway. Only meaningful alongside `keepRuns`.
 
 proc parseCapabilities*(text: string): set[Capability] =
   ## `--caps=op,ac` and friends. `capStatic` is always included: withholding
@@ -634,6 +640,11 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
     elif a == "--strict": result.strict = true
     elif a.startsWith("--caps="):
       result.allowed = parseCapabilities(a["--caps=".len .. ^1])
+    elif a == "--save-currents": result.saveCurrents = true
+    elif a.startsWith("--keep-runs="):
+      # Absolute, because the path is baked into each archived deck's own
+      # `write` line and the design binary inherits the caller's directory.
+      result.keepRuns = absolutePath(a["--keep-runs=".len .. ^1])
 
 # --- the catalog: what may be claimed ------------------------------------
 #
@@ -811,4 +822,13 @@ proc verifyMain*(d: Design, args = commandLineParams()): int =
   ## compiled design can be re-run offline without being edited, which is what
   ## makes it usable as both a check and an artifact.
   let o = parseVerifyArgs(args)
+  # The parser stays pure; the environment is set here. An environment
+  # variable is the right mechanism at the bottom of this stack: nothing
+  # below `readiness` takes an options value, and only the capability set
+  # reaches an analysis at all -- so threading an archive directory down to
+  # `spice/ngspice.run` would mean a parameter on every analysis between
+  # here and there, and an import of `spice` from a module that deliberately
+  # has none.
+  if o.keepRuns.len > 0: putEnv("NIMCIR_KEEP_RUNS", o.keepRuns)
+  if o.saveCurrents: putEnv("NIMCIR_SAVE_CURRENTS", "1")
   verify(d, o.allowed, o.verbose, o.strict)

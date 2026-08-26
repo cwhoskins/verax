@@ -601,6 +601,77 @@ simulated is *derived* — cloned, flattened, model-substituted, isolated — so
 is not the netlist anyone wrote, and reasoning about a surprising number from
 the design file alone is guesswork.
 
+### The run archive
+
+`--keep-runs=<dir>` (or `$NIMCIR_KEEP_RUNS`) keeps the **results** as well as
+the deck. Per simulation it leaves `run000.cir`, `run000.raw` and `run000.log`,
+plus one `index.txt` row naming the run's label, analysis card, netlist, plot,
+whether the data is real or complex, and its vector, point and byte counts:
+
+```
+slot    status  label            analysis                 netlist       plot              data     vectors  points
+run000  ok      operating point  .op                      sensor_node   Operating Point   real     12       1
+run001  ok      pdn:vdd          .ac dec 20 1e+03 1e+09   pdn_vdd       AC Analysis       complex  38       121
+run002  ok      startup:vdda     .tran 2.5e-06 5e-03      startup_vdda  Transient Analy.  real     15       2027
+```
+
+The index is the part that makes a directory of `run000` … `run012` usable at
+all: a rawfile does not say which circuit or which analysis produced it, and
+here the circuit is derived rather than authored. `run` knows the netlist but
+not which claim it is serving, so it takes an optional `label` that the ten
+analysis call sites pass.
+
+Two properties are worth stating because they came from design decisions rather
+than falling out. The destination is chosen **before** anything is written, so
+ngspice writes all three files straight into the archive instead of them being
+copied afterwards — which means the archived deck *is* the one that ran, its
+`write` line names the rawfile beside it, and re-running it in place reproduces
+that rawfile byte for byte apart from the header timestamp. And a **failed** run
+gets an index row and keeps its deck and log, because that is precisely the run
+someone wants to read; both files are already on disk by the time anything
+raises.
+
+The rawfile is ngspice's own ASCII format, so it goes straight back in:
+
+```
+ngspice
+  load run001.raw
+  display
+  plot v(vdd)
+```
+
+### What ngspice saves, and the one thing it doesn't
+
+Worth knowing before reaching for a knob: **nimcir is not saving a subset.**
+With no `save` card at all ngspice's output stage starts at `saveall` and only
+drops to an allowlist once one exists, and `write <path>` with no vector list
+dumps the whole plot — so every rawfile here already carries every node voltage
+and every voltage-source and inductor `#branch` current. The genuinely absent
+category is device *internals* (`@r1[i]`, `@d2[id]`, `@m1[gm]`), which are
+computed from the solution rather than being part of it and never appear unless
+asked for.
+
+`--save-currents` (or `$NIMCIR_SAVE_CURRENTS`) asks, by emitting a `.save` card
+built from the netlist. Two things about it are load-bearing:
+
+- **`all` leads the list.** Naming any vector turns the default set off, so a
+  card that said only `@r1[i]` would archive a resistor's current and throw away
+  every node voltage.
+- **It is never emitted for an `.ac`-family analysis.** A `@r1[i]` is
+  real-valued; in a complex plot ngspice writes it as a bare real token among
+  the `real,imag` pairs, and `parseRawfile` rejects that line as malformed. An
+  unguarded version of this would turn every frequency sweep in the library into
+  a parse error.
+
+That second point is also why the card is built here rather than by asking for
+`.options savecurrents`, which injects at parse time whatever analysis follows —
+and which the *simulator's* option table does not know, it being a frontend-only
+keyword, so it reports `unknown option` into the log of every run that uses it.
+
+Selecting more output cannot move a solved number: a `.save` is read after the
+matrix is solved. It does multiply an archived rawfile's size — 701 KB to 1.9 MB
+on `sensor_node`'s start-up transient.
+
 ### Assumptions are the pipeline's output too
 
 Every simulation-backed analysis works by filling in data a netlist does not
@@ -753,3 +824,4 @@ legible.
 | what did checking real boards teach us? | `docs/RESOLVED_FINDINGS.md` |
 | what roles/quantities/annotations exist *right now*? | `nimcir roles`, `nimcir quantities`, `nimcir annotations` |
 | what was actually simulated? | `NIMCIR_KEEP_DECKS=<dir> nimcir check <design>` |
+| what did the simulation actually return? | `nimcir check --keep-runs=<dir> <design>`, then `load <dir>/run000.raw` in ngspice |

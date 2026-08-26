@@ -91,7 +91,7 @@ proc solveOperatingPoint*(nl: Netlist, spec = defaultOperatingSpec()): Operating
 
   var sim: SimResult
   try:
-    sim = run(simNl, @[".op"])
+    sim = run(simNl, @[".op"], label = "operating point")
   except CatchableError as e:
     result.reason = e.msg
     return

@@ -125,7 +125,7 @@ proc analyzeDerating*(nl: Netlist, spec = defaultDeratingSpec()): AnalysisReport
   var sim: SimResult
   if spec.precomputed.len == 0:
     try:
-      sim = run(simNl, @[".op"])
+      sim = run(simNl, @[".op"], label = "derating")
     except CatchableError as e:
       result.issues.add newIssue(KindSimulationFailed, sevWarning,
         "the operating point needed to check part ratings did not solve: " & e.msg)

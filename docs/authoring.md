@@ -329,7 +329,9 @@ Three parts, and each answers a different question:
   ngspice is *derived* — isolated, terminated, model-substituted — so it is
   never the netlist you wrote, and this is what says which analysis produced
   the number and what it does and does not cover. (`NIMCIR_KEEP_DECKS=<dir>`
-  writes out the decks themselves.)
+  writes out the decks themselves; `--keep-runs=<dir>` writes out the decks,
+  the raw results and ngspice's log, with an `index.txt` saying which run is
+  which — see below.)
 - **`assuming:`** — numbers the design does not contain and the tool invented
   anyway: a package-typical ESR, an assumed pin capacitance, a leak resistor
   on an open net. They sit **under the run that rests on them**, because which
@@ -343,6 +345,54 @@ Three parts, and each answers a different question:
 
 A claim appears in exactly one check block. Claims that reached no test at all
 are counted at the end of CHECKS and listed in full under NOT CHECKED.
+
+### Keeping the results so you can look at them later
+
+A check reports the numbers it extracted and then throws the curves away. When
+you want the curve — a rail's whole start-up ramp rather than its overshoot
+figure, an impedance across the sweep rather than its worst point — ask for the
+run archive:
+
+```
+nimcir check --keep-runs=./runs designs/sensor_node.nim
+```
+
+That leaves one deck, one rawfile and one ngspice log per simulation, plus an
+`index.txt` telling you which is which:
+
+```
+slot    status  label            analysis                netlist       plot             points
+run000  ok      operating point  .op                     sensor_node   Operating Point  1
+run001  ok      pdn:vdd          .ac dec 20 1e+03 1e+09  pdn_vdd       AC Analysis      121
+run002  ok      startup:vdda     .tran 2.5e-06 5e-03     startup_vdda  Transient Ana..  2027
+```
+
+The rawfile is ngspice's own format, so you plot it in ngspice:
+
+```
+ngspice
+  load runs/run002.raw
+  display
+  plot v(vdda)
+```
+
+Two things this is good for beyond plotting. The archived deck is the one that
+actually ran, so `cd runs && ngspice -b run002.cir` re-runs that exact fragment
+— which is how you try a component value against a surprising number without
+re-checking the whole design. And a run that *failed* keeps its deck and log too,
+with `failed` in the index, so a convergence error leaves you the deck that
+caused it.
+
+You already get every node voltage and every voltage-source and inductor current
+— ngspice saves those unless told otherwise. What it does not save is device
+terminal currents; `--save-currents` adds them (`@r1[i]`, `@d2[id]`), which is
+what answers "where is the inrush actually flowing". It applies to `.op`, `.tran`
+and `.dc` only — for a frequency sweep those vectors are real-valued and cannot
+be written into a complex plot — and it multiplies the size of a rawfile, so it
+is off unless asked for.
+
+Neither flag can change a measured number: both select what gets recorded, after
+the circuit has been solved.
 
 ## AC-coupled stages
 

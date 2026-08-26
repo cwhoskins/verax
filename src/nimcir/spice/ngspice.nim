@@ -5,7 +5,7 @@
 ## installed ngspice-46 rather than assumed, because the CLI's exit code and
 ## output formats have real surprises -- see `run` and `parseRawfile`.
 
-import std/[complex, streams, osproc, os, strutils, tables, tempfiles]
+import std/[complex, streams, osproc, os, strutils, tables, tempfiles, times]
 import ../netlist/types
 import ../netlist/formats/spice as spiceFormat
 import ./backend
@@ -144,6 +144,67 @@ proc keepDeck(deckPath: string) =
   except CatchableError:
     discard  # a debugging aid must never be able to fail a simulation
 
+const runIndexFile* = "index.txt"
+  ## The manifest inside a `$NIMCIR_KEEP_RUNS` directory. A rawfile does not
+  ## say which circuit or which analysis produced it, and the fragment
+  ## simulated is derived rather than authored, so a directory of `run000` ..
+  ## `run012` with nothing beside it answers none of the questions a reader
+  ## opens it with.
+
+proc runSlotName(i: int): string =
+  ## Zero-padded so `ls` sorts an archive in the order the runs happened.
+  "run" & align($i, 3, '0')
+
+proc archiveSlot(): tuple[dir, slot: string] =
+  ## Picks where this run's deck, rawfile and log are going to be written.
+  ##
+  ## `keepDeck` copies a deck *after the fact*; this instead chooses the
+  ## destination up front, so ngspice writes all three artifacts straight into
+  ## the archive. That is not merely fewer steps: the deck kept is then
+  ## byte-identical to the one that ran, `write` inside it names the rawfile
+  ## sitting next to it, and the whole run is reproducible by handing that
+  ## file back to ngspice.
+  ##
+  ## Off unless `$NIMCIR_KEEP_RUNS` is set, and it never changes what is
+  ## simulated. Any failure yields `("", "")` and a normal temp-directory run,
+  ## on the same reasoning as `keepDeck`: an archive is a debugging aid and
+  ## must never be able to fail a simulation.
+  let dir = getEnv("NIMCIR_KEEP_RUNS")
+  if dir.len == 0: return ("", "")
+  try:
+    createDir(dir)
+    var i = 0
+    while fileExists(dir / (runSlotName(i) & ".cir")): inc i
+    (dir, runSlotName(i))
+  except CatchableError:
+    ("", "")
+
+proc appendIndex(dir, slot, status, label, analysis: string,
+                 setup: seq[string], netlistName, plot, dataText: string,
+                 nvars, npoints, rawBytes, ms: int) =
+  ## One tab-separated row per run, header written when the file is created.
+  ##
+  ## A failed run gets a row too, and its `status` says so. That is the run
+  ## whose deck and log are worth reading, and both are already on disk by the
+  ## time anything raises.
+  if dir.len == 0: return
+  try:
+    let path = dir / runIndexFile
+    let fresh = not fileExists(path)
+    let f = open(path, fmAppend)
+    defer: f.close()
+    if fresh:
+      f.writeLine(["slot", "status", "label", "analysis", "setup", "netlist",
+                   "plot", "data", "vectors", "points", "bytes",
+                   "ms"].join("\t"))
+    proc orDash(s: string): string = (if s.len > 0: s else: "-")
+    f.writeLine([slot, status, orDash(label), orDash(analysis.strip()),
+                 orDash(setup.join("; ")), orDash(netlistName), orDash(plot),
+                 orDash(dataText), $nvars, $npoints, $rawBytes,
+                 $ms].join("\t"))
+  except CatchableError:
+    discard  # as above: an archive must never fail a simulation
+
 const analysisCards* = ["ac", "dc", "op", "tran", "noise", "disto", "pz",
                         "sens", "tf"]
   ## Dot cards that make ngspice *run an analysis* and produce a plot of its
@@ -152,14 +213,82 @@ const analysisCards* = ["ac", "dc", "op", "tran", "noise", "disto", "pz",
   ## `parseSpiceMagnitude`: refuse what is known to be wrong rather than
   ## require what is guessed to be right.
 
-proc isAnalysisCard*(card: string): bool =
+proc analysisWord(card: string): string =
+  ## The bare card name, lowercased: `".tran 1u 1m uic"` -> `"tran"`. Empty
+  ## for anything that is not a dot card.
   let t = card.strip().toLowerAscii()
-  if not t.startsWith("."): return false
-  let word = t[1 .. ^1].split({' ', '\t'})[0]
-  word in analysisCards
+  if not t.startsWith("."): return ""
+  t[1 .. ^1].split({' ', '\t'})[0]
+
+proc isAnalysisCard*(card: string): bool =
+  analysisWord(card) in analysisCards
+
+const realPlotAnalyses = ["op", "tran", "dc"]
+  ## The analyses whose plot is real-valued, and therefore the only ones a
+  ## device-current `.save` may be attached to. See `saveCurrentsCard`.
+
+proc currentParamsFor(letter: char): seq[string] =
+  ## Which `@dev[...]` currents exist for a device letter, mirroring
+  ## ngspice's own table in `src/frontend/inp.c` (`inp_savecurrents`).
+  ##
+  ## `v` is deliberately absent: a voltage source's branch current is an MNA
+  ## unknown and is already in the default saved set as `v1#branch`. So are
+  ## `x` (a subcircuit instance) and `a` (an XSPICE code model), neither of
+  ## which has terminal currents to ask for -- ngspice's walk skips both the
+  ## same way, through its `default: continue`.
+  case letter
+  of 'r', 'c', 'l', 'b', 'f', 'g', 'w', 's': @["i"]
+  of 'd': @["id"]
+  of 'q': @["ic", "ie", "ib"]
+  of 'm': @["id", "is", "ig", "ib"]
+  of 'j': @["id", "is", "ig"]
+  of 'i': @["current"]
+  else: @[]
+
+proc saveCurrentsCard*(nl: Netlist, analysis: string): string =
+  ## A `.save` card naming every device terminal current in `nl`, or `""`.
+  ##
+  ## **What ngspice saves by default is already everything it has as an
+  ## unknown** -- every node voltage plus every voltage-source and inductor
+  ## `#branch` current -- because with no `save` at all the output stage
+  ## starts at `saveall` and only drops to an allowlist once one exists. So
+  ## this exists for the one category that is genuinely absent: device
+  ## *internals* (`@r1[i]`, `@d2[id]`), which are computed from the solution
+  ## rather than being part of it and never appear unless asked for.
+  ##
+  ## **`all` has to lead the list.** Naming any vector turns the default set
+  ## off, so a card that said only `@r1[i]` would archive a rail's resistor
+  ## current and throw away the rail.
+  ##
+  ## **Never emitted for an `.ac`-family analysis, and that is not caution.**
+  ## A `@r1[i]` is a real-valued vector; in a complex plot ngspice writes it
+  ## as a bare real token in among the `real,imag` pairs, and `parseRawfile`
+  ## rejects the line as malformed -- so switching this on would turn every
+  ## frequency sweep in the library into a parse error. This is also why the
+  ## card is built here rather than by asking for `.options savecurrents`,
+  ## which injects at parse time whatever analysis follows (and which the
+  ## simulator's own option table does not know, so it reports an `unknown
+  ## option` error into the log of every run that uses it).
+  ##
+  ## Off unless `$NIMCIR_SAVE_CURRENTS` is set. Selecting more output cannot
+  ## move a solved number -- a `.save` is read after the matrix is solved --
+  ## but it does multiply the size of an archived rawfile.
+  if getEnv("NIMCIR_SAVE_CURRENTS").len == 0: return ""
+  if analysisWord(analysis) notin realPlotAnalyses: return ""
+  var toks = @["all"]
+  for c in nl.components.values:
+    # A part with children is written as an `X` instance, and its interior is
+    # not addressable from the top level.
+    if c.subNetlist != nil: continue
+    let desig = spiceFormat.deckDesignator(c)
+    if desig.len == 0: continue
+    for param in currentParamsFor(desig[0].toLowerAscii):
+      toks.add "@" & desig & "[" & param & "]"
+  if toks.len == 1: return ""
+  ".save " & toks.join(" ")
 
 proc run*(nl: Netlist, analysis: string, setup: seq[string] = @[],
-          codemodels: seq[string] = @[]): SimResult =
+          codemodels: seq[string] = @[], label = ""): SimResult =
   ## Runs `nl` through ngspice in batch mode and returns the resulting
   ## vectors.
   ##
@@ -213,14 +342,32 @@ proc run*(nl: Netlist, analysis: string, setup: seq[string] = @[],
         "plot. Setup means .ic/.nodeset/.options/.param/.temp; run the " &
         "second analysis as its own call.")
 
-  let cards = setup & @[analysis]
+  var cards = setup & @[analysis]
 
-  let tmpDir = createTempDir("nimcir_spice_", "")
+  # Prepended rather than appended only for legibility in an archived deck;
+  # a `.save` *card* is harvested at parse time, so unlike the `save` control
+  # command its position does not matter.
+  let saveCard = saveCurrentsCard(nl, analysis)
+  if saveCard.len > 0: cards = @[saveCard] & cards
+
+  # Where the three artifacts are written is decided here, before anything is
+  # written, so that an archived run is the deck that actually ran rather than
+  # a copy of it -- and so the `write` line inside it names the rawfile lying
+  # next to it.
+  let (keepDir, slot) = archiveSlot()
+  let archiving = keepDir.len > 0
+  let workDir = if archiving: keepDir else: createTempDir("nimcir_spice_", "")
+  let stem = if archiving: slot else: "deck"
+
+  let deckPath = workDir / (stem & ".cir")
+  let rawPath = workDir / (stem & ".raw")
+  let logPath = workDir / (stem & ".log")
+
+  let started = epochTime()
+  var status = "failed"
+  var plot, dataText = ""
+  var nvars, npoints = 0
   try:
-    let deckPath = tmpDir / "deck.cir"
-    let rawPath = tmpDir / "deck.raw"
-    let logPath = tmpDir / "deck.log"
-
     # What the deck needs is a property of the *netlist*, and by the time a
     # fragment reaches here it has been cloned, flattened, model-substituted
     # and isolated -- so the caller three layers up is in no position to know
@@ -295,10 +442,30 @@ proc run*(nl: Netlist, analysis: string, setup: seq[string] = @[],
     except CatchableError as e:
       raise newException(SpiceSimError,
         "failed to parse ngspice output: " & e.msg & "\nngspice log:\n" & log)
+
+    status = "ok"
+    plot = result.plotName
+    dataText = (if result.dataKind == sdComplex: "complex" else: "real")
+    nvars = result.vectors.len
+    for v in result.vectors.values:
+      npoints = (case v.kind
+                 of sdReal: v.values.len
+                 of sdComplex: v.cvalues.len)
+      break
   finally:
-    removeDir(tmpDir)
+    if archiving:
+      var rawBytes = 0
+      try:
+        if fileExists(rawPath): rawBytes = int(getFileSize(rawPath))
+      except CatchableError:
+        discard
+      appendIndex(keepDir, stem, status, label, analysis, setup, nl.name,
+                  plot, dataText, nvars, npoints, rawBytes,
+                  int((epochTime() - started) * 1000))
+    else:
+      removeDir(workDir)
 proc run*(nl: Netlist, cards: seq[string],
-          codemodels: seq[string] = @[]): SimResult =
+          codemodels: seq[string] = @[], label = ""): SimResult =
   ## The older shape, kept because every existing call site passes a
   ## single-element seq and there is nothing wrong with those calls.
   ##
@@ -327,5 +494,5 @@ proc run*(nl: Netlist, cards: seq[string],
       (if analyses.len == 1: analyses[0] else: "an analysis")
       else: "e.g. .ic with .tran ... uic") &
       " -- call run(nl, analysis, setup = @[...]), which says which is which.")
-  run(nl, cards[0], @[], codemodels)
+  run(nl, cards[0], @[], codemodels, label)
 

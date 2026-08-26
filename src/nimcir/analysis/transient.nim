@@ -228,7 +228,7 @@ proc runWindow(nl: Netlist, measureNet: string, spec: TransientSpec,
       "starts at zero rather than at its bias")
 
   try:
-    rep.raw = run(work, card, setup)
+    rep.raw = run(work, card, setup, label = "transient:" & measureNet)
   except SpiceSimError as e:
     rep.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not run the transient: " & e.msg)

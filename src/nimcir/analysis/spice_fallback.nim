@@ -61,7 +61,7 @@ proc resolveAmbiguousDCPaths*(nl: Netlist, issues: seq[Issue]): seq[Issue] =
   var simResult: SimResult
   var simErrorMsg = ""
   try:
-    simResult = run(simNl, @[".op"])
+    simResult = run(simNl, @[".op"], label = "dc path fallback")
   except SpiceSimError as e:
     simErrorMsg = e.msg
 

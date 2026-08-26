@@ -179,7 +179,7 @@ proc analyzePdn*(nl: Netlist, powerNet: string, groundNet = "",
   let card = ".ac dec " & $spec.ptsPerDecade & " " &
              spiceFormat.spiceValue(spec.fStart) & " " & spiceFormat.spiceValue(spec.fStop)
   try:
-    result.raw = run(frag, @[card])
+    result.raw = run(frag, @[card], label = "pdn:" & powerNet)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not sweep the isolated PDN fragment: " & e.msg)
