@@ -27,6 +27,7 @@ nimcache/
 /designs/*
 !/designs/*.nim
 !/designs/README
+!/designs/CLAUDE.md
 # `/designs/*` excludes the `lib` *directory*, and git does not descend into an
 # excluded directory -- so `!/designs/*.nim` cannot rescue anything under it,
 # and the whole shared parts/subcircuit library was untracked. Re-include the
