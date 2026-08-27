@@ -2,7 +2,7 @@ import std/[math, os, strutils, tables, unittest, sequtils]
 
 import nimcir/netlist/dsl
 import nimcir/netlist/graph
-import nimcir/analysis/opamp
+import nimcir/analysis/analyses/opamp
 
 let haveNgspice = findExe("ngspice").len > 0
 

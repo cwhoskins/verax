@@ -13,17 +13,19 @@
 ## Anything needing a simulator is **opt-in per-import**, mirroring how
 ## `nimcir/spice/ngspice` is opt-in from `nimcir/spice.nim`. This hub exports
 ## only what runs with no external toolchain: the two result types, the static
-## checks (`io_check`), and the pure curve math (`measure`). Import
-## `nimcir/analysis/spice_fallback`, `nimcir/analysis/pdn`,
-## `nimcir/analysis/startup` or `nimcir/analysis/opamp` directly for the
-## ngspice-backed ones:
+## checks (`io_check`), and the pure curve math (`measure`). The ngspice-backed
+## analyses live under `nimcir/analysis/analyses/` -- one file each -- and are
+## imported directly: `nimcir/analysis/analyses/spice_fallback`,
+## `nimcir/analysis/analyses/pdn`, `nimcir/analysis/analyses/startup`,
+## `nimcir/analysis/analyses/opamp`, and so on. `nimcir/analysis/evaluators/`
+## wraps them for the `contract` assertion registry.
 ##
 ## | module | question | analysis |
 ## | --- | --- | --- |
-## | `spice_fallback` | is this ambiguous DC path real? | `.op` |
-## | `pdn` | is my decoupling adequate? | `.ac` |
-## | `startup` | does this rail come up cleanly? | `.tran` |
-## | `opamp` | gain, bandwidth and stability margin | `.ac` |
+## | `analyses/spice_fallback` | is this ambiguous DC path real? | `.op` |
+## | `analyses/pdn` | is my decoupling adequate? | `.ac` |
+## | `analyses/startup` | does this rail come up cleanly? | `.tran` |
+## | `analyses/opamp` | gain, bandwidth and stability margin | `.ac` |
 ##
 ## Each of those isolates a fragment of the design with
 ## `nimcir/spice/isolate` and simulates that, never the whole board and never

@@ -9,7 +9,7 @@ import nimcir/spice/models
 import nimcir/spice/transform
 import nimcir/spice/boundary
 import nimcir/spice/ngspice
-import nimcir/analysis/pdn
+import nimcir/analysis/analyses/pdn
 import nimcir/spice/flatten
 import std/sequtils
 

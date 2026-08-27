@@ -52,7 +52,7 @@ back-edges: nothing below ever learns about anything above it.
                           verify.nim           (the runner + the catalog)
                         /            \
                        /              \
-              contract/            analysis/   (+ analysis/contract_eval, the join)
+              contract/            analysis/   (+ analysis/evaluators/, the join)
                        \              /
                         \          spice/  --> spice/xspice/
                          \          /
@@ -81,7 +81,7 @@ An edge from `contract` to `analysis` would quietly destroy that property.
 `spice.nim`, `analysis.nim`, `contract.nim`, `pcb.nim`) exports only what runs
 with no external toolchain. The backend (`spice/ngspice`), the file formats
 (`netlist/formats/*`, `pcb/formats/*`), the simulation-backed analyses
-(`analysis/pdn`, `analysis/opamp`, …) and the XSPICE authoring tools are each
+(`analysis/analyses/pdn`, `analysis/analyses/opamp`, …) and the XSPICE authoring tools are each
 imported by path. `src/nimcir.nim` is deliberately **not** a re-export hub for
 the same reason, and the nimble package builds its binary from
 `src/nimcir/cli.nim` so that `import nimcir` in an unrelated program does not
@@ -400,7 +400,7 @@ act, not an oversight — unless `--strict`.
 
 This is where a board actually meets a simulator. Every simulation-backed
 analysis follows the same shape, and **the ordering is load-bearing at every
-step**. `analysis/pdn.analyzePdn` is the canonical one:
+step**. `analysis/analyses/pdn.analyzePdn` is the canonical one:
 
 ```
   d.netlist                        the design as authored -- never mutated, never simulated
@@ -435,7 +435,7 @@ step**. `analysis/pdn.analyzePdn` is the canonical one:
       v
   AnalysisReport { measurements, issues, assumptions, raw }
       |
-      | contract_eval harvest adapter
+      | the evaluators/ harvest adapter (common.harvest)
       v
   seq[AssertionResult]
 ```
@@ -553,7 +553,7 @@ passed at exit 0**. `opamp.checkInjectionPoint` now refuses it by name.
 
 But the deeper point is that no version of a swept measurement answers the
 question. An oscillator has no transfer function, because there is nothing to
-sweep it *from*. So `analysis/transient` holds three analyses over one run:
+sweep it *from*. So `analysis/analyses/transient` holds three analyses over one run:
 `analyzeTransient` reports what a node **settled to**, `analyzeOscillation`
 reports what it is **running at**, and `analyzeCurrent` reports what is
 flowing **through a part**. They share `runWindow` deliberately — having the
@@ -604,15 +604,15 @@ of the batch is measured anyway.
 ### A difference is not a bias
 
 Every analysis above answers a question at *one* operating point.
-`analysis/operating` solves a single `.op` and `analysis/derating` reads it
-back; `analysis/pdn` and `analysis/opamp` linearise about it. So the whole
+`analysis/analyses/operating` solves a single `.op` and `analysis/analyses/derating` reads it
+back; `analysis/analyses/pdn` and `analysis/analyses/opamp` linearise about it. So the whole
 family answers "what does this do *there*" — and a large part of what a
 datasheet specifies is instead a difference between two biases: line
 regulation, load regulation, dropout, a divider's ratio, an output resistance.
 None of those is in an operating point however many of them you solve, which
 is why `capSpiceDc` is its own capability rather than a mode of `capSpiceOp`.
 
-`analysis/dcsweep` has two procs, and the split is about **where the stimulus
+`analysis/analyses/dcsweep` has two procs, and the split is about **where the stimulus
 comes from**. `analyzeLineSweep` sweeps a source the design already contains,
 resolved through `findComponent` after flattening and identified by
 `deckDesignator`, so a source inside an instance works and a part whose `kind`
@@ -669,7 +669,7 @@ the droop is smaller than that, or the rail never leaves it and the recovery
 reads a confident zero — which is the one wrong answer of this shape that
 looks like a right one.
 
-**Ripple rejection** is `analysis/psrr.nim`, and it is two measurements rather
+**Ripple rejection** is `analysis/analyses/psrr.nim`, and it is two measurements rather
 than one with a mode. The `.ac` sweep finds a curve's worst point; the `.tran`
 tone answers at one frequency with a real amplitude, which matters because a
 `.tran` is not linear and a ripple big enough to move a duty cycle gets a
@@ -703,7 +703,7 @@ added to it, `i_out_derating`, which divides the *sense* part's RMS by the
 hand: the subject gives the sense part and `Assertion.origin` gives the role
 binding that names the regulator.
 
-That last point is why all of this lands in `roles.nim` as parameters on
+That last point is why all of this lands in `roles/power.nim` as parameters on
 `regulator` rather than as three more roles. A load step needs a rail *and*
 knowledge that something is regulating it; a rejection needs a supply and an
 input pin; an output current needs a sense part and a rated regulator. All of
@@ -874,7 +874,7 @@ and its three answers — `require`, `role: X`, `-- needs a role binding` — ar
 genuinely different; conflating any two is how a reader writes a claim nothing
 will check.
 
-Setup topology is recovered the same way at run time: `roles.nim` stamps the
+Setup topology is recovered the same way at run time: the role expanders' code (`roles/power.nim` and its siblings) stamps the
 role-instance name into `Assertion.origin`, so an evaluator reads the bindings
 back off `Design.roles[origin]`. Resolution order is **subjects → origin-role
 bindings → `condition` → `notEvaluable` naming what was missing**. That last

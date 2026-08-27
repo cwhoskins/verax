@@ -76,17 +76,17 @@
 
 import std/[math, strutils, tables]
 
-import ../netlist/types
-import ../netlist/graph
-import ../netlist/kinds
-import ../netlist/formats/spice as spiceFormat
-import ../spice/transform
-import ../spice/flatten
-import ../spice/models
-import ../spice/probes
-import ../spice/ngspice
-import ./measure
-import ./report
+import ../../netlist/types
+import ../../netlist/graph
+import ../../netlist/kinds
+import ../../netlist/formats/spice as spiceFormat
+import ../../spice/transform
+import ../../spice/flatten
+import ../../spice/models
+import ../../spice/probes
+import ../../spice/ngspice
+import ../measure
+import ../report
 
 export report
 

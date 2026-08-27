@@ -3,7 +3,7 @@ import std/[math, os, sequtils, strutils, tables, unittest]
 import nimcir/netlist/dsl
 import nimcir/spice/transform
 import nimcir/spice/ngspice
-import nimcir/analysis/transient
+import nimcir/analysis/analyses/transient
 
 let haveNgspice = findExe("ngspice").len > 0
 

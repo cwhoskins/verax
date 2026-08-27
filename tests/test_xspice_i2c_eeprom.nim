@@ -2,7 +2,7 @@ import std/[os, strutils, unittest]
 
 import nimcir/contract/dsl
 import nimcir/netlist/graph
-import nimcir/analysis/transient
+import nimcir/analysis/analyses/transient
 import nimcir/spice/xspice/build
 
 import ../designs/lib/i2c_parts

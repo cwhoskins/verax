@@ -32,17 +32,17 @@
 
 import std/[math, strutils, tables]
 
-import ../netlist/types
-import ../netlist/graph
-import ../netlist/annotations
+import ../../netlist/types
+import ../../netlist/graph
+import ../../netlist/annotations
 
-import ../netlist/formats/spice as spiceFormat
-import ../spice/ngspice
-import ../spice/transform
-import ../spice/flatten
-import ../spice/models
-import ../eng
-import ./report
+import ../../netlist/formats/spice as spiceFormat
+import ../../spice/ngspice
+import ../../spice/transform
+import ../../spice/flatten
+import ../../spice/models
+import ../../eng
+import ../report
 
 export report
 

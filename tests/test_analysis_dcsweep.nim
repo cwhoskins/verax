@@ -8,8 +8,8 @@ import std/[math, os, strutils, tables, unittest]
 import nimcir/netlist
 import nimcir/netlist/dsl as netdsl
 import nimcir/contract/dsl
-import nimcir/analysis/dcsweep
-import nimcir/analysis/contract_eval
+import nimcir/analysis/analyses/dcsweep
+import nimcir/analysis/evaluators/contract_eval
 import nimcir/verify
 
 let haveNgspice = findExe("ngspice").len > 0

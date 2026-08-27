@@ -10,7 +10,7 @@
 import std/tables
 
 import nimcir/netlist/dsl
-import nimcir/analysis/pdn
+import nimcir/analysis/analyses/pdn
 
 # Three-tier decoupling: a tantalum bulk cap, a mid-value ceramic, and a
 # small ceramic near the pin. Only `package` is annotated, so the analysis

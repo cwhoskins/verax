@@ -11,7 +11,7 @@
 import std/tables
 
 import nimcir/netlist/dsl
-import nimcir/analysis/opamp
+import nimcir/analysis/analyses/opamp
 
 proc stage(cLoad: string): Netlist =
   ## Gain of 1 + 100k/10k = 11. `cLoad` on the feedback node adds a second

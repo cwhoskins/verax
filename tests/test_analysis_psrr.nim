@@ -1,7 +1,7 @@
 import std/[math, os, sequtils, strutils, tables, unittest]
 
 import nimcir/netlist/dsl
-import nimcir/analysis/psrr
+import nimcir/analysis/analyses/psrr
 
 let haveNgspice = findExe("ngspice").len > 0
 

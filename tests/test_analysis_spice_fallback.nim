@@ -2,7 +2,7 @@ import std/[os, strutils, tables, unittest]
 
 import nimcir/netlist
 import nimcir/analysis
-import nimcir/analysis/spice_fallback
+import nimcir/analysis/analyses/spice_fallback
 
 let haveNgspice = findExe("ngspice").len > 0
 

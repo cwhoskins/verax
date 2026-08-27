@@ -22,17 +22,17 @@
 ## passed in is never mutated or simulated directly -- `isolate` clones first.
 
 import std/[math, strutils, tables]
-import ../netlist/types
-import ../netlist/graph
-import ../netlist/formats/spice as spiceFormat
-import ../spice/isolate
-import ../spice/transform
-import ../spice/models
-import ../spice/flatten
-import ../spice/probes
-import ../spice/ngspice
-import ./measure
-import ./report
+import ../../netlist/types
+import ../../netlist/graph
+import ../../netlist/formats/spice as spiceFormat
+import ../../spice/isolate
+import ../../spice/transform
+import ../../spice/models
+import ../../spice/flatten
+import ../../spice/probes
+import ../../spice/ngspice
+import ../measure
+import ../report
 
 export report
 

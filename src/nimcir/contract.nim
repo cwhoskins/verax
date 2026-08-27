@@ -37,7 +37,7 @@
 ##
 ## The evaluators that need no toolchain (`contract/evaluators/static`) are
 ## exported from here. The simulation-backed ones live in
-## `nimcir/analysis/contract_eval` and are **opt-in per-import**, the same
+## `nimcir/analysis/evaluators/contract_eval` and are **opt-in per-import**, the same
 ## rule `analysis.nim` and `spice.nim` already apply: importing this hub must
 ## never require a simulator in the build.
 

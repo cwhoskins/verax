@@ -52,7 +52,7 @@ import ./eng
 import ./netlist/annotations
 import ./netlist/environment
 import ./analysis/io_check
-import ./analysis/contract_eval
+import ./analysis/evaluators/contract_eval
 
 export contract_eval, io_check, environment
 

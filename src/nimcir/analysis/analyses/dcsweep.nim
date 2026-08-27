@@ -51,14 +51,14 @@
 
 import std/[math, strutils, tables]
 
-import ../netlist/types
-import ../netlist/graph
-import ../netlist/formats/spice as spiceFormat
-import ../spice/transform
-import ../spice/flatten
-import ../spice/models
-import ../spice/ngspice
-import ./report
+import ../../netlist/types
+import ../../netlist/graph
+import ../../netlist/formats/spice as spiceFormat
+import ../../spice/transform
+import ../../spice/flatten
+import ../../spice/models
+import ../../spice/ngspice
+import ../report
 
 export report
 

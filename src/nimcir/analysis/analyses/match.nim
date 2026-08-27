@@ -39,11 +39,11 @@
 ## evaluated* rather than as a failure.
 
 import std/math
-import ../netlist/types
-import ../netlist/graph
-import ../netlist/annotations
-import ./measure
-import ./report
+import ../../netlist/types
+import ../../netlist/graph
+import ../../netlist/annotations
+import ../measure
+import ../report
 import ./opamp
 
 export report

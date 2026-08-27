@@ -23,18 +23,18 @@
 ## Unlike the frequency-domain analyses this needs no `.ac`, only `.tran`.
 
 import std/[math, strutils, tables, sets]
-import ../netlist/types
-import ../netlist/graph
-import ../netlist/kinds
-import ../netlist/formats/spice as spiceFormat
-import ../spice/isolate
-import ../spice/models
-import ../spice/flatten
-import ../spice/probes
-import ../spice/transform
-import ../spice/ngspice
-import ./measure
-import ./report
+import ../../netlist/types
+import ../../netlist/graph
+import ../../netlist/kinds
+import ../../netlist/formats/spice as spiceFormat
+import ../../spice/isolate
+import ../../spice/models
+import ../../spice/flatten
+import ../../spice/probes
+import ../../spice/transform
+import ../../spice/ngspice
+import ../measure
+import ../report
 
 export report
 

@@ -25,13 +25,13 @@
 ## netlist passed in is never mutated or simulated directly.
 
 import std/tables
-import ../netlist/types
-import ../netlist/graph
-import ../spice/transform
-import ../spice/flatten
-import ../spice/ngspice
-import ./issue
-import ./io_check
+import ../../netlist/types
+import ../../netlist/graph
+import ../../spice/transform
+import ../../spice/flatten
+import ../../spice/ngspice
+import ../issue
+import ../io_check
 
 export issue, io_check
 

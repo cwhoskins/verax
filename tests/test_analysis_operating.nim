@@ -4,7 +4,7 @@ import nimcir/netlist/dsl
 import nimcir/netlist/formats/spice
 import nimcir/units
 import nimcir/spice/models
-import nimcir/analysis/operating
+import nimcir/analysis/analyses/operating
 import nimcir/contract/dsl
 import nimcir/verify
 

@@ -50,7 +50,7 @@
 import std/[os, tables, times]
 
 import nimcir/contract/dsl
-import nimcir/contract/roles
+import nimcir/contract/roles/core
 import nimcir/netlist/graph
 import nimcir/netlist/annotations
 import nimcir/spice/xspice/spec
