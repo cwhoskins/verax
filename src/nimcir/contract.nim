@@ -42,7 +42,7 @@
 ## never require a simulator in the build.
 
 import nimcir/contract/types
-import nimcir/contract/roles
+import nimcir/contract/roles/built_in as roles
 import nimcir/contract/design
 import nimcir/contract/evaluate
 import nimcir/contract/evaluators/static

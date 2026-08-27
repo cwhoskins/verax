@@ -29,7 +29,7 @@
 ## design and its contract inspectable with no simulator anywhere in the
 ## build. An `Evaluator` is a value with a `proc` field, exactly as
 ## `RoleDef.expand` is, so the simulation-backed evaluators register
-## themselves from `nimcir/analysis/contract_eval` -- a module that *is*
+## themselves from `nimcir/analysis/evaluators/contract_eval` -- a module that *is*
 ## allowed to import a simulator -- and take an identical path to the static
 ## ones registered here. A built-in that cheats makes user-defined evaluators
 ## second-class, and then nobody writes one.
@@ -39,7 +39,7 @@ import ../netlist/types
 import ../netlist/annotations
 import ../eng
 import ./types as ctypes
-import ./roles
+import ./roles/core
 import ./design
 
 # `AssertionResult` carries `Assumption`s, so anything holding a result needs
@@ -850,7 +850,7 @@ proc evaluate*(d: Design, allowed: set[Capability] = offlineCapabilities): seq[A
   ##
   ## The default offers nothing but graph walks, mirroring how
   ## `nimcir/analysis` exports only what runs with no external toolchain: pass
-  ## `allCapabilities` (and import `nimcir/analysis/contract_eval`) to let the
+  ## `allCapabilities` (and import `nimcir/analysis/evaluators/contract_eval`) to let the
   ## simulation-backed evaluators run.
   ##
   ## Each call builds its own context, so a caller sweeping many candidate

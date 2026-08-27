@@ -19,7 +19,7 @@ import ../netlist/types
 import ../netlist/graph
 import ../netlist/annotations
 import ./types as ctypes
-import ./roles
+import ./roles/built_in as roles
 
 export ctypes, roles
 

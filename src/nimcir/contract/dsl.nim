@@ -46,7 +46,7 @@ import ../netlist/types
 import ../netlist/dsl as netlistDsl
 import ../units
 import ./types as ctypes
-import ./roles
+import ./roles/built_in as roles
 import ./design
 import ./evaluate
 import ./evaluators/static
