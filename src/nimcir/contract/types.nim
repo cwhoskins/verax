@@ -36,11 +36,41 @@ type
       ## a real gap, called out rather than half-solved, because the right
       ## spelling depends on how imported hierarchy ends up looking.
 
+  MeasurementRef* = object
+    ## A reference to another measurement, used as the bound of a relative
+    ## expectation or as a named dependency of a predicate.
+    quantity*: string
+    subjects*: seq[Subject]
+    condition*: OrderedTable[string, string]
+      ## The circumstances that measurement must be made under. A dependency
+      ## is its own measurement request, so its conditions may differ from
+      ## the claim's own; the DSL stamps the trailing conditions onto every
+      ## one.
+
+  PredicateDep* = object
+    name*: string
+      ## The author-chosen name, for diagnostics: "dependency 'vdd' ...".
+    measurement*: MeasurementRef
+
+  PredicateProc* = proc (values: seq[float]): bool {.nimcall.}
+    ## A non-capturing Nim proc over the dependency values, in the order the
+    ## dependencies were named. `{.nimcall.}` is what enforces non-capturing:
+    ## a proc that reaches an outer variable will not convert and the design
+    ## fails to compile, rather than silently capturing state the contract
+    ## layer cannot see.
+
+  RelativeOp* = enum
+    roLe   ## `value <= coeff * reference`
+    roGe   ## `value >= coeff * reference`
+    roEq   ## `value` within the stated band of `coeff * reference`
+
   ExpectKind* = enum
     ekNominal   ## a target with a tolerance band
     ekMin
     ekMax
     ekRange
+    ekRelative  ## a bound referring to another measurement
+    ekPredicate ## a Nim proc over named measurement dependencies
 
   Expectation* = object
     ## A variant object rather than a set of nullable bounds, so the cases
@@ -57,6 +87,18 @@ type
       hi*: float
     of ekRange:
       rlo*, rhi*: float
+    of ekRelative:
+      relOp*: RelativeOp
+      coeff*: float
+        ## The multiplier on the referenced measurement's value: "no more
+        ## than a fifth of the primary filter" is `coeff = 0.2`.
+      reference*: MeasurementRef
+      relFracTol*, relAbsTol*: float
+        ## The band for `roEq`, as a fraction of the bound or an absolute.
+        ## The wider of the two is accepted, exactly as `ekNominal` does.
+    of ekPredicate:
+      deps*: seq[PredicateDep]
+      predicate*: PredicateProc
 
   Assertion* = object
     id*: string
@@ -86,6 +128,27 @@ proc atLeast*(lo: float): Expectation = Expectation(kind: ekMin, lo: lo)
 proc atMost*(hi: float): Expectation = Expectation(kind: ekMax, hi: hi)
 proc between*(lo, hi: float): Expectation = Expectation(kind: ekRange, rlo: lo, rhi: hi)
 
+proc measurementRef*(quantity: string, subjects: seq[Subject]): MeasurementRef =
+  MeasurementRef(quantity: quantity, subjects: subjects)
+
+proc relative*(op: RelativeOp, coeff: float, reference: MeasurementRef,
+               fracTol = 0.0, absTol = 0.0): Expectation =
+  ## The runtime form of `value <= coeff * reference`.
+  Expectation(kind: ekRelative, relOp: op, coeff: coeff,
+              reference: reference, relFracTol: fracTol, relAbsTol: absTol)
+
+proc predicate*(deps: seq[PredicateDep], pred: PredicateProc): Expectation =
+  Expectation(kind: ekPredicate, deps: deps, predicate: pred)
+
+proc relOpText*(op: RelativeOp): string =
+  ## The operator the author wrote, for a sentence a designer reads. Shared
+  ## by the renderer and the verdict, so the two can never spell one of them
+  ## two ways.
+  case op
+  of roLe: "<="
+  of roGe: ">="
+  of roEq: "=="
+
 proc bounds*(e: Expectation): tuple[lo, hi: float] =
   ## The acceptance interval, with infinities for an open end. `ekNominal`
   ## takes the *wider* of its fractional and absolute tolerances when both are
@@ -98,6 +161,11 @@ proc bounds*(e: Expectation): tuple[lo, hi: float] =
   of ekMin: (e.lo, Inf)
   of ekMax: (-Inf, e.hi)
   of ekRange: (e.rlo, e.rhi)
+  of ekRelative, ekPredicate:
+    # No constant interval exists: the bound is another measurement, or the
+    # answer is a proc over several. `NaN` is the honest reading, and the
+    # planner never routes either kind through this single-value comparison.
+    (NaN, NaN)
 
 proc satisfies*(e: Expectation, value: float): bool =
   ## The comparison every evaluator will share. Exposed now so an assertion
@@ -106,9 +174,43 @@ proc satisfies*(e: Expectation, value: float): bool =
   ##
   ## A `NaN` value never satisfies anything: "the measurement did not happen"
   ## must not read as a pass.
+  ##
+  ## A relative or predicate expectation has no single-value answer -- the
+  ## planner decomposes those into hidden measurement requests and folds them
+  ## back -- so a lone value never satisfies one.
   if value.isNaN: return false
+  if e.kind in {ekRelative, ekPredicate}: return false
   let (lo, hi) = e.bounds
   value >= lo and value <= hi
+
+proc satisfies*(e: Expectation, value, reference: float): bool =
+  ## The two-value form, for `ekRelative` only. `reference` is the referenced
+  ## measurement's value; the bound is `coeff * reference`.
+  if e.kind != ekRelative: return false
+  if value.isNaN or reference.isNaN: return false
+  let bound = e.coeff * reference
+  case e.relOp
+  of roLe: value <= bound
+  of roGe: value >= bound
+  of roEq:
+    let tol = max(abs(bound) * e.relFracTol, e.relAbsTol)
+    value >= bound - tol and value <= bound + tol
+
+proc coeffText(c: float): string =
+  ## A multiplier is a plain number, not an engineering quantity -- `0.2`,
+  ## not `200m` -- so `eng` would be the wrong renderer for it.
+  var t = formatFloat(c, ffDecimal, 9)
+  while t.endsWith("0"): t.setLen(t.len - 1)
+  if t.endsWith("."): t.setLen(t.len - 1)
+  t
+
+proc `$`*(s: Subject): string =
+  case s.kind
+  of skNet: "net '" & s.name & "'"
+  of skComponent: s.name
+  of skPin: "pin " & s.name
+  of skClass: "role " & s.name
+  of skDesign: "the design"
 
 proc `$`*(e: Expectation, unit = ""): string =
   case e.kind
@@ -119,14 +221,24 @@ proc `$`*(e: Expectation, unit = ""): string =
   of ekMin: result = ">= " & eng(e.lo, unit)
   of ekMax: result = "<= " & eng(e.hi, unit)
   of ekRange: result = eng(e.rlo, unit) & " .. " & eng(e.rhi, unit)
-
-proc `$`*(s: Subject): string =
-  case s.kind
-  of skNet: "net '" & s.name & "'"
-  of skComponent: s.name
-  of skPin: "pin " & s.name
-  of skClass: "role " & s.name
-  of skDesign: "the design"
+  of ekRelative:
+    var subj: seq[string]
+    for s in e.reference.subjects: subj.add $s
+    let refText = e.reference.quantity & "(" & subj.join(", ") & ")"
+    result = relOpText(e.relOp) & " "
+    if e.coeff != 1.0: result &= coeffText(e.coeff) & " * "
+    result &= refText
+    if e.relOp == roEq and (e.relFracTol > 0.0 or e.relAbsTol > 0.0):
+      if e.relFracTol > 0.0: result &= " +-" & eng(e.relFracTol * 100.0) & "%"
+      if e.relAbsTol > 0.0: result &= " +-" & eng(e.relAbsTol, unit)
+  of ekPredicate:
+    var parts: seq[string]
+    for d in e.deps:
+      var subj: seq[string]
+      for s in d.measurement.subjects: subj.add $s
+      parts.add d.name & " = " & d.measurement.quantity & "(" &
+               subj.join(", ") & ")"
+    result = "predicate(" & parts.join(", ") & ")"
 
 proc describe*(a: Assertion): string =
   ## The claim on its own, without the id.
@@ -134,6 +246,16 @@ proc describe*(a: Assertion): string =
   ## `$` prefixes the id, which is right for a bare list but wrong for any
   ## renderer that already prints the id as a label -- that produced
   ## `[FAIL] rail.voltage: rail.voltage: dc_voltage(...)`.
+  ##
+  ## A predicate has no left-hand quantity of its own, so it is spelled
+  ## entirely from its named dependencies.
+  if a.expect.kind == ekPredicate:
+    result = `$`(a.expect, a.unit)
+    if a.condition.len > 0:
+      var conds: seq[string]
+      for k, v in a.condition: conds.add k & "=" & prettyValue(v)
+      result &= " [" & conds.join(", ") & "]"
+    return
   var subj: seq[string]
   for s in a.subjects: subj.add $s
   result = a.quantity & "(" & subj.join(", ") & ") " & `$`(a.expect, a.unit)

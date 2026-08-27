@@ -120,6 +120,61 @@ test "a multi-subject requirement is expressible, ready for relational quantitie
   check x.subjects[0].name == "miso"
   check x.subjects[1].name == "sclk"
 
+test "a relative require parses number * measurement and stamps conditions on both sides":
+  let d = design("rel"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require z_max_in_band(a) <= 0.2 * z_max_in_band(b),
+            f_from = 100.kHz, f_to = 100.MHz, id = "REL"
+  let x = d.expandAll()[0]
+  check x.expect.kind == ekRelative
+  check x.expect.relOp == roLe
+  check abs(x.expect.coeff - 0.2) < 1e-12
+  check x.expect.reference.quantity == "z_max_in_band"
+  check x.expect.reference.subjects == @[Subject(kind: skNet, name: "b")]
+  check x.condition.hasKey("f_from")
+  check x.expect.reference.condition.hasKey("f_from")
+
+test "measurement * number parses too, in either order":
+  let d = design("rel2"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require z_max_in_band(a) >= z_max_in_band(b) * 2, id = "GE"
+  let x = d.expandAll()[0]
+  check x.expect.kind == ekRelative
+  check x.expect.relOp == roGe
+  check abs(x.expect.coeff - 2.0) < 1e-12
+  check x.expect.reference.quantity == "z_max_in_band"
+
+test "a relative == takes its tolerance from the trailing band":
+  let d = design("rel3"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require dc_voltage(a) == 0.5 * dc_voltage(b), band = 5.pct, id = "EQ"
+  let x = d.expandAll()[0]
+  check x.expect.kind == ekRelative
+  check x.expect.relOp == roEq
+  check abs(x.expect.coeff - 0.5) < 1e-12
+  check abs(x.expect.relFracTol - 0.05) < 1e-12
+
+test "a predicate names its dependencies and gets a non-capturing proc":
+  let d = design("pred"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require pred(x = dc_voltage(a), y = dc_voltage(b), id = "P",
+                 f_from = 100.kHz) do (x, y: float) -> bool:
+      x > y
+  let x = d.expandAll()[0]
+  check x.expect.kind == ekPredicate
+  check x.expect.deps.len == 2
+  check x.expect.deps[0].name == "x"
+  check x.expect.deps[1].measurement.quantity == "dc_voltage"
+  # Trailing conditions apply to every dependency.
+  check x.expect.deps[0].measurement.condition.hasKey("f_from")
+  check x.expect.deps[1].measurement.condition.hasKey("f_from")
+  check x.expect.predicate(@[3.0, 2.0])
+  check not x.expect.predicate(@[2.0, 3.0])
+
 test "explain prints the whole contract, authored and expanded alike":
   let text = board().explain()
   check "vdd_rail : power_rail" in text
@@ -211,6 +266,27 @@ test "the permissive statement-head fallback is untouched by any of this":
 """)
   check ok
   if not ok: echo output
+
+test "arithmetic over a measurement is refused with the predicate escape hatch":
+  # `number * measurement` is the only arithmetic a relative bound accepts;
+  # anything richer must be a `pred(...)`.
+  let (ok, output) = compileFixture(preamble & """
+  net a, kind = ntSignal
+  net b, kind = ntSignal
+  require z_max_in_band(a) <= z_max_in_band(b) + 1.0, id = "X"
+""")
+  check not ok
+  check "pred" in output
+
+test "a predicate body whose arity disagrees with its dependencies is refused":
+  let (ok, output) = compileFixture(preamble & """
+  net a, kind = ntSignal
+  net b, kind = ntSignal
+  require pred(x = z_max_in_band(a), y = z_max_in_band(b), id = "P") do (x: float) -> bool:
+    x > 0.0
+""")
+  check not ok
+  check "dependenc" in output
 
 proc stage(): Netlist =
   subckt("STAGE", [IN, OUT, VP, GND]):

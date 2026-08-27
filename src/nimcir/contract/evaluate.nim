@@ -34,7 +34,7 @@
 ## ones registered here. A built-in that cheats makes user-defined evaluators
 ## second-class, and then nobody writes one.
 
-import std/[algorithm, math, options, strutils, tables]
+import std/[algorithm, math, options, sets, strutils, tables]
 import ../netlist/types
 import ../netlist/annotations
 import ../eng
@@ -214,12 +214,30 @@ type
     reason*: string
     evaluator*: string   ## empty when nothing claimed the quantity
 
+  ResolveStep* = object
+    ## How a relative or predicate claim folds back into one user-visible
+    ## result after its hidden measurement requests have run.
+    assertion*: Assertion
+      ## The authored claim, kept whole.
+    primary*: string
+      ## Id of the hidden request for the left-hand measurement; "" for a
+      ## predicate, which has none.
+    deps*: seq[tuple[name, request: string]]
+      ## The named dependencies, in predicate-argument order. A relative
+      ## claim has exactly one, named `reference`.
+
   Plan* = object
     ## What *would* run. Separated from running it because an assertion set
     ## you cannot inspect before it executes is the same failure mode
     ## `design.explain` exists to prevent.
     steps*: seq[PlanStep]
     rejected*: seq[Rejection]
+    resolves*: seq[ResolveStep]
+      ## Relative and predicate claims, one per authored claim, to be folded
+      ## from their hidden requests after the steps have run.
+    hidden*: HashSet[string]
+      ## Ids of the measurement requests the planner invented. Excluded from
+      ## every user-facing result list.
 
 proc capLabel*(c: Capability): string =
   ## Short form, shared by every renderer so one capability never appears
@@ -461,56 +479,115 @@ proc defaultKey(a: Assertion): string =
   for s in a.subjects: parts.add s.name
   parts.join("/")
 
+const hiddenIdPrefix = "\x1fcontract-dep\x1f"
+
+proc hiddenId(serial: int, role: string): string =
+  ## A request id no authored claim can collide with in practice: the same
+  ## record separator the planner already uses for its step keys, plus a
+  ## monotonic counter. The counter guarantees uniqueness; the prefix lets a
+  ## reader tell an invented request from a claim at a glance.
+  hiddenIdPrefix & $serial & "\x1f" & role
+
+proc routePlain(ctx: EvalContext, p: var Plan,
+                stepIndex: var Table[string, int], a: Assertion) =
+  ## Route one plain measurement request, the path every assertion took
+  ## before relative and predicate claims existed. Hidden requests from the
+  ## planner go through here unchanged, so they group with authored claims
+  ## sharing the same evaluator and setup.
+  let d = ctx.design
+  let allowed = ctx.allowed
+  let evOpt = evaluatorFor(a.quantity)
+  if evOpt.isNone:
+    p.rejected.add Rejection(assertion: a, status: esNotEvaluable,
+      reason: "no evaluator produces '" & a.quantity & "'")
+    return
+  let ev = evOpt.get
+
+  if a.subjects.len notin ev.arity:
+    p.rejected.add Rejection(assertion: a, status: esNotEvaluable,
+      evaluator: ev.name,
+      reason: "'" & a.quantity & "' takes " & $ev.arity.a & ".." &
+              (if ev.arity.b == int.high: "n" else: $ev.arity.b) &
+              " subjects, got " & $a.subjects.len)
+    return
+
+  var badKind = false
+  for s in a.subjects:
+    if s.kind notin ev.subjectKinds:
+      p.rejected.add Rejection(assertion: a, status: esNotEvaluable,
+        evaluator: ev.name,
+        reason: "'" & a.quantity & "' cannot be measured of " & $s)
+      badKind = true
+      break
+  if badKind: return
+
+  let missing = ev.needs - allowed
+  if missing.len > 0:
+    p.rejected.add Rejection(assertion: a, status: esNotEvaluated,
+      evaluator: ev.name,
+      reason: "needs the " & capLabel(missing) &
+              (if missing.len > 1: " capabilities, which were not offered"
+               else: " capability, which was not offered"))
+    return
+
+  let key = if ev.setupKey != nil: ev.setupKey(ctx, a) else: defaultKey(a)
+  let slot = ev.name & "\x1f" & key
+  if not stepIndex.hasKey(slot):
+    stepIndex[slot] = p.steps.len
+    p.steps.add PlanStep(evaluator: ev.name, key: key, needs: ev.needs)
+  p.steps[stepIndex[slot]].assertions.add a
+
 proc plan*(ctx: EvalContext): Plan =
   ## Routes every assertion in the design -- authored and role-expanded alike
   ## -- to an evaluator, grouping into one step per `(evaluator, setup key)`.
+  ##
+  ## A relative or predicate claim is first decomposed into hidden
+  ## measurement requests (its left-hand measurement and each named
+  ## dependency), each routed through the ordinary path, and one `ResolveStep`
+  ## that folds them back into the single authored claim. The evaluator ABI
+  ## never sees the relative or predicate itself.
   ##
   ## Pure: nothing runs, nothing is simulated, and the design is not touched.
   let d = ctx.design
   let allowed = ctx.allowed
   var stepIndex: Table[string, int]
+  var serial = 0
 
   for a in d.expandAll():
-    let evOpt = evaluatorFor(a.quantity)
-    if evOpt.isNone:
-      result.rejected.add Rejection(assertion: a, status: esNotEvaluable,
-        reason: "no evaluator produces '" & a.quantity & "'")
-      continue
-    let ev = evOpt.get
+    case a.expect.kind
+    of ekNominal, ekMin, ekMax, ekRange:
+      routePlain(ctx, result, stepIndex, a)
+    of ekRelative:
+      let primId = hiddenId(serial, "primary"); inc serial
+      result.hidden.incl primId
+      var prim = a
+      prim.id = primId
+      prim.expect = atLeast(-Inf)
+      routePlain(ctx, result, stepIndex, prim)
 
-    if a.subjects.len notin ev.arity:
-      result.rejected.add Rejection(assertion: a, status: esNotEvaluable,
-        evaluator: ev.name,
-        reason: "'" & a.quantity & "' takes " & $ev.arity.a & ".." &
-                (if ev.arity.b == int.high: "n" else: $ev.arity.b) &
-                " subjects, got " & $a.subjects.len)
-      continue
+      let depId = hiddenId(serial, "reference"); inc serial
+      result.hidden.incl depId
+      let reference = a.expect.reference
+      var dep = Assertion(id: depId, subjects: reference.subjects,
+        quantity: reference.quantity, expect: atLeast(-Inf), unit: "",
+        severity: a.severity, rationale: "", origin: a.origin)
+      for k, v in reference.condition: dep.condition[k] = v
+      routePlain(ctx, result, stepIndex, dep)
 
-    var badKind = false
-    for s in a.subjects:
-      if s.kind notin ev.subjectKinds:
-        result.rejected.add Rejection(assertion: a, status: esNotEvaluable,
-          evaluator: ev.name,
-          reason: "'" & a.quantity & "' cannot be measured of " & $s)
-        badKind = true
-        break
-    if badKind: continue
-
-    let missing = ev.needs - allowed
-    if missing.len > 0:
-      result.rejected.add Rejection(assertion: a, status: esNotEvaluated,
-        evaluator: ev.name,
-        reason: "needs the " & capLabel(missing) &
-                (if missing.len > 1: " capabilities, which were not offered"
-                 else: " capability, which was not offered"))
-      continue
-
-    let key = if ev.setupKey != nil: ev.setupKey(ctx, a) else: defaultKey(a)
-    let slot = ev.name & "\x1f" & key
-    if not stepIndex.hasKey(slot):
-      stepIndex[slot] = result.steps.len
-      result.steps.add PlanStep(evaluator: ev.name, key: key, needs: ev.needs)
-    result.steps[stepIndex[slot]].assertions.add a
+      result.resolves.add ResolveStep(assertion: a, primary: primId,
+        deps: @[(name: "reference", request: depId)])
+    of ekPredicate:
+      var reqs: seq[tuple[name, request: string]]
+      for d in a.expect.deps:
+        let depId = hiddenId(serial, "dep." & d.name); inc serial
+        result.hidden.incl depId
+        var req = Assertion(id: depId, subjects: d.measurement.subjects,
+          quantity: d.measurement.quantity, expect: atLeast(-Inf), unit: "",
+          severity: a.severity, rationale: "", origin: a.origin)
+        for k, v in d.measurement.condition: req.condition[k] = v
+        routePlain(ctx, result, stepIndex, req)
+        reqs.add (name: d.name, request: depId)
+      result.resolves.add ResolveStep(assertion: a, primary: "", deps: reqs)
 
 proc plan*(d: Design, allowed: set[Capability] = offlineCapabilities): Plan =
   ## Convenience for a caller that does not need to hold a context. Note that
@@ -519,8 +596,14 @@ proc plan*(d: Design, allowed: set[Capability] = offlineCapabilities): Plan =
   plan(newEvalContext(d, allowed))
 
 proc assertionCount*(p: Plan): int =
-  for s in p.steps: result += s.assertions.len
-  result += p.rejected.len
+  ## The number of *authored* claims in the plan. The planner's hidden
+  ## measurement requests are implementation detail and are not claims.
+  for s in p.steps:
+    for a in s.assertions:
+      if a.id notin p.hidden: inc result
+  for r in p.rejected:
+    if r.assertion.id notin p.hidden: inc result
+  result += p.resolves.len
 
 proc explainPlan*(p: Plan): string =
   var lines: seq[string]
@@ -529,10 +612,12 @@ proc explainPlan*(p: Plan): string =
   for s in p.steps:
     lines.add "  " & s.evaluator & " [" & capLabel(s.needs) & "]" &
               (if s.key.len > 0: " on " & s.key else: "") &
-              " -- " & $s.assertions.len & " assertion(s)"
+              " -- " & $s.assertions.len & " request(s)"
     for a in s.assertions:
+      if a.id in p.hidden: continue
       lines.add "      " & (if a.id.len > 0: a.id else: a.quantity)
   for r in p.rejected:
+    if r.assertion.id in p.hidden: continue
     lines.add "  (" & $r.status & ") " &
               (if r.assertion.id.len > 0: r.assertion.id else: r.assertion.quantity) &
               " -- " & r.reason
@@ -609,23 +694,156 @@ proc runPlan*(d: Design, p: Plan): seq[seq[AssertionResult]] =
   runPlan(newEvalContext(d, allCapabilities), p)
 
 proc rejectionResults*(p: Plan): seq[AssertionResult] =
-  ## The claims that never reached an evaluator, as results, so a caller
-  ## handles one kind of thing.
+  ## Every rejection, including the planner's hidden requests, as results.
+  ## Low-level: user-facing flows go through `visibleRejections` instead, so
+  ## an invented request never surfaces as a claim of its own.
   for rej in p.rejected:
     result.add AssertionResult(assertion: rej.assertion, status: rej.status,
                                value: NaN, unit: rej.assertion.unit,
                                reason: rej.reason, evaluator: rej.evaluator)
 
+proc visibleRejections*(p: Plan): seq[AssertionResult] =
+  ## The *authored* claims that never reached an evaluator, as results. The
+  ## planner's hidden requests are consumed by `resolveHidden` and never
+  ## surface as claims of their own.
+  for rej in p.rejected:
+    if rej.assertion.id in p.hidden: continue
+    result.add AssertionResult(assertion: rej.assertion, status: rej.status,
+                               value: NaN, unit: rej.assertion.unit,
+                               reason: rej.reason, evaluator: rej.evaluator)
+
+proc relativeResult(a: Assertion, prim, dep: AssertionResult): AssertionResult =
+  ## Fold one relative claim: the left-hand measurement and its reference
+  ## have both run (or refused to), and the comparison is between the two.
+  let e = a.expect
+
+  template refuse(r: AssertionResult, prefix: string): AssertionResult =
+    var res = AssertionResult(assertion: a, status: r.status, value: NaN,
+      unit: r.unit, reason: prefix & r.reason, evaluator: r.evaluator)
+    res.assumptions = r.assumptions
+    res.issues = r.issues
+    res
+
+  if prim.status notin {esPass, esFail}:
+    return refuse(prim, "")
+  if dep.status notin {esPass, esFail}:
+    return refuse(dep, "the reference measurement '" & e.reference.quantity &
+      "' could not be made: ")
+
+  if not unitsAgree(prim.unit, dep.unit):
+    result = notEvaluable(a, prim.evaluator,
+      "unit mismatch: " & a.quantity & " is measured in " & prim.unit &
+      " but its reference " & e.reference.quantity & " in " & dep.unit)
+    result.assumptions = prim.assumptions & dep.assumptions
+    result.issues = prim.issues & dep.issues
+    return
+
+  let bound = e.coeff * dep.value
+  let unit = if prim.unit.len > 0: prim.unit else: dep.unit
+  let ok = case e.relOp
+    of roLe: prim.value <= bound
+    of roGe: prim.value >= bound
+    of roEq:
+      let tol = max(abs(bound) * e.relFracTol, e.relAbsTol)
+      prim.value >= bound - tol and prim.value <= bound + tol
+
+  result = AssertionResult(assertion: a, value: prim.value, unit: unit,
+    evaluator: prim.evaluator,
+    assumptions: prim.assumptions & dep.assumptions,
+    issues: prim.issues & dep.issues)
+  if ok:
+    result.status = esPass
+    result.reason = "measured " & eng(prim.value, unit) &
+      " (reference " & e.reference.quantity & " = " & eng(dep.value, unit) & ")"
+  else:
+    result.status = esFail
+    result.reason = "measured " & eng(prim.value, unit) & ", expected " &
+      relOpText(e.relOp) & " " & eng(bound, unit) &
+      " (reference " & e.reference.quantity & " = " & eng(dep.value, unit) & ")"
+
+proc predicateResult(a: Assertion,
+                     deps: seq[tuple[name: string, r: AssertionResult]]): AssertionResult =
+  ## Fold one predicate claim: gather the dependency values in order, run the
+  ## non-capturing proc, and report whether it held.
+  var values: seq[float]
+  var assumptions: seq[Assumption]
+  var issues: seq[Issue]
+  var evaluator = ""
+  var unit = ""
+
+  for (name, r) in deps:
+    if r.status notin {esPass, esFail}:
+      result = AssertionResult(assertion: a, status: r.status, value: NaN,
+        unit: r.unit, evaluator: r.evaluator,
+        reason: "dependency '" & name & "' could not be made: " & r.reason)
+      result.assumptions = r.assumptions
+      result.issues = r.issues
+      return
+    values.add r.value
+    assumptions.add r.assumptions
+    issues.add r.issues
+    if evaluator.len == 0: evaluator = r.evaluator
+    if unit.len == 0 and r.unit.len > 0: unit = r.unit
+
+  var ok = false
+  try:
+    ok = a.expect.predicate(values)
+  except CatchableError as e:
+    result = notEvaluated(a, evaluator, "the predicate raised: " & e.msg)
+    result.assumptions = assumptions
+    result.issues = issues
+    return
+
+  result = AssertionResult(assertion: a, status: (if ok: esPass else: esFail),
+    value: NaN, unit: unit, evaluator: evaluator,
+    reason: (if ok: "predicate held" else: "predicate did not hold"),
+    assumptions: assumptions, issues: issues)
+
+proc resolveHidden*(p: Plan, batches: seq[seq[AssertionResult]]): seq[AssertionResult] =
+  ## One user-visible result per relative/predicate claim, in `p.resolves`
+  ## order, folded from the hidden requests after they have run or been
+  ## rejected.
+  var byId = initTable[string, AssertionResult]()
+  for batch in batches:
+    for r in batch:
+      if r.assertion.id.len > 0: byId[r.assertion.id] = r
+  for rej in p.rejected:
+    if rej.assertion.id.len > 0:
+      byId[rej.assertion.id] = AssertionResult(
+        assertion: rej.assertion, status: rej.status, value: NaN,
+        unit: rej.assertion.unit, reason: rej.reason, evaluator: rej.evaluator)
+
+  for step in p.resolves:
+    var depResults: seq[tuple[name: string, r: AssertionResult]]
+    for d in step.deps:
+      depResults.add (name: d.name, r: byId.getOrDefault(d.request,
+        notEvaluated(step.assertion, "",
+          "internal: hidden request '" & d.request & "' produced no result")))
+    if step.primary.len > 0:
+      let prim = byId.getOrDefault(step.primary,
+        notEvaluated(step.assertion, "",
+          "internal: hidden request '" & step.primary & "' produced no result"))
+      result.add relativeResult(step.assertion, prim, depResults[0].r)
+    else:
+      result.add predicateResult(step.assertion, depResults)
+
 proc evaluate*(ctx: EvalContext): seq[AssertionResult] =
   ## Every claim this design makes, checked as far as `ctx.allowed` permits.
+  ##
+  ## Exactly one result comes back per authored claim: relative and predicate
+  ## claims are folded from their hidden requests rather than reported once
+  ## per measurement.
   ##
   ## One context throughout, so every step of the run shares whatever the
   ## first one put in `scratch` -- which is what makes "one `.op` per design"
   ## a property of the run rather than of a module-level cache.
   let p = plan(ctx)
-  for batch in runPlan(ctx, p):
-    for r in batch: result.add r
-  for r in rejectionResults(p): result.add r
+  let batches = runPlan(ctx, p)
+  for batch in batches:
+    for r in batch:
+      if r.assertion.id notin p.hidden: result.add r
+  for r in visibleRejections(p): result.add r
+  for r in resolveHidden(p, batches): result.add r
 
 proc evaluate*(d: Design, allowed: set[Capability] = offlineCapabilities): seq[AssertionResult] =
   ## Every claim this design makes, checked as far as `allowed` permits.

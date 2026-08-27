@@ -281,3 +281,35 @@ suite "the catalog names a two-subject quantity as one":
     for line in q.splitLines():
       if line.strip().startsWith("gain_delta_max_db"):
         check "2 subjects" in line
+
+suite "relative and predicate claims in the report":
+  test "a relative claim folds to one result and never leaks its hidden requests":
+    var d = bus("2.2k")
+    # 1 pull-up on sda >= 2 * 1 pull-up on scl is false: the reference run
+    # (scl) exists only to feed this claim and must not appear as a claim.
+    d.assertThat relAssertion("pullup_count",
+      @[Subject(kind: skNet, name: "sda")], roGe, 2.0,
+      "pullup_count", @[Subject(kind: skNet, name: "scl")],
+      id = "REQ-REL-FAIL")
+    let r = readiness(d, offlineCapabilities)
+    var seen = 0
+    for res in r.results:
+      if res.assertion.id == "REQ-REL-FAIL": inc seen
+    check seen == 1
+    check count(r.results, esFail) == 1
+    let text = render(r)
+    check "REQ-REL-FAIL" in text
+    check "contract-dep" notin text
+
+  test "a predicate claim renders as a predicate, not as a measurement":
+    var d = bus("2.2k")
+    d.assertThat predicateAssertion(
+      @[dep("sda_pullups", "pullup_count", @[Subject(kind: skNet, name: "sda")]),
+        dep("scl_pullups", "pullup_count", @[Subject(kind: skNet, name: "scl")])],
+      proc (values: seq[float]): bool {.nimcall.} = values[0] == values[1],
+      id = "REQ-PRED")
+    let r = readiness(d, offlineCapabilities)
+    check count(r.results, esPass) >= 1
+    let text = render(r)
+    check "REQ-PRED" in text
+    check "predicate" in text

@@ -111,8 +111,10 @@ type
       ## steps against the count of assertions is the cheapest evidence that
       ## claims are being batched rather than re-simulated one by one.
     checks*: seq[Check]
-      ## The same steps, with what each one produced. One per plan step, in
-      ## plan order.
+      ## The steps with what each one produced, in plan order. A run that
+      ## existed only to measure a relative claim's reference (and so
+      ## answered no authored claim of its own) is folded into the claim that
+      ## used it rather than printed as an empty block.
     rejected*: seq[AssertionResult]
       ## Claims no step could take: nothing produces the quantity, the
       ## subjects are the wrong shape, or the capability was withheld. Kept
@@ -192,6 +194,7 @@ proc claimLint*(results: seq[AssertionResult]): seq[Issue] =
   ## `produces`); until then, reporting it beats comparing silently.
   for r in results:
     if r.status notin {esPass, esFail}: continue
+    if r.assertion.expect.kind in {ekRelative, ekPredicate}: continue
     if r.assertion.unit.len > 0 or r.unit.len == 0: continue
     result.add newIssue("claim_unit_unstated", sevWarning,
       "claim '" & label(r.assertion) & "' states no unit, but " &
@@ -260,21 +263,52 @@ proc readiness*(d: Design, allowed = allCapabilities): Readiness =
   # carries its evaluator's name but not its setup key, and two steps of one
   # evaluator -- a PDN sweep of two rails, a start-up of two regulators --
   # are two separate runs resting on two separate sets of assumptions.
+  #
+  # Relative and predicate claims were decomposed by `plan` into hidden
+  # measurement requests. Those requests run in the same steps, but they are
+  # not claims: they are filtered out of every check block, and the single
+  # authored claim they feed is folded back and attached to the run that
+  # measured it.
+  var stepOf = initTable[string, int]()
+  for i, step in result.plan.steps:
+    for a in step.assertions:
+      if a.id in result.plan.hidden: stepOf[a.id] = i
+
+  var checks: seq[Check]
+  checks.setLen(result.plan.steps.len)
   for i, step in result.plan.steps:
     var c = Check(evaluator: step.evaluator, needs: step.needs, key: step.key,
-                  setup: describeStep(ctx, step), results: batches[i])
+                  setup: describeStep(ctx, step))
+    for r in batches[i]:
+      if r.assertion.id notin result.plan.hidden: c.results.add r
+    checks[i] = c
+
+  result.rejected = visibleRejections(result.plan)
+
+  let resolved = resolveHidden(result.plan, batches)
+  for j, r in resolved:
+    let rs = result.plan.resolves[j]
+    let anchor = if rs.primary.len > 0: rs.primary else: rs.deps[0].request
+    if stepOf.hasKey(anchor):
+      checks[stepOf[anchor]].results.add r
+    else:
+      # The anchor request never reached a step (it was rejected at plan
+      # time), so the folded claim files with the others no test took.
+      result.rejected.add r
+
+  for c in checks:
+    if c.results.len == 0: continue   # a run that only fed another claim
+    var kept = c
     var seen = initHashSet[string]()
-    for r in c.results:
+    for r in kept.results:
       for a in r.assumptions:
         if a.source == annAuthored: continue
         let text = $a
         if text in seen: continue
         seen.incl text
-        c.assumptions.add a
-    result.checks.add c
-    for r in batches[i]: result.results.add r
-
-  result.rejected = rejectionResults(result.plan)
+        kept.assumptions.add a
+    result.checks.add kept
+    for r in kept.results: result.results.add r
   for r in result.rejected: result.results.add r
 
   for i in claimLint(result.results): result.structural.add i
@@ -408,9 +442,12 @@ proc renderClaim(L: var seq[string], r: AssertionResult, indent: string,
   ## line, since a limit read against the wrong part of a curve is not a
   ## check at all.
   var head = indent & "[" & statusMark(r.status) & "]  " & label(r.assertion)
-  var subj: seq[string]
-  for sub in r.assertion.subjects: subj.add $sub
-  head &= "   " & r.assertion.quantity & "(" & subj.join(", ") & ")"
+  if r.assertion.expect.kind == ekPredicate:
+    head &= "   predicate"
+  else:
+    var subj: seq[string]
+    for sub in r.assertion.subjects: subj.add $sub
+    head &= "   " & r.assertion.quantity & "(" & subj.join(", ") & ")"
   let conds = conditionText(r.assertion)
   if conds.len > 0: head &= "   " & conds
   L.add head
@@ -421,12 +458,17 @@ proc renderClaim(L: var seq[string], r: AssertionResult, indent: string,
   if interval.len > 0: cmpLine &= " (" & interval & ")"
   case r.status
   of esPass, esFail:
-    cmpLine &= "   measured " & eng(r.value, r.unit)
-    # `reason` carries more than the bare number when the measurement was
-    # taken somewhere the subject does not name -- `inrush_peak` is read on
-    # the rail being charged, not on the net the claim judges.
-    let at = r.reason.find(" at ")
-    if at >= 0: cmpLine &= r.reason[at .. ^1]
+    if r.assertion.expect.kind in {ekRelative, ekPredicate}:
+      # The comparison needs the referenced value(s), which are in `reason`;
+      # there is no single bare number to print after "measured".
+      cmpLine &= "   " & r.reason
+    else:
+      cmpLine &= "   measured " & eng(r.value, r.unit)
+      # `reason` carries more than the bare number when the measurement was
+      # taken somewhere the subject does not name -- `inrush_peak` is read on
+      # the rail being charged, not on the net the claim judges.
+      let at = r.reason.find(" at ")
+      if at >= 0: cmpLine &= r.reason[at .. ^1]
   of esNotEvaluated, esNotEvaluable:
     cmpLine &= "   not measured"
   for line in indented(cmpLine, deep, deep & "  "): L.add line

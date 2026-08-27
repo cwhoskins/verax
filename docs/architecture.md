@@ -936,14 +936,16 @@ legible.
   design and buys nothing for the job at hand.
 * **The contract layer is not an expression language.** Almost every claim is
   "quantity Q of subjects S under conditions C lies in interval I", and
-  `ExpectKind` today is exactly `ekNominal`/`ekMin`/`ekMax`/`ekRange`. When a
-  claim is not that shape, the escalation is: put the arithmetic in a Nim proc
-  emitting a *derived quantity* (an SPI setup margin is a computation over
-  datasheet numbers, not a measurement), then a planned `ekRelative` (a bound
-  referring to another measurement), then a planned `ekPredicate` (a Nim proc).
-  Neither of the last two exists yet; `Expectation` is a variant object
-  precisely so that adding them is additive rather than a redesign. **Nim is
-  the expression language** — at the cost of no parser, no evaluator and no
+  `ExpectKind` today is exactly `ekNominal`/`ekMin`/`ekMax`/`ekRange`/
+  `ekRelative`/`ekPredicate`. When a claim is not that shape, the escalation
+  is: put the arithmetic in a Nim proc emitting a *derived quantity* (an SPI
+  setup margin is a computation over datasheet numbers, not a measurement),
+  then `ekRelative` (a bound referring to another measurement —
+  `number * measurement` on the right), then `ekPredicate` (a non-capturing
+  Nim proc over named dependencies). `Expectation` is a variant object, so
+  the two added without touching the evaluator ABI: the planner decomposes
+  them into hidden measurement requests and folds them back. **Nim is the
+  expression language** — at the cost of no parser, no evaluator and no
   bespoke error messages.
 * **`netlist/environment` models nothing.** It carries a board's ambient range
   and a part's rise above it, and joins them. There is no tempco here, and the

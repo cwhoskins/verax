@@ -2237,3 +2237,57 @@ Two instances of one `subckt` produce two byte-identical isolated fragments, and
 ### §60 (`channel_match`), closed
 
 §60 proposed exactly this role and named `designs/riaa_preamp.nim` as the motivating design already in the repo. It is the role above. §59 (`sequencing`) stays a proposal -- it needs a new `t_reach_frac` quantity and has no design in-repo demanding it -- but it is no longer blocked.
+
+---
+
+## 52. `ekRelative` and `ekPredicate` were documented but did not exist
+
+**Fixed.** The `Expectation` variant gained `ekRelative` (a bound referring to
+another measurement — "no more than a fifth of the primary filter") and
+`ekPredicate` (a non-capturing Nim proc over named measurement dependencies),
+without touching the evaluator ABI.
+
+**What it was.** A claim shaped `require z_max_in_band(vdda) <= 0.2 *
+z_max_in_band(vdd)` had to be written as an absolute number somebody computed
+by hand from the other rail's result — the arithmetic-done-twice the contract
+layer exists to remove. The variant-object hedge had been paid for and never
+spent.
+
+**What was added.**
+
+* `contract/types.nim`: `MeasurementRef` (quantity + subjects + conditions),
+  `RelativeOp` (`roLe`/`roGe`/`roEq`), `PredicateDep`, `PredicateProc` (a
+  `{.nimcall.}` proc, so a capturing predicate fails to compile), and the two
+  new `ExpectKind` branches. `satisfies` gained the two-value overload for
+  `ekRelative`; the single-value form declines both new kinds, since neither
+  has a constant bound.
+* `contract/dsl.nim`: `require q(a) <= 0.2 * r(b)` parses a bare measurement
+  RHS or `number * measurement` in either order for `==`/`>=`/`<=`, with the
+  usual `band` setting the relative-equality tolerance; anything richer is a
+  compile error pointing at the predicate form. `require pred(x = q(a),
+  y = r(b), id = ...) do (x, y: float) -> bool: ...` names its dependencies
+  and wraps the author's proc so the dependency values arrive in order.
+  Trailing condition keys are stamped on the claim *and* every dependency
+  (the runtime API can set dependency-specific conditions via
+  `MeasurementRef.condition`).
+* `contract/evaluate.nim`: `plan` decomposes a relative/predicate claim into
+  hidden measurement requests (`Plan.hidden`, `\x1f`-prefixed ids) routed
+  through the identical `routePlain` path, plus one `ResolveStep`.
+  `resolveHidden` compares the two values (or runs the proc), propagates a
+  dependency's `esNotEvaluated`/`esNotEvaluable` and its assumptions/issues,
+  and checks the two measured units against each other. `evaluate` returns
+  exactly one result per authored claim; the evaluator `EvalProc` ABI never
+  sees the relative or predicate.
+* `verify.nim`: `readiness` filters hidden requests out of check blocks and
+  folds the resolved claim onto the run that measured its primary (or first
+  dependency), skipping a run that existed only to feed another claim;
+  `renderClaim` spells the relative comparison with its numeric bound and a
+  predicate as `predicate(...)`. `claimLint` skips the two new kinds, which
+  state no literal unit by design.
+
+Tests: `tests/test_contract_dsl.nim` (parsing, both operand orders, relative
+`==` band, predicate deps and conditions, compile-time refusals),
+`tests/test_contract_evaluate.nim` (relative pass/fail, reference refusals,
+unit mismatch, predicate, cross-setup folding, one-result-per-claim), and
+`tests/test_verify_readiness.nim` (no hidden request leaks, predicate
+rendering). See `docs/authoring.md` for the spelling.

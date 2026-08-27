@@ -268,6 +268,119 @@ test "an evaluator whose capability was not offered is not *evaluated*":
   # identifier -- the two must not drift, which is why `capLabel` is one proc.
   check "the static capability" in resultFor(rs, "X").reason
 
+# --- relative and predicate expectations ------------------------------
+
+proc runRel(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  for a in batch:
+    case a.quantity
+    of "rel_a": result.add verdict(a, 10.0, "V", "test.rel")
+    of "rel_b": result.add verdict(a, 100.0, "V", "test.rel")
+    else: result.add notEvaluable(a, "test.rel", "no such quantity")
+
+proc relKey(ctx: EvalContext, a: Assertion): string = "shared"
+
+registerEvaluator(Evaluator(
+  name: "test.rel",
+  produces: @["rel_a", "rel_b"],
+  needs: {capStatic},
+  arity: 1 .. 1,
+  subjectKinds: {skNet},
+  setupKey: relKey,
+  run: runRel))
+
+proc runPerNet(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  for a in batch: result.add verdict(a, 7.0, "V", "test.pernet")
+
+registerEvaluator(Evaluator(
+  name: "test.pernet",
+  produces: @["pn_q"],
+  needs: {capStatic},
+  arity: 1 .. 1,
+  subjectKinds: {skNet},
+  run: runPerNet))   # no setupKey: `defaultKey` groups by subject name
+
+test "a relative bound compares the two measurements, both ways":
+  let d = design("rel"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require rel_a(a) <= 0.5 * rel_b(b), id = "LE"   # 10 <= 50
+    require rel_a(a) >= 0.5 * rel_b(b), id = "GE"   # 10 >= 50 is false
+    require rel_a(a) == 0.1 * rel_b(b), band = 5.pct, id = "EQ"  # 10 == 10
+  let rs = evaluate(d)
+  check resultFor(rs, "LE").status == esPass
+  let ge = resultFor(rs, "GE")
+  check ge.status == esFail
+  check "expected >=" in ge.reason
+  check resultFor(rs, "EQ").status == esPass
+  # The claim carries the left-hand value, not the reference's.
+  check abs(resultFor(rs, "LE").value - 10.0) < 1e-12
+  check resultFor(rs, "LE").unit == "V"
+
+test "a relative bound whose reference cannot be made reports the reference":
+  let d = design("relbad"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require rel_a(a) <= 0.5 * nothing_here(b), id = "NOPROD"
+    require rel_a(a) <= 0.5 * test_nan(b), id = "NAN"
+    require rel_a(a) <= 0.5 * test_wrong_unit(b), id = "UNIT"
+  let rs = evaluate(d)
+  check resultFor(rs, "NOPROD").status == esNotEvaluable
+  check "reference measurement" in resultFor(rs, "NOPROD").reason
+  check "no evaluator produces" in resultFor(rs, "NOPROD").reason
+  check resultFor(rs, "NAN").status == esNotEvaluated
+  let unit = resultFor(rs, "UNIT")
+  check unit.status == esNotEvaluable
+  check "unit mismatch" in unit.reason
+  check "V" in unit.reason and "Hz" in unit.reason
+
+test "a predicate runs its proc over the dependency values in order":
+  let d = design("pred"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require pred(x = rel_a(a), y = rel_b(b), id = "P") do (x, y: float) -> bool:
+      x < y
+  let r = resultFor(evaluate(d), "P")
+  check r.status == esPass
+  check "predicate held" in r.reason
+
+test "a predicate whose dependency cannot be made names that dependency":
+  let d = design("predbad"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require pred(x = rel_a(a), y = nothing_here(b), id = "P") do (x, y: float) -> bool:
+      x < y
+  let r = resultFor(evaluate(d), "P")
+  check r.status == esNotEvaluable
+  check "dependency 'y'" in r.reason
+
+test "a relative claim's two measurements may live in different setups":
+  let d = design("cross"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require pn_q(a) <= 0.5 * pn_q(b), id = "CROSS"
+  # defaultKey groups by subject name, so the two sides are two runs.
+  var steps = 0
+  for s in plan(d).steps:
+    if s.evaluator == "test.pernet": inc steps
+  check steps == 2
+  # ...and still fold into exactly one user-visible result.
+  let rs = evaluate(d)
+  check rs.len == 1
+  check rs[0].assertion.id == "CROSS"
+  check rs[0].status == esFail          # 7 <= 3.5 is false
+
+test "relative and predicate claims are one result each, never one per request":
+  let d = design("mix"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require rel_a(a) <= 0.5 * rel_b(b), id = "R"
+    require pred(x = rel_a(a), y = rel_b(b), id = "P") do (x, y: float) -> bool:
+      x < y
+    require test_value(a) == 42.0.V, id = "PLAIN"
+  let rs = evaluate(d)
+  check rs.len == d.expandAll().len
+  check rs.len == 3
+
 # --- planning ------------------------------------------------------------
 
 test "assertions sharing a setup are grouped into a single step":

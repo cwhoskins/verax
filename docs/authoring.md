@@ -219,6 +219,37 @@ naming the arity. When the two subjects are themselves role instances — as
 `channel_match` binds two stages — write `roleRef("<instance name>")`, and
 declare the referenced roles *before* the one that names them.
 
+**A relative bound** puts another measurement on the right, so the limit is
+read off the same simulation rather than copied by hand:
+
+```nim
+require z_max_in_band(vdda) <= 0.2 * z_max_in_band(vdd),
+        f_from = 100.kHz, f_to = 100.MHz,
+        id = "REQ-ANA-QUIETER", because = "analog rail five times quieter"
+```
+
+`number * measurement` and `measurement * number` both work for `==`, `>=`
+and `<=`; a bare measurement on the right is the coefficient 1. For `==`, the
+usual `band = 5.pct` sets the tolerance on the relative equality. Trailing
+condition keys are stamped on **both** measurements, so the bound is taken at
+the same point of the curve. Arithmetic beyond one number times one
+measurement is refused at compile time — that is a predicate.
+
+**A predicate** names its measurement dependencies and gives a non-capturing
+Nim proc over them, in the order they are named:
+
+```nim
+require pred(a = dc_voltage(vdda), b = dc_voltage(vdd),
+             id = "REQ-RAILS-ORDERED") do (a, b: float) -> bool:
+  a < b
+```
+
+The proc must take exactly as many `float` parameters as there are
+dependencies and return `bool`; trailing condition keys apply to every
+dependency. Because it is non-capturing, the proc cannot see design-site
+state — the measurements it receives are its whole input, which is what keeps
+the claim inspectable.
+
 ## Writing a role of your own
 
 `nimcir quantities` marks each quantity with how it can be claimed:

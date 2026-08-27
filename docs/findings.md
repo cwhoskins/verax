@@ -265,22 +265,6 @@ prerequisites — the dependencies are stated where they exist.
     planner change at all, because the two pairs of sweeps produce
     byte-identical decks.
 
-14. **`ekRelative` and `ekPredicate` are documented as the escalation path and
-    do not exist** (§52). `contract/types.nim` names both in a comment
-    explaining that the `Expectation` variant is what makes them additive
-    rather than a redesign; the variant has `ekNominal`, `ekMin`, `ekMax` and
-    `ekRange`, and `satisfies` and `acceptance` branch over those four.
-
-    `require z_max_in_band(vdda) <= 0.2 * z_max_in_band(vdd)` — "the analog
-    rail must be five times quieter than the digital one" — is the shape a
-    large fraction of real claims take, and today it has to be written as an
-    absolute number somebody computed by hand from the other rail's result.
-    That is precisely the arithmetic-done-twice this library exists to remove,
-    and the hedge that was taken to keep it cheap has never been spent.
-    `ekRelative` also wants a second measurement in scope at comparison time,
-    which is a planner question rather than a types question, and that is the
-    part nobody has thought through.
-
 15. **Noise** (§54). No capability, no analysis, no quantity. For
     `designs/riaa_preamp.nim` this is not a refinement, it is *the*
     specification — a phono preamp is chosen on its input-referred noise —
