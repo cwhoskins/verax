@@ -184,7 +184,10 @@ story, and none of them should be traded away for convenience:
 
 * **`Assertion.subjects` is a `seq`**, not one subject plus a second-operand
   field. Setup/hold is inherently one signal *versus* another, so a two-subject
-  quantity must not be a special case bolted on later.
+  quantity must not be a special case bolted on later. The `channel_match`
+  role and its `spice.channel_match` evaluator (`arity: 2 .. 2`, subjects of
+  kind `skClass`) are the first to use it — `designs/riaa_preamp.nim` claims
+  its two channels agree, over and above each reaching its own gain.
 * **`Assertion.quantity` is an open string naming an analysis `Measurement`**
   (`dc_voltage`, `bw_3db`, `z_min`). That is what turns evaluation into "run
   whatever analysis produces this name, then compare", with one comparison
@@ -223,6 +226,8 @@ readiness(d, allowed)
   |                   for each assertion in d.expandAll():
   |                     evaluatorFor(quantity)   -> else rejected, esNotEvaluable
   |                     arity / subject kinds    -> else rejected, esNotEvaluable
+  |                       (arity is a `Slice[int]`: 1 .. 1 for almost all,
+  |                        2 .. 2 for `spice.channel_match`)
   |                     ev.needs <= allowed      -> else rejected, esNotEvaluated
   |                     group by (evaluator, setupKey(ctx, a))  -> one PlanStep
   |
@@ -640,6 +645,71 @@ Zener reference measures 1.67% of line regulation over its specified 6–16 V
 and 41.6% over 3–16 V, because most of the wider range is below the knee.
 Neither number is wrong; they are answers to different questions, and a
 planner that pooled them would report one of them as the other.
+
+### A regulator is not a node voltage
+
+Everything up to here holds the input still and the load still. A regulator is
+specified the other way round — by what it does when they move — and three
+things a datasheet's front page is written around were unaskable however many
+operating points were solved.
+
+**The load step** is the time-domain twin of `power_rail`'s `targetZ`, and the
+thing a target impedance is a *proxy* for. `analyzeLoadStep` is the only
+analysis here that changes the circuit to ask its question: it injects a
+pulsed constant-current sink through a `mutate` hook on `runWindow`, called
+after the model passes and before the probe resolves. A sink rather than a
+resistor, for the same reason `analyzeLoadSweep` gives, and pulsed rather than
+swept because the answer is a shape in time. Two decisions carry it. The
+baseline is what the rail was *actually* sitting at before the edge, not what
+the design says it should be. And the recovery is measured against where the
+rail settles **under the new load**: load regulation moves that point, and
+counting the shift as a failure to recover reports a correct regulator as an
+unstable one. Its band defaults to 1% and has to be stated tighter whenever
+the droop is smaller than that, or the rail never leaves it and the recovery
+reads a confident zero — which is the one wrong answer of this shape that
+looks like a right one.
+
+**Ripple rejection** is `analysis/psrr.nim`, and it is two measurements rather
+than one with a mode. The `.ac` sweep finds a curve's worst point; the `.tran`
+tone answers at one frequency with a real amplitude, which matters because a
+`.tran` is not linear and a ripple big enough to move a duty cycle gets a
+different answer. They need different capabilities, and `Evaluator.needs` is a
+single set, so one evaluator declaring `{capSpiceAc, capSpiceTran}` would be
+refused on a host offering only one. Two evaluators, disjoint quantities.
+
+How the ripple gets in follows `probes.addCurrentProbe` rather than rewriting
+the supply's value string: the supply's output pin is re-netted onto a fresh
+net and the ripple source goes between that and the original input net. The
+value string may be anything, and this composes correctly with
+`expandSourceImpedance` — whose 10 mohm and 1 uH then sit in series with the
+ripple, which is physical rather than an artefact.
+
+The honesty here is a **refusal**. `spice/models.regulatorModel` stands an
+unmodelled part in as an ideal source at its output voltage, which by
+construction has no path from its input to its output; so does a behavioural
+model that commands a voltage rather than a duty. Measured, an `.ac` sweep
+through an XSPICE code model returns exactly zero output, because a code model
+contributes to the AC matrix only if it sets `AC_GAIN`. In every one of those
+cases the output sits at the solver's noise floor while the input does not,
+and that is reported as *not evaluated* naming the missing feedthrough. The
+difference between "this regulator rejects perfectly" and "nothing was
+simulated that could fail" is the whole product.
+
+**Output current against the rating** needed no new analysis at all.
+`spice.current_path`'s setup key is the window, so a regulator's output-current
+claims batch into whatever `.tran` was already running — and one quantity was
+added to it, `i_out_derating`, which divides the *sense* part's RMS by the
+*regulator's* stated `current_rating`. `runCurrent` already had both halves in
+hand: the subject gives the sense part and `Assertion.origin` gives the role
+binding that names the regulator.
+
+That last point is why all of this lands in `roles.nim` as parameters on
+`regulator` rather than as three more roles. A load step needs a rail *and*
+knowledge that something is regulating it; a rejection needs a supply and an
+input pin; an output current needs a sense part and a rated regulator. All of
+those are bindings a regulator role already has or can take, and
+`linear_regulator` and `switching_regulator` expand the base whole before
+adding their own, so a claim added to the base cannot drift between the three.
 
 ### What crosses the process boundary
 

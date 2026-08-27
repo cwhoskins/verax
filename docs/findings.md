@@ -27,8 +27,17 @@ oldest one and is now closed too: `analyzeCurrent` and the `current_path`
 role make **current** a quantity — `i_peak`, `i_rms`, `i_avg`, `i_pp`, plus
 the two derating fractions that read a part's own `isat` and `current_rating`
 back off it — so `lt8640a_buck` claims its inductor's 905 mA triangle and its
-49% of saturation, and §64's efficiency figure is the only half of that
-proposal still blocked. What is below is what is left.
+49% of saturation, and §64's efficiency figure is the half still open —
+further off than a second `current_path` claim, since a converter's input
+current runs through no single two-terminal part; §64 now records why. §58
+built on that immediately: `analyzeLoadStep`,
+`analysis/psrr.nim` and the `regulator` / `linear_regulator` /
+`switching_regulator` roles ask a power supply the three questions it is
+actually specified by — what the rail does when the load jumps, how much of
+the input's ripple reaches it, and whether the part is being run past its
+rating. Doing that turned up **§66** and **§67** below, both of them findings
+rather than proposals: the models had to be fixed before the measurements
+meant anything. What is below is what is left.
 
 ---
 
@@ -87,7 +96,71 @@ proposal still blocked. What is below is what is left.
    That role is the deliverable; the quantity and the measurement are what it
    needs underneath.
 
-5. **A start-up transient is not sampled the way a settled one is.**
+5. **The switching model runs at exactly one print step, and nothing says
+   so** (§66). `designs/lib/lt8640a_sw.nim` forces sub-steps onto a
+   `1 / (fsw * nsub)` grid through `setTempBkpt`, and ngspice only survives a
+   `.tran` whose print step lands on it. Measured on
+   `designs/lt8640a_buck.nim` at 1 MHz and `nsub = 50`, so a 20 ns grid:
+
+   | print step | result |
+   |---|---|
+   | 30 ns | `Timestep too small` — no output |
+   | **20 ns** | **runs** |
+   | 15 ns | `Timestep too small` |
+   | 12 ns | `Timestep too small` |
+   | 10 ns | `Timestep too small` |
+
+   Nothing in the design states 20 ns. `analyzeTransient` derives the step as
+   `tWindow / 1000`, so the design's `tWindow = 20.0.us` is the only window
+   that works and every steady-state number on that board rests on that
+   arithmetic holding — one edit from breaking, with a failure that looks like
+   a solver problem rather than like a model constraint. It is also why the
+   design **cannot claim `fSw`** though the role offers it and the switch node
+   is bound: `analyzeOscillation` samples a window 10 000 times, which over
+   20 us is 2 ns.
+
+   The fix is in the model: guard `setTempBkpt` so a breakpoint already
+   passed is not re-armed. A first attempt at that broke the working 20 ns
+   case and was reverted rather than left in — a model whose ripple figures a
+   design already claims is not a thing to perturb on the way past. Until
+   then, the constraint belongs in the design's comments, which is where it
+   now is.
+
+6. **A regulator model can reject perfectly and mean nothing by it** (§67).
+   Two of the three regulator models here could not show input feedthrough at
+   all, so a PSRR measurement through them was a confident number about the
+   model:
+
+   - `designs/lib/adjreg.nim` drove the output net straight off the error
+     amplifier. There was **no element between IN and OUT**, so rejection
+     measured infinite and the input current was a declared constant.
+   - `designs/lib/lt8640a_avg.nim` commanded a switch *voltage*
+     (`output(sw) = aol * (vr - vf)`) with `partial(sw, vin) = 0` while in
+     regulation, so rejection was `aol` — a statement about a parameter.
+
+   Both are fixed, and both fixes were structural rather than a number being
+   corrected. `adjreg` now closes its loop through a floating series VCVS fed
+   from the IN net, so line response is `1 / (1 + aol)` and the input draw is
+   whatever the load takes; `lt8640a_avg` commands a **duty** and multiplies
+   it by the input. What falls out is measurable and checks against the
+   datasheet rather than against the model: the LM317 rail's line regulation
+   comes to 0.0107 %/V against a 0.01 %/V typical, and its rejection to
+   62.9 dB at 120 Hz by a `.tran` tone and 62.9 dB by an `.ac` sweep — two
+   solvers, agreeing to 0.002 dB.
+
+   **What is left open is the third case, and it cannot be fixed the same
+   way.** `spice/models.regulatorModel` stands an unmodelled `regulator`,
+   `ldo` or `buck` in as an ideal source at its output voltage, which by
+   construction has no input path — `templates/regulator.nim` is exactly
+   that. There is no loop to give it: the part number is all anybody stated.
+   So `analysis/psrr.nim` refuses instead, reporting `not evaluated` with
+   `KindNoFeedthrough` when the output sits at the solver's noise floor while
+   the input does not. That is honest, and it is not the same as a warning at
+   authoring time — a design can still state the claim, get the refusal, and
+   have to read the report to find out. A structural check that a PSRR claim's
+   regulator carries a model with a live input would be better.
+
+7. **A start-up transient is not sampled the way a settled one is.**
    `analyzeStartup` derives its print step from the run length
    (`tStop / 2000`), where §23 established that the derived step is *also*
    ngspice's ceiling on its own timestep. That is defensible for a rise time,
@@ -107,7 +180,7 @@ a thing the library cannot currently be asked. Ordered roughly by value per unit
 of work rather than by size, and several of them are each other's
 prerequisites — the dependencies are stated where they exist.
 
-6. **`tolerance` is written by the part policy and read by nothing** (§46).
+8. **`tolerance` is written by the part policy and read by nothing** (§46).
    `parts/annotate.applyChoice` sets it on every part the policy chooses,
    `annotations.nim` registers it, and no analysis, evaluator or report ever
    looks at it — the same registered-and-unconsumed smell `current_rating` had
@@ -126,7 +199,7 @@ prerequisites — the dependencies are stated where they exist.
    argument for §51, because it multiplies run count by exactly the factor
    caching would absorb. §62 is the design that would prove it.
 
-7. **`environment:` is stated, validated, and consumed by nothing** (§47).
+9. **`environment:` is stated, validated, and consumed by nothing** (§47).
    `validateEnvironment` checks what was stated, `partTemperatureRange` joins
    an ambient range to a part's rise, and no analysis reads the result. §28 is
    the expensive way to fix that — a capacitance-versus-temperature curve per
@@ -142,14 +215,14 @@ prerequisites — the dependencies are stated where they exist.
    its first consumer, gives `delta_t` something to be checked against rather
    than merely authored, and leaves §28 exactly where it is.
 
-8. **No machine-readable report output** (§48). `verify.readiness` renders one
+10. **No machine-readable report output** (§48). `verify.readiness` renders one
    text report and there is no other shape. A `--format=json` (or `--junit`)
    carrying each claim's id, quantity, subjects, expectation, measurement,
    status and assumptions makes the tool CI-native, costs nothing electrical,
    and cannot move a number. It is also the precondition for §49, which is
    where the real value is. Smallest item on this list.
 
-9. **A claim that passes by 40% and one that passes by 0.5% print
+11. **A claim that passes by 40% and one that passes by 0.5% print
     identically** (§49). The report says `PASS` and moves on, so the single
     most useful piece of information about a healthy design — how close it is
     to not being one — is computed and thrown away on every run. `acceptance`
@@ -163,7 +236,7 @@ prerequisites — the dependencies are stated where they exist.
     the phase margin while leaving it above 45°. Neither is worth much without
     the other.
 
-10. **`explainPlan` is written and has no caller** (§50). `plan` is pure and
+12. **`explainPlan` is written and has no caller** (§50). `plan` is pure and
     `explainPlan` renders it, both for the stated reason that an assertion set
     you cannot inspect before it executes is the failure mode this layer
     exists to prevent — and nothing in `cli.nim`, `verify.nim` or any design
@@ -172,7 +245,7 @@ prerequisites — the dependencies are stated where they exist.
     through the LT8640A's switching model at fifty timepoints a cycle is not
     free, and the tool already knows the bill before it runs up.
 
-11. **Nothing is cached; every run re-simulates from scratch** (§51). The
+13. **Nothing is cached; every run re-simulates from scratch** (§51). The
     derived deck is a deterministic function of the design and the analysis
     setup, and `--keep-runs` already writes it *before* handing it to ngspice —
     which means the exact bytes that determine the answer are already in hand
@@ -183,7 +256,16 @@ prerequisites — the dependencies are stated where they exist.
     theoretical. The invalidation story is unusually clean here because the
     hash is over the derived artifact rather than over the source.
 
-12. **`ekRelative` and `ekPredicate` are documented as the escalation path and
+    A concrete second customer landed with §53: `spice.channel_match` sweeps
+    each of two stages exactly the way `spice.opamp_response` does, so
+    `designs/riaa_preamp.nim` now runs **four** `.ac` sweeps where two would
+    do — the two `gain_stage` steps and this evaluator's own two, over the
+    same fragments. Routing one step's curve into another is planner work
+    (§52-shaped); a rawfile cache keyed on the derived deck absorbs it with no
+    planner change at all, because the two pairs of sweeps produce
+    byte-identical decks.
+
+14. **`ekRelative` and `ekPredicate` are documented as the escalation path and
     do not exist** (§52). `contract/types.nim` names both in a comment
     explaining that the `Expectation` variant is what makes them additive
     rather than a redesign; the variant has `ekNominal`, `ekMin`, `ekMax` and
@@ -199,19 +281,7 @@ prerequisites — the dependencies are stated where they exist.
     which is a planner question rather than a types question, and that is the
     part nobody has thought through.
 
-13. **No quantity takes more than one subject** (§53). `Assertion.subjects` is
-    a `seq` for the explicit reason that setup/hold is inherently one signal
-    *versus* another and must not be a special case bolted on later — and every
-    registered evaluator, built-in and static alike, declares `arity: 1 .. 1`.
-    So the shape decision is paid for and unused.
-
-    What it would reach: channel matching (§60), rail sequencing (§59),
-    setup/hold, differential balance, and any claim of the form "these two are
-    the same to within". `designs/riaa_preamp.nim` instances one channel twice
-    and can say nothing whatever about the pair, which is the single most
-    obvious thing to want to know about a stereo board.
-
-14. **Noise** (§54). No capability, no analysis, no quantity. For
+15. **Noise** (§54). No capability, no analysis, no quantity. For
     `designs/riaa_preamp.nim` this is not a refinement, it is *the*
     specification — a phono preamp is chosen on its input-referred noise —
     and the library cannot express the claim at all. `ngspice.analysisCards`
@@ -221,7 +291,7 @@ prerequisites — the dependencies are stated where they exist.
     of them is the spectral density. Quantities: `vn_out_rms` over a band,
     `vn_density_at_f`, and a noise figure if a source resistance is stated.
 
-15. **Nothing sweeps a parameter** (§55). The `EvalContext` refactor was
+16. **Nothing sweeps a parameter** (§55). The `EvalContext` refactor was
     justified in part by making a sweep over candidate designs *safe* — the
     shared operating point is scoped to one run, so two designs checked in one
     process can no longer share a cached solve — and nothing sweeps.
@@ -234,7 +304,7 @@ prerequisites — the dependencies are stated where they exist.
     or `verifyMain` grows a way to be called more than once with different
     bindings. Wants §51 to be affordable.
 
-16. **Two missing CLI surfaces** (§56), both small and neither electrical.
+17. **Two missing CLI surfaces** (§56), both small and neither electrical.
     `nimcir bom <design>` — `pcb/bom.buildBom` exists and the part policy
     computes real choices with real provenance, and there is no way to print
     any of it without writing a program. And `nimcir netlist <design> [-o
@@ -252,9 +322,12 @@ built-ins use no privileged mechanism, so each of these is ordinary code
 against the existing registry — which makes the interesting question for each
 one not "how" but "what does it bind, and what does the evaluator underneath
 it still lack". One more role is described where its blocking finding is:
-`logic_net`, under §44. (`current_path` was the other, and §27 built it.)
+`logic_net`, under §44. (`current_path` was one of the others, and §27 built
+it; `load_step` was the third, and §58 built it — as parameters on
+`regulator` rather than as a role of its own, because a load step is a thing
+a regulator is asked and not a thing to bind separately.)
 
-17. **`passive_filter`** (§57) — the response role with no amplifier binding.
+19. **`passive_filter`** (§57) — the response role with no amplifier binding.
     `opamp_stage` and `gain_stage` both require an `opamp` component and the
     evaluators behind them declare `binds: @["opamp", "input"]`, so an LC EMI
     filter, a ferrite-and-capacitor rail filter, an RC anti-alias front end, or
@@ -269,37 +342,37 @@ it still lack". One more role is described where its blocking finding is:
     handle the two ways driving a net goes wrong. Probably the largest increase
     in what the library can be pointed at, per line of code, on either list.
 
-18. **`load_step`** (§58) — the time-domain twin of `targetZ`, and the thing a
-    target impedance is a *proxy* for. Bind the rail and the sink; params
-    `iFrom`, `iTo`, `tEdge`, `maxDroop`, `maxOvershoot`, `maxRecover`.
-    `spice/boundary.driveSink` already builds a constant-current sink and
-    already documents why it is not a resistor (a sink is an open circuit at
-    AC and damps nothing, which is the same reason it is the right stimulus
-    here); this is that, pulsed, plus a `.tran` and three window statistics.
-    It answers "does the rail hold up when the MCU wakes" directly, instead of
-    by an impedance argument the reader has to complete themselves.
-
-19. **`sequencing`** (§59) — two rails and an ordering claim: core up before
+20. **`sequencing`** (§59) — two rails and an ordering claim: core up before
     I/O, or the two within 10 ms of each other. A real and common way to
     destroy an FPGA or a PHY, and nothing here can currently express it.
-    Multi-subject, so it is blocked on §53, and the natural first customer for
-    `ekRelative` in §52 — "rail A reaches 90% before rail B leaves 10%" is a
-    comparison between two measurements and not against a constant. Quantity:
-    `t_reach_frac` per rail, over the start-up run `analyzeStartup` already
-    performs.
-
-20. **`channel_match`** (§60) — bind two nets, claim `gain_delta_db <= 0.5 dB`,
-    or two corner frequencies within a ratio band. Blocked on §53. The
-    motivating design is already in the repository and already instances one
-    channel twice, which makes this the cheapest way to prove the multi-subject
-    path works on something real rather than on a fixture.
+    Multi-subject — **no longer blocked**: §53 shipped `arity: 2 .. 2` and the
+    `skClass` subject path, and `channel_match` is the worked precedent. It
+    remains the natural first customer for `ekRelative` in §52 — "rail A
+    reaches 90% before rail B leaves 10%" is a comparison between two
+    measurements and not against a constant. What is still missing is a
+    `t_reach_frac` quantity per rail, over the start-up run `analyzeStartup`
+    already performs, and a design in-repo that demands it.
 
 21. **`bias_point`** (§61) — bind a three-terminal device; claim `v_ce` or
-    `v_ds`, `i_c`, and headroom to the rail. Pure reads off the shared `.op`,
-    no new analysis, no new capability, and it is what a discrete stage is
-    designed around in the first place. The natural home, later, for "this
-    device is in its active region" as a derived quantity rather than something
-    the reader infers from two voltages.
+    `v_ds`, `i_c`, and headroom to the rail. The voltage claims are pure reads
+    off the shared `.op` — no new analysis, no new capability — and they are
+    what a discrete stage is designed around in the first place. The natural
+    home, later, for "this device is in its active region" as a derived
+    quantity rather than something the reader infers from two voltages.
+
+    **`i_c` is the part that is not free — it wants a pin subject.**
+    `Assertion.subjects` already has an `skPin` kind, `design.resolve` handles
+    it through `graph.findPin`, and `contract/dsl.subjectOf(Pin)` routes a pin
+    binding — but no evaluator declares `subjectKinds: {skPin}`, so a pin-bound
+    claim is rejected at plan time today. ngspice exposes per-terminal device
+    current directly (`@q1[ic]`, `@m1[id]`; `ngspice.currentParamsFor`), and
+    `branchCurrentVector` refuses `Q`/`M`/`J` precisely because "the current
+    through Q1" does not name a terminal — a pin subject is that
+    disambiguation. The work is one `skPin` evaluator mapping a pin to its
+    `@dev[term]` vector (real-valued, so saveable on an `.op`/`.tran`/`.dc`
+    plot, not `.ac`) plus lifting `analyzeCurrent`'s three-terminal refusal for
+    a pin-addressed claim. That same evaluator generalises `current_path` (§27)
+    to transistors, and §64 and §65 need it for their current claims.
 
 22. **`precision_divider`** (§62) — `designs/divider_net.nim`'s claims as a
     role: bind top, tap and bottom; params `ratio`, `band`, `zOut`,
@@ -329,21 +402,30 @@ it still lack". One more role is described where its blocking finding is:
 24. **`switching_converter`** (§64) — bind the switch node and the output;
     params `fSw`, `dutyRange`, `minEfficiency`, `maxRipple`. Ripple is already
     claimable through `settled_rail`, and duty and switching frequency fall out
-    of the same window. Efficiency is the one piece still missing, and §27
-    got it most of the way there: `i_avg` on a part is now a quantity, so an
-    input current and an output current are each one `current_path` claim
-    away — what is absent is the *product* of a voltage and a current, which
-    is arithmetic over two measurements rather than a new analysis, and which
-    is the same shape §52's `ekRelative` needs.
+    of the same window. Efficiency is the piece still missing, and it is
+    further off than §27 left it looking. The *output* current is one
+    `current_path` claim away — for a buck it is the inductor's `i_avg`, which
+    `lt8640a_buck` already measures. The *input* current is not: an input
+    capacitor carries only the switching ripple, not the DC draw, and a board
+    routinely splits its input bulk across several caps, so no two-terminal
+    part necessarily carries the whole of it — the current that matters is the
+    one into the converter's VIN pin. A part-scoped `current_path` cannot name
+    a pin (§61), and `lt8640a_buck`'s converter is an XSPICE code model with no
+    addressable terminal current anyway, so the input side needs either a pin
+    subject on a converter that reaches the deck as a real device, or a
+    deliberate series sense element in the design. Efficiency is then still the
+    *product* of a voltage and a current — arithmetic over two measurements,
+    the same shape §52's `ekRelative` needs.
 
 25. **`esd_clamp` / `protection`** (§65) — bind the protected net and the
     clamp; sweep past the clamp voltage and claim the clamped level and the
-    leakage below it. **No longer blocked** either: §45's `source_sweep` and
-    its `dc_out_max` already reach the clamped level, so what is missing is a
-    role saying which net is protected, plus a leakage quantity. The leakage
-    half is no longer blocked either: §27 made a device current measurable, so
-    what remains is a `.dc`-swept counterpart of `i_avg` rather than any new
-    plumbing.
+    leakage below it. **No longer blocked**: §45's `source_sweep` and its
+    `dc_out_max` already reach the clamped level, so what is missing is a role
+    saying which net is protected, plus a leakage quantity. For a two-terminal
+    clamp (a TVS diode) §27 already makes the current measurable and what
+    remains is a `.dc`-swept counterpart of `i_avg`. A multi-terminal clamp (a
+    rail-to-rail diode pair, a clamp array) carries the same three-terminal
+    ambiguity as §61 and wants the pin-subject evaluator described there.
 
 ---
 
@@ -357,8 +439,10 @@ passing claim today.
 capability enum member and one analysis module, and it unblocked §63 and §65
 and turned `divider_net`'s ratio and output resistance from asserted numbers
 into measured ones. Of what is left, §61 (`bias_point`) is the closest
-equivalent: pure reads off the shared `.op`, no new analysis and no new
-capability, for the thing a discrete stage is designed around.
+equivalent for its voltage claims: pure reads off the shared `.op`, no new
+analysis and no new capability, for the thing a discrete stage is designed
+around. Its `i_c` claim is not that cheap — it needs the `skPin` evaluator
+§61 now describes — but the voltage half stands alone.
 
 **Highest value overall:** was §27 with `current_path`, and it was spent — it
 closed the oldest open finding, made the registered-and-unchecked `isat` and
@@ -366,6 +450,7 @@ closed the oldest open finding, made the registered-and-unchecked `isat` and
 measurements. Of what is left, §57 (`passive_filter`) is the biggest single
 jump in what the library can be pointed at.
 
-**The two that quietly gate everything else:** §51, because §46 and §55 are
-both impractical without it, and §53, because §59 and §60 cannot be written at
-all until a quantity may take two subjects.
+**The one that quietly gates everything else:** §51, because §46 and §55 are
+both impractical without it — and §53 was its companion here until it shipped
+(`arity: 2 .. 2`, `skClass` subjects, `roleRef`, and `channel_match` on
+`designs/riaa_preamp.nim`), which unblocked §59 and closed §60.

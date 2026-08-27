@@ -25,6 +25,11 @@
 ##     100 Hz   +13.02 dB                               +13.09
 ##     10 kHz   -13.71 dB                               -13.73
 ##     20 kHz   -19.56 dB                               -19.62
+##
+## The `channel_match` claim -- the one this design exists for -- measures a
+## worst-case gain delta between the channels of **0 dB** over the audio band:
+## two instances of one `subckt` are the same circuit, and the two sweeps
+## agree to the last digit.
 
 import nimcir/contract/dsl
 import nimcir/verify
@@ -104,5 +109,23 @@ let d = design("riaa_preamp"):
   role "gain_stage", right, opamp = XR.innerComponent("U1"),
        input = inR, output = outR,
        atF = 1.kHz, minGain = 39.0.dB, maxGain = 40.5.dB
+
+  # The claim this design exists for. "Each channel reaches its gain" and "the
+  # two agree" are different claims and neither implies the other -- two
+  # channels 3 dB apart both pass the `gain_stage` bands above. `channel_match`
+  # binds the two stages already declared rather than restating six bindings,
+  # and must be declared *after* them: `resolve` raises otherwise, naming the
+  # ordering.
+  #
+  # Two identical instances of one `subckt` measure a delta of **exactly
+  # 0 dB** over 20 Hz .. 20 kHz -- the two isolated fragments are bit-identical
+  # and ngspice is deterministic, so every point of the two gain curves agrees
+  # to the last digit. That is the point: anything else would mean the two
+  # sweeps are not measuring the same circuit and the number would be about
+  # the harness, not the board. The claim can fail -- a +1% error on one
+  # channel's R7 measures 67 mdB, a +20% error 1.20 dB against the 0.5 dB
+  # limit.
+  role "channel_match", stereo, a = roleRef("left"), b = roleRef("right"),
+       fFrom = 20.Hz, fTo = 20.kHz, maxGainDelta = 0.5.dB
 
 quit(verifyMain(d))

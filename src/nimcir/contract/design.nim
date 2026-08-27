@@ -97,6 +97,19 @@ proc innerPin*(inst: Component, comp, pin: string): Subject =
       "; it has: " & names.join(", "))
   Subject(kind: skPin, name: hierName(c.name, pin))
 
+proc roleRef*(name: string): Subject =
+  ## A reference to another role instance, as a subject a multi-subject role
+  ## can bind: `role "channel_match", stereo, a = roleRef("left"), ...`.
+  ##
+  ## One line, and no validation of its own on purpose. `dsl.subjectOf(Subject)`
+  ## is an identity overload, so a helper returning a `Subject` routes through
+  ## the `role` macro as a *binding* with no macro change -- and `resolve`
+  ## below raises when the named instance is not there yet, which is also what
+  ## makes "declare the referenced roles first" an enforced ordering rather
+  ## than a convention. This is the `skClass` counterpart of `innerComponent`
+  ## walking its path immediately.
+  Subject(kind: skClass, name: name)
+
 proc resolve(d: Design, s: Subject): tuple[net: Net, comp: Component, pin: Pin] =
   ## Subject -> live entity, so a binding to something that does not exist is
   ## caught when the role is attached rather than when it is evaluated.
@@ -127,7 +140,23 @@ proc resolve(d: Design, s: Subject): tuple[net: Net, comp: Component, pin: Pin] 
     if p == nil:
       raise newException(NetlistError, "no such pin: " & s.name)
     (nil, p.component, p)
-  of skClass, skDesign:
+  of skClass:
+    # A reference to another role instance. It resolves to no netlist entity
+    # -- a role is not a net or a component -- so this returns all-nil, and
+    # `tagMembership` below therefore tags nothing, which is correct. What it
+    # does do is raise when the instance is absent: a `channel_match` naming
+    # `left`/`right` must be declared *after* the two `gain_stage`s, and this
+    # is where that is enforced.
+    if not d.roles.hasKey(s.name):
+      var have: seq[string]
+      for k in d.roles.keys: have.add k
+      raise newException(NetlistError,
+        "no role instance '" & s.name & "' -- a role that references another " &
+        "(a `channel_match` binding its two channels, say) must be declared " &
+        "after the roles it names. Declared so far: " &
+        (if have.len == 0: "(none)" else: have.join(", ")))
+    (nil, nil, nil)
+  of skDesign:
     (nil, nil, nil)
 
 proc tagMembership(d: Design, inst: RoleInstance) =
@@ -137,6 +166,10 @@ proc tagMembership(d: Design, inst: RoleInstance) =
     if p != nil: p.attrs[key] = partName
     elif c != nil: c.attrs[key] = partName
     elif n != nil: n.attrs[key] = partName
+    # An `skClass` binding resolves to all-nil and so tags nothing, which is
+    # right: a role instance is not a netlist entity and has nothing to carry
+    # a membership attr. The reference is still validated -- `resolve` raised
+    # above if the named instance did not exist.
 
 proc validate(d: Design, def: RoleDef, inst: RoleInstance) =
   var known: Table[string, RolePart]

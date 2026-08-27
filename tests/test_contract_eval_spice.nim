@@ -426,3 +426,313 @@ test "a current claim on a net says a current is carried by a part":
 
   let rs = evaluate(d, allCapabilities)
   check resultFor(rs, "REQ-NET-CURRENT").status == esNotEvaluable
+
+# --- load step, rejection and output-current derating -------------------
+
+proc stepBoard(): Design =
+  ## A stiff 5 V rail behind 100 mohm of source resistance, with 100 uF and
+  ## a 1 A standing load. The droop the step produces is arithmetic rather
+  ## than a fixture: a 0.5 A step through 100 mohm is 50 mV once the source
+  ## is in charge of it, and the capacitor's own contribution over the first
+  ## microsecond is `i * t / C` = 5 mV.
+  design("step"):
+    net vin, kind = ntPower
+    net vout, kind = ntPower
+    net gnd, kind = ntGround, name = "0"
+
+    component V1, kind = "voltage_source", value = "DC 5":
+      pin "+", vin, kind = ptPower
+      pin "-", gnd, kind = ptGround
+      spec:
+        current_rating = 2.0.A
+    component RS, kind = "resistor", value = "0.1":
+      pin "1", vin, kind = ptPassive
+      pin "2", vout, kind = ptPassive
+    component C1, kind = "capacitor", value = "100u":
+      pin "1", vout, kind = ptPassive
+      pin "2", gnd, kind = ptPassive
+      spec:
+        dielectric = "C0G"
+        esr = 1.mohm
+        esl = 1.pH
+    component RL, kind = "resistor", value = "5":
+      pin "1", vout, kind = ptPassive
+      pin "2", gnd, kind = ptPassive
+
+    role "regulator", reg, regulator = V1, output = vout, sense = RS,
+         without = "final_v,overshoot",
+         voltage = 5.0.V, band = 5.pct,
+         iFrom = 0.0.A, iTo = 0.5.A, tEdge = 1.0.us,
+         tStepAt = 20.0.ms, tHold = 10.0.ms, tRecover = 10.0.ms,
+         stepPoints = 4000, stepBand = 0.002,
+         maxDroop = 60.mV, maxStepOvershoot = 60.mV, maxRecover = 5.0.ms
+
+test "the load-step quantities are reachable and their subject is a net":
+  check isEvaluable("step_droop_v")
+  check isEvaluable("step_overshoot_v")
+  check isEvaluable("step_recover_s")
+  check "spice.load_step" in registeredEvaluators()
+  let ev = evaluatorFor("step_droop_v")
+  check ev.isSome
+  check ev.get.subjectKinds == {skNet}
+  # No `binds`: the subject is the rail, so `require step_droop_v(vout)`
+  # reaches this with no role at all. The *step* still has to be stated,
+  # and the evaluator says so when it is not.
+  check ev.get.binds.len == 0
+
+test "one load step is one run however many claims are made about it":
+  let d = stepBoard()
+  let p = plan(d, allCapabilities)
+  var steps = 0
+  for s in p.steps:
+    if s.evaluator == "spice.load_step": steps += 1
+  check steps == 1
+
+test "two step magnitudes are two runs -- the answers do not pool":
+  # A rail that holds up under 1 A may not under 3 A, so the magnitude is
+  # part of the setup key. Pooling would answer one claim with the other's
+  # number, which is a wrong answer rather than a missing one.
+  let d = stepBoard()
+  discard d.addRole("regulator", "reg2",
+                    {"regulator": Subject(kind: skComponent, name: "V1"),
+                     "output": Subject(kind: skNet, name: "vout")},
+                    {"without": "overshoot",
+                     "iFrom": "0.0", "iTo": "1.0", "tEdge": "1.0e-6",
+                     "tStepAt": "0.02", "tRecover": "0.01",
+                     "maxDroop": "0.2"})
+  let p = plan(d, allCapabilities)
+  var steps = 0
+  for s in p.steps:
+    if s.evaluator == "spice.load_step": steps += 1
+  check steps == 2
+
+test "a load step measures the droop the source resistance predicts":
+  if not haveNgspice:
+    skip()
+  else:
+    let rs = evaluate(stepBoard(), allCapabilities)
+    let droop = resultFor(rs, "reg.droop")
+    check droop.status == esPass
+    # 0.5 A through 100 mohm, once the capacitor has handed over.
+    check abs(droop.value - 0.05) / 0.05 < 0.1
+    # **The release does not mirror it, and that is the right answer.** A
+    # first-order RC behind a resistor has nothing to overshoot with: the
+    # rail climbs back to exactly where it started and stops. An overshoot
+    # needs a second energy store -- an output inductance, or a loop with
+    # phase left in it -- so a fixture that reported one here would be
+    # reporting the measurement's own artefact.
+    let over = resultFor(rs, "reg.step_overshoot")
+    check over.status == esPass
+    check over.value < 0.005
+
+test "recovery is measured against where the rail settles under the new load":
+  if not haveNgspice:
+    skip()
+  else:
+    # There is no loop here at all -- an RC behind a resistor -- so the
+    # recovery is the RC's own 10 us and nothing else. What this pins is
+    # that load regulation is not counted as a failure to recover: the rail
+    # settles 50 mV lower under the step and stays there, and a recovery
+    # measured against the *old* level would never converge.
+    let rs = evaluate(stepBoard(), allCapabilities)
+    let rec = resultFor(rs, "reg.recover")
+    check rec.status == esPass
+    check rec.value >= 0.0 and rec.value < 1.0e-3
+
+proc psrrBoard(): Design =
+  ## An RC low-pass from input to output, whose rejection is exactly
+  ## `sqrt(1 + (2*pi*f*R*C)^2)`. 1 kohm and 1 uF puts the pole at 159 Hz, so
+  ## at 1 kHz the attenuation is 16.1 dB.
+  design("psrr"):
+    net vin, kind = ntPower
+    net vout, kind = ntPower
+    net gnd, kind = ntGround, name = "0"
+
+    component V1, kind = "voltage_source", value = "DC 5":
+      pin "+", vin, kind = ptPower
+      pin "-", gnd, kind = ptGround
+    component R1, kind = "resistor", value = "1000":
+      pin "1", vin, kind = ptPassive
+      pin "2", vout, kind = ptPassive
+    component C1, kind = "capacitor", value = "1u":
+      pin "1", vout, kind = ptPassive
+      pin "2", gnd, kind = ptPassive
+      spec:
+        dielectric = "C0G"
+        esr = 1.uohm
+        esl = 1.pH
+
+    role "linear_regulator", filt,
+         regulator = R1, output = vout, source = V1, input = vin,
+         without = "overshoot",
+         minPsrrDb = 15.dB, psrrAtF = 1.kHz, psrrRippleV = 100.mV,
+         tSettle = 20.0.ms, psrrPeriods = 8, psrrPoints = 400,
+         minPsrrBandDb = 15.dB, psrrFrom = 100.Hz, psrrTo = 10.kHz
+
+test "the two rejection evaluators declare different capabilities":
+  # One evaluator declaring `{capSpiceAc, capSpiceTran}` would be refused on
+  # a host offering only one of them, which is why these are two.
+  check isEvaluable("psrr_db")
+  check isEvaluable("psrr_min_db")
+  check isEvaluable("psrr_at_f")
+  check "spice.psrr_tone" in registeredEvaluators()
+  check "spice.psrr_ac" in registeredEvaluators()
+  check evaluatorFor("psrr_db").get.needs == {capSpiceTran}
+  check evaluatorFor("psrr_min_db").get.needs == {capSpiceAc}
+
+test "a rejection claim names the role, because it needs a supply bound":
+  # Both declare `binds`, so a bare `require psrr_db(vout) >= 40.dB` comes
+  # back naming what would have to be bound rather than failing obscurely.
+  check evaluatorFor("psrr_db").get.binds == @["source", "input"]
+  check evaluatorFor("psrr_min_db").get.binds == @["source", "input"]
+  let d = design("bare_psrr"):
+    net vdd, kind = ntPower
+    net gnd, kind = ntGround, name = "0"
+    component V1, kind = "voltage_source", value = "DC 5":
+      pin "+", vdd, kind = ptPower
+      pin "-", gnd, kind = ptGround
+    require psrr_db(vdd) >= 40.dB, id = "REQ-BARE-PSRR"
+  let rs = evaluate(d, allCapabilities)
+  check resultFor(rs, "REQ-BARE-PSRR").status == esNotEvaluable
+
+test "both methods measure an RC's known rejection, and agree with each other":
+  if not haveNgspice:
+    skip()
+  else:
+    let rs = evaluate(psrrBoard(), allCapabilities)
+    # 20*log10(sqrt(1 + (2*pi*1000*1e-3)^2)) = 15.98 dB.
+    let exact = 10.0 * log10(1.0 + pow(2.0 * PI * 1000.0 * 1.0e-3, 2.0))
+    let tone = resultFor(rs, "filt.psrr")
+    let swept = resultFor(rs, "filt.psrr_swept")
+    check tone.status == esPass
+    check swept.status == esPass
+    check abs(tone.value - exact) < 0.3
+    check abs(swept.value - exact) < 0.1
+    # The point of running both: a tone measurement has a noise floor and an
+    # `.ac` sweep has a linearisation, and neither alone says which it hit.
+    check abs(tone.value - swept.value) < 0.3
+
+# --- channel match, the first two-subject quantity ---------------------
+
+proc matchBoard(rfRight: string): Design =
+  ## Two non-inverting stages. Gain is 1 + Rf/Rg per channel; with both Rf at
+  ## 10k the channels match, and moving the right one off it is a real
+  ## imbalance the `channel_match` claim has to catch.
+  design("match"):
+    net inL, kind = ntSignal
+    net outL, kind = ntSignal
+    net fbL, kind = ntSignal
+    net inR, kind = ntSignal
+    net outR, kind = ntSignal
+    net fbR, kind = ntSignal
+    net gnd, kind = ntGround, name = "0"
+
+    component UL, kind = "opamp":
+      pin "IN+", inL, kind = ptInput
+      pin "IN-", fbL, kind = ptInput
+      pin "OUT", outL, kind = ptOutput
+    component RfL, kind = "resistor", value = "10k":
+      pin "1", outL, kind = ptPassive
+      pin "2", fbL, kind = ptPassive
+    component RgL, kind = "resistor", value = "1k":
+      pin "1", fbL, kind = ptPassive
+      pin "2", gnd, kind = ptPassive
+
+    component UR, kind = "opamp":
+      pin "IN+", inR, kind = ptInput
+      pin "IN-", fbR, kind = ptInput
+      pin "OUT", outR, kind = ptOutput
+    component RfR, kind = "resistor", value = rfRight:
+      pin "1", outR, kind = ptPassive
+      pin "2", fbR, kind = ptPassive
+    component RgR, kind = "resistor", value = "1k":
+      pin "1", fbR, kind = ptPassive
+      pin "2", gnd, kind = ptPassive
+
+    role "gain_stage", left, opamp = UL, input = inL, output = outL,
+         minGain = 10.dB
+    role "gain_stage", right, opamp = UR, input = inR, output = outR,
+         minGain = 10.dB
+    role "channel_match", stereo, a = roleRef("left"), b = roleRef("right"),
+         fFrom = 100.Hz, fTo = 20.kHz, maxGainDelta = 0.5.dB
+
+test "the channel-match quantity is reachable, and needs two skClass subjects":
+  check isEvaluable("gain_delta_max_db")
+  check "spice.channel_match" in registeredEvaluators()
+  let ev = evaluatorFor("gain_delta_max_db")
+  check ev.isSome
+  check ev.get.arity == 2 .. 2
+  check ev.get.subjectKinds == {skClass}
+  check ev.get.needs == {capSpiceAc}
+
+test "a channel-match claim needing no sim is planned as one .ac step":
+  let p = plan(matchBoard("10k"), allCapabilities)
+  var steps = 0
+  for s in p.steps:
+    if s.evaluator == "spice.channel_match": inc steps
+  check steps == 1
+
+test "matched channels pass the delta claim":
+  if not haveNgspice:
+    skip()
+  else:
+    let r = resultFor(evaluate(matchBoard("10k"), allCapabilities),
+                      "stereo.gain_delta")
+    check r.status == esPass
+    check r.value < 0.01
+    check r.unit == "dB"
+
+test "a gain-setting resistor off on one channel fails it, with the measurement":
+  if not haveNgspice:
+    skip()
+  else:
+    # Rf 12k vs 10k: gain 13 vs 11, about 1.46 dB apart across the band.
+    let r = resultFor(evaluate(matchBoard("12k"), allCapabilities),
+                      "stereo.gain_delta")
+    check r.status == esFail
+    check r.value > 1.0
+    check "dB" in r.reason
+
+test "i_out_derating reads the regulator's rating, not the sense part's":
+  # The rating belongs to the part somebody chose, so a substitution changes
+  # the limit in one place rather than two -- and the sense part is a
+  # resistor here, which has no rating of its own to be confused with.
+  if not haveNgspice:
+    skip()
+  else:
+    let d = stepBoard()
+    discard d.addRole("regulator", "rated",
+                      {"regulator": Subject(kind: skComponent, name: "V1"),
+                       "output": Subject(kind: skNet, name: "vout"),
+                       "sense": Subject(kind: skComponent, name: "RS")},
+                      {"without": "overshoot",
+                       "tSettle": "0.05", "tWindow": "0.001",
+                       "maxOutputDerating": "0.9"})
+    let rs = evaluate(d, allCapabilities)
+    let dr = resultFor(rs, "rated.i_out_derating")
+    check dr.status == esPass
+    # 1 A standing load against V1's stated 2 A rating.
+    check abs(dr.value - 0.5) < 0.05
+
+test "a regulator that states no rating reports derating as unchecked":
+  # NaN rather than infinite headroom: a part nobody has chosen must read as
+  # *not evaluated*, which is the rule `current_path` already follows for
+  # `isat` and `current_rating`.
+  if not haveNgspice:
+    skip()
+  else:
+    let d = design("unrated"):
+      net vdd, kind = ntPower
+      net gnd, kind = ntGround, name = "0"
+      component V1, kind = "voltage_source", value = "DC 5":
+        pin "+", vdd, kind = ptPower
+        pin "-", gnd, kind = ptGround
+      component RS, kind = "resistor", value = "5":
+        pin "1", vdd, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+      role "regulator", reg, regulator = V1, output = vdd, sense = RS,
+           without = "overshoot",
+           tSettle = 1.0.ms, tWindow = 1.0.ms,
+           maxOutputDerating = 0.9
+    let rs = evaluate(d, allCapabilities)
+    check resultFor(rs, "reg.i_out_derating").status == esNotEvaluated

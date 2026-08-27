@@ -166,6 +166,7 @@ const conditionUnits = {
   # the units module exists to remove.
   "step_from": "A", "step_to": "A",
   "step_edge": "s", "step_at": "s", "step_hold": "s", "step_recover": "s",
+  "step_band": "",
   "ripple_f": "Hz", "ripple_v": "V",
   "t_settle": "s", "t_window": "s", "t_run": "s"
 }.toTable

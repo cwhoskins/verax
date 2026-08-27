@@ -173,8 +173,12 @@ type
     subjectKinds*: set[SubjectKind]
       ## Empty means every kind.
     binds*: seq[string]
-      ## Role *parts* this evaluator reads back off `Assertion.origin`,
-      ## beyond the assertion's own subjects.
+      ## Role *parts* this evaluator reads back off a role instance, beyond
+      ## the assertion's own subjects -- usually the one in `Assertion.origin`
+      ## (`originBinding`), and for a multi-subject quantity the ones its
+      ## `skClass` subjects name (`subjectRoleBinding`). `channel_match` reads
+      ## `opamp`/`input`/`output` off each of the two stages its subjects
+      ## point at.
       ##
       ## Declared rather than inferred, for the same reason
       ## `BehavioralModel.passesSignal` is: something has to answer "can a
@@ -333,6 +337,34 @@ proc originParam*(d: Design, a: Assertion, name: string): Option[string] =
   if inst.isNone: return none(string)
   if not inst.get.params.hasKey(name): return none(string)
   some(inst.get.params[name])
+
+proc subjectRole*(d: Design, a: Assertion, index: int): Option[RoleInstance] =
+  ## The role instance the `index`-th subject *names*, when that subject is an
+  ## `skClass` reference and the instance exists.
+  ##
+  ## The subject-side counterpart of `originRole`, which answers "the role that
+  ## *expanded* this assertion". A multi-subject quantity such as
+  ## `channel_match` states its claim over two role instances, and the topology
+  ## those instances bound -- an amplifier, an input and an output each -- is
+  ## what the evaluator needs. It cannot come from the expander: a
+  ## `RoleExpander` takes only a `RoleInstance` and has no `Design` to
+  ## dereference through, which is the same asymmetry `originRole` exists for.
+  ##
+  ## `none` rather than a raise, matching every accessor here, so an
+  ## evaluator's refusal message is written where it can name what was missing.
+  if index < 0 or index >= a.subjects.len: return none(RoleInstance)
+  let s = a.subjects[index]
+  if s.kind != skClass: return none(RoleInstance)
+  if not d.roles.hasKey(s.name): return none(RoleInstance)
+  some(d.roles[s.name])
+
+proc subjectRoleBinding*(d: Design, a: Assertion, index: int,
+                         part: string): Option[Subject] =
+  ## A named part of the role instance the `index`-th subject references.
+  let inst = subjectRole(d, a, index)
+  if inst.isNone: return none(Subject)
+  if not inst.get.bindings.hasKey(part): return none(Subject)
+  some(inst.get.bindings[part])
 
 proc conditionOf*(a: Assertion, key: string): Option[string] =
   if not a.condition.hasKey(key): return none(string)

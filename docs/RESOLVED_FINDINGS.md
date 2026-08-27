@@ -2035,3 +2035,205 @@ substitution changes it.
 
 §64 (`switching_converter`) was blocked on this for its efficiency figure and
 §65's leakage half lands here too; both remain open.
+
+---
+
+## 58. A power supply could not be asked the three things it is specified by
+
+A regulator was checkable as a *node voltage* and as a *ramp* and as nothing
+else. Every claim any design here made about one — `dc_voltage`, `final_v`,
+`rise_time_10_90`, `overshoot_pct`, `ripple_pp` — is a measurement taken with
+the input held still and the load held still, and the three questions a
+datasheet's front page is actually written around were unaskable:
+
+1. **Load step.** Does the rail hold up when the load jumps? This was §58's
+   original proposal, specified there down to the parameter names. It is the
+   time-domain twin of `power_rail`'s `targetZ` — a target impedance is a
+   *proxy* for it, and getting from one to the other is an argument the reader
+   had to complete.
+2. **Ripple rejection.** How much of the input supply's ripple reaches the
+   rail. Not mentioned anywhere in the repository before this.
+3. **Output current against the part's rating.** §27 made current a quantity,
+   but nothing connected a measured current to the rating of the part that has
+   to deliver it.
+
+### What was added
+
+**`analyzeLoadStep`** in `analysis/transient.nim`. It injects a pulsed
+constant-current sink (`ILOADSTEP`, `+` on the rail and `-` on ground, so a
+positive value pulls current out) and measures `step_droop_v`,
+`step_droop_pct`, `step_overshoot_v`, `step_overshoot_pct`, `step_recover_s`
+and the signed envelope `step_v_min` / `step_v_max`. The baseline is the
+time-weighted mean over the window *before* the edge, and the recovery is
+measured against where the rail settles **under the new load** — load
+regulation moves that point, and counting the shift as a failure to recover
+reports a correct regulator as an unstable one.
+
+The one structural change to existing code is a `mutate: proc (work: Netlist)`
+hook on the private `runWindow`, called after the model passes and before
+`resolveProbe`; `analyzeTransient`, `analyzeOscillation` and `analyzeCurrent`
+pass `nil`.
+
+**`analysis/psrr.nim`**, holding *both* methods. The ripple gets in the same
+way `probes.addCurrentProbe` gets a probe in: the supply's output pin is
+re-netted onto a fresh net and the ripple source goes between that and the
+original input net. Rewriting the supply's `attrs["value"]` would have had to
+parse a string that may be anything from `"DC 5"` to a whole source spec;
+splitting the pin works whatever it says and composes correctly with
+`expandSourceImpedance`.
+
+- `analyzePsrrAc` — `"DC 0 AC 1"` in series, `.ac dec`, emitting
+  `psrr_min_db`, `f_psrr_min` and `psrr_at_f`.
+- `analyzePsrrTone` — `"SIN(0 v f)"`, a `.tran` over a whole number of periods
+  after `tSettle`, with the amplitude at exactly `f` pulled out by
+  `measure.harmonicAmplitudes`. Emits `psrr_db`, `in_ripple_v`,
+  `out_ripple_v`.
+
+**Three evaluators** — `spice.load_step` (`{capSpiceTran}`),
+`spice.psrr_tone` (`{capSpiceTran}`) and `spice.psrr_ac` (`{capSpiceAc}`) —
+and one quantity added to `spice.current_path`: `i_out_derating`, the sense
+part's RMS over the **regulator's** stated `current_rating`.
+
+**Three roles.** `regulator` gains all of it as opt-in parameters, so the
+three designs and one template that already instantiate it expand to exactly
+what they did before; `linear_regulator` and `switching_regulator` expand
+`regulatorExpand` whole and add what only their topology is asked.
+
+### The four decisions worth keeping
+
+**The input ripple is measured, never assumed.** The board's input filter
+attenuates the injected ripple before the regulator sees it, and quoting
+against the injected amplitude would credit the regulator with the filter's
+work. Both ends are emitted so the split stays visible.
+
+**Two PSRR evaluators, not one with a mode.** `spice.dc_sweep`'s
+one-evaluator-two-modes precedent does not transfer: both of its modes are
+`.dc`, whereas these need different capabilities, and `Evaluator.needs` is a
+single set — one evaluator would declare `{capSpiceAc, capSpiceTran}` and be
+refused on a host offering only one.
+
+**Which method runs is chosen by which *limit* is stated, not by a mode
+string.** `minPsrrDb` selects the tone; `minPsrrBandDb` selects the sweep. A
+`psrrMethod = "tone" | "ac"` parameter was written first and removed, because
+`verify.claimingRoles` works out what a role can claim by expanding it with
+every parameter set to the placeholder `"1"` — a float placeholder still
+selects a branch, a string one selects nothing, and every `.ac` quantity here
+reported as claimable by no built-in role at all. It also needed value
+validation that the two-limit form does not, which let `regulatorApply` be
+deleted outright.
+
+**"Swept in magnitude" is a condition, not a loop.** `step_from` and `step_to`
+join the evaluator's setup key, so two claims at two magnitudes are two runs
+whose answers are not pooled. A rail that holds up under 1 A may not under
+3 A, and pooling would answer one claim with the other's number.
+
+### The models had to be fixed first
+
+Two of the three regulator models could not show input feedthrough at all, so
+a rejection measured through them would have been a confident number about the
+model. Both fixes are structural and are written up as §67. What matters here
+is that they turned two *declared* figures into derived ones: `adjreg`'s input
+current now follows the load through a floating series pass element instead of
+being a constant, and `lt8640a_avg` commands a duty rather than a voltage.
+
+### What it measures on the designs it was written for
+
+`designs/adj_regulator.nim`, on the 5 V LM317 rail:
+
+| quantity | claimed | measured |
+|---|---|---|
+| `step_droop_v` | ≤ 50 mV on a 50 mA step | **11.3 mV** |
+| `step_recover_s` | ≤ 100 us, against a 0.1% band | **8.71 us** |
+| `psrr_db` (tone, 120 Hz, 100 mV) | ≥ 55 dB | **62.9 dB** |
+| `psrr_at_f` (`.ac`, 120 Hz) | ≥ 55 dB | **62.9 dB** |
+| `line_reg_pct` over 8 V .. 20 V | ≤ 0.25% | **0.129%** |
+
+The two rejection figures agree to 0.002 dB through two different solvers,
+which is the cross-check the tone method needs: a tone measurement has a noise
+floor and an `.ac` sweep has a linearisation, and neither alone says which it
+hit. The line figure is 0.0107 %/V across 12 V of input against the LM317
+datasheet's 0.01 %/V typical — derived from the loop the model closes rather
+than read back off the part.
+
+The 12 V rail states one claim only, the **worst point across a band**, which
+is the shape that matters: the same part on the same board rejects 62.9 dB at
+120 Hz, 19.9 dB by 10 kHz and 4.19 dB by 1 MHz. The loop gain has rolled off
+and COUT has not taken over.
+
+`designs/lt8640a_buck.nim` replaces its `regulator` / `settled_rail` /
+`current_path` trio with one `switching_regulator` instance and adds:
+
+| quantity | claimed | measured |
+|---|---|---|
+| `step_droop_v` | ≤ 150 mV on a 1 A step | **21.3 mV** |
+| `step_recover_s` | ≤ 30 us, against a 0.1% band | **27.0 us** |
+| `psrr_db` (tone, 100 kHz, 1 V) | ≥ 60 dB | **70.1 dB** |
+| `i_out_derating` | ≤ 1.0 of U1's stated 5 A | **0.994** |
+
+The rejection is claimed by the **tone** method and necessarily so: an `.ac`
+sweep through an XSPICE code model returns exactly zero output, because a code
+model contributes to the AC matrix only if it sets `AC_GAIN` and neither of
+this part's does. The `KindNoFeedthrough` guard turns that into a refusal
+rather than into an infinite rejection.
+
+Two limits are set where they are for reasons the design files record. The
+step is 1 A and not more because the switching model's cycle-by-cycle limit is
+7 A of *peak* inductor current, and 6 A of average plus half the 0.9 A
+triangle is already 6.45 A of it — a 2 A step measures 383 mV and never
+recovers, which is a true statement about a part being asked for more than it
+has and not the question the claim is asking. And `i_out_derating` is claimed
+at **1.0** because this board is the datasheet's front page, which specifies
+the part at exactly its rated 5 A: there is no headroom to claim and the only
+honest statement is that the part may not be run past its rating. The last
+0.6% is the ripple triangle's contribution to the RMS, which the average does
+not see.
+
+### One parameter that had to be added afterwards
+
+`stepBand`. `step_recover_s` re-enters a band around where the rail settles
+under the new load, defaulting to 1%. On the buck that is 50 mV against a
+21.3 mV droop — the rail never leaves the band and the recovery reads a
+confident **zero**. Both designs state it explicitly at 0.1%, and the
+parameter's doc says to state it whenever the droop is smaller than the band.
+A default that silently reports zero is the worst kind of wrong answer, and
+this is the one place in this work where the first version produced one.
+
+---
+
+## 53. A quantity could not take more than one subject, and §60 with it
+
+**Fixed.** `Assertion.subjects` was always a `seq` for a stated reason -- "setup/hold is inherently one signal *versus* another, and a two-subject quantity must not be a special case bolted on later" -- but every one of the seventeen registered evaluators declared `arity: 1 .. 1`, so the shape decision was paid for and unused, and four families of claim were unreachable: channel matching (§60), rail sequencing (§59), setup/hold, and differential balance.
+
+`designs/riaa_preamp.nim` made it concrete. It instances one channel twice (`XL`, `XR` of `riaaChannel()`), its own module doc says "channel matching is the specification that matters", and it could say nothing whatever about the pair -- only two independent `gain_stage` claims that would both pass with the channels 3 dB apart.
+
+### What was already in place
+
+More than the finding suggested. The `require` macro already accepted `require q(a, b) <= x`; `plan()` already gated on `Evaluator.arity`; `defaultKey` already joined every subject name, so grouping a two-subject claim by its pair needed no change. `dsl.subjectOf(Subject)` was already an identity overload, so a helper returning a `Subject` already routed through the `role` macro as a binding. The two real gaps were that no evaluator declared `arity` wider than `1 .. 1`, and that `design.resolve`'s `skClass` branch returned three nils and validated nothing.
+
+### What was added
+
+* **`design.roleRef(name): Subject`** -- one line, `Subject(kind: skClass, name: name)`. It is the `skClass` counterpart of `innerComponent`: a role can now bind *another role instance* as a part.
+* **`design.resolve`'s `skClass` branch raises** when the named instance is absent, listing the instances that do exist. This is what makes "declare the referenced roles first" an enforced ordering rather than a comment -- `addRole` validates bindings before an expander sees them, so a `channel_match` written above its two stages fails at attach time with a message that says so. `tagMembership` tags nothing for an `skClass` binding, which is correct: a role instance is not a netlist entity.
+* **`evaluate.subjectRole` / `evaluate.subjectRoleBinding`** -- the subject-side pair beside `originRole`/`originBinding`. `originRole` answers "the role that *expanded* this assertion"; these answer "the role a subject *points at*". Both return `none` rather than raising, so the evaluator writes the refusal that names what was missing. A `RoleExpander` is pure and has no `Design`, so it cannot dereference `a`/`b` into nets -- the expander states the claim over the two `skClass` subjects and the evaluator recovers the topology, the same asymmetry `originRole` already existed for.
+* **`measure.maxDeviation(x, ya, yb, xFrom, xTo)`** -- the largest `abs(ya[i] - yb[i])` over an axis two curves share, and the `x` that witnesses it. Pure, tested offline: the worst point, the windowed form, `NaN` for an empty window, a raise on mismatched lengths.
+* **`analysis/match.analyzeChannelMatch`** -- its own module on `psrr.nim`'s precedent, composing rather than duplicating: it calls `opamp.analyzeOpAmpResponse` once per channel and reads the gain curve back off `raw.db(...)`. It reports `gain_delta_max_db` / `f_gain_delta_max` (the band worst and its witness), `gain_delta_at_f` (emitted only when a frequency is stated), and `f_lo_ratio` / `f_hi_ratio` (the two band edges as `max/min`, so `>= 1`). Four decisions are pinned in the module doc: a band worst and a single frequency are separate names (as `psrr_min_db`/`psrr_at_f` are); every figure is a magnitude, so which channel is "A" cannot change a verdict; both sweeps must share one frequency axis, which is *checked* elementwise and reported as an `Issue` rather than assumed; and each channel's assumptions and issues are merged and deduplicated, since both channels substitute the same macromodel.
+* **`spice.channel_match`** in `analysis/contract_eval` -- `arity: 2 .. 2`, `subjectKinds: {skClass}`, `binds: @["opamp", "input", "output"]`, `needs: {capSpiceAc}`. `runChannelMatch` dereferences both subjects with `subjectRoleBinding` and refuses -- naming the missing part -- when a referenced stage binds no `opamp`/`input`/`output`. It deliberately does **not** require the referenced role to be `gain_stage`: `opamp_stage` binds the same three parts and a user role may too, and requiring a name would make the built-in privileged. Its setup key carries both stages' topology plus the band and `at_f`.
+* **`channel_match`** in `contract/roles` -- parts `a`, `b`, both `RolePart(kind: skClass)`; params `maxGainDelta`, `maxEdgeRatio`, `atF`, `fFrom`, `fTo`. Every claim is `hasParam`-gated on its own limit; `atF` **redirects** `maxGainDelta` from `gain_delta_max_db` onto `gain_delta_at_f` rather than adding a second claim, the `gain_stage`/`atF` pattern.
+* **`verify.describeRole`** maps `skClass` to `role` -- the generic `($kind)[2..^1]` slice printed `class`, which for a role reference is wrong. **`verify.describeQuantities`** marks a quantity whose evaluator has non-`1..1` arity `2 subjects`, so a reader can tell `gain_delta_max_db` needs the pair without running it.
+
+### The design, and the number that is the point
+
+`designs/riaa_preamp.nim` gains one `channel_match` instance binding the two `gain_stage`s it already declares:
+
+```nim
+role "channel_match", stereo, a = roleRef("left"), b = roleRef("right"),
+     fFrom = 20.Hz, fTo = 20.kHz, maxGainDelta = 0.5.dB
+```
+
+Two instances of one `subckt` produce two byte-identical isolated fragments, and ngspice is deterministic, so the two gain curves agree to the last digit: `gain_delta_max_db` measures **exactly 0 dB** over 20 Hz .. 20 kHz. That is the point of the exercise -- anything else would mean the two sweeps are measuring different circuits and the number is about the harness, not the board. The claim can fail as well as pass: a scratch copy with a +1% error on one channel's feedback resistor R7 measures **67 mdB**, and a +20% error **1.20 dB** against the 0.5 dB limit, exit 1.
+
+**Known cost, recorded under §51.** `riaa_preamp` now runs four `.ac` sweeps where two would do -- the two `gain_stage` steps and this evaluator's own two, over byte-identical fragments. Routing one step's curve into another is §52-shaped planner work; §51's rawfile cache keyed on the derived deck absorbs it with no planner change.
+
+### §60 (`channel_match`), closed
+
+§60 proposed exactly this role and named `designs/riaa_preamp.nim` as the motivating design already in the repo. It is the role above. §59 (`sequencing`) stays a proposal -- it needs a new `t_reach_frac` quantity and has no design in-repo demanding it -- but it is no longer blocked.

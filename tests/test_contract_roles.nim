@@ -1,4 +1,4 @@
-import std/[math, strutils, tables, unittest]
+import std/[math, sequtils, strutils, tables, unittest]
 
 import nimcir/netlist
 import nimcir/netlist/annotations
@@ -290,6 +290,103 @@ test "a gain_stage makes no stability claim":
   for x in d.expandAll():
     check x.quantity notin ["peaking_db", "phase_margin_deg", "gain_margin_db"]
 
+# --- channel_match: a quantity whose subjects are two role instances ---
+
+proc stereoBoard(): Design =
+  let nl = newNetlist("stereo")
+  for n in ["inL", "outL", "inR", "outR"]:
+    discard addNet(nl, newNet(n, ntSignal))
+  for u in ["UL", "UR"]:
+    let sig = (if u == "UL": ("inL", "outL") else: ("inR", "outR"))
+    let c = addComponent(nl, newComponent(u, kind = "opamp"))
+    discard connect(c, "IN+", nl.nets[sig[0]], ptInput)
+    discard connect(c, "OUT", nl.nets[sig[1]], ptOutput)
+  newDesign(nl)
+
+proc withStages(d: Design) =
+  discard d.addRole("gain_stage", "left",
+    {"opamp": comp("UL"), "input": net("inL"), "output": net("outL")},
+    {"minGain": "20.0"})
+  discard d.addRole("gain_stage", "right",
+    {"opamp": comp("UR"), "input": net("inR"), "output": net("outR")},
+    {"minGain": "20.0"})
+
+test "roleRef binds another role instance as a skClass subject":
+  let d = stereoBoard()
+  withStages(d)
+  let inst = d.addRole("channel_match", "stereo",
+    {"a": roleRef("left"), "b": roleRef("right")}, {"maxGainDelta": "0.5"})
+  check inst.bindings["a"].kind == skClass
+  check inst.bindings["a"].name == "left"
+  check inst.bindings["b"].name == "right"
+
+test "channel_match expands to one claim carrying two skClass subjects":
+  let d = stereoBoard()
+  withStages(d)
+  discard d.addRole("channel_match", "stereo",
+    {"a": roleRef("left"), "b": roleRef("right")},
+    {"maxGainDelta": "0.5", "fFrom": "20.0", "fTo": "20000.0"})
+  let a = d.expandAll().filterIt(it.origin == "stereo")
+  check a.len == 1
+  check a[0].quantity == "gain_delta_max_db"
+  check a[0].subjects.len == 2
+  check a[0].subjects[0].kind == skClass
+  check a[0].subjects[1].kind == skClass
+  # The band is setup: it rides in the condition and never gates a claim.
+  check a[0].condition["f_from"] == "20.0"
+  check a[0].condition["f_to"] == "20000.0"
+  check a[0].expect.satisfies(0.4)
+  check not a[0].expect.satisfies(0.6)
+
+test "maxEdgeRatio adds the two band-edge ratio claims, still two subjects":
+  let d = stereoBoard()
+  withStages(d)
+  discard d.addRole("channel_match", "stereo",
+    {"a": roleRef("left"), "b": roleRef("right")}, {"maxEdgeRatio": "1.1"})
+  let a = d.expandAll().filterIt(it.origin == "stereo")
+  var qs: seq[string]
+  for x in a:
+    qs.add x.quantity
+    check x.subjects.len == 2
+  check "f_lo_ratio" in qs
+  check "f_hi_ratio" in qs
+
+test "atF redirects the gain-delta claim rather than adding a second":
+  let d = stereoBoard()
+  withStages(d)
+  discard d.addRole("channel_match", "stereo",
+    {"a": roleRef("left"), "b": roleRef("right")},
+    {"maxGainDelta": "0.5", "atF": "1000.0"})
+  let a = d.expandAll().filterIt(it.origin == "stereo")
+  check a.len == 1
+  check a[0].quantity == "gain_delta_at_f"
+  check a[0].condition["at_f"] == "1000.0"
+
+test "a channel_match with no limits claims nothing":
+  let d = stereoBoard()
+  withStages(d)
+  discard d.addRole("channel_match", "stereo",
+    {"a": roleRef("left"), "b": roleRef("right")}, {"fFrom": "20.0"})
+  check d.expandAll().filterIt(it.origin == "stereo").len == 0
+
+test "referencing a role that is not declared yet raises, naming the ordering":
+  let d = stereoBoard()
+  # Neither stage declared -- `channel_match` cannot come first.
+  try:
+    discard d.addRole("channel_match", "stereo",
+      {"a": roleRef("left"), "b": roleRef("right")}, {"maxGainDelta": "0.5"})
+    check false
+  except NetlistError as e:
+    check "left" in e.msg
+    check "after" in e.msg
+
+test "binding a net to a skClass part is rejected":
+  let d = stereoBoard()
+  withStages(d)
+  expect NetlistError:
+    discard d.addRole("channel_match", "stereo",
+      {"a": net("inL"), "b": roleRef("right")}, {"maxGainDelta": "0.5"})
+
 # --- declining a role's always-claims ----------------------------------
 
 test "a role instance can decline one of its always-claims":
@@ -511,3 +608,265 @@ test "a regulator role stamps its run length onto every claim it makes":
   check a.len == 5
   for x in a:
     check x.condition["t_run"] == "0.008"
+
+# --- the load-step, rejection and output-current claims ------------------
+#
+# All three are `regulator`'s, and `linear_regulator` and
+# `switching_regulator` reach them by expanding it rather than by repeating
+# it. What the tests below pin is mostly that: what the base claims, that a
+# specialisation adds to it and subtracts nothing, and that every parameter
+# that changes a *run* reaches the assertion's condition -- because a
+# condition that does not get stamped is a claim quietly planned into a
+# second simulation, which is the one failure mode here that looks like
+# success.
+
+proc regBoard(): Design =
+  ## A part with a rating on it, a rail, a supply and something carrying the
+  ## output current -- the four things the specialised roles bind.
+  let nl = newNetlist("reg")
+  let vin = addNet(nl, newNet("vin", ntPower))
+  let vdd = addNet(nl, newNet("vdd", ntPower))
+  let sw = addNet(nl, newNet("sw", ntSignal))
+  let gnd = addNet(nl, newNet("0", ntGround))
+  let u1 = addComponent(nl, newComponent("U1", kind = "buck"))
+  discard connect(u1, "VIN", vin, ptPower)
+  discard connect(u1, "SW", sw, ptOutput)
+  discard connect(u1, "GND", gnd, ptGround)
+  u1.attrs["current_rating"] = "5.0"
+  let l1 = addComponent(nl, newComponent("L1", kind = "inductor"))
+  l1.attrs["value"] = "3.3u"
+  discard connect(l1, "1", sw, ptPassive)
+  discard connect(l1, "2", vdd, ptPassive)
+  let v1 = addComponent(nl, newComponent("V1", kind = "voltage_source"))
+  v1.attrs["value"] = "DC 12"
+  discard connect(v1, "+", vin, ptPower)
+  discard connect(v1, "-", gnd, ptGround)
+  newDesign(nl)
+
+proc byId(a: seq[Assertion], id: string): Assertion =
+  for x in a:
+    if x.id == id: return x
+  raise newException(ValueError, "no assertion " & id & " in " &
+    a.mapIt(it.id).join(", "))
+
+proc ids(a: seq[Assertion]): seq[string] = a.mapIt(it.id)
+
+test "a regulator claims no load step, no rejection and no current by default":
+  # The whole point of putting these on the base role: every one of them is
+  # opt-in, so the three designs and one template that already instantiate
+  # `regulator` expand to exactly what they did before.
+  let d = regBoard()
+  discard d.addRole("regulator", "r",
+                    {"regulator": comp("U1"), "output": net("vdd")},
+                    {"voltage": "5.0", "tRun": "0.008"})
+  let a = d.expandAll()
+  for x in a:
+    check x.quantity in ["final_v", "overshoot_pct"]
+
+test "each load-step claim is gated on its own limit, not on the step":
+  # `source_sweep`'s shape rather than an oversight. Gating the group on the
+  # magnitude also hid it from `verify.claimingRoles`, which expands each
+  # parameter alone and so never had a step and a limit at the same time.
+  let d = regBoard()
+  discard d.addRole("regulator", "r",
+                    {"regulator": comp("U1"), "output": net("vdd")},
+                    {"voltage": "5.0", "tRun": "0.008",
+                     "without": "final_v,overshoot",
+                     "maxDroop": "0.05"})
+  let a = d.expandAll()
+  check ids(a) == @["r.droop"]
+  check a[0].quantity == "step_droop_v"
+
+test "a load-step limit with no step still expands -- the evaluator refuses it":
+  # The magnitude is setup and rides in the conditions, so a claim missing
+  # one reaches the evaluator and is refused there by name. Expanding to
+  # nothing instead would lose the claim silently.
+  let d = regBoard()
+  discard d.addRole("regulator", "r",
+                    {"regulator": comp("U1"), "output": net("vdd")},
+                    {"without": "overshoot", "maxRecover": "3.0e-5"})
+  let a = d.expandAll()
+  check ids(a) == @["r.recover"]
+  check a[0].condition["step_to"] == "0.0"
+
+test "everything that changes the load-step run reaches the condition":
+  let d = regBoard()
+  discard d.addRole("regulator", "r",
+                    {"regulator": comp("U1"), "output": net("vdd")},
+                    {"without": "overshoot",
+                     "iFrom": "0.5", "iTo": "2.0", "tEdge": "1.0e-6",
+                     "tStepAt": "3.0e-4", "tHold": "5.0e-5",
+                     "tRecover": "4.0e-5", "stepPoints": "2000",
+                     "stepBand": "0.001",
+                     "maxDroop": "0.05", "maxDroopPct": "1.0",
+                     "minStepV": "4.8", "maxStepOvershoot": "0.06",
+                     "maxRecover": "3.0e-5"})
+  let a = d.expandAll()
+  check a.len == 5
+  for x in a:
+    check x.condition["step_from"] == "0.5"
+    check x.condition["step_to"] == "2.0"
+    check x.condition["step_edge"] == "0.000001"
+    check x.condition["step_at"] == "0.0003"
+    check x.condition["step_hold"] == "0.00005"
+    check x.condition["step_recover"] == "0.00004"
+    check x.condition["step_points"] == "2000.0"
+    check x.condition["step_band"] == "0.001"
+  # One run, therefore, for all five: identical conditions are what the
+  # evaluator's setup key is built from.
+  check a.mapIt($it.condition).deduplicate().len == 1
+
+test "the two rejection limits select two different quantities":
+  # `minPsrrDb` is the tone through a `.tran`; `minPsrrBandDb` is the `.ac`
+  # sweep. Which one runs is decided by which limit is stated rather than by
+  # a mode string -- a string parameter is invisible to `claimingRoles`,
+  # which expands with a numeric placeholder.
+  let d = regBoard()
+  discard d.addRole("linear_regulator", "r",
+                    {"regulator": comp("U1"), "output": net("vdd"),
+                     "source": comp("V1"), "input": net("vin")},
+                    {"without": "overshoot",
+                     "minPsrrDb": "55.0", "minPsrrBandDb": "40.0",
+                     "psrrRippleV": "0.1", "psrrFrom": "10.0",
+                     "psrrTo": "10000.0"})
+  let a = d.expandAll()
+  check byId(a, "r.psrr").quantity == "psrr_db"
+  check byId(a, "r.psrr_swept").quantity == "psrr_min_db"
+  check byId(a, "r.psrr_swept").condition["f_from"] == "10.0"
+  check byId(a, "r.psrr_swept").condition["f_to"] == "10000.0"
+
+test "psrrAtF redirects the swept claim rather than adding a second one":
+  # The `gain_stage`/`atF` pattern. Two claims about one curve would be one
+  # claim that can only ever be weaker than the other.
+  let d = regBoard()
+  discard d.addRole("linear_regulator", "r",
+                    {"regulator": comp("U1"), "output": net("vdd"),
+                     "source": comp("V1"), "input": net("vin")},
+                    {"without": "overshoot",
+                     "minPsrrBandDb": "55.0", "psrrAtF": "120.0"})
+  let a = d.expandAll()
+  check ids(a) == @["r.psrr_swept"]
+  check a[0].quantity == "psrr_at_f"
+  check a[0].condition["at_f"] == "120.0"
+
+test "the tone claim carries the amplitude, because a .tran is not linear":
+  let d = regBoard()
+  discard d.addRole("linear_regulator", "r",
+                    {"regulator": comp("U1"), "output": net("vdd"),
+                     "source": comp("V1"), "input": net("vin")},
+                    {"without": "overshoot",
+                     "minPsrrDb": "55.0", "psrrAtF": "120.0",
+                     "psrrRippleV": "0.1", "tSettle": "0.04",
+                     "psrrPeriods": "6", "psrrPoints": "400"})
+  let a = d.expandAll()
+  check a[0].condition["ripple_f"] == "120.0"
+  check a[0].condition["ripple_v"] == "0.1"
+  check a[0].condition["t_settle"] == "0.04"
+  check a[0].condition["ripple_periods"] == "6.0"
+  check a[0].condition["ripple_points"] == "400.0"
+
+test "the output-current claims are made about the sense part, not the regulator":
+  # Forced rather than chosen: a regulator that reaches the deck as a code
+  # model or a subcircuit has no terminal current of its own to probe.
+  let d = regBoard()
+  discard d.addRole("switching_regulator", "r",
+                    {"regulator": comp("U1"), "output": net("vdd"),
+                     "sense": comp("L1")},
+                    {"without": "overshoot",
+                     "tSettle": "3.0e-4", "tWindow": "2.0e-5",
+                     "maxOutputCurrent": "5.6", "maxOutputAvg": "5.2",
+                     "maxOutputDerating": "1.0"})
+  let a = d.expandAll()
+  check a.len == 3
+  for x in a:
+    check x.subjects[0] == comp("L1")
+    check x.condition["t_settle"] == "0.0003"
+    check x.condition["t_window"] == "0.00002"
+  check byId(a, "r.i_out_peak").quantity == "i_peak"
+  check byId(a, "r.i_out_avg").quantity == "i_avg"
+  check byId(a, "r.i_out_derating").quantity == "i_out_derating"
+
+test "no sense part means no current claims, whatever the limits say":
+  # There is nothing to probe, and guessing which part carries the output
+  # current is exactly the guess the binding exists to remove.
+  let d = regBoard()
+  discard d.addRole("switching_regulator", "r",
+                    {"regulator": comp("U1"), "output": net("vdd")},
+                    {"without": "overshoot",
+                     "maxOutputCurrent": "5.6", "maxOutputDerating": "1.0"})
+  check d.expandAll().len == 0
+
+test "linear_regulator is regulator plus its own, and subtracts nothing":
+  let d = regBoard()
+  let common = @{"voltage": "5.0", "tRun": "0.008", "maxDroop": "0.05",
+                 "iTo": "0.05", "minPsrrDb": "55.0", "psrrAtF": "120.0"}
+  discard d.addRole("regulator", "base",
+                    {"regulator": comp("U1"), "output": net("vdd")}, common)
+  discard d.addRole("linear_regulator", "lin",
+                    {"regulator": comp("U1"), "output": net("vdd"),
+                     "source": comp("V1"), "input": net("vin")},
+                    common & @{"maxLineReg": "0.25", "vinFrom": "8.0",
+                               "vinTo": "20.0", "vinStep": "0.1"})
+  let a = d.expandAll()
+  let baseIds = ids(a.filterIt(it.origin == "base"))
+  let linIds = ids(a.filterIt(it.origin == "lin"))
+  for id in baseIds:
+    check id.replace("base.", "lin.") in linIds
+  check "lin.line_reg" in linIds
+  check byId(a, "lin.line_reg").quantity == "line_reg_pct"
+  check byId(a, "lin.line_reg").condition["sweep"] == "source"
+  check byId(a, "lin.line_reg").condition["sweep_from"] == "8.0"
+
+test "switching_regulator is regulator plus its own, and subtracts nothing":
+  let d = regBoard()
+  let common = @{"voltage": "5.0", "tRun": "0.008", "maxDroop": "0.05",
+                 "iTo": "1.0", "minPsrrDb": "60.0", "psrrAtF": "100000.0"}
+  discard d.addRole("regulator", "base",
+                    {"regulator": comp("U1"), "output": net("vdd")}, common)
+  discard d.addRole("switching_regulator", "sw",
+                    {"regulator": comp("U1"), "output": net("vdd"),
+                     "switch": net("sw"), "inductor": comp("L1"),
+                     "sense": comp("L1"), "source": comp("V1"),
+                     "input": net("vin")},
+                    common & @{"tSettle": "3.0e-4", "tWindow": "2.0e-5",
+                               "maxRipple": "0.01", "fSw": "1.0e6",
+                               "fSwBand": "0.1", "maxSwitchCurrent": "6.0",
+                               "maxIsatDerating": "0.6"})
+  let a = d.expandAll()
+  let baseIds = ids(a.filterIt(it.origin == "base"))
+  let swIds = ids(a.filterIt(it.origin == "sw"))
+  for id in baseIds:
+    check id.replace("base.", "sw.") in swIds
+  check byId(a, "sw.ripple").quantity == "ripple_pp"
+  check byId(a, "sw.fsw").quantity == "osc_freq"
+  check byId(a, "sw.fsw").subjects[0] == net("sw")
+  check byId(a, "sw.i_switch").subjects[0] == comp("L1")
+  check byId(a, "sw.isat_derating").quantity == "i_peak_derating"
+
+test "the switching claims sharing a window share a setup key":
+  # The ripple, the inductor current and the derating are all `t_settle` /
+  # `t_window` claims, so they batch into one `.tran` -- which on a model
+  # costing fifty timepoints a cycle is most of the check.
+  let d = regBoard()
+  discard d.addRole("switching_regulator", "sw",
+                    {"regulator": comp("U1"), "output": net("vdd"),
+                     "inductor": comp("L1"), "sense": comp("L1")},
+                    {"without": "overshoot",
+                     "tSettle": "3.0e-4", "tWindow": "2.0e-5",
+                     "maxRipple": "0.01", "maxIsatDerating": "0.6",
+                     "maxOutputAvg": "5.2"})
+  let a = d.expandAll()
+  check a.len == 3
+  for x in a:
+    check x.condition["t_settle"] == "0.0003"
+    check x.condition["t_window"] == "0.00002"
+
+test "all three roles accept every base parameter":
+  # `RoleDef.params` is what `Design.validate` checks a stated parameter
+  # against, so a specialisation that forgot to re-declare one would reject
+  # a perfectly good design with a message about an unknown parameter.
+  let base = roleDef("regulator").params.mapIt(it.key)
+  for name in ["linear_regulator", "switching_regulator"]:
+    let own = roleDef(name).params.mapIt(it.key)
+    for k in base:
+      check k in own

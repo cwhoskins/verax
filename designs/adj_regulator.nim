@@ -46,15 +46,43 @@
 ## `netlist/environment` wires the figures together and models nothing -- but
 ## a premise carried silently is a premise nobody checks.
 ##
+## ## What the rails are asked as *regulators*
+##
+## Four node voltages say what the divider settles at. They do not say what
+## happens when the input moves, when the load jumps, or when there is hum on
+## the supply -- and those are what a regulator is bought for. The two
+## `linear_regulator` roles below ask them:
+##
+##   * a **load step** -- 50 mA arriving in a microsecond on top of the 5 V
+##     rail's standing 100 mA. 11.3 mV of droop, back inside a 1 mV band in
+##     8.7 us. It is the one measurement here that depends on the pass
+##     element's own resistance rather than on the loop gain, because above
+##     the loop's bandwidth the division by `1 + aol` has stopped.
+##
+##   * **ripple rejection**, claimed on the 5 V rail by **both** methods at
+##     once: one real 100 mV sinusoid through a `.tran` with the amplitude
+##     extracted at exactly 120 Hz, and the same frequency read off an `.ac`
+##     sweep of the linearised circuit. Different runs, different solvers,
+##     and they agree to 0.002 dB at 62.9 dB. On the 12 V rail the claim is
+##     the *worst point across a band* instead, which is the shape that
+##     matters: 62.9 dB at 120 Hz is 19.9 dB by 10 kHz and 4.19 dB by 1 MHz.
+##
+##   * **line regulation** over an 8 V to 20 V supply. 0.129% across 12 V is
+##     0.0107 %/V against the datasheet's 0.01 %/V typical -- and that is
+##     derived from the loop the model closes, not read back off the part.
+##
 ## ## What this design deliberately does not claim
 ##
 ## No PDN sweep and no start-up ramp. The pass element is a controlled
 ## source, so the rail is stiff at every frequency the loop still holds and a
 ## `z_max_in_band` claim would pass any target that could be set; and the
-## part has no soft start, so there is no ramp at t = 0 to measure. No
-## dropout claim either -- nothing clamps the pass element below the input,
-## so this rail never leaves regulation and `dropout_v` comes back *not
-## evaluated* rather than as a number. All three are stated in
+## part has no soft start, so there is no ramp at t = 0 to measure -- which
+## is what `without = "final_v,overshoot"` on both roles below is declining.
+## No dropout claim either -- nothing clamps the pass element below the
+## input, so this rail never leaves regulation and `dropout_v` comes back
+## *not evaluated* rather than as a number. Nor `maxLoadReg` or `maxZOut`:
+## the pass resistance divided by the loop gain is about 10 uohm at DC, and
+## a claim that cannot fail is worse than no claim. All of them are stated in
 ## `lib/adjreg.nim` as limits of the model rather than left to be
 ## discovered.
 
@@ -173,6 +201,98 @@ let d = design("adj_regulator"):
           because = "Vout - Vref is what an LM317 actually regulates; the " &
                     "output voltage is a consequence of it and of two " &
                     "resistors, and this is the half that is the part's"
+
+  # The 5 V rail as a *regulator* rather than as a node voltage. Everything
+  # above reads what the divider settles at; none of it moves the input or
+  # the load, and a part that holds its DC value perfectly can still pass a
+  # hundred millivolts of mains hum straight through and sag 200 mV when the
+  # MCU wakes.
+  #
+  # `without = "final_v,overshoot"` declines the two start-up claims the
+  # base role makes by default. The part has no soft start and the loop
+  # model has no ramp in it, so a run from power-on finds the rail already
+  # where it belongs at t = 0 -- there is nothing there to measure and a
+  # claim that cannot fail is worse than no claim.
+  #
+  # No `maxDropout`, no `maxLoadReg`, no `maxZOut`. All three are limits of
+  # the loop model and all three are written down in `lib/adjreg.nim`:
+  # nothing clamps the pass element below the input, so `dropout_v` comes
+  # back not evaluated; and the pass resistance is divided by the loop gain,
+  # so the DC output impedance is around 10 uohm and any `maxZOut` a person
+  # would write passes without being a check. What the *load step* below
+  # measures instead is that same resistance above the loop's bandwidth,
+  # where the division has stopped -- which is the number a transient
+  # actually depends on and the one a DC sweep cannot see.
+  role "linear_regulator", reg5,
+       regulator = XR5.innerComponent("U1"), output = v5rail,
+       source = V1, input = vboard,
+       voltage = 5.0.V, band = 0.5.pct,
+       without = "final_v,overshoot",
+
+       # 50 mA arriving in a microsecond on top of the standing 100 mA --
+       # half again, which is an MCU coming out of stop mode. What holds the
+       # rail through the first microsecond is COUT and nothing else: the
+       # loop has not noticed. Measured 11.3 mV of droop and 8.7 us to come
+       # back, against a 1 mV band rather than the 1% default -- at 1% the
+       # band is 50 mV, four times the droop, the rail never leaves it and
+       # the recovery reads a confident zero.
+       iFrom = 0.0.A, iTo = 50.mA, tEdge = 1.0.us,
+       tStepAt = 200.0.us, tRecover = 200.0.us, stepPoints = 2000,
+       stepBand = 0.001,
+       maxDroop = 50.mV, maxRecover = 100.us,
+
+       # Ripple rejection at 120 Hz, which is where it matters on anything
+       # fed from a bridge rectifier: 100 mV of hum on a 15 V supply is an
+       # ordinary amount for a smoothing capacitor to leave behind.
+       #
+       # Claimed **twice, by both methods**, and that is the point of doing
+       # it here. `minPsrrDb` puts one real 100 mV sinusoid through a
+       # `.tran` and extracts the amplitude at exactly 120 Hz at each end;
+       # `minPsrrBandDb` with `psrrAtF` set linearises the same circuit and
+       # reads the same frequency off an `.ac` sweep. They are different
+       # runs through different solvers and they agree to 0.002 dB -- 62.9
+       # against 62.9 -- which is the cross-check the tone method needs,
+       # because a tone measurement has a noise floor and an `.ac` sweep has
+       # a linearisation, and neither one alone tells you which it hit.
+       #
+       # `tSettle` is 40 ms because the run has to start after the loop has
+       # settled *and* on a whole period boundary of a 120 Hz tone, which is
+       # 8.33 ms long.
+       minPsrrDb = 55.dB, psrrAtF = 120.Hz, psrrRippleV = 100.mV,
+       psrrPeriods = 6, psrrPoints = 400, tSettle = 40.0.ms,
+       minPsrrBandDb = 55.dB, psrrFrom = 10.Hz, psrrTo = 1.kHz,
+
+       # What the rail does when the supply moves, which is a slope and not
+       # a bias: the operating point above is solved at one input voltage
+       # and says nothing about it however precisely it lands. 8 V to 20 V
+       # is the whole range this board could plausibly be fed over.
+       #
+       # 0.129% measured across 12 V of input is 0.0107 %/V, and the LM317
+       # datasheet's typical line regulation is 0.01 %/V. That figure is not
+       # read back from the part: it falls out of the loop gain the model
+       # closes, which is the difference between a check and a tautology.
+       vinFrom = 8.0.V, vinTo = 20.0.V, vinStep = 0.1.V,
+       maxLineReg = 0.25
+
+  # The 12 V rail, and one claim only -- the **worst point across a band**
+  # rather than a figure at one frequency. It is here because a rejection
+  # number without a band is close to meaningless and this rail shows why:
+  # the same part on the same board that rejects 62.9 dB at 120 Hz is down
+  # to 19.9 dB by 10 kHz, and widening the band to 1 MHz finds 4.19 dB. The
+  # loop gain has rolled off and COUT has not taken over, so there is a
+  # decade or two in the middle where this rail is barely a filter at all.
+  #
+  # Which end of that a design cares about is a design question. 15 dB over
+  # 10 Hz to 10 kHz is the claim that fits a board whose input ripple is
+  # mains-derived; a board with a switcher upstream of it would have to
+  # state the band up at the switching frequency and would not like the
+  # answer.
+  role "linear_regulator", reg12,
+       regulator = XR12.innerComponent("U1"), output = v12rail,
+       source = V1, input = vboard,
+       voltage = 12.0.V, band = 0.5.pct,
+       minPsrrBandDb = 15.dB, psrrFrom = 10.Hz, psrrTo = 10.kHz,
+       without = "final_v,overshoot"
 
   require dc_voltage(vboard) == vBoardNominal, band = 0.5.pct,
           id = "REQ-REG-LEAD-001",

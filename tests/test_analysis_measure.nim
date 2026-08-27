@@ -61,6 +61,39 @@ test "unityGainFreq finds the 0 dB crossing, and reports NaN when there isn't on
 test "interpCrossing catches a rising crossing, not just a falling one":
   check abs(interpCrossing(@[1.0, 2.0], @[-10.0, 10.0], 0.0) - 1.5) < 1e-12
 
+# --- maxDeviation: two curves on one axis ------------------------------
+
+test "maxDeviation reports the worst point and the x that witnesses it":
+  let x  = @[1.0, 2.0, 3.0, 4.0, 5.0]
+  let ya = @[0.0, 1.0, 2.0, 3.0, 4.0]
+  let yb = @[0.0, 1.1, 1.5, 3.0, 4.2]
+  let (dev, at) = maxDeviation(x, ya, yb)
+  check abs(dev - 0.5) < 1e-12      # at x = 3
+  check at == 3.0
+
+test "the window restricts which samples are compared":
+  let x  = @[10.0, 100.0, 1000.0, 10000.0]
+  let ya = @[0.0, 0.0, 0.0, 0.0]
+  let yb = @[9.0, 1.0, 2.0, 8.0]
+  # Over the whole axis the worst is 9 at 10 Hz; inside 50 .. 5000 it is 2.
+  check maxDeviation(x, ya, yb).dev == 9.0
+  let (dev, at) = maxDeviation(x, ya, yb, 50.0, 5000.0)
+  check dev == 2.0
+  check at == 1000.0
+
+test "a window with no sample in it is NaN, not a clamped endpoint":
+  let x  = @[10.0, 100.0, 1000.0]
+  let ya = @[0.0, 0.0, 0.0]
+  let yb = @[1.0, 2.0, 3.0]
+  check maxDeviation(x, ya, yb, 200.0, 900.0).dev.isNaN
+  check maxDeviation(x, ya, yb, 200.0, 900.0).at.isNaN
+
+test "mismatched lengths are a caller bug and raise":
+  expect ValueError:
+    discard maxDeviation(@[1.0, 2.0], @[1.0, 2.0], @[1.0])
+  expect ValueError:
+    discard maxDeviation(@[1.0], @[1.0, 2.0], @[1.0])
+
 test "corner3dB on a high-pass reports NaN rather than a bogus corner":
   var f, g: seq[float]
   for k in 0 .. 60:

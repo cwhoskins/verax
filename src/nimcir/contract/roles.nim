@@ -350,6 +350,11 @@ let regulatorParams = @[
          doc: "how far it may rise when the load is released again"),
   AnnDef(key: "maxRecover", kind: akFloat, unit: "s", scopes: {asNet},
          doc: "how long it may take to come back inside band and stay there"),
+  AnnDef(key: "stepBand", kind: akFloat, scopes: {asNet},
+         doc: "the band `maxRecover` is measured against, as a fraction of " &
+              "where the rail settles under the new load; omitted takes " &
+              "1%. State it whenever the droop is smaller than that, or " &
+              "the rail never leaves the band and the recovery reads zero"),
   # --- supply rejection ---
   AnnDef(key: "minPsrrDb", kind: akFloat, unit: "dB", scopes: {asNet},
          doc: "least acceptable rejection of input ripple, measured with " &
@@ -497,6 +502,7 @@ proc loadStepClaims(inst: RoleInstance, judged: Subject): seq[Assertion] =
     claim.condition["step_hold"] = $paramFloat(inst, "tHold", 0.0)
     claim.condition["step_recover"] = $paramFloat(inst, "tRecover", 0.0)
     claim.condition["step_points"] = $paramFloat(inst, "stepPoints", 0.0)
+    claim.condition["step_band"] = $paramFloat(inst, "stepBand", 0.0)
     result.add claim
 
   if hasParam(inst, "maxDroop"):
@@ -1091,6 +1097,75 @@ proc gainStageExpand(inst: RoleInstance): seq[Assertion] =
       rationale: "the stage must still be passing at the top of its band",
       origin: inst.name)
 
+proc channelMatchExpand(inst: RoleInstance): seq[Assertion] =
+  ## Two stages judged against each other, rather than each against a band.
+  ##
+  ## `gain_stage` claims each channel reaches its gain; this claims the two
+  ## *agree*, and neither implies the other -- two channels 3 dB apart can
+  ## each sit inside its own band, and a stereo image that shifts with level
+  ## is the most audible fault a two-channel stage has.
+  ##
+  ## **The subjects are the two `skClass` references, not nets.** A
+  ## `RoleExpander` is pure and has no `Design`, so it cannot turn
+  ## `roleRef("left")` into an amplifier and two nets; the evaluator does
+  ## that (`subjectRoleBinding`). Same asymmetry `originRole` exists for --
+  ## an expander states the claim, an evaluator recovers the topology.
+  ##
+  ## Every claim is `hasParam`-gated on its own limit, the rule the regulator
+  ## roles established. `fFrom`/`fTo`/`atF` are **setup**: they say what was
+  ## swept, ride in `Assertion.condition`, and never gate a claim.
+  let a = inst.subject("a")
+  let b = inst.subject("b")
+  let atF = paramFloat(inst, "atF", 0.0)
+
+  template withSetup(x: var Assertion) =
+    if paramFloat(inst, "fFrom", 0.0) > 0.0:
+      x.condition["f_from"] = $paramFloat(inst, "fFrom", 0.0)
+    if paramFloat(inst, "fTo", 0.0) > 0.0:
+      x.condition["f_to"] = $paramFloat(inst, "fTo", 0.0)
+    if atF > 0.0: x.condition["at_f"] = $atF
+
+  if hasParam(inst, "maxGainDelta"):
+    # `atF` **redirects** the gain-delta claim onto the single frequency
+    # rather than adding a second one -- the `gain_stage`/`atF` pattern. Two
+    # claims about one pair of curves would be one claim that can only ever
+    # be the weaker.
+    let q = if atF > 0.0: "gain_delta_at_f" else: "gain_delta_max_db"
+    var x = Assertion(
+      id: assertionId(inst, "gain_delta"),
+      subjects: @[a, b],
+      quantity: q,
+      expect: atMost(paramFloat(inst, "maxGainDelta", 0.0)),
+      unit: "dB",
+      severity: sevError,
+      rationale: (if atF > 0.0:
+                    "the two channels' gain must match at the frequency the " &
+                    "stage is specified at"
+                  else:
+                    "the two channels' gain must match across the band -- " &
+                    "the worst point, since an imbalance anywhere in the " &
+                    "audio range moves the stereo image there"),
+      origin: inst.name)
+    withSetup(x)
+    result.add x
+
+  if hasParam(inst, "maxEdgeRatio"):
+    for suffix in ["f_lo_ratio", "f_hi_ratio"]:
+      var x = Assertion(
+        id: assertionId(inst, suffix),
+        subjects: @[a, b],
+        quantity: suffix,
+        expect: atMost(paramFloat(inst, "maxEdgeRatio", 1.0)),
+        unit: "",
+        severity: sevError,
+        rationale: "the two channels' band edges must track: a coupling or " &
+                   "feedback capacitor out of tolerance on one channel tilts " &
+                   "its response relative to the other. The figure is " &
+                   "max/min, so it is >= 1 whichever channel is faster",
+        origin: inst.name)
+      withSetup(x)
+      result.add x
+
 proc oscillatorExpand(inst: RoleInstance): seq[Assertion] =
   ## What a circuit whose intent is *instability* is specified by: what it
   ## runs at, how big it is, and how clean.
@@ -1676,6 +1751,36 @@ proc registerBuiltinRoles*() =
     ],
     apply: nil,
     expand: gainStageExpand))
+
+  registerRole(RoleDef(
+    name: "channel_match",
+    doc: "Two amplifier stages judged against each other: do the channels " &
+         "of a stereo board actually match?",
+    parts: @[
+      RolePart(name: "a", kind: skClass,
+               doc: "the first stage, as `roleRef(\"<name>\")`"),
+      RolePart(name: "b", kind: skClass,
+               doc: "the second stage, as `roleRef(\"<name>\")` -- declare " &
+                    "both stages before this instance"),
+    ],
+    params: @[
+      AnnDef(key: "maxGainDelta", kind: akFloat, unit: "dB", scopes: {asNet},
+             doc: "largest gain difference between the channels, in dB; " &
+                  "omitted means unclaimed"),
+      AnnDef(key: "maxEdgeRatio", kind: akFloat, scopes: {asNet},
+             doc: "largest ratio (max/min, so >= 1) between the two " &
+                  "channels' -3 dB corners; omitted means unclaimed"),
+      AnnDef(key: "atF", kind: akFloat, unit: "Hz", scopes: {asNet},
+             doc: "frequency the gain-delta claim is made at; omitted means " &
+                  "it is the worst over the swept band"),
+      AnnDef(key: "fFrom", kind: akFloat, unit: "Hz", scopes: {asNet},
+             doc: "low end of the compared band; sets the sweep, never " &
+                  "gates a claim"),
+      AnnDef(key: "fTo", kind: akFloat, unit: "Hz", scopes: {asNet},
+             doc: "high end of the compared band; sets the sweep"),
+    ],
+    apply: nil,
+    expand: channelMatchExpand))
 
   registerRole(RoleDef(
     name: "settled_rail",

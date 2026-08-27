@@ -142,6 +142,35 @@ proc unityGainFreq*(freq, magDb: openArray[float]): float =
   ## correct answer, not an error.
   interpCrossing(freq, magDb, 0.0, logX = true)
 
+proc maxDeviation*(x, ya, yb: openArray[float],
+                   xFrom = 0.0, xTo = 0.0): tuple[dev, at: float] =
+  ## The largest `abs(ya[i] - yb[i])` over the samples, and the `x` where it
+  ## occurs.
+  ##
+  ## This is the point-by-point difference between two curves sharing one
+  ## axis -- two channels' gain in dB, so the answer is a channel-match figure
+  ## in dB and the `at` is the frequency that witnesses it. The two `y`
+  ## arrays must be sampled at the same `x`; a caller that sweeps each channel
+  ## with a different `.ac` card and passes the results here is comparing two
+  ## grids and the number means nothing. That is the caller's contract, the
+  ## same one `checkPair` enforces for length.
+  ##
+  ## With the window left at its `0.0 .. 0.0` default the whole axis is
+  ## considered. A window with no sample inside it yields `NaN`, per the
+  ## module rule: not found is `NaN`, never a clamp and never the endpoint of
+  ## an empty range dressed up as an answer.
+  checkPair(x, ya, "maxDeviation")
+  checkPair(x, yb, "maxDeviation")
+  let windowed = xFrom != 0.0 or xTo != 0.0
+  let lo = min(xFrom, xTo)
+  let hi = max(xFrom, xTo)
+  result = (dev: NaN, at: NaN)
+  for i in 0 ..< x.len:
+    if windowed and (x[i] < lo or x[i] > hi): continue
+    let d = abs(ya[i] - yb[i])
+    if result.dev.isNaN or d > result.dev:
+      result = (dev: d, at: x[i])
+
 proc harmonicAmplitudes*(t, v: openArray[float], f0: float,
                          upTo = 9): seq[float] =
   ## Amplitudes of the fundamental and its harmonics, `A[0]` being the

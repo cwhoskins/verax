@@ -704,8 +704,13 @@ proc describeRole*(name: string): string =
   w += 2
   var L = @["role " & def.name & " -- " & def.doc, "", "parts"]
   for p in def.parts:
+    # `skClass` renders `class` through the generic `[2..^1]` slice, which is
+    # wrong for a part that references another role instance -- to a reader it
+    # is a role. The other kinds (`net`, `component`, `pin`) come out right.
+    let kindText = if p.kind == skClass: "role"
+                   else: ($p.kind)[2 .. ^1].toLowerAscii
     L.add "  " & p.name.alignLeft(w) &
-          ($p.kind)[2 .. ^1].toLowerAscii.alignLeft(11) &
+          kindText.alignLeft(11) &
           (if p.optional: "optional  " else: "required  ") & p.doc
   if def.params.len > 0:
     L.add ""
@@ -787,8 +792,17 @@ proc describeQuantities*(): string =
     else:
       reach = "-- needs a role binding " & ev.get.binds.join("/")
       orphans.add q
+    # A quantity whose evaluator takes more than one subject cannot be reached
+    # by a bare `require q(x)` -- it needs the pair -- so a reader has to be
+    # able to tell that without running it. `channel_match`'s are the first.
+    var subjTag = ""
+    if ev.get.arity != 1 .. 1:
+      subjTag =
+        if ev.get.arity.a == ev.get.arity.b: "   " & $ev.get.arity.a & " subjects"
+        elif ev.get.arity.b == int.high: "   " & $ev.get.arity.a & "+ subjects"
+        else: "   " & $ev.get.arity.a & ".." & $ev.get.arity.b & " subjects"
     L.add "  " & q.alignLeft(w + 2) & ev.get.name.alignLeft(24) &
-          ("[" & capLabel(ev.get.needs) & "]").alignLeft(10) & reach
+          ("[" & capLabel(ev.get.needs) & "]").alignLeft(10) & reach & subjTag
 
   L.add ""
   L.add "A quantity not listed here cannot be checked by anything in this build."

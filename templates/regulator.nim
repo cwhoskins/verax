@@ -21,6 +21,24 @@
 ## limit or foldback, no dropout and no load regulation. A rail that
 ## overshoots here would overshoot on a real board; a rail that looks clean
 ## here can still misbehave for loop-stability reasons this cannot see.
+##
+## **And it is why there is no ripple-rejection claim here**, though the role
+## offers one and the parameters are two lines away. The stand-in is an ideal
+## source at the output voltage with no path from its input to its output at
+## all, so a PSRR measurement through it would report infinite rejection --
+## a confident number about a stand-in rather than about a part. The analysis
+## refuses it rather than answering: an output at the solver's noise floor
+## while the input is not is reported as `not evaluated`, naming the missing
+## feedthrough. That refusal is the point, and the misread it exists to catch
+## is exactly the one this template would otherwise invite. Give U1 a
+## `simReplace` carrying a real loop -- `designs/lib/adjreg.nim` is one --
+## and the claim becomes measurable.
+##
+## The same goes for the **load step**, for a subtler reason: an ideal source
+## has zero output impedance, so it holds the rail through any step and the
+## droop measured is whatever the output network's ESR contributes and
+## nothing the regulator did. That is a real number rather than a refused
+## one, which makes it the more dangerous of the two.
 
 import nimcir/contract/dsl
 import nimcir/verify

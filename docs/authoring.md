@@ -211,6 +211,14 @@ complete, so build the parts conditionally and state the claims after.
 optional `id = "..."`, `because = "..."`, and condition keys such as
 `f_from` / `f_to` / `at_t`. Run `nimcir quantities` for what can be measured.
 
+Most quantities take one subject. A few take two — `gain_delta_max_db(left,
+right)` is one channel *versus* another — and `require q(a, b) <= x` spells
+that with no extra syntax. `nimcir quantities` marks such a quantity `2
+subjects`, and a `require` with the wrong count is refused at plan time
+naming the arity. When the two subjects are themselves role instances — as
+`channel_match` binds two stages — write `roleRef("<instance name>")`, and
+declare the referenced roles *before* the one that names them.
+
 ## Writing a role of your own
 
 `nimcir quantities` marks each quantity with how it can be claimed:
@@ -619,6 +627,140 @@ being answered with a guess. A subcircuit instance and an XSPICE code model
 have no terminal current of their own either — name the part inside the
 instance. Everything else works, including a resistor or a capacitor, whose
 current has to be asked for by name in the deck and is.
+
+## Asking a regulator what a regulator is asked
+
+Everything above holds the input still and the load still. A power supply is
+not specified that way: its front page says what happens when the load jumps,
+how much of the input's ripple gets through, and how much current it can
+actually deliver. Three roles ask that.
+
+`regulator` is the base and covers what any regulator is asked whatever it is
+made of. `linear_regulator` and `switching_regulator` are it plus what only
+their topology is asked — they expand everything the base claims and add to
+it, so nothing is lost by picking the specific one.
+
+```nim
+  role "switching_regulator", buck,
+       regulator = U1, output = vout,
+       switch = sw, inductor = L1, sense = L1,
+       source = V1, input = vin,
+
+       voltage = 4.962.V, band = 2.pct, tRun = 8.0.ms,
+       maxRiseTime = 5.0.ms, maxOvershoot = 2.0,
+
+       tSettle = 300.us, tWindow = 20.us,
+       maxRipple = 10.mV,
+       iRipple = 0.879.A, iRippleBand = 15.pct, maxIsatDerating = 0.6,
+       maxOutputCurrent = 5.6.A, maxOutputAvg = 5.2.A,
+       maxOutputDerating = 1.0,
+
+       minPsrrDb = 60.dB, psrrAtF = 100.kHz, psrrRippleV = 1.0.V,
+       psrrPeriods = 8, psrrPoints = 500,
+
+       iFrom = 0.0.A, iTo = 1.0.A, tEdge = 1.0.us,
+       tStepAt = 300.us, tRecover = 40.us, stepPoints = 2000,
+       stepBand = 0.001,
+       maxDroop = 150.mV, maxRecover = 30.us
+```
+
+**Every one of these is opt-in.** State a limit and you get the claim; leave
+it out and nothing is claimed, which is why adding all of this to `regulator`
+changed no design that was already using it.
+
+### The load step
+
+`iFrom` → `iTo` over `tEdge`, arriving at `tStepAt`, watched for `tRecover`.
+The analysis injects a pulsed constant-current sink — it is not a part on
+your board, and it is a sink rather than a resistor because a resistor's
+current follows the rail it hangs on, so it would sweep the load and the drive
+together and damp the network being measured.
+
+Quantities: `step_droop_v` and `step_droop_pct` (how far the rail falls),
+`step_v_min` (the same as an absolute, which is what an undervoltage lockout
+cares about), `step_overshoot_v` (what happens on the *release*, which needs
+`tHold` to be stated — leave it out and the load stays on to the end of the
+run, which halves the cost), and `step_recover_s`.
+
+**Set `stepBand` whenever the droop is small.** The recovery is the time to
+re-enter a band around where the rail settles *under the new load* — measured
+against the old level it would never converge, because load regulation moves
+that point. That band defaults to 1%, and on a rail that only dips half a
+percent the rail never leaves it and the recovery reports a confident **zero**.
+Both regulator designs in `designs/` state it at 0.1% for exactly that reason.
+
+**The magnitude is part of the question.** A rail that holds up under 1 A may
+not under 3 A, so `step_from`/`step_to` join the analysis setup — two claims
+at two magnitudes are two runs, and the answers are never pooled.
+
+### Ripple rejection
+
+Two methods, and **which one runs is decided by which limit you state**:
+
+- `minPsrrDb` puts **one real sinusoid** of `psrrRippleV` at `psrrAtF` on top
+  of the input and runs a `.tran`, pulling the amplitude at exactly that
+  frequency out of each end. Quantity: `psrr_db`. The default way to ask,
+  because it is the one that reaches everything — a switching converter has no
+  meaningful linearisation about an operating point, and a `.tran` is not
+  linear, so the amplitude is genuinely part of the question.
+- `minPsrrBandDb` **sweeps a band** from `psrrFrom` to `psrrTo` with `.ac` and
+  reports its worst point. Quantity: `psrr_min_db`. Cheaper, and it finds the
+  hole rather than answering where you happened to look. Adding `psrrAtF`
+  *redirects* this claim onto that one frequency (`psrr_at_f`) instead.
+
+Stating both is legal, is two runs, and is a genuine cross-check: a tone
+measurement has a noise floor and an `.ac` sweep has a linearisation, and
+neither alone tells you which one it hit. `designs/adj_regulator.nim` does
+this and the two agree to 0.002 dB.
+
+**A rejection figure without a band is close to meaningless.** The same LM317
+rail in that design rejects 62.9 dB at 120 Hz, 19.9 dB at 10 kHz and 4.19 dB
+at 1 MHz — the loop gain has rolled off and the output capacitor has not taken
+over. Say which band you care about.
+
+**You need a `source` and an `input` bound.** The ripple goes in series
+between the supply's output pin and the regulator's input net, and the input
+ripple is then *measured* rather than assumed — your input filter attenuates
+it before the regulator ever sees it, and quoting against what was injected
+would credit the regulator with the filter's work.
+
+**If nothing could have fed through, you get a refusal rather than a
+number.** A regulator with no `simReplace` of its own is stood in for by an
+ideal source at its output voltage, which has no path from input to output at
+all; so is a behavioural model that commands a voltage rather than a duty. In
+either case the output sits at the solver's noise floor while the input does
+not, and the report says so instead of reporting infinite rejection.
+
+### Output current against the rating
+
+`maxOutputCurrent`, `maxOutputAvg` and `maxOutputDerating`, measured through
+the bound **`sense`** part. That binding is needed rather than convenient: a
+regulator that reaches the simulator as a code model or a subcircuit has no
+terminal current of its own to probe, and only you know what carries its
+output current — the inductor after a converter, the pass element inside a
+linear's loop model.
+
+`maxOutputDerating` states no current. It reads the **regulator's** own
+`current_rating` off the part, so a substitution changes the limit in one
+place; a regulator that states none reports this as unchecked rather than as
+headroom nobody verified. These are ordinary `current_path` quantities over
+the same `tSettle`/`tWindow` window, so they batch into the same run as the
+ripple and inductor claims rather than costing another.
+
+### What the specialisations add
+
+`linear_regulator` adds `maxDropout` → `dropout_v`, `maxLineReg` →
+`line_reg_pct` over `vinFrom`/`vinTo`/`vinStep`, `maxLoadReg` →
+`load_reg_pct` and `maxZOut` → `z_out_dc` over `iLoadFrom`/`iLoadTo` — all
+through the `.dc` sweeps described in the next section, so it must bind a
+`source`.
+
+`switching_regulator` adds `maxRipple` → `ripple_pp`, `fSw`/`fSwBand` →
+`osc_freq` on the bound `switch` net, and `maxSwitchCurrent` /
+`maxIsatDerating` → `i_peak` and `i_peak_derating` on the bound `inductor`. In
+a synchronous buck the inductor's peak *is* the switch peak during the on-time,
+and a converter's own cycle-by-cycle current limit is a model parameter rather
+than something stated in the netlist, so this is the measurable proxy for it.
 
 ## Sweeping something, rather than solving at one bias
 

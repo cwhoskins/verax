@@ -161,6 +161,61 @@ registerEvaluator(Evaluator(
   setupKey: fixedKey,
   run: runFixed))
 
+# --- a two-subject quantity, the §53 plumbing ------------------------
+
+proc runPair(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  for a in batch: result.add verdict(a, 1.0, "V", "test.pair")
+
+registerEvaluator(Evaluator(
+  name: "test.pair",
+  produces: @["test_pair"],
+  needs: {capStatic},
+  arity: 2 .. 2,
+  subjectKinds: {skNet},
+  run: runPair))          # no setupKey, so `defaultKey` joins both names
+
+test "a two-subject assertion routes to an arity 2..2 evaluator and runs":
+  let d = design("pairs"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require test_pair(a, b) <= 2.0.V, id = "OK"
+  let r = resultFor(evaluate(d), "OK")
+  check r.status == esPass
+  check r.evaluator == "test.pair"
+
+test "a one- or three-subject claim on a two-subject quantity is rejected with the arity message":
+  let d1 = design("one"):
+    net a, kind = ntSignal
+    require test_pair(a) <= 2.0.V, id = "ONE"
+  let r1 = resultFor(evaluate(d1), "ONE")
+  check r1.status == esNotEvaluable
+  check "takes 2..2 subjects" in r1.reason
+  check "got 1" in r1.reason
+
+  let d3 = design("three"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    net c, kind = ntSignal
+    require test_pair(a, b, c) <= 2.0.V, id = "THREE"
+  let r3 = resultFor(evaluate(d3), "THREE")
+  check r3.status == esNotEvaluable
+  check "got 3" in r3.reason
+
+test "defaultKey groups a two-subject claim by both subject names":
+  let d = design("grp"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    net c, kind = ntSignal
+    require test_pair(a, b) <= 1.0.V, id = "AB1"
+    require test_pair(a, b) >= 0.0.V, id = "AB2"
+    require test_pair(a, c) <= 1.0.V, id = "AC"
+  let p = plan(d)
+  var steps = 0
+  for s in p.steps:
+    if s.evaluator == "test.pair": inc steps
+  # {a,b} answers two claims in one step; {a,c} is a different pair.
+  check steps == 2
+
 proc statusBoard(): Design =
   design("statuses"):
     net a, kind = ntSignal

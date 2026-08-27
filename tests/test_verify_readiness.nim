@@ -266,3 +266,18 @@ suite "a claim as a comparison":
     let a = mkAssertion("n", @[Subject(kind: skNet, name: "sda")],
                         expectEq(1.0, 0.pct), "", id = "N")
     check acceptance(a) == ""
+
+suite "the catalog names a two-subject quantity as one":
+  test "channel_match's role parts render as `role`, not `class`":
+    let text = describeRole("channel_match")
+    check "role" in text
+    # The generic `($kind)[2..^1]` slice would print `class`; a role
+    # reference is a role to a reader.
+    check "class" notin text
+
+  test "a quantity whose evaluator takes two subjects is marked in the catalog":
+    let q = describeQuantities()
+    check "gain_delta_max_db" in q
+    for line in q.splitLines():
+      if line.strip().startsWith("gain_delta_max_db"):
+        check "2 subjects" in line
