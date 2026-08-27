@@ -268,19 +268,34 @@ codeModel "lt8640a_sw":
         analogVar(stCycle, 0, float) = cyc
         analogVar(stTOff, 0, float) = tOff
 
-        # The edge is a raised cosine rather than a straight ramp, and that
-        # is not cosmetic: a linear ramp has a corner at each end, the driven
-        # node's second derivative is a delta there, and truncation-error
-        # control answers a delta by halving the timestep until it gives up.
-        # Measured with a 2 ns linear edge: `Timestep too small; time =
-        # 2.2e-09, timestep = 3.4e-20` at the first edge of the run. A
-        # raised cosine leaves the slope continuous at both ends.
+        # The edge is smootherstep (6u^5 - 15u^4 + 10u^3) rather than a
+        # straight ramp, and that is not cosmetic. A linear ramp has a corner
+        # at each end -- the driven node's second derivative is a delta there,
+        # and truncation-error control answers a delta by halving the timestep
+        # until it gives up: measured with a 2 ns linear edge, `Timestep too
+        # small; time = 2.2e-09, timestep = 3.4e-20` at the first edge of the
+        # run. A raised cosine was the first fix and is not enough: it leaves
+        # the *first* derivative continuous at both ends but steps the
+        # *second* (its curvature jumps from +-0.5*(PI/tedge)^2 to 0 where the
+        # edge meets the flat region), and the same truncation-error control
+        # collapses the timestep at that curvature break -- measured, a 2 ns
+        # print step died with `Timestep too small` at `tclk + tedge` of the
+        # first cycle, which is exactly the step `analyzeOscillation` picks
+        # (10000 samples over a 20 us window) and the reason a design could
+        # not claim `fSw` through this model. smootherstep is zero in both the
+        # first and second derivative at u = 0 and u = 1, so the edge joins
+        # the flat regions to second order and the model runs at any print
+        # step from ~1 ns up. `uOff` is only read on the falling edge, where
+        # `tOff` is finite; on the plateau (`tnow < tOff`, possibly Inf) the
+        # `1.0` branch is taken before it is touched.
+        let uOn = (tnow - tclk) / param(tedge)
+        let uOff = (tnow - tOff) / param(tedge)
         son =
           if tnow < tclk + param(tedge):
-            0.5 - 0.5 * cos(PI * (tnow - tclk) / param(tedge))
+            uOn * uOn * uOn * (uOn * (uOn * 6.0 - 15.0) + 10.0)
           elif tnow < tOff: 1.0
           elif tnow < tOff + param(tedge):
-            0.5 + 0.5 * cos(PI * (tnow - tOff) / param(tedge))
+            1.0 - uOff * uOff * uOff * (uOff * (uOff * 6.0 - 15.0) + 10.0)
           else: 0.0
         son = max(0.0, min(1.0, son))
 

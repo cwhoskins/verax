@@ -238,21 +238,16 @@ let d = design("lt8640a_buck"):
   # Everything below is opt-in: the role claims nothing it was not given a
   # number for.
   #
-  # **The window is 20 us from 300 us, and it may not be anything else.**
-  # That is not a preference. `spice/transform.selectSimModel` gives a
-  # steady-state question the switching model, whose forced sub-steps sit on
-  # a `1 / (fsw * nsub)` grid -- 20 ns here -- and ngspice only survives a
-  # print step that lands on it: measured, this design's `.tran` fails
-  # outright at 30 ns, 15 ns, 12 ns and 10 ns and succeeds at exactly 20 ns.
-  # `analyzeTransient` derives its step as `tWindow / 1000`, so 20 us is the
-  # window that works. See `docs/findings.md`; until the model is fixed,
-  # every steady-state number on this design rests on that arithmetic.
-  #
-  # It is also why **no `fSw` claim appears below**, though the role offers
-  # one and the switch node is bound for it: `analyzeOscillation` samples a
-  # window ten thousand times, because a frequency read off too few points is
-  # wrong in a way that looks like a circuit measurement -- and 20 us over
-  # ten thousand points is 2 ns, which this model cannot take.
+  # **The window is 20 us from 300 us**, shared by every steady-state claim
+  # below so the copies cannot drift. It is a judgement about the circuit --
+  # a converter's output is settled a hundred microseconds after start-up and
+  # 20 us is 20 switching cycles, enough for a peak-to-peak to be about the
+  # ripple rather than about the sampling -- and no longer a constraint of
+  # the model: `lt8640a_sw` now runs at any print step from ~1 ns up, so
+  # `analyzeTransient`'s `tWindow / 1000` and `analyzeOscillation`'s
+  # `tWindow / 10000` (a 2 ns step) both simulate cleanly. That is what lets
+  # the `fSw` claim below exist -- see `docs/RESOLVED_FINDINGS.md` §66 for
+  # what the switching edge used to do to a 2 ns step.
   role "switching_regulator", buck,
        regulator = U1, output = vout,
        switch = sw, inductor = L1, sense = L1,
@@ -285,6 +280,15 @@ let d = design("lt8640a_buck"):
 
        # The settled window, shared by every steady-state claim below.
        tSettle = 300.0.us, tWindow = 20.0.us,
+
+       # The switching frequency, set on the board by RT (41.2 k -> 1 MHz)
+       # and passed to the model the same way. `analyzeOscillation` counts
+       # switch-node edges over the settled window, so this checks that the
+       # model is actually switching at the rate the board asks for -- and,
+       # since RT and the model's `fsw` are two separate statements of one
+       # number, that they agree. Measured 1.00 MHz; the default 10% band is
+       # comfortable.
+       fSw = 1.0e6,
 
        # What is left moving on the rail. 10 mV is the budget, and the
        # arithmetic behind it is worth writing down because the measurement
@@ -343,8 +347,8 @@ let d = design("lt8640a_buck"):
        # 500 mV the tone at the output is not clearly above the converter's
        # own broadband content and the measurement is refused rather than
        # guessed at, which is the analysis working. The window is eight
-       # periods at 500 points each, which is the same 20 ns step everything
-       # else here needs.
+       # periods at 500 points each, which works out to the same 20 ns step
+       # the ripple runs use.
        minPsrrDb = 60.dB, psrrAtF = 100.kHz, psrrRippleV = 1.0.V,
        psrrPeriods = 8, psrrPoints = 500,
 
@@ -377,7 +381,7 @@ let d = design("lt8640a_buck"):
        # the loop actually takes.
        #
        # `stepPoints` is 2000 across a 40 us recovery window, which is again
-       # the 20 ns step everything on this design needs. `tHold` is left
+       # the 20 ns step the other settled runs use. `tHold` is left
        # unstated, so the load stays on and there is no release edge to
        # measure an overshoot at; that halves the run.
        iFrom = 0.0.A, iTo = 1.0.A, tEdge = 1.0.us,

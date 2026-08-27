@@ -2291,3 +2291,52 @@ Tests: `tests/test_contract_dsl.nim` (parsing, both operand orders, relative
 unit mismatch, predicate, cross-setup folding, one-result-per-claim), and
 `tests/test_verify_readiness.nim` (no hidden request leaks, predicate
 rendering). See `docs/authoring.md` for the spelling.
+
+---
+
+## 66. The switching model collapsed a fine print step, so `fSw` was unclaimable
+
+**Fixed.** `designs/lib/lt8640a_sw.nim`'s switch-edge shape was a raised
+cosine; it is now smootherstep (`6u^5 - 15u^4 + 10u^3`). The model runs at any
+`.tran` print step from ~1 ns up, and `designs/lt8640a_buck.nim` now claims
+`fSw` — `osc_freq(sw)` measured 1.00 MHz against the board's 1 MHz RT setting.
+
+**What it was.** §66 was filed as "the model runs at exactly one print step":
+measured on the buck at 1 MHz / `nsub = 50`, the `.tran` was reported to fail
+with `Timestep too small` at 30, 15, 12 and 10 ns and to succeed only at
+20 ns — the `1 / (fsw * nsub)` sub-step grid — which made `tWindow = 20.0.us`
+the one window `analyzeTransient`'s `tWindow / 1000` step could land on, and
+made `fSw` unclaimable because `analyzeOscillation`'s `tWindow / 10000` is a
+2 ns step.
+
+The re-investigation on ngspice-46 did not reproduce that table. The model ran
+cleanly at every print step from **3.5 ns to 1 us** (and at 1–1.5 ns), and
+failed only in a narrow band around **2–3 ns** — `analyzeOscillation`'s step
+lands squarely in it. So the grid story was wrong; the print-step sensitivity
+was real but sat somewhere else, and the specific failing values in the
+original table were most likely an artefact of a different ngspice build (the
+failure band's location is build- and platform-dependent).
+
+**The actual cause.** Every failing run died at `tclk + tedge` of the first
+switching cycle — the instant `son`'s turn-on edge meets its flat top. A
+raised cosine `0.5 - 0.5*cos(PI*u)` is zero in the *first* derivative at both
+ends (which is why it beat the linear ramp of §40) but steps the *second*: its
+curvature jumps from `-0.5*(PI/tedge)^2` to 0 where the edge goes flat.
+ngspice's local-truncation-error control fights that curvature break by
+cutting the timestep, and for a max internal step in the 2–3 ns range it cuts
+it to ~1e-20 s and bails. ngspice's log said `delta set to truncation error
+result: point rejected`, repeated — not a convergence or breakpoint problem,
+so the finding's proposed fix (guarding `setTempBkpt` against re-arming a
+passed breakpoint, the reverted first attempt) was aimed at the wrong
+mechanism.
+
+**The fix.** smootherstep is zero in both the first *and* second derivative at
+`u = 0` and `u = 1`, so each edge joins the flat regions to second order and
+there is no curvature step for LTE control to chase. The edge is 10 ns of a
+1 us cycle, so the shape change barely moves the steady-state numbers:
+`ripple_pp` 6.95 → 7.13 mV, `i_pp(L1)` 905 → 919 mA, `psrr_db` 70.1 → 71.3 dB,
+`step_droop_v` 21.3 → 21.2 mV — every claim still passes. Comments in
+`lt8640a_sw.nim` and `lt8640a_buck.nim` that described the grid constraint
+were rewritten, and the design gained `fSw = 1.0e6` on its
+`switching_regulator` role. No test file covers the switching model directly;
+`nimble verify` exercises it through the design.

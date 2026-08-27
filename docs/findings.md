@@ -35,9 +35,12 @@ built on that immediately: `analyzeLoadStep`,
 `switching_regulator` roles ask a power supply the three questions it is
 actually specified by — what the rail does when the load jumps, how much of
 the input's ripple reaches it, and whether the part is being run past its
-rating. Doing that turned up **§66** and **§67** below, both of them findings
-rather than proposals: the models had to be fixed before the measurements
-meant anything. What is below is what is left.
+rating. Doing that turned up **§66** and **§67**, both of them findings rather
+than proposals: the models had to be fixed before the measurements meant
+anything. §66 (`designs/lib/lt8640a_sw.nim`'s switch edge collapsed a fine
+`.tran` print step, so `lt8640a_buck` could not claim `fSw`) is fixed and in
+the resolved file; §67 stays below for its one remaining case. What is below
+is what is left.
 
 ---
 
@@ -95,36 +98,6 @@ meant anything. What is below is what is left.
    covers all of those with one definition, and `i2c` can stay what it is.
    That role is the deliverable; the quantity and the measurement are what it
    needs underneath.
-
-5. **The switching model runs at exactly one print step, and nothing says
-   so** (§66). `designs/lib/lt8640a_sw.nim` forces sub-steps onto a
-   `1 / (fsw * nsub)` grid through `setTempBkpt`, and ngspice only survives a
-   `.tran` whose print step lands on it. Measured on
-   `designs/lt8640a_buck.nim` at 1 MHz and `nsub = 50`, so a 20 ns grid:
-
-   | print step | result |
-   |---|---|
-   | 30 ns | `Timestep too small` — no output |
-   | **20 ns** | **runs** |
-   | 15 ns | `Timestep too small` |
-   | 12 ns | `Timestep too small` |
-   | 10 ns | `Timestep too small` |
-
-   Nothing in the design states 20 ns. `analyzeTransient` derives the step as
-   `tWindow / 1000`, so the design's `tWindow = 20.0.us` is the only window
-   that works and every steady-state number on that board rests on that
-   arithmetic holding — one edit from breaking, with a failure that looks like
-   a solver problem rather than like a model constraint. It is also why the
-   design **cannot claim `fSw`** though the role offers it and the switch node
-   is bound: `analyzeOscillation` samples a window 10 000 times, which over
-   20 us is 2 ns.
-
-   The fix is in the model: guard `setTempBkpt` so a breakpoint already
-   passed is not re-armed. A first attempt at that broke the working 20 ns
-   case and was reverted rather than left in — a model whose ripple figures a
-   design already claims is not a thing to perturb on the way past. Until
-   then, the constraint belongs in the design's comments, which is where it
-   now is.
 
 6. **A regulator model can reject perfectly and mean nothing by it** (§67).
    Two of the three regulator models here could not show input feedthrough at
