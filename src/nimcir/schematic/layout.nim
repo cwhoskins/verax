@@ -497,11 +497,16 @@ proc pinKey(c: Component, pinName: string): string =
   ## name within a component, so the pair is unique.
   c.designator & "\x1f" & pinName
 
-proc overlapsPlaced(i: int, x, y: float, pos: seq[Point],
-                    ohw, ohh: seq[float]): bool =
-  ## Whether the candidate centre `(x, y)` overlaps any already-placed
-  ## component's inflated body (strict interior; touching is allowed).
-  for j in 0 ..< i:
+proc overlapsAny(i: int, x, y: float, pos: seq[Point],
+                 ohw, ohh: seq[float], against: openArray[int]): bool =
+  ## Whether the candidate centre `(x, y)` for part `i` overlaps the inflated
+  ## body of any part named in `against` (strict interior; touching is
+  ## allowed). `i` itself is skipped if listed. The separation pass passes the
+  ## indices it has already placed; taking an explicit list rather than
+  ## hard-coding `0 ..< i` keeps the non-overlap check reusable by a later
+  ## pass that places parts in a different order.
+  for j in against:
+    if j == i: continue
     if abs(x - pos[j].x) < ohw[i] + ohw[j] - 1e-9 and
        abs(y - pos[j].y) < ohh[i] + ohh[j] - 1e-9:
       return true
@@ -845,6 +850,7 @@ proc layout*(nl: Netlist): Schematic =
     ohh[i] = syms[i].bodyH / 2.0 + placementPad
 
   let maxR = max(64, 4 * n)
+  var placed: seq[int]
   for i in 0 ..< n:
     let cx = pos[i].x
     let cy = pos[i].y
@@ -855,7 +861,7 @@ proc layout*(nl: Netlist): Schematic =
           if max(abs(dx), abs(dy)) != r: continue
           let x = cx + float(dx) * grid
           let y = cy + float(dy) * grid
-          if not overlapsPlaced(i, x, y, pos, ohw, ohh):
+          if not overlapsAny(i, x, y, pos, ohw, ohh, placed):
             pos[i] = Point(x: x, y: y)
             done = true
             break
@@ -863,6 +869,7 @@ proc layout*(nl: Netlist): Schematic =
       if done: break
     doAssert done,
       "schematic placement could not separate component " & comps[i].designator
+    placed.add i
 
   # --- packing: blocks that share no signal net are pulled back together --
   # The force layout's only long-range counter-force is a weak gravity, so
