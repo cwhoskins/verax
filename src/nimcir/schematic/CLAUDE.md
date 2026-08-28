@@ -55,7 +55,19 @@ implements.
   force layout's — a design whose blocks a shared rail already pulled
   together — the pass reverts, so it can only ever help. Each group moves by a
   rigid grid-snapped translation, so the separation invariant and the grid
-  snap both survive it. Routing is per signal net: a tree grows
+  snap both survive it. After the definitive rotation pass a **leaf-snap pass**
+  (`leafSnap`) takes each square two-terminal part with exactly one
+  non-ground / non-rail net, moves it to the nearest free grid cell out along
+  its one net-mate pin's escape axis, and turns it so its connected pin faces
+  back at that mate — a single spring fixes a leaf's distance but not its
+  direction or alignment, so the force layout leaves it adrift with its pin
+  pointing away, and the rotation score's four-way ties (a shunt element sits
+  symmetrically between its neighbours) were breaking on nothing better than
+  the smaller angle. It runs last and owns both the position and the
+  orientation of the leaves it touches; position is only ever moved *closer* to
+  the mate pin, parts are visited in insertion order against the others' final
+  centres, so it can only help and stays deterministic. Routing is per signal
+  net: a tree grows
   from the first pin, each next pin attaching to the closest already-wired
   point through a Hanan free-space grid built from the inflated obstacle
   boundaries so no segment enters an inflated body; a wire

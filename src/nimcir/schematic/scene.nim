@@ -40,9 +40,10 @@ type
       ## One of 0, 90, 180, 270 degrees. `layout` picks it for an eligible
       ## square two-terminal part as the orientation that minimises its pins'
       ## distance to their net-mates -- so it fixes both the pin axis and which
-      ## end each pin takes. The SVG writer rotates the body by this angle
-      ## around the part centre and keeps the labels upright. Always 0 for
-      ## boxes and for non-two-terminal symbols.
+      ## end each pin takes; a one-net part instead simply faces its lone
+      ## net-mate (see `layout`'s leaf-snap pass). The SVG writer rotates the
+      ## body by this angle around the part centre and keeps the labels upright.
+      ## Always 0 for boxes and for non-two-terminal symbols.
     pins*: seq[SchematicPin]
 
   SchematicWire* = object

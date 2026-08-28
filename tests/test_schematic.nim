@@ -552,6 +552,42 @@ test "a parallel pair ends up adjacent and co-oriented, not scattered":
     let dq = pinPoints(s, "CP", net)[0]
     check abs(dp.x - dq.x) + abs(dp.y - dq.y) <= 160.0
 
+test "a one-net leaf snaps up against its single net-mate, pin facing it":
+  # CSH hangs off the mid node to ground: one signal net, so the force layout
+  # gives it a single spring and leaves it adrift with its pin facing away.
+  # leafSnap pulls it up against a mid-node pin and turns it so its own mid pin
+  # faces there -- a short straight stub, not an L across the sheet.
+  var nl = newNetlist("leaf")
+  let inn = addNet(nl, newNet("in"))
+  let mid = addNet(nl, newNet("mid"))
+  let outn = addNet(nl, newNet("out"))
+  let g = addNet(nl, newNet("0", ntGround))
+  let vs = addComponent(nl, newComponent("VS", kind = "voltage_source"))
+  discard connect(vs, "+", inn); discard connect(vs, "-", g)
+  vs.attrs["value"] = "DC 5"
+  let rs = addComponent(nl, newComponent("RS", kind = "resistor"))
+  discard connect(rs, "1", inn, ptPassive); discard connect(rs, "2", mid, ptPassive)
+  rs.attrs["value"] = "1k"
+  let ro = addComponent(nl, newComponent("RO", kind = "resistor"))
+  discard connect(ro, "1", mid, ptPassive); discard connect(ro, "2", outn, ptPassive)
+  ro.attrs["value"] = "1k"
+  let rl = addComponent(nl, newComponent("RL", kind = "resistor"))
+  discard connect(rl, "1", outn, ptPassive); discard connect(rl, "2", g, ptPassive)
+  rl.attrs["value"] = "1k"
+  let csh = addComponent(nl, newComponent("CSH", kind = "capacitor"))
+  discard connect(csh, "1", mid, ptPassive); discard connect(csh, "2", g, ptPassive)
+  csh.attrs["value"] = "1n"
+  let s = layout(nl)
+  let lp = pinPoints(s, "CSH", "mid")[0]
+  # CSH's mid pin lands on a line with some other mid pin (a straight stub) and
+  # within a grid step of it.
+  var best = 1e18
+  for mate in ["RS", "RO"]:
+    let mp = pinPoints(s, mate, "mid")[0]
+    if (abs(lp.x - mp.x) < 1e-6 or abs(lp.y - mp.y) < 1e-6):
+      best = min(best, abs(lp.x - mp.x) + abs(lp.y - mp.y))
+  check best <= 80.0 + 1e-6
+
 test "a three-terminal transistor never rotates":
   let nl = newNetlist("elig")
   let a = addNet(nl, newNet("a"))

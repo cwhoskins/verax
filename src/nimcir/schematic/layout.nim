@@ -27,7 +27,11 @@
 ## angle is written into `SchematicPart.rotation` and its pin slots rotated
 ## with it, so routing, obstacle avoidance and rendering all agree. Only the
 ## square two-terminal symbols rotate, so a quarter turn never swaps
-## `bodyW`/`bodyH` and the obstacle rects stay valid. Every step is
+## `bodyW`/`bodyH` and the obstacle rects stay valid. Finally a **leaf-snap**
+## pass pulls each square two-terminal part that has just one non-ground /
+## non-rail net up against the pin it connects to and turns it so that pin
+## faces there -- a single spring otherwise leaves such a part adrift with its
+## pin pointing away. Every step is
 ## deterministic -- same netlist, same scene, every time -- which is what
 ## makes the scene testable and the archive reproducible.
 ##
@@ -603,6 +607,122 @@ proc bestRotation(sd: SymbolDef, comp: Component, centre: Point, current: float,
   else:
     current
 
+proc slotEscape(slot: Point, bw, bh: float): Point =
+  ## The outward axis direction of a pin at `slot` relative to its part centre,
+  ## by the same body-half-extent test `escapeDir` runs on a placed part.
+  if abs(abs(slot.x) - bw / 2.0) < abs(abs(slot.y) - bh / 2.0):
+    Point(x: (if slot.x >= 0.0: 1.0 else: -1.0), y: 0.0)
+  else:
+    Point(x: 0.0, y: (if slot.y >= 0.0: 1.0 else: -1.0))
+
+proc axisUnit(p: Point): Point {.inline.} =
+  ## The dominant axis of `p` as a unit vector (ties to x). `(0,0)` stays.
+  if abs(p.x) >= abs(p.y) and p.x != 0.0:
+    Point(x: (if p.x > 0.0: 1.0 else: -1.0), y: 0.0)
+  elif p.y != 0.0:
+    Point(x: 0.0, y: (if p.y > 0.0: 1.0 else: -1.0))
+  else:
+    Point(x: 0.0, y: 0.0)
+
+proc leafSnap(comps: seq[Component], syms: seq[SymbolDef], pos: var seq[Point],
+              rots: var seq[float], ohw, ohh: seq[float],
+              idxOf: Table[string, int]) =
+  ## A square two-terminal part with exactly one non-ground / non-rail net has a
+  ## single attraction spring: the force layout fixes its distance from that one
+  ## net-mate but neither the direction nor the alignment, so it drifts off with
+  ## its connected pin facing away. Move each such leaf to the nearest free grid
+  ## cell out along its net-mate pin's escape axis -- so the wire between them is
+  ## a short straight stub -- and turn it so its connected pin faces back at that
+  ## mate. Position is only ever moved *closer* to the mate pin than it already
+  ## was, so the pass can only help.
+  ##
+  ## Runs after the definitive rotation pass, and owns a leaf's orientation
+  ## outright: for a part with one real connection "point the pin at it" beats
+  ## any wirelength score, and the score's four-way ties (a shunt element sits
+  ## symmetrically between its neighbours) were being broken by nothing better
+  ## than the smaller angle.
+  ##
+  ## Deterministic: parts visited in insertion order, each placed and turned
+  ## against the others' current centres/rotations, the mate chosen as the
+  ## nearest pin with a `pinKey` tie-break.
+  let n = comps.len
+  var against = newSeq[int](n)
+  for i in 0 ..< n: against[i] = i
+  for i in 0 ..< n:
+    if not rotatable(syms[i]): continue
+    var theNet: Net = nil
+    var myPin = ""
+    var myOrd = 0
+    var multi = false
+    block:
+      var ord = 0
+      for pinName, p in comps[i].pins:
+        if p.net != nil and not isGround(p.net) and not isRail(p.net):
+          if theNet == nil:
+            theNet = p.net; myPin = pinName; myOrd = ord
+          elif p.net != theNet: multi = true
+        inc ord
+    if multi or theNet == nil: continue
+
+    let pw = pinWorldPositions(comps, syms, pos, rots)
+    var mate: Pin = nil
+    var mateKey = ""
+    var mateD = Inf
+    for other in theNet.pins:
+      if other.component == nil or
+         other.component.designator == comps[i].designator: continue
+      if not idxOf.hasKey(other.component.designator): continue
+      let key = pinKey(other.component, other.name)
+      if not pw.hasKey(key): continue
+      let d = manhattan(pw[key], pos[i])
+      if d < mateD - 1e-9 or
+         (abs(d - mateD) <= 1e-9 and (mate == nil or key < mateKey)):
+        mateD = d
+        mate = other
+        mateKey = key
+    if mate == nil: continue
+
+    let j = idxOf[mate.component.designator]
+    var ord = 0
+    var mslot = Point()
+    for pinName, _ in comps[j].pins:
+      if pinName == mate.name:
+        mslot = rotatedSlot(slotOf(syms[j], pinName, ord), rots[j])
+        break
+      inc ord
+    let m = pos[j] + mslot
+    let dir = slotEscape(mslot, syms[j].bodyW, syms[j].bodyH)
+    let reach = ohw[i] + ohw[j]
+    let target = Point(x: round((m.x + dir.x * reach) / grid) * grid,
+                       y: round((m.y + dir.y * reach) / grid) * grid)
+
+    var best = pos[i]
+    var bestD = manhattan(pos[i], m)
+    var found = false
+    for r in 0 .. 6:
+      for dy in -r .. r:
+        for dx in -r .. r:
+          if max(abs(dx), abs(dy)) != r: continue
+          let x = target.x + float(dx) * grid
+          let y = target.y + float(dy) * grid
+          if overlapsAny(i, x, y, pos, ohw, ohh, against): continue
+          let d = manhattan(Point(x: x, y: y), m)
+          if d < bestD - 1e-9:
+            bestD = d
+            best = Point(x: x, y: y)
+            found = true
+      if found: break
+    if not found: continue
+    pos[i] = best
+
+    # Turn the leaf so its connected pin points back at the mate (along -dir).
+    let wantSlot = Point(x: -dir.x, y: -dir.y)
+    let baseSlot = slotOf(syms[i], myPin, myOrd)
+    for angle in rotationChoices:
+      if axisUnit(rotatedSlot(baseSlot, angle)) == wantSlot:
+        rots[i] = angle
+        break
+
 proc ufFind(parent: var seq[int], x: int): int =
   ## Union-find root with path compression. The root of a class is always its
   ## smallest member index (see `ufUnion`), so a class id is a stable function
@@ -950,6 +1070,14 @@ proc layout*(nl: Netlist): Schematic =
     for i in 0 ..< n:
       newRots[i] = bestRotation(syms[i], comps[i], pos[i], rots[i], pw, 0.0)
     rots = newRots
+
+  # --- leaf cleanup: a one-signal-net part snapped beside its net-mate ----
+  # A part with a single non-ground / non-rail net still sits and points
+  # wherever its one spring left it. Pull each up against the pin it connects
+  # to and turn it to face there, so the router draws a short straight stub
+  # rather than a long detour. Last, so it owns both the position and the
+  # orientation of the leaves it touches.
+  leafSnap(comps, syms, pos, rots, ohw, ohh, idxOf)
 
   # --- parts, with absolute pin positions --------------------------------
   var pinPos = initTable[string, Point]()
