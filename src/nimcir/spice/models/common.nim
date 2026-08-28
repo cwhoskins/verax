@@ -27,6 +27,22 @@ const
   opampNegNames* = ["-", "in-", "inn", "vin-", "inv"]
   opampOutNames* = ["out", "vout", "o", "output"]
 
+  # Transformer / coupled-inductor / common-mode-choke winding terminals,
+  # dotted end first. Kept here for the same reason the op-amp lists are: a
+  # second model file (a future S-parameter one) will match on them and the
+  # two must agree. A two-winding part names its windings PRI/SEC; a
+  # common-mode choke's two windings are its two lines, same terminals.
+  priDotNames* = ["p1", "pri+", "pri1", "p+", "1a", "a"]
+  priRetNames* = ["p2", "pri-", "pri2", "p-", "1b"]
+  secDotNames* = ["s1", "sec+", "sec1", "s+", "2a", "b"]
+  secRetNames* = ["s2", "sec-", "sec2", "s-", "2b"]
+
+  # Control terminals of a two-terminal switch, and the throw it makes.
+  switchCtrlNames* = ["ctrl", "ctrl+", "en", "c", "g", "gate", "sel"]
+  switchCtrlRetNames* = ["ctrl-", "c-", "en-"]
+  switchThrowInNames* = ["1", "in", "a", "com", "rfc", "d"]
+  switchThrowOutNames* = ["2", "out", "b", "no", "rf"]
+
 proc pinNamed*(c: Component, names: openArray[string]): Pin =
   for p in orderedPins(c):
     if p.name.toLowerAscii in names: return p

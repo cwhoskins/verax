@@ -46,6 +46,20 @@ proc classifyConductivity*(c: Component): Conductivity =
   else: condAmbiguous
 
 const
+  couplingKinds* = ["mutual_inductance"]
+    ## The SPICE `K` card -- a *relationship* between two inductors, not a
+    ## device with terminals. Synthesized only: `spice/models/magnetics`
+    ## emits one per winding pair when it expands a `transformer` or a
+    ## `common_mode_choke`.
+    ##
+    ## `isPassive` accepts it so `spice/isolate` pulls it into a fragment
+    ## whenever both the inductors it couples are already there -- otherwise
+    ## the coupling is silently dropped and the fragment is a different
+    ## circuit. `classifyConductivity` still calls it `condAmbiguous`, and
+    ## deliberately: a `K` card has no nodes to walk *through*, which for a
+    ## transformer is precisely the isolation barrier `analysis/io_check`
+    ## must not cross.
+
   behaviouralKinds* = ["vcvs", "vccs", "cccs", "ccvs", "bsource"]
     ## Controlled sources. Never real parts -- these only ever appear because
     ## something in `spice/models` synthesized one to stand in for a part that
@@ -65,6 +79,9 @@ const builtinDesignatorPrefixes* = {
     "jfet": "Q", "transistor": "Q", "voltage_source": "V", "battery": "BT",
     "current_source": "I", "fuse": "F", "crystal": "Y", "oscillator": "Y",
     "switch": "SW", "relay": "K", "connector": "J", "jumper": "JP",
+    "analog_switch": "U", "rf_switch": "U", "mux": "U", "load_switch": "U",
+    "vswitch": "S", "iswitch": "W", "mutual_inductance": "K",
+    "common_mode_choke": "FL", "coupled_inductor": "T",
     "transformer": "T", "test_point": "TP", "antenna": "E", "speaker": "LS",
     "potentiometer": "RV", "thermistor": "RT", "varistor": "RV",
     "opamp": "U", "op_amp": "U", "operational_amplifier": "U", "comparator": "U",
@@ -134,7 +151,7 @@ proc isPassive*(c: Component): bool =
   ## controlled source, which would otherwise be discarded by the very
   ## isolation that was meant to keep the path it stands in for.
   classifyConductivity(c) != condAmbiguous or c.kind in behaviouralKinds or
-    hasDeviceModel(c)
+    c.kind in couplingKinds or hasDeviceModel(c)
 
 proc isRail*(net: Net): bool =
   ## Whether `net` is a power or ground rail, by *either* signal: the net's

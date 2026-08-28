@@ -71,6 +71,17 @@ let prefixByDeviceKind = block:
   # that exists beats a silent 2 F capacitor.
   t["cccs"] = 'F'
   t["ccvs"] = 'H'
+  # The switch pair and the mutual-inductance card, all write-side only and
+  # all synthesized by `spice/models` -- never authored, never read back. An
+  # `S` line is plainly positional over four nodes, so it goes through the
+  # normal `pinTemplates` path below. A `W` line's third token names a
+  # *voltage source* (`Wname n+ n- VNAM MODEL`), so it is here for the letter
+  # and nothing more -- same reason `F`/`H` are. A `K` line carries **no
+  # nodes at all**, only two inductor names, and is handled by a special case
+  # in `formatDeviceLine` like `xspice.ports`.
+  t["vswitch"] = 'S'
+  t["iswitch"] = 'W'
+  t["mutual_inductance"] = 'K'
   # Behavioural source, also write-side only. `spice/models` uses one to
   # bound an op-amp macromodel to its supply rails: a VCVS is ideal and
   # cannot saturate, and clamping its *output* with diodes achieves nothing
@@ -232,6 +243,9 @@ let pinTemplates = {
   # a template rather than relying on `Component.pins` insertion order.
   "vcvs": @[("OUT+", ptOutput), ("OUT-", ptPassive), ("IN+", ptInput), ("IN-", ptInput)],
   "vccs": @[("OUT+", ptOutput), ("OUT-", ptPassive), ("IN+", ptInput), ("IN-", ptInput)],
+  # `Sname n+ n- nc+ nc- MODEL`: the through nodes then the control pair, and
+  # `MODEL` rides in `attrs["value"]` the same way a diode's model name does.
+  "vswitch": @[("1", ptPassive), ("2", ptPassive), ("C+", ptInput), ("C-", ptInput)],
   # `Bxxx n+ n- V=<expr>`: two nodes, and the expression names its inputs
   # itself rather than taking them positionally.
   "bsource": @[("OUT+", ptOutput), ("OUT-", ptPassive)],
@@ -400,6 +414,23 @@ proc readNetlistFile*(path: string): Netlist =
   result = readNetlist(s, name = path.extractFilename)
 
 proc formatDeviceLine(comp: Component): string =
+  if comp.attrs.hasKey("spice.couples"):
+    # A SPICE `K` card: `Kname Lname1 Lname2 kvalue`. It has no nodes -- it
+    # names two inductors and a coupling coefficient -- so it cannot go
+    # through the positional node path at all. `spice.couples` holds the two
+    # inductors' *graph* designators; they are resolved to their deck
+    # spelling here rather than baked in, because `deckDesignator` prepends
+    # the device letter and a baked name would rot the moment a winding was
+    # renamed.
+    result = deckDesignator(comp)
+    for d in comp.attrs["spice.couples"].split(','):
+      let other = if comp.netlist != nil: comp.netlist.components.getOrDefault(d.strip())
+                  else: nil
+      result &= " " & (if other != nil: deckDesignator(other) else: d.strip())
+    if comp.attrs.hasKey("value"):
+      result &= " " & comp.attrs["value"]
+    return result
+
   if comp.attrs.hasKey("xspice.ports"):
     # An XSPICE `A` device. Its port list is not positional -- a differential
     # port takes two nodes, a vector port is bracketed, an unconnected one is

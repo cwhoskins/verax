@@ -260,6 +260,44 @@ const builtinAnnotations* = [
          "NOT an acceptance band -- a requirement's +-5% is a property of " &
          "the requirement, not of any part, and conflating the two " &
          "produces confidently wrong pass/fail windows."),
+  AnnDef(key: "ron", kind: akFloat, unit: "ohm", scopes: {asComponent},
+    doc: "On-resistance of a switch, analog mux or relay contact. Read by " &
+         "spice/models when it stands the part up as a voltage-controlled " &
+         "`.MODEL SW` switch; a typical is used and reported as an " &
+         "assumption otherwise. For an absorptive RF mux this is the through " &
+         "path's series resistance against the 50 ohm ports."),
+  AnnDef(key: "roff", kind: akFloat, unit: "ohm", scopes: {asComponent},
+    doc: "Off-resistance of a switch or mux -- the leakage path of an open " &
+         "throw. Defaults to 1 Gohm, reported as an assumption; state it " &
+         "from the datasheet's off-isolation where that is what is being " &
+         "studied."),
+  AnnDef(key: "vt", kind: akFloat, unit: "V", scopes: {asComponent},
+    doc: "Control-input threshold of a switch: the voltage on the control " &
+         "pin at which it changes state. Defaults to half the control " &
+         "rail. Paired with `vh`."),
+  AnnDef(key: "vh", kind: akFloat, unit: "V", scopes: {asComponent},
+    doc: "Control-input hysteresis of a switch, as passed to `.MODEL SW`. " &
+         "Defaults to a tenth of the control rail."),
+  AnnDef(key: "k_coupling", kind: akFloat, scopes: {asComponent},
+    doc: "Coupling coefficient between the windings of a transformer or " &
+         "common-mode choke, 0..1, emitted as the value of a SPICE `K` " &
+         "card. Leakage inductance is implicit in `k < 1`. Defaults to " &
+         "0.98 and says so: every real wound part is 0.95..0.995 and the " &
+         "answer is not sensitive to which."),
+  AnnDef(key: "turns", kind: akFloat, scopes: {asComponent},
+    doc: "Secondary-to-primary turns ratio Ns/Np of a transformer. With " &
+         "`lpri` it fixes the secondary inductance (Ls = Lp * turns^2), " &
+         "which is how a flyback datasheet specifies one. Ignored when " &
+         "`lsec` is stated directly."),
+  AnnDef(key: "lpri", kind: akFloat, unit: "H", scopes: {asComponent},
+    doc: "Primary (or first-winding) inductance of a transformer or " &
+         "coupled inductor. spice/models needs this or `lsec` to build the " &
+         "part at all -- there is no defensible default magnetising " &
+         "inductance, so an unstated one leaves the part unmodelled with a " &
+         "note rather than a guess."),
+  AnnDef(key: "lsec", kind: akFloat, unit: "H", scopes: {asComponent},
+    doc: "Secondary-winding inductance of a transformer. Stated directly, " &
+         "or derived from `lpri` and `turns`."),
 ]
 
 var registry: OrderedTable[string, AnnDef]

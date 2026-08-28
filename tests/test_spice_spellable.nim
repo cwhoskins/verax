@@ -33,6 +33,7 @@ proc passiveKinds(): seq[string] =
   for k in conductiveKinds: result.add k
   for k in blockingKinds: result.add k
   for k in behaviouralKinds: result.add k
+  for k in couplingKinds: result.add k
 
 proc oneOf(kind: string): Netlist =
   ## A two-terminal part of `kind` between a signal net and ground.
@@ -96,6 +97,29 @@ suite "every passive kind survives to a deck as a device SPICE knows":
       discard expandPinModels(nl)
       check not nl.components.hasKey(designatorPrefixFor(kind) & "1")
       check nl.components.len > 0
+
+  test "a switch stood up as an S element is spellable and self-attributing":
+    # `vswitch`/`iswitch` are never authored -- `spice/models/switch` emits
+    # them -- and they reach passivity through `hasDeviceModel`, not through
+    # any of the three kind lists above. Check the deck line directly.
+    let nl = newNetlist("t")
+    let a = addNet(nl, newNet("a", ntSignal))
+    let b = addNet(nl, newNet("b", ntSignal))
+    let e = addNet(nl, newNet("en", ntSignal))
+    discard addNet(nl, newNet("0", ntGround))
+    let sw = addComponent(nl, newComponent("SW1", kind = "switch"))
+    discard connect(sw, "IN", a, ptPassive)
+    discard connect(sw, "OUT", b, ptPassive)
+    discard connect(sw, "CTRL", e, ptInput)
+    discard expandPinModels(nl)
+    check nl.components.hasKey("SSW1")
+    check nl.components["SSW1"].kind == "vswitch"
+    check isPassive(nl.components["SSW1"])
+    let s = newStringStream()
+    writeNetlist(nl, s)
+    for line in s.data.splitLines:
+      if line.startsWith("S"):
+        check deckDesignator(nl.components["SSW1"]) == line.split(' ')[0]
 
   test "a fuse's value is amps and a link's is ohms":
     # Reading a 2 A fuse's value as 2 ohms would put forty times its real cold

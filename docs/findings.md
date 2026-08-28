@@ -384,6 +384,66 @@ a regulator is asked and not a thing to bind separately.)
     rail-to-rail diode pair, a clamp array) carries the same three-terminal
     ambiguity as §61 and wants the pin-subject evaluator described there.
 
+26. **What `designs/xbar_switch.nim` could not be asked** (§66). The
+    Ethernet-controlled RF crossbar is the first *product* under `designs/`,
+    and building it turned up seven things the library cannot express, ordered
+    by how much this one board wanted them:
+
+    - **No transmission lines / characteristic impedance / S-parameters.** The
+      largest gap for any RF board, and the reason *every* RF claim on the
+      crossbar — insertion loss, isolation, return loss, VSWR, the two-stage
+      cascade's cumulative loss, port match — is on the cannot-check list.
+      Needs a new device kind, a `prefixByDeviceKind` letter, a `pinTemplates`
+      entry and a new evaluator + role; `tests/test_spice_spellable.nim` will
+      name a half-done addition.
+    - ~~**No coupled inductors** (`K` card).~~ **Shipped.**
+      `src/nimcir/spice/models/magnetics.nim`: `transformer` /
+      `common_mode_choke` / `coupled_inductor` expand to two windings and a
+      `mutual_inductance` component that `formats/spice` renders as a `K`
+      card; `mutual_inductance` joins `couplingKinds` (accepted by `isPassive`,
+      still `condAmbiguous` so `io_check` never crosses the barrier) and
+      `spice/isolate` gained a closing pass that pulls a `K` in when both its
+      inductors are selected. `designs/xbar_poe.nim` now carries a real
+      flyback `T1` and a common-mode choke `LCM`; the isolation barrier is a
+      checked claim (`dc_path_exists(vpoe, poe5v) == 0`, a new
+      `static.dc_isolation` evaluator). Still not modelled: a *switching*
+      flyback primary (so the Si3402-B is still an ideal isolated source),
+      core saturation, and the MagJack's MDI transformers (nothing drives an
+      MDI pair to measure).
+    - ~~**No switch or relay device model.**~~ **Shipped.**
+      `src/nimcir/spice/models/switch.nim`: `switch`/`relay`/`load_switch`
+      expand to a `vswitch` `S` element plus a `.MODEL SW` card
+      (`prefixByDeviceKind` gained `S`/`W`/`K`); a multi-throw `analog_switch`
+      /`rf_switch`/`mux` is a behavioural-registry model (`muxModel`) that
+      decodes the select pins, gates on the enable, and terminates each open
+      throw when the part is absorptive. `designs/xbar_rf.nim`'s eight ADG904s
+      are `kind = "rf_switch"` and make four new `.op` claims -- a routed path
+      and an off path's isolation. Still not modelled: off-isolation vs.
+      frequency (`Roff` is flat), charge injection, break-before-make timing.
+    - **`sequencing` role** (already §20). "The switch enables come up only
+      after 3v3 is up" is a real requirement here; the pulldowns make it true
+      structurally and nothing checks the dynamic ordering.
+    - **No logic-state quantity** (related to `logic_net`, §44). "This pin is
+      low at boot" has to be a `dc_voltage` claim, and "this pin is high-Z"
+      cannot be spelled at all — it is a `driveOpen()` bench assumption rather
+      than a netlist property. It also means `safe_default` only catches a line
+      *pulled toward the rail*, not a genuinely floating one: `expandPinModels`
+      grounds every unmodelled pin, so an undriven enable reads low regardless.
+    - **`esd_clamp` role** (already §65). Four TVS parts on this board and
+      nothing to say about any of them; the derating claims check the working
+      voltage, not the clamp under a surge.
+    - **`passive_filter` role** (already §57/§19). The ferrite-and-capacitor
+      filter making `v3v3rf` can be swept for its impedance but not its
+      response.
+
+    Two convergence notes, not gaps but worth recording: a whole-system `.op`
+    carrying the LT8640A switching code model *and* the 48 V PoE rectifier
+    bridge does not converge (the system swaps an ideal source in for the buck
+    via `buildIdealBuck`); and the switching model's steady-state `.tran`
+    collapses ("timestep too small") when its input is fed through the OR-ing
+    diodes rather than a stiff source, which is why the chunk bench declines
+    ripple/PSRR/load-step and `lt8640a_buck` keeps them.
+
 ---
 
 ## If the order is up for grabs

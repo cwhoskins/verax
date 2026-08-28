@@ -159,6 +159,20 @@ proc growSelection(nl: Netlist, seedDesignators: openArray[string], seedNets: op
         if other.net != nil and other.net != net:
           enqueue(other.net, hop + 1)
 
+  # A `mutual_inductance` (SPICE `K` card) has no pins, so the walk above
+  # never reaches it. Pull one in whenever both inductors it couples are
+  # already selected -- otherwise a common-mode choke or a transformer
+  # isolates into two independent windings and the fragment is a different
+  # circuit, with nothing said about it.
+  for _, comp in nl.components:
+    if comp.kind notin couplingKinds or comp.designator in selected: continue
+    let couples = comp.attrs.getOrDefault("spice.couples", "")
+    if couples.len == 0: continue
+    var both = true
+    for d in couples.split(','):
+      if d.strip() notin selected: both = false
+    if both: selected.incl comp.designator
+
   var sel: seq[string]
   for d in selected: sel.add d
   (selected: sel, dropped: dropped)

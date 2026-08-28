@@ -209,6 +209,71 @@ proc runRcCorner(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] 
     let corner = 1.0 / (2.0 * PI * resistance * farads)
     result.add verdict(a, corner, "Hz", "static.rc_corner", assumptions)
 
+# --- dc_path_exists ----------------------------------------------------
+
+proc dcConnected(a, b: Net): bool =
+  ## Is there a DC-conductive path from `a` to `b`? A breadth-first walk
+  ## across `condConductive` two-terminal parts and hierarchy boundaries,
+  ## the same traversal `analysis/io_check.dcReachable` uses -- but stopped
+  ## at a *named target* rather than at any terminus. A `condAmbiguous` part
+  ## (a diode, an IC, a **transformer**) is never crossed, which is what
+  ## makes this the isolation-barrier check: the two windings of a `K`-coupled
+  ## pair have no DC path between them.
+  if a == b: return true
+  var visited: seq[Net] = @[a]
+  var queue: seq[Net] = @[a]
+  var qi = 0
+  while qi < queue.len:
+    let net = queue[qi]
+    inc qi
+    for p in net.pins:
+      let comp = p.component
+      if comp == nil: continue
+      if comp.subNetlist != nil:
+        if p.hierNet != nil and p.hierNet notin visited:
+          if p.hierNet == b: return true
+          visited.add p.hierNet
+          queue.add p.hierNet
+        continue
+      if classifyConductivity(comp) != condConductive: continue
+      for _, other in comp.pins:
+        if other == p or other.net == nil or other.net == net: continue
+        if other.net == b: return true
+        if other.net notin visited:
+          visited.add other.net
+          queue.add other.net
+    if net.netlist != nil and net.netlist.instanceOf != nil:
+      for _, pp in net.netlist.instanceOf.pins:
+        if pp.hierNet == net and pp.net != nil and pp.net notin visited:
+          if pp.net == b: return true
+          visited.add pp.net
+          queue.add pp.net
+  false
+
+proc runDcPathExists(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  ## `dc_path_exists(a, b)` -- 1 when a DC-conductive path joins the two nets,
+  ## 0 when nothing but ambiguous parts (a transformer, a diode, an IC) sit
+  ## between them. The claim a coupled-inductor barrier makes checkable:
+  ## `require dc_path_exists(vpoe, poe5v) == 0`.
+  let d = ctx.design
+  const name = "static.dc_isolation"
+  for a in batch:
+    let n1 = netSubject(d, a, 0)
+    let n2 = netSubject(d, a, 1)
+    if n1.isNone or n2.isNone:
+      result.add notEvaluable(a, name,
+        "dc_path_exists takes two nets that both exist in this design")
+      continue
+    result.add verdict(a, (if dcConnected(n1.get, n2.get): 1.0 else: 0.0),
+                       "", name)
+
+proc dcPathDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  var ns: seq[string]
+  for s in batch[0].subjects:
+    if s.kind == skNet: ns.add "'" & s.name & "'"
+  "a graph walk from " & (if ns.len == 2: ns[0] & " to " & ns[1] else: "two nets") &
+  " across DC-conductive parts only -- a transformer, a diode or an IC stops it"
+
 # --- controller_count ---------------------------------------------------
 
 proc runControllerCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
@@ -312,6 +377,15 @@ proc registerStaticEvaluators*() =
     subjectKinds: {skNet},
     setupDoc: sinkCurrentDoc,
     run: runPullupSinkCurrent))
+
+  registerEvaluator(Evaluator(
+    name: "static.dc_isolation",
+    produces: @["dc_path_exists"],
+    needs: {capStatic},
+    arity: 2 .. 2,
+    subjectKinds: {skNet},
+    setupDoc: dcPathDoc,
+    run: runDcPathExists))
 
   registerEvaluator(Evaluator(
     name: "static.controller_count",

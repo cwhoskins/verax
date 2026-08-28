@@ -16,6 +16,8 @@ import ./common
 import ./behavioral
 import ./ferrite_bead
 import ./passives
+import ./magnetics
+import ./switch
 
 type
   PinModelDefaults* = object
@@ -110,6 +112,8 @@ proc expandPinModels*(nl: Netlist, d = defaultPinModels(),
   # simulate", and a bead breaks that in a way the passivity filter misses.
   result.add expandFerriteBeads(nl)
   result.add expandResistiveParts(nl)
+  result.add expandCoupledInductors(nl)
+  result.add expandSwitches(nl)
 
   let gnd = groundOf(nl)
   if gnd == nil:

@@ -2340,3 +2340,86 @@ there is no curvature step for LTE control to chase. The edge is 10 ns of a
 were rewritten, and the design gained `fSw = 1.0e6` on its
 `switching_regulator` role. No test file covers the switching model directly;
 `nimble verify` exercises it through the design.
+
+## 26 (part). No coupled inductors, and no switch device model
+
+Two of the seven library gaps `designs/xbar_switch.nim` turned up (§26) were
+device-model holes in `src/nimcir/spice/models/`. Both are now filled.
+
+### Coupled inductors — `spice/models/magnetics.nim`
+
+**What it was.** SPICE models a transformer as `Lp`, `Ls` and `K Lp Ls <k>`;
+the library had none of it. The PoE flyback, the MagJack magnetics and every
+common-mode choke were on the BoM and absent from the electrical model, so the
+isolated half of the PoE front end was declared, not simulated.
+
+**The fix.** `expandCoupledInductors` rewrites `transformer` /
+`common_mode_choke` / `coupled_inductor` into, per winding, an `inductor` in
+series with a `resistor` for its DCR, plus one `mutual_inductance` component
+per winding pair. `mutual_inductance` is a pinless component — a `K` card names
+two inductors and a coefficient, not nodes — rendered by a special case in
+`formats/spice.formatDeviceLine` keyed on `attrs["spice.couples"]`, which
+resolves each inductor to its *deck* spelling at write time (like the
+`xspice.ports` escape). `prefixByDeviceKind` gained `mutual_inductance -> 'K'`
+(write-side only, alongside `E`/`G`/`F`/`H`). `mutual_inductance` is in a new
+`kinds.couplingKinds`: `isPassive` accepts it so `spice/isolate` absorbs it,
+but `classifyConductivity` still calls it `condAmbiguous` so `io_check` never
+walks "through" a barrier that has no nodes to walk through. `spice/isolate`'s
+`growSelection` gained a closing pass — a pinless `K` is never reached by the
+net-walk, so it is pulled in explicitly when both its inductors were selected,
+or a common-mode choke would isolate into two independent windings.
+
+Winding inductances come from `lpri` + `lsec`, else `lpri` + `turns`
+(`Ls = Lp·turns²`), else 1:1; none of the three stated leaves the part
+unmodelled with a note, because there is no defensible default magnetising
+inductance. `k_coupling` defaults to 0.98 and says so — leakage is implicit in
+`k < 1` and the answer is not sensitive between 0.95 and 0.995.
+
+**The barrier as a claim.** A new `static.dc_isolation` evaluator
+(`contract/evaluators/static.nim`) produces `dc_path_exists(a, b)` — a
+two-net, `capStatic` graph walk across `condConductive` parts only. `require
+dc_path_exists(vpoe, poe5v) == 0` is `designs/xbar_poe.nim`'s isolation-barrier
+claim, and it passes because the flyback's two windings share no node.
+
+**What is not modelled:** a switching flyback primary (so `equipXbarPoe` still
+strips the loop and stands the Si3402-B up as an ideal isolated source), core
+saturation, and interwinding capacitance.
+
+### Switches — `spice/models/switch.nim`
+
+**What it was.** `switch`/`relay` were designator prefixes only; neither was in
+`conductiveKinds`, so the eight ADG904s in `designs/xbar_rf.nim` were stood in
+pin-by-pin — no RF path through the part existed, and `safe_default` passed for
+a reason unrelated to the pulldowns (an unmodelled enable pin reads low
+regardless).
+
+**The fix.** `expandSwitches` turns a two-terminal `switch` / `relay` /
+`load_switch` into a `vswitch` `S` element plus a `.MODEL SW(Ron= Roff= Vt=
+Vh=)` card. `muxModel` — a `passesSignal` behavioural-registry model for
+`analog_switch` / `rf_switch` / `mux` — builds, per throw, a `bsource` decoder
+(a product of logistic terms on the select and enable pins, smooth rather than
+`>` so a `.tran` does not stall and an `.ac` does not linearise a live path to
+no gain), a through `S` element, and — when `switch.off_termination` is stated
+— a second `S` element and a resistor terminating the throw when it is open.
+That absorptive termination is the whole electrical content of the
+safe-default claim: enable low ⇒ every throw open ⇒ every RF port in 50 ohm.
+`prefixByDeviceKind` gained `S`/`W`; `test_spice_spellable` covers `vswitch`,
+which reaches passivity through `hasDeviceModel` rather than a kind list.
+
+`designs/lib/adg904.nim` is the ADG904 as annotations only — no build proc,
+which is the test of whether the model sits at the right altitude.
+`designs/xbar_rf.nim` makes four new `.op` claims: a 1 V tone on RIN1 reaches
+m1 and ROUT1 through the routed path (EN1/EN5 driven, A1/A0 grounded), while m2
+and ROUT2 sit at ground in their terminations.
+
+**What is not modelled:** off-isolation vs. frequency (`Roff` is flat), charge
+injection, break-before-make timing, and R_on flatness vs. signal level.
+
+### Tests
+
+`tests/test_spice_magnetics.nim` (winding sizing, the `K` line's deck
+spelling, a transformer left alone, isolation pulling in a `K`, and an ngspice
+`.op` showing no DC path across a two-winding transformer) and
+`tests/test_spice_switch.nim` (the `S` line's node order, the `.MODEL SW` card,
+and an ADG904 decoding all four throws plus the all-off absorptive state). Both
+gated on ngspice for the runs. `nimble verify` exercises the designs.

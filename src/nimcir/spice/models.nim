@@ -26,10 +26,12 @@ import ./models/behavioral
 import ./models/regulator
 import ./models/buffer
 import ./models/opamp
+import ./models/magnetics
+import ./models/switch
 import ./models/pin_models
 
 export common, derating, capacitor, ferrite_bead, passives, source_impedance
-export behavioral, regulator, buffer, opamp, pin_models
+export behavioral, regulator, buffer, opamp, magnetics, switch, pin_models
 
 proc registerBuiltinBehavioralModels*() =
   ## Called at module init. Exposed so a test can prove re-registering is
@@ -51,5 +53,10 @@ proc registerBuiltinBehavioralModels*() =
   # comparator's entire behaviour is that it is not.
   for kind in ["opamp", "op_amp", "operational_amplifier"]:
     registerBehavioralModel(kind, opampModel)
+  # A multi-throw analog mux / RF switch keeps a path from its common
+  # terminal to whichever throw the select pins decode -- so `passesSignal`,
+  # like a buffer and unlike a regulator.
+  for kind in ["analog_switch", "rf_switch", "mux"]:
+    registerBehavioralModel(kind, muxModel, passesSignal = true)
 
 registerBuiltinBehavioralModels()
