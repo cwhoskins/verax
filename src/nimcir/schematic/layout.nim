@@ -4,22 +4,30 @@
 ## touches no files, no clock and no simulator. The two passes follow the
 ## reference visualizer described in `docs/netlist-converter-research.md`: a
 ## Fruchterman-Reingold force layout seeded on a golden-angle spiral, then
-## obstacle- and occupancy-aware orthogonal tree routing. Placement ends with a
-## deterministic separation pass so no two *inflated* component bodies ever
-## overlap -- the inflation is the routing clearance below plus an extra
-## channel -- and routing is obstacle-aware: a signal wire keeps the routing
-## clearance from every component body and reaches each pin directly through
-## a short outward stub. Between separation and rotation a packing pass groups
-## the parts by signal-net connectivity (ground and rails excluded; a block of
-## one or two parts is folded into the block holding its nearest power-rail
-## net-mate) and shelf-packs the group bounding boxes -- but keeps the result
-## only when it is smaller than what the force layout produced, so a design
-## whose blocks were already pulled together by a shared rail is left alone.
-## After the centres are final, each eligible
-## two-terminal part is turned 0 or 90 degrees so its pin axis follows the
-## dominant direction of its neighbours (see `rotationFor`); the rotation is
-## written into `SchematicPart.rotation` and its pin slots are rotated with
-## it, so routing, obstacle avoidance and rendering all agree. Every step is
+## obstacle- and occupancy-aware orthogonal tree routing. The force layout's
+## attraction acts **pin-to-pin**, not centre-to-centre: it needs each part's
+## rotation, so orientation is co-optimised inside the loop -- every iteration
+## re-picks each part's angle from `rotationChoices` (0/90/180/270) as the one
+## minimising its pins' distance to their net-mates (`bestRotation`), read from
+## a snapshot so the outcome never depends on part visit order. A parallel pair
+## sharing two nets is then pulled by both wires at once and settles side by
+## side rather than being tugged toward a single overlapping point. Placement
+## ends with a deterministic separation pass so no two *inflated* component
+## bodies ever overlap -- the inflation is the routing clearance below plus an
+## extra channel -- and routing is obstacle-aware: a signal wire keeps the
+## routing clearance from every component body and reaches each pin directly
+## through a short outward stub. Between separation and the final rotation pass
+## a packing pass groups the parts by signal-net connectivity (ground and rails
+## excluded; a block of one or two parts is folded into the block holding its
+## nearest power-rail net-mate) and shelf-packs the group bounding boxes -- but
+## keeps the result only when it is smaller than what the force layout
+## produced, so a design whose blocks were already pulled together by a shared
+## rail is left alone. Once the centres are final each eligible two-terminal
+## part gets its definitive orientation from the same `bestRotation` test; the
+## angle is written into `SchematicPart.rotation` and its pin slots rotated
+## with it, so routing, obstacle avoidance and rendering all agree. Only the
+## square two-terminal symbols rotate, so a quarter turn never swaps
+## `bodyW`/`bodyH` and the obstacle rects stay valid. Every step is
 ## deterministic -- same netlist, same scene, every time -- which is what
 ## makes the scene testable and the archive reproducible.
 ##
@@ -513,63 +521,87 @@ proc overlapsAny(i: int, x, y: float, pos: seq[Point],
   false
 
 proc rotatedSlot(s: Point, rot: float): Point =
-  ## A pin slot after an SVG `rotate(rot)` around the part centre. `layout`
-  ## only ever produces 0 or 90 here; 90 maps a +X slot to +Y (down, in the
-  ## y-down world `svg.nim` uses), which is the same transform the body is
-  ## drawn under, so a rotated symbol's pins and body cannot disagree.
-  if abs(rot - 90.0) < 1e-9:
-    Point(x: -s.y, y: s.x)
-  else:
-    s
+  ## A pin slot after an SVG `rotate(rot)` around the part centre, for `rot` one
+  ## of {0, 90, 180, 270}. In the y-down world `svg.nim` uses, `rotate(90)`
+  ## sends a +X slot to +Y -- the same transform the body is drawn under, so a
+  ## rotated symbol's pins and body cannot disagree. Only the square
+  ## two-terminal symbols are ever rotated, so 90/270 swapping `bodyW`/`bodyH`
+  ## does not matter (they are equal) and the obstacle rects stay valid.
+  if abs(rot - 90.0) < 1e-9: Point(x: -s.y, y: s.x)
+  elif abs(rot - 180.0) < 1e-9: Point(x: -s.x, y: -s.y)
+  elif abs(rot - 270.0) < 1e-9: Point(x: s.y, y: -s.x)
+  else: s
 
-proc rotationFor(partIdx: int, sd: SymbolDef, comp: Component,
-                 comps: seq[Component], pos: seq[Point],
-                 idxOf: Table[string, int]): float =
-  ## 0 or 90 for a two-terminal, non-box symbol: the angle that puts its pin
-  ## axis along the dominant direction of the parts around it. The dominant
-  ## direction is the sum of the vectors to the *nearest* other part on each
-  ## pin's net (Manhattan, ties broken toward the lowest component index), so
-  ## a resistor in a chain follows the chain and never guesses from net names.
-  ## A tie or a part with no neighbours keeps its default orientation.
-  ##
-  ## Only the square two-terminal symbols are eligible, so a 90-degree turn
-  ## never changes `bodyW`/`bodyH` -- the separation and routing obstacle
-  ## rects stay valid without a width/height swap.
-  if sd.isBox or sd.slots.len != 2 or abs(sd.bodyW - sd.bodyH) > 1e-9:
-    return 0.0
-  let a = sd.slots[0]
-  let b = sd.slots[1]
-  let defaultAxisX = abs(a.x - b.x) >= abs(a.y - b.y)
-  var fx, fy = 0.0
-  var have = false
-  for _, pin in comp.pins:
-    if pin.net == nil: continue
-    var best = Inf
-    var bestJ = -1
-    var bx, by = 0.0
-    for other in pin.net.pins:
+const rotationChoices = [0.0, 90.0, 180.0, 270.0]
+
+proc rotatable(sd: SymbolDef): bool {.inline.} =
+  ## A symbol is turned only when it is a square two-terminal non-box: a
+  ## quarter turn then never changes `bodyW`/`bodyH`, so the separation and
+  ## routing obstacle rects stay valid without a width/height swap, and every
+  ## one of the four orientations is a distinct, meaningful pin assignment.
+  not sd.isBox and sd.slots.len == 2 and abs(sd.bodyW - sd.bodyH) <= 1e-9
+
+proc slotOf(sd: SymbolDef, pinName: string, ordinal: int): Point {.inline.} =
+  if sd.byName.len > 0: sd.byName[pinName] else: sd.slots[ordinal]
+
+proc pinWorldPositions(comps: seq[Component], syms: seq[SymbolDef],
+                       pos: seq[Point], rots: seq[float]):
+    Table[string, Point] =
+  ## Every pin's world position given the current centres and rotations. The
+  ## pin-level attraction force and the rotation search both read net-mates'
+  ## pin positions out of this, rebuilt once per force-layout iteration.
+  result = initTable[string, Point]()
+  for i, c in comps:
+    var ord = 0
+    for pinName, _ in c.pins:
+      result[pinKey(c, pinName)] =
+        pos[i] + rotatedSlot(slotOf(syms[i], pinName, ord), rots[i])
+      inc ord
+
+proc rotationScore(sd: SymbolDef, comp: Component, centre: Point, angle: float,
+                   pinWorld: Table[string, Point]): float =
+  ## Total Manhattan distance from each of this part's pins, placed at `angle`,
+  ## to the centroid of the *other* pins on that pin's net. Minimising it over
+  ## the four orientations picks both the pin axis and which end each pin takes
+  ## -- a flip falls out when it shortens the wires, with no separate rule.
+  var ord = 0
+  for pinName, p in comp.pins:
+    let mine = centre + rotatedSlot(slotOf(sd, pinName, ord), angle)
+    inc ord
+    if p.net == nil: continue
+    var cx, cy = 0.0
+    var cnt = 0
+    for other in p.net.pins:
       if other.component == nil or
-         other.component.designator == comp.designator:
-        continue
-      let j = idxOf.getOrDefault(other.component.designator, -1)
-      if j < 0: continue
-      let d = abs(pos[partIdx].x - pos[j].x) + abs(pos[partIdx].y - pos[j].y)
-      if bestJ < 0 or d < best - 1e-9 or
-         (abs(d - best) <= 1e-9 and j < bestJ):
-        bestJ = j
-        best = d
-        bx = pos[j].x - pos[partIdx].x
-        by = pos[j].y - pos[partIdx].y
-    if bestJ >= 0:
-      fx += bx
-      fy += by
-      have = true
-  if not have: return 0.0
-  let ax = abs(fx)
-  let ay = abs(fy)
-  if abs(ax - ay) <= 1e-9: return 0.0
-  let flowAxisX = ax > ay
-  if defaultAxisX != flowAxisX: 90.0 else: 0.0
+         other.component.designator == comp.designator: continue
+      let key = pinKey(other.component, other.name)
+      if not pinWorld.hasKey(key): continue
+      cx += pinWorld[key].x
+      cy += pinWorld[key].y
+      inc cnt
+    if cnt == 0: continue
+    result += abs(mine.x - cx / float(cnt)) + abs(mine.y - cy / float(cnt))
+
+proc bestRotation(sd: SymbolDef, comp: Component, centre: Point, current: float,
+                  pinWorld: Table[string, Point], margin: float): float =
+  ## The orientation in `rotationChoices` with the lowest `rotationScore`, ties
+  ## broken toward the smaller angle. `margin` is hysteresis: the incumbent
+  ## `current` is only abandoned when the best alternative beats it by more
+  ## than `margin`, so a part cannot flip back and forth between iterations on
+  ## a sub-grid difference.
+  if not rotatable(sd): return 0.0
+  var bestAngle = 0.0
+  var bestScore = Inf
+  for angle in rotationChoices:
+    let s = rotationScore(sd, comp, centre, angle, pinWorld)
+    if s < bestScore - 1e-9 or (abs(s - bestScore) <= 1e-9 and angle < bestAngle):
+      bestScore = s
+      bestAngle = angle
+  if abs(bestAngle - current) < 1e-9: return current
+  if bestScore <= rotationScore(sd, comp, centre, current, pinWorld) - margin:
+    bestAngle
+  else:
+    current
 
 proc ufFind(parent: var seq[int], x: int): int =
   ## Union-find root with path compression. The root of a class is always its
@@ -775,12 +807,30 @@ proc layout*(nl: Netlist): Schematic =
   var idxOf = initTable[string, int]()
   for i, c in comps: idxOf[c.designator] = i
 
+  # Orientation is co-optimised with placement: the attraction force below acts
+  # pin-to-pin, so it needs each part's rotation, and the rotation that
+  # minimises a part's wire depends on where its neighbours have been pushed.
+  # Each iteration re-picks every rotation from a *snapshot* of the current
+  # centres and rotations (fresh-write, snapshot-read), so the result never
+  # depends on the order parts are visited. The last stretch of iterations
+  # leaves rotation frozen so the centres settle against a fixed orientation,
+  # and a final pass after separation gives the definitive assignment.
+  var rots = newSeq[float](n)
+
   let k = 110.0
   let iterations = 250
   let temp0 = 2.0 * k
   for it in 0 ..< iterations:
     let temp = temp0 * (1.0 - float(it) / float(iterations))
     var disp = newSeq[Point](n)
+
+    if it < iterations - 30:
+      let pw = pinWorldPositions(comps, syms, pos, rots)
+      var newRots = rots
+      for i in 0 ..< n:
+        newRots[i] = bestRotation(syms[i], comps[i], pos[i], rots[i], pw, grid)
+      rots = newRots
+    let pinWorld = pinWorldPositions(comps, syms, pos, rots)
 
     for i in 0 ..< n:
       for j in i + 1 ..< n:
@@ -797,19 +847,28 @@ proc layout*(nl: Netlist): Schematic =
         disp[j].y -= fy
 
     for _, net in nl.nets:
-      var idxs: seq[int]
-      for p in net.pins:
-        if p.component != nil and idxOf.hasKey(p.component.designator):
-          let i = idxOf[p.component.designator]
-          if idxs.len == 0 or idxs[^1] != i: idxs.add i
-      if idxs.len < 2 or isGround(net): continue
+      if isGround(net): continue
       let w = if isRail(net): 0.35 else: 1.0
-      for a in 0 ..< idxs.len:
-        for b in a + 1 ..< idxs.len:
-          let i = idxs[a]
-          let j = idxs[b]
-          let dx = pos[i].x - pos[j].x
-          let dy = pos[i].y - pos[j].y
+      # Pin-to-pin, not centre-to-centre: a net with pins on three parts pulls
+      # each pair together, and a parallel pair sharing two nets is pulled by
+      # both wires at once -- so its lowest-energy rest is the two parts side
+      # by side with both pin pairs short, which centre-to-centre could never
+      # express (both nets were the same centre vector, i.e. one doubled tug
+      # toward overlap).
+      let ps = net.pins
+      for a in 0 ..< ps.len:
+        for b in a + 1 ..< ps.len:
+          let ca = ps[a].component
+          let cb = ps[b].component
+          if ca == nil or cb == nil or ca.designator == cb.designator: continue
+          if not (idxOf.hasKey(ca.designator) and
+                  idxOf.hasKey(cb.designator)): continue
+          let i = idxOf[ca.designator]
+          let j = idxOf[cb.designator]
+          let pa = pinWorld.getOrDefault(pinKey(ca, ps[a].name), pos[i])
+          let pb = pinWorld.getOrDefault(pinKey(cb, ps[b].name), pos[j])
+          let dx = pa.x - pb.x
+          let dy = pa.y - pb.y
           var d = sqrt(dx * dx + dy * dy)
           if d < 0.01: d = 0.01
           let f = d * d / k * w
@@ -880,13 +939,17 @@ proc layout*(nl: Netlist): Schematic =
   let group = groupsOf(nl, comps, pos, idxOf)
   packGroups(pos, ohw, ohh, group)
 
-  # --- orientation: two-terminal parts follow their neighbours ------------
-  # Decided once the centres are final and before any pin position exists, so
-  # the rule reads only placed centres -- never another part's already-chosen
-  # rotation, which would make the result depend on part iteration order.
-  var rots = newSeq[float](n)
-  for i in 0 ..< n:
-    rots[i] = rotationFor(i, syms[i], comps[i], comps, pos, idxOf)
+  # --- orientation: the definitive assignment once the centres are final ---
+  # Separation and packing have moved parts since the loop froze rotation, so
+  # re-pick every one from the settled centres. One pass, snapshot-read and
+  # fresh-write like the loop, and with no hysteresis -- this is the answer,
+  # not an increment toward it.
+  block:
+    let pw = pinWorldPositions(comps, syms, pos, rots)
+    var newRots = rots
+    for i in 0 ..< n:
+      newRots[i] = bestRotation(syms[i], comps[i], pos[i], rots[i], pw, 0.0)
+    rots = newRots
 
   # --- parts, with absolute pin positions --------------------------------
   var pinPos = initTable[string, Point]()

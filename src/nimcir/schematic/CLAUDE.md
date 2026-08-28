@@ -10,7 +10,7 @@ placement, no signal-flow awareness, no DRC, no round-trip. The quality bar is
 implements.
 
 - **`scene.nim`** — the renderer-neutral middle layer. `Schematic`, with placed
-  `SchematicPart`s (position, symbol, body extents, a 0/90-degree `rotation`,
+  `SchematicPart`s (position, symbol, body extents, a `rotation` of 0/90/180/270,
   per-pin world positions),
   `SchematicWire`s (per-net polylines, tagged signal/ground/supply),
   `SchematicJunction`s, `SchematicLabel`s and a bounding box — all in world
@@ -18,14 +18,27 @@ implements.
   placement and routing passes use; it relies on the compiler's structural
   `==` and generic object `hash` (both key on the grid-snapped coordinates).
 - **`layout.nim`** — `layout(nl: Netlist): Schematic`, pure and deterministic.
-  After the separation pass, eligible two-terminal parts are rotated 0 or 90
-  degrees so their pin axis follows the dominant direction of their
-  neighbours (`rotationFor`); the rotated pin slots feed routing and the
-  body extents stay square, so obstacles and separation are unaffected.
-  Placement is a Fruchterman–Reingold force layout seeded on a golden-angle
-  spiral (no randomness, no clock): repulsion, attraction along nets (ground
-  nets excluded, power nets weaker, matching the reference visualizer), a
-  gentle gravity, a grid snap, then a deterministic separation pass that
+  Eligible two-terminal parts take one of four orientations (0/90/180/270,
+  `rotationChoices`): `bestRotation` picks the one minimising each pin's
+  Manhattan distance to the centroid of its net-mates' pins, so both the pin
+  axis **and which end each pin takes** fall out of one wirelength test — a
+  180° flip when it shortens the wires, no separate rule. Only the square
+  two-terminal symbols are eligible, so a quarter turn never swaps
+  `bodyW`/`bodyH` and the obstacle/separation rects stay valid. Because the
+  attraction force is **pin-to-pin**, rotation is co-optimised *inside* the
+  force loop: each iteration re-picks every angle from a snapshot of the
+  current centres/rotations (fresh-write, snapshot-read, so order-independent),
+  with `grid`-sized hysteresis against flip-flop and the last 30 iterations
+  frozen; a final hysteresis-free pass after separation/packing gives the
+  definitive assignment. Placement is a Fruchterman–Reingold force layout
+  seeded on a golden-angle spiral (no randomness, no clock): repulsion
+  (centre-to-centre — this is the non-overlap term), **pin-to-pin** attraction
+  along nets (ground nets excluded, power nets weaker; a net with pins on N
+  parts pulls every pair, and a parallel pair sharing two nets is pulled by
+  both wires at once, so its rest state is the two parts side by side rather
+  than tugged toward one overlapping point — what centre-to-centre could not
+  express), a gentle gravity, a grid snap, then a deterministic separation
+  pass that
   places each part at the nearest grid cell whose **inflated body** is clear
   of every already-placed one — inflation is `routingClearance` (12 world
   units) plus an extra channel, so the final layout never overlaps and a

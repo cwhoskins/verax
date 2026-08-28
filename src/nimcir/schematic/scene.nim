@@ -37,11 +37,12 @@ type
       ## for a symbol it is the pin-to-pin extent used to offset labels.
     x*, y*: float
     rotation*: float
-      ## 0 or 90 degrees. `layout` sets 90 for an eligible two-terminal part
-      ## whose pin axis should follow the dominant direction of its
-      ## neighbours; the SVG writer rotates the body by this angle around the
-      ## part centre and keeps the labels upright. Always 0 for boxes and for
-      ## non-two-terminal symbols.
+      ## One of 0, 90, 180, 270 degrees. `layout` picks it for an eligible
+      ## square two-terminal part as the orientation that minimises its pins'
+      ## distance to their net-mates -- so it fixes both the pin axis and which
+      ## end each pin takes. The SVG writer rotates the body by this angle
+      ## around the part centre and keeps the labels upright. Always 0 for
+      ## boxes and for non-two-terminal symbols.
     pins*: seq[SchematicPin]
 
   SchematicWire* = object

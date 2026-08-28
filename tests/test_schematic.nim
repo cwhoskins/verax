@@ -492,6 +492,66 @@ test "layout rotates an eligible two-terminal part and rotates its pin slots":
   # A fallback box never rotates.
   check partOf(s, "U1").rotation == 0.0
 
+test "rotation assigns each pin to the end facing its neighbour, flipping 180 if need be":
+  # A four-resistor chain, but R2 is declared with its two pins swapped. Its
+  # n1 pin (shared with R1, to its left) must still come out on the left and
+  # its n2 pin (shared with R3, to its right) on the right -- which is a 180
+  # turn from the symbol's default, chosen with no rule beyond "shorter wire".
+  var nl = newNetlist("chain")
+  var ns: seq[Net]
+  for i in 0 .. 4: ns.add addNet(nl, newNet("n" & $i))
+  for i in 0 ..< 4:
+    let r = addComponent(nl, newComponent("R" & $(i + 1), kind = "resistor"))
+    if i == 1:
+      discard connect(r, "1", ns[i + 1], ptPassive)
+      discard connect(r, "2", ns[i], ptPassive)
+    else:
+      discard connect(r, "1", ns[i], ptPassive)
+      discard connect(r, "2", ns[i + 1], ptPassive)
+    r.attrs["value"] = "1k"
+  let s = layout(nl)
+  let r2 = partOf(s, "R2")
+  check r2.rotation == 180.0
+  let toR1 = pinPoints(s, "R2", "n1")[0]
+  let toR3 = pinPoints(s, "R2", "n2")[0]
+  check toR1.x < r2.x          # n1 pin faces R1, to R2's left
+  check toR3.x > r2.x          # n2 pin faces R3, to R2's right
+  check partOf(s, "R1").x < r2.x and partOf(s, "R3").x > r2.x
+
+test "a parallel pair ends up adjacent and co-oriented, not scattered":
+  # RP and CP both bridge nets a and b. The pin-to-pin attraction is pulled by
+  # both wires at once, so the two parts settle side by side with one
+  # orientation between them -- where centre-to-centre forces left them in
+  # unrelated spots and angles.
+  var nl = newNetlist("par")
+  let a = addNet(nl, newNet("a"))
+  let b = addNet(nl, newNet("b"))
+  let g = addNet(nl, newNet("0", ntGround))
+  let v1 = addComponent(nl, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", a); discard connect(v1, "-", g)
+  v1.attrs["value"] = "DC 5"
+  let rin = addComponent(nl, newComponent("RIN", kind = "resistor"))
+  discard connect(rin, "1", a, ptPassive); discard connect(rin, "2", b, ptPassive)
+  rin.attrs["value"] = "1k"
+  let rl = addComponent(nl, newComponent("RL", kind = "resistor"))
+  discard connect(rl, "1", b, ptPassive); discard connect(rl, "2", g, ptPassive)
+  rl.attrs["value"] = "1k"
+  let rp = addComponent(nl, newComponent("RP", kind = "resistor"))
+  discard connect(rp, "1", a, ptPassive); discard connect(rp, "2", b, ptPassive)
+  rp.attrs["value"] = "10k"
+  let cp = addComponent(nl, newComponent("CP", kind = "capacitor"))
+  discard connect(cp, "1", a, ptPassive); discard connect(cp, "2", b, ptPassive)
+  cp.attrs["value"] = "1n"
+  let s = layout(nl)
+  let p = partOf(s, "RP")
+  let q = partOf(s, "CP")
+  check p.rotation == q.rotation
+  check abs(p.x - q.x) + abs(p.y - q.y) <= 160.0
+  for net in ["a", "b"]:
+    let dp = pinPoints(s, "RP", net)[0]
+    let dq = pinPoints(s, "CP", net)[0]
+    check abs(dp.x - dq.x) + abs(dp.y - dq.y) <= 160.0
+
 test "a three-terminal transistor never rotates":
   let nl = newNetlist("elig")
   let a = addNet(nl, newNet("a"))
