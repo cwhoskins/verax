@@ -9,7 +9,13 @@
 ## overlap -- the inflation is the routing clearance below plus an extra
 ## channel -- and routing is obstacle-aware: a signal wire keeps the routing
 ## clearance from every component body and reaches each pin directly through
-## a short outward stub. After the centres are final, each eligible
+## a short outward stub. Between separation and rotation a packing pass groups
+## the parts by signal-net connectivity (ground and rails excluded; a block of
+## one or two parts is folded into the block holding its nearest power-rail
+## net-mate) and shelf-packs the group bounding boxes -- but keeps the result
+## only when it is smaller than what the force layout produced, so a design
+## whose blocks were already pulled together by a shared rail is left alone.
+## After the centres are final, each eligible
 ## two-terminal part is turned 0 or 90 degrees so its pin axis follows the
 ## dominant direction of its neighbours (see `rotationFor`); the rotation is
 ## written into `SchematicPart.rotation` and its pin slots are rotated with
@@ -51,6 +57,20 @@ const
     ## `routingClearance`-inflated obstacles `2 * placementPad - 2 *
     ## routingClearance` = 16 apart -- a channel wider than the clearance, so
     ## a route fits between them.
+  mergeMaxParts = 2
+    ## A block of at most this many parts is folded into the block holding its
+    ## nearest power-rail net-mate rather than packed on its own -- a
+    ## decoupling cap, a pull-up pair or a series termination belongs beside
+    ## the part it serves, not on a shelf of its own. Anything larger is a
+    ## block in its own right.
+  groupGap = 2.0 * grid
+    ## The gutter kept between two block bounding boxes when they are
+    ## shelf-packed. `2 * grid` is `>= 2 * placementPad`, so a cross-group
+    ## part pair still clears `ohw + ohw` on the separating axis and the
+    ## non-overlap invariant holds through the grid snap.
+  packAspect = 1.2
+    ## Shelf width as a multiple of `sqrt(total inflated block area)`: a
+    ## slightly landscape sheet, the shape a schematic is printed on.
 
 type
   SymbolDef = object
@@ -546,6 +566,188 @@ proc rotationFor(partIdx: int, sd: SymbolDef, comp: Component,
   let flowAxisX = ax > ay
   if defaultAxisX != flowAxisX: 90.0 else: 0.0
 
+proc ufFind(parent: var seq[int], x: int): int =
+  ## Union-find root with path compression. The root of a class is always its
+  ## smallest member index (see `ufUnion`), so a class id is a stable function
+  ## of the partition alone -- never of the order the unions happened in.
+  var r = x
+  while parent[r] != r: r = parent[r]
+  var c = x
+  while parent[c] != c:
+    let nxt = parent[c]
+    parent[c] = r
+    c = nxt
+  r
+
+proc ufUnion(parent: var seq[int], a, b: int) =
+  let ra = ufFind(parent, a)
+  let rb = ufFind(parent, b)
+  if ra == rb: return
+  if ra < rb: parent[rb] = ra else: parent[ra] = rb
+
+proc groupsOf(nl: Netlist, comps: seq[Component], pos: seq[Point],
+              idxOf: Table[string, int]): seq[int] =
+  ## A group id per part. Parts joined by a *signal* net (ground and rails
+  ## excluded -- neither is routed as a tree) are one group; then every group
+  ## of at most `mergeMaxParts` parts is folded into the group holding its
+  ## nearest power-rail net-mate, so a decoupling cap or a pull-up is not
+  ## stranded away from the IC it serves. Ids are renumbered by ascending
+  ## lowest-member index. Fully deterministic: union-find over a fixed edge
+  ## set, merge decisions taken against a snapshot of the pre-merge partition.
+  let n = comps.len
+  var parent = newSeq[int](n)
+  for i in 0 ..< n: parent[i] = i
+
+  proc members(net: Net): seq[int] =
+    for p in net.pins:
+      if p.component != nil and idxOf.hasKey(p.component.designator):
+        let i = idxOf[p.component.designator]
+        if result.len == 0 or i notin result: result.add i
+
+  for _, net in nl.nets:
+    if isGround(net) or isRail(net): continue
+    let m = members(net)
+    for a in 1 ..< m.len: ufUnion(parent, m[0], m[a])
+
+  # Fold small groups into the group of their nearest power-rail net-mate.
+  # Every decision is computed against the current (pre-merge) partition and
+  # only applied afterwards, so the outcome cannot depend on merge order.
+  var size = newSeq[int](n)
+  for i in 0 ..< n: inc size[ufFind(parent, i)]
+  var mergeTo = newSeq[int](n)
+  for i in 0 ..< n: mergeTo[i] = -1
+  for root in 0 ..< n:
+    if ufFind(parent, root) != root: continue
+    if size[root] == 0 or size[root] > mergeMaxParts: continue
+    var cx, cy = 0.0
+    for j in 0 ..< n:
+      if ufFind(parent, j) == root:
+        cx += pos[j].x
+        cy += pos[j].y
+    cx /= float(size[root])
+    cy /= float(size[root])
+    var bestQ = -1
+    var bestD = Inf
+    for _, net in nl.nets:
+      if not isRail(net) or isGround(net): continue
+      let m = members(net)
+      var touchesRoot = false
+      for q in m:
+        if ufFind(parent, q) == root: touchesRoot = true
+      if not touchesRoot: continue
+      for q in m:
+        if ufFind(parent, q) == root: continue
+        let d = abs(pos[q].x - cx) + abs(pos[q].y - cy)
+        if bestQ < 0 or d < bestD - 1e-9 or
+           (abs(d - bestD) <= 1e-9 and q < bestQ):
+          bestQ = q
+          bestD = d
+    mergeTo[root] = bestQ
+  for root in 0 ..< n:
+    if mergeTo[root] >= 0: ufUnion(parent, root, mergeTo[root])
+
+  # Renumber: roots are minimal member indices, so scanning 0 ..< n meets them
+  # in ascending order and the first-seen order is the id order.
+  var gid = initTable[int, int]()
+  result = newSeq[int](n)
+  for i in 0 ..< n:
+    let r = ufFind(parent, i)
+    if not gid.hasKey(r): gid[r] = gid.len
+  for i in 0 ..< n:
+    result[i] = gid[ufFind(parent, i)]
+
+proc packGroups(pos: var seq[Point], ohw, ohh: seq[float], group: seq[int]) =
+  ## Shelf-packs the per-group inflated bounding boxes with a `groupGap`
+  ## gutter, translating each group by a grid-snapped delta -- but only if the
+  ## packed arrangement is *smaller* than what the force layout produced.
+  ##
+  ## The force layout keeps disconnected blocks apart by repulsion alone (the
+  ## only counter-force is a weak gravity), so on a design with genuinely
+  ## independent sub-circuits it leaves a page of empty space between them;
+  ## re-packing collapses that. But when the blocks are already close --
+  ## pulled together by a shared rail -- re-packing would scatter a sensible
+  ## arrangement, so the total-area guard reverts to the force layout in that
+  ## case. Deterministic: the guard is a pure comparison of two bounding-box
+  ## areas.
+  ##
+  ## Each translation is rigid, so intra-group geometry -- and the separation
+  ## invariant it satisfies -- is untouched; the shelves make boxes x-disjoint
+  ## within a row and y-disjoint across rows with `groupGap` between, so any
+  ## cross-group part pair clears `ohw[i] + ohw[j]` on the separating axis.
+  let n = pos.len
+  var ng = 0
+  for g in group: ng = max(ng, g + 1)
+  if ng <= 1: return
+
+  var minX = newSeq[float](ng)
+  var minY = newSeq[float](ng)
+  var maxX = newSeq[float](ng)
+  var maxY = newSeq[float](ng)
+  for g in 0 ..< ng:
+    minX[g] = Inf; minY[g] = Inf; maxX[g] = -Inf; maxY[g] = -Inf
+  for i in 0 ..< n:
+    let g = group[i]
+    minX[g] = min(minX[g], pos[i].x - ohw[i])
+    minY[g] = min(minY[g], pos[i].y - ohh[i])
+    maxX[g] = max(maxX[g], pos[i].x + ohw[i])
+    maxY[g] = max(maxY[g], pos[i].y + ohh[i])
+
+  proc spanArea(): float =
+    var x1 = Inf
+    var y1 = Inf
+    var x2 = -Inf
+    var y2 = -Inf
+    for g in 0 ..< ng:
+      x1 = min(x1, minX[g]); y1 = min(y1, minY[g])
+      x2 = max(x2, maxX[g]); y2 = max(y2, maxY[g])
+    (x2 - x1) * (y2 - y1)
+  let beforeArea = spanArea()
+
+  var totalArea, widest = 0.0
+  for g in 0 ..< ng:
+    let w = maxX[g] - minX[g]
+    totalArea += w * (maxY[g] - minY[g])
+    widest = max(widest, w)
+  let shelfWidth = max(widest, ceil(packAspect * sqrt(totalArea) / grid) * grid)
+
+  var order = newSeq[int](ng)
+  for g in 0 ..< ng: order[g] = g
+  order.sort(proc (a, b: int): int =
+    result = cmp(maxY[b] - minY[b], maxY[a] - minY[a])
+    if result == 0: result = cmp(a, b))
+
+  var dx = newSeq[float](ng)
+  var dy = newSeq[float](ng)
+  var curX, curY, rowH = 0.0
+  for g in order:
+    let w = maxX[g] - minX[g]
+    let h = maxY[g] - minY[g]
+    if curX > 1e-9 and curX + w > shelfWidth:
+      curY += rowH + groupGap
+      curX = 0.0
+      rowH = 0.0
+    dx[g] = round((curX - minX[g]) / grid) * grid
+    dy[g] = round((curY - minY[g]) / grid) * grid
+    curX += w + groupGap
+    rowH = max(rowH, h)
+
+  block:
+    var x1 = Inf
+    var y1 = Inf
+    var x2 = -Inf
+    var y2 = -Inf
+    for g in 0 ..< ng:
+      x1 = min(x1, minX[g] + dx[g]); y1 = min(y1, minY[g] + dy[g])
+      x2 = max(x2, maxX[g] + dx[g]); y2 = max(y2, maxY[g] + dy[g])
+    if (x2 - x1) * (y2 - y1) >= beforeArea - 1e-6: return
+
+  for i in 0 ..< n:
+    let g = group[i]
+    pos[i].x += dx[g]
+    pos[i].y += dy[g]
+    if abs(pos[i].x) < 1e-9: pos[i].x = 0.0
+    if abs(pos[i].y) < 1e-9: pos[i].y = 0.0
+
 proc layout*(nl: Netlist): Schematic =
   ## Places and routes `nl` into a renderer-neutral scene. Read-only with
   ## respect to the netlist; deterministic given the same netlist object.
@@ -662,6 +864,15 @@ proc layout*(nl: Netlist): Schematic =
     doAssert done,
       "schematic placement could not separate component " & comps[i].designator
 
+  # --- packing: blocks that share no signal net are pulled back together --
+  # The force layout's only long-range counter-force is a weak gravity, so
+  # two disconnected sub-circuits drift as far apart as the repulsion carries
+  # them. Group the parts by signal-net connectivity and shelf-pack the group
+  # bounding boxes with a fixed gutter. A rigid grid-snapped translation per
+  # group, so separation and the grid snap both survive it.
+  let group = groupsOf(nl, comps, pos, idxOf)
+  packGroups(pos, ohw, ohh, group)
+
   # --- orientation: two-terminal parts follow their neighbours ------------
   # Decided once the centres are final and before any pin position exists, so
   # the rule reads only placed centres -- never another part's already-chosen
@@ -706,6 +917,22 @@ proc layout*(nl: Netlist): Schematic =
   # reproducible.
   var occ: seq[OccSeg]
 
+  # Every signal pin leaves its body through a short stub in a fixed
+  # direction; a ground or supply stub must not run along one of those, or two
+  # different nets share a collinear segment. Seed the shortening test with
+  # them (they are not added to `occ` -- the signal route re-adds its own).
+  var escapeSeeds: seq[OccSeg]
+  for _, net in nl.nets:
+    if isGround(net) or isRail(net): continue
+    for p in net.pins:
+      if p.component == nil: continue
+      let key = pinKey(p.component, p.name)
+      if not (pinPos.hasKey(key) and
+              partIdxByDesig.hasKey(p.component.designator)): continue
+      let pt = pinPos[key]
+      let part = result.parts[partIdxByDesig[p.component.designator]]
+      addOcc(escapeSeeds, pt, pt + escapeDir(part, pt) * routingClearance)
+
   for _, net in nl.nets:
     var pins: seq[tuple[pt: Point, partIdx: int]]
     for p in net.pins:
@@ -718,13 +945,13 @@ proc layout*(nl: Netlist): Schematic =
 
     if isGround(net):
       for pin in pins:
-        let e = shortenedStubEnd(pin.pt, pinSpan, occ)
+        let e = shortenedStubEnd(pin.pt, pinSpan, occ & escapeSeeds)
         result.wires.add SchematicWire(net: net.name, kind: wkGround,
                                        points: @[pin.pt, e])
         addOcc(occ, pin.pt, e)
     elif isRail(net):
       for pin in pins:
-        let e = shortenedStubEnd(pin.pt, -pinSpan, occ)
+        let e = shortenedStubEnd(pin.pt, -pinSpan, occ & escapeSeeds)
         result.wires.add SchematicWire(net: net.name, kind: wkSupply,
                                        points: @[pin.pt, e])
         addOcc(occ, pin.pt, e)

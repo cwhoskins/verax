@@ -176,6 +176,47 @@ proc resistorChain(n: int): Netlist =
     discard connect(r, "2", net, ptPassive)
     prev = net
 
+proc twoBlocks(): Netlist =
+  ## Two independent RC pairs that share no net at all -- the shape whose two
+  ## halves the force layout used to fling ~1200 world units apart.
+  result = newNetlist("two_blocks")
+  for b in 1 .. 2:
+    let a = addNet(result, newNet("a" & $b))
+    let m = addNet(result, newNet("m" & $b))
+    let z = addNet(result, newNet("z" & $b))
+    let r = addComponent(result, newComponent("R" & $b, kind = "resistor"))
+    discard connect(r, "1", a, ptPassive)
+    discard connect(r, "2", m, ptPassive)
+    let c = addComponent(result, newComponent("C" & $b, kind = "capacitor"))
+    discard connect(c, "1", m, ptPassive)
+    discard connect(c, "2", z, ptPassive)
+
+proc decoupledMcu(): Netlist =
+  ## An MCU with a decoupling cap on its rail pair, plus an unrelated resistor
+  ## divider. The cap shares only VDD/GND with the MCU, so a signal-only
+  ## grouping would strand it -- the merge rule must keep it in the MCU's
+  ## group rather than packing it beside the divider.
+  result = newNetlist("decoupled_mcu")
+  let vdd = addNet(result, newNet("vdd", ntPower))
+  let gnd = addNet(result, newNet("0", ntGround))
+  let io = addNet(result, newNet("io"))
+  let u1 = addComponent(result, newComponent("U1", kind = "mcu"))
+  discard connect(u1, "VDD", vdd, ptPower)
+  discard connect(u1, "GND", gnd, ptGround)
+  discard connect(u1, "IO", io, ptInOut)
+  let c1 = addComponent(result, newComponent("C1", kind = "capacitor"))
+  discard connect(c1, "1", vdd, ptPower)
+  discard connect(c1, "2", gnd, ptGround)
+  let din = addNet(result, newNet("din"))
+  let mid = addNet(result, newNet("mid"))
+  let dout = addNet(result, newNet("dout"))
+  let r1 = addComponent(result, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", din, ptPassive)
+  discard connect(r1, "2", mid, ptPassive)
+  let r2 = addComponent(result, newComponent("R2", kind = "resistor"))
+  discard connect(r2, "1", mid, ptPassive)
+  discard connect(r2, "2", dout, ptPassive)
+
 template withEnv(key, value: string, body: untyped) =
   let had = existsEnv(key)
   let old = getEnv(key)
@@ -322,8 +363,49 @@ test "the source4 symbol renders as a labelled rectangle, not a diamond":
   check ">OUT-</text>" in text
   check "<polygon" notin text
 
+proc blockBBox(s: Schematic, desigs: openArray[string]):
+    tuple[x1, y1, x2, y2: float] =
+  result = (x1: Inf, y1: Inf, x2: -Inf, y2: -Inf)
+  for d in desigs:
+    let p = partOf(s, d)
+    result.x1 = min(result.x1, p.x - p.bodyW / 2.0)
+    result.y1 = min(result.y1, p.y - p.bodyH / 2.0)
+    result.x2 = max(result.x2, p.x + p.bodyW / 2.0)
+    result.y2 = max(result.y2, p.y + p.bodyH / 2.0)
+
+test "every part centre stays on the 40-unit grid":
+  for s in [layout(divider()), layout(resistorChain(16)), layout(starNet()),
+            layout(twoBlocks()), layout(decoupledMcu())]:
+    for p in s.parts:
+      check abs(p.x / 40.0 - round(p.x / 40.0)) < 1e-9
+      check abs(p.y / 40.0 - round(p.y / 40.0)) < 1e-9
+
+test "blocks sharing no net are packed close, not flung apart":
+  let s = layout(twoBlocks())
+  let g1 = blockBBox(s, ["R1", "C1"])
+  let g2 = blockBBox(s, ["R2", "C2"])
+  # the two blocks clear each other on one axis; the gutter is a few grid
+  # cells, not the ~1200-unit spread the unbounded force layout produced
+  let gapX = max(g2.x1 - g1.x2, g1.x1 - g2.x2)
+  let gapY = max(g2.y1 - g1.y2, g1.y1 - g2.y2)
+  check max(gapX, gapY) <= 5.0 * 40.0
+
+test "a decoupling cap is packed with the part it decouples":
+  # C1 shares only VDD/GND with U1, so a signal-only grouping strands it. The
+  # merge rule folds it into U1's block: its edge-to-edge clearance to U1 is
+  # one separation, while a full block gutter separates it from the divider.
+  let s = layout(decoupledMcu())
+  let c1 = partOf(s, "C1")
+  proc clearance(a, b: SchematicPart): float =
+    max(abs(a.x - b.x) - (a.bodyW + b.bodyW) / 2.0,
+        abs(a.y - b.y) - (a.bodyH + b.bodyH) / 2.0)
+  let toU1 = clearance(c1, partOf(s, "U1"))
+  check toU1 < clearance(c1, partOf(s, "R1"))
+  check toU1 < clearance(c1, partOf(s, "R2"))
+
 test "placement never overlaps inflated component bodies":
-  for s in [layout(divider()), layout(resistorChain(16))]:
+  for s in [layout(divider()), layout(resistorChain(16)), layout(twoBlocks()),
+            layout(decoupledMcu())]:
     for i in 0 ..< s.parts.len:
       for j in i + 1 ..< s.parts.len:
         let a = s.parts[i]

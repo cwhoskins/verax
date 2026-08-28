@@ -29,7 +29,20 @@ implements.
   places each part at the nearest grid cell whose **inflated body** is clear
   of every already-placed one — inflation is `routingClearance` (12 world
   units) plus an extra channel, so the final layout never overlaps and a
-  route fits between any two bodies. Routing is per signal net: a tree grows
+  route fits between any two bodies. After separation a **packing pass**
+  (`groupsOf`/`packGroups`) partitions the parts into blocks joined by
+  *signal* nets — `isGround`/`isRail` nets are excluded, then any block of
+  `mergeMaxParts` (2) or fewer parts is folded into the block holding its
+  nearest power-rail net-mate, so a decoupling cap or a pull-up is not
+  stranded from its IC — and shelf-packs the block bounding boxes with a
+  `groupGap` gutter. The force layout keeps disconnected sub-circuits apart by
+  repulsion alone (only a weak gravity opposes it), leaving a page of empty
+  space between them; packing collapses that. It is **guarded by total
+  bounding-box area**: when the shelf arrangement is not smaller than the
+  force layout's — a design whose blocks a shared rail already pulled
+  together — the pass reverts, so it can only ever help. Each group moves by a
+  rigid grid-snapped translation, so the separation invariant and the grid
+  snap both survive it. Routing is per signal net: a tree grows
   from the first pin, each next pin attaching to the closest already-wired
   point through a Hanan free-space grid built from the inflated obstacle
   boundaries so no segment enters an inflated body; a wire
@@ -42,9 +55,13 @@ implements.
   never share a positive-length collinear segment.** They may share a vertex
   and may cross perpendicularly; signal routes and rail stubs are emitted in
   a deterministic order and later geometry is steered or shortened so it only
-  touches what is already there. Within one signal net the wires are grown as
-  a tree (each next pin attaches to the closest already-wired point), so the
-  net's polylines partition its segments exactly once. Controlled sources (`vcvs`,
+  touches what is already there — this includes each **signal pin's escape
+  stub**: those fixed short outward segments are seeded into the shortening
+  test before any ground/supply stub is drawn, so a rail stub cannot end up
+  running along one (a case tighter placement makes reachable). Within one
+  signal net the wires are grown as a tree (each next pin attaches to the
+  closest already-wired point), so the net's polylines partition its segments
+  exactly once. Controlled sources (`vcvs`,
   `vccs`, `cccs`, `ccvs`) draw as a rectangular `source4` buffer/controlled
   source with `OUT+`/`OUT-` on the right edge and `IN+`/`IN-` on the left,
   keyed by pin name rather than declaration order, and labelled inside the
