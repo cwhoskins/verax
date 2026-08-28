@@ -1,0 +1,11 @@
+slot	status	label	analysis	setup	netlist	plot	data	vectors	points	bytes	ms
+run000	ok	operating point	.op	-	riaa_preamp	Operating Point	real	24	1	1262	8209
+run001	ok	pdn:vp	.ac dec 20 1.000000000e+03 1.000000000e+09	-	pdn_vp	AC Analysis	complex	20	121	111366	224
+run002	ok	closed loop:XL.U1	.ac dec 20 1.000000000e+00 1.000000000e+08	-	opamp_XL.U1	AC Analysis	complex	16	161	118781	290
+run003	ok	closed loop:XR.U1	.ac dec 20 1.000000000e+00 1.000000000e+08	-	opamp_XR.U1	AC Analysis	complex	16	161	118781	290
+run004	ok	closed loop:XL.U1	.ac dec 20 2.000000000e+01 2.000000000e+04	-	opamp_XL.U1	AC Analysis	complex	16	61	45339	293
+run005	ok	closed loop:XR.U1	.ac dec 20 2.000000000e+01 2.000000000e+04	-	opamp_XR.U1	AC Analysis	complex	16	61	45339	298
+run006	ok	operating point	.op	-	aa_filter	Operating Point	real	19	1	1013	999
+run007	ok	closed loop:U1B	.ac dec 20 1.000000000e+00 1.000000000e+08	-	opamp_U1B	AC Analysis	complex	21	161	156182	571
+run008	ok	closed loop:U1A	.ac dec 20 1.000000000e+00 1.000000000e+08	-	opamp_U1A	AC Analysis	complex	21	161	156182	664
+run009	ok	closed loop:U1B	.ac dec 20 1.000000000e+00 1.000000000e+08	-	opamp_U1B	AC Analysis	complex	20	161	148203	356

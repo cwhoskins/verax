@@ -10,10 +10,13 @@ placement, no signal-flow awareness, no DRC, no round-trip. The quality bar is
 implements.
 
 - **`scene.nim`** — the renderer-neutral middle layer. `Schematic`, with placed
-  `SchematicPart`s (position, symbol, body extents, a `rotation` of 0/90/180/270,
-  per-pin world positions),
+  `SchematicPart`s (position, symbol, the pin-span `bodyW`/`bodyH` **and** the
+  smaller drawn-ink `inkW`/`inkH`, a `rotation` of 0/90/180/270, per-pin world
+  positions),
   `SchematicWire`s (per-net polylines, tagged signal/ground/supply),
-  `SchematicJunction`s, `SchematicLabel`s, `SchematicPort`s and a bounding box —
+  `SchematicJunction`s, `SchematicLabel`s (text plus `anchor`/`size`/`role`/
+  `owner` — every one placed by `layout` against the finished geometry, the
+  writer only renders them), `SchematicPort`s and a bounding box —
   all in world units with no SVG, DOM or JSON types. `Point` carries the
   arithmetic the placement and routing passes use; it relies on the compiler's
   structural `==` and generic object `hash` (both key on the grid-snapped
@@ -80,8 +83,13 @@ implements.
   boundaries so no segment enters an inflated body; a wire
   reaches each pin directly through a short outward stub. **Rail decisions come from
   `netlist/kinds.isGround`/`isRail`, never from name guessing**: a ground net
-  draws a local ground stub at each pin, a supply net a local up-stub
-  labelled with the net name, and neither is wired as a tree. Junction dots
+  draws a local ground stub at each pin, a supply net a local stub labelled
+  with the net name, and neither is wired as a tree. Each stub leaves its pin
+  along that pin's outward escape direction (`escapeDir`), so it always juts
+  *away* from the body -- a positive rail on a top-edge pin stubs up, a
+  negative rail on a box's bottom-edge `V-` pin stubs *down* rather than back
+  up through the body, and a rail on a side pin stubs sideways. The glyph
+  (`svg.nim`) is drawn perpendicular to whatever direction the stub took. Junction dots
   appear where three or more segments meet. Routing is occupancy-aware and
   upholds one hard geometric invariant: **two distinct `SchematicWire` objects
   never share a positive-length collinear segment.** They may share a vertex
@@ -122,15 +130,58 @@ implements.
   shared global net `"0"` carries pins from every sibling clone, and siblings
   reuse designators — so pins are filtered by owning-`Netlist` identity, not by
   name, everywhere `layout` walks `net.pins`.
+  Finally a **label pass** places every free-standing `SchematicLabel` — each
+  non-box part's designator+value as one stacked block, each signal net's name
+  near its leftmost-then-topmost pin, each supply rail's name at its stub — by
+  a first-fit search over candidate spots around the thing named. It measures
+  from `inkW`/`inkH`, the *drawn* symbol box, not the pin span, so a resistor's
+  designator sits just above its zigzag rather than 40 units past it; a
+  90/270 rotation swaps the ink extents. Candidates are the four sides (the
+  ones **no pin escapes through** first — right, top, left, bottom — then the
+  occupied ones, then the four corners); a candidate is rejected if its text
+  box (`0.6·size` per monospace char) crosses any wire, any symbol lead stub,
+  any drawn-ink rect, port body or ground/supply glyph footprint, or a label
+  already placed. A net name's anchor pin has that pin's own escape side tried
+  **last** — its wire leaves there. Placement order
+  is parts, then net names, then rail names, each scored against all before
+  it; a wire or lead crossing outweighs any body/label overlap, and the
+  lowest-penalty candidate wins (earliest on a tie), so a boxed-in label on a
+  dense sheet lands in the *least bad* spot rather than dead centre — the pass
+  is total and deterministic. Box designators/values are **not** placed here —
+  `svg` draws those inside the body where `boxSlots` reserved the room. The
+  force/separation/packing passes were deliberately **not** given label
+  reservation: the label side depends on a rotation co-optimised inside the
+  force loop, and widening the bodies would shift every existing layout and
+  void `packGroups`' area guard — choosing a good spot in the space those
+  passes already leave (`2·placementPad` between bodies) is cheaper and
+  reversible. If crowding proves it insufficient, folding label extents into
+  `ohw`/`ohh` is the follow-up.
 - **`svg.nim`** — `renderSvg`/`writeSvgFile`. Self-contained SVG: every colour
   a literal, every style inlined, a graph-paper grid, wires as polylines,
-  junction circles, ground/power symbols and a small symbol library (resistor
+  junction circles, ground/power symbols (each bar drawn perpendicular to the
+  stub it caps, so a sideways or downward rail stub still gets an upright
+  glyph) and a small symbol library (resistor
   zigzag, capacitor plates, inductor arcs, diode triangle+bar, source circles,
-  controlled-source rectangle, transistor body). A rotated part is drawn with
-  a `rotate(rotation)` group around its centre while its designator/value
-  labels stay outside the group, so they remain upright. Anything a kind table
+  controlled-source rectangle, transistor body). Each symbol's stroked extent
+  must match the `inkExtent` table in `layout.nim` — the two files are the
+  only ones that know drawn geometry, and the label pass reads that table, so
+  a change to a symbol's drawing here needs the matching entry updated there.
+  A rotated part is drawn with a `rotate(rotation)` group around its centre;
+  its `SchematicLabel`s were placed by `layout` outside any group and rendered
+  after it, so they stay upright. Anything a kind table
   does not recognise — and any hierarchical instance — is drawn as a
-  **fallback box** with pins placed down the left edge then the right edge.
+  **fallback box** (`boxSlots` in `layout.nim`): `ptPower` pins leave the top
+  edge, `ptGround` the bottom, `ptInput` the left and `ptOutput` the right,
+  every other pin fills the left edge then the right, and each edge's pins are
+  spread symmetrically about the body centre. Pins sit on the `bodyW`/`bodyH`
+  extent — so their routing escape points stay on the Hanan grid exactly as a
+  symbol's edge pins do — and the *drawn* rectangle is inset from that by
+  `layout.boxStub` (20) on every side, so each pin visibly juts out on a short
+  stub with its name printed just inside. The designator and value/kind stack
+  at the top-left inside corner, clear of the centred rows and columns of pin
+  labels — this is the **one** kind of part text `svg` still places itself
+  (the label pass skips boxes), because `boxSlots` already sized the body to
+  hold it. A box never rotates.
   `drawPort` draws each `SchematicPort` as one `<polygon>` pennant with its
   name centred: a flat-left/point-right pentagon for `pdInput`/`pdOutput`, a
   both-ends-pointed hexagon for `pdBidir`, a plain rectangle for

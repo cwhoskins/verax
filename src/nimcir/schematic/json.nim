@@ -17,6 +17,19 @@ proc wireKindName(k: WireKind): string =
   of wkGround: "ground"
   of wkSupply: "supply"
 
+proc textAnchorName(a: TextAnchor): string =
+  case a
+  of taStart: "start"
+  of taMiddle: "middle"
+  of taEnd: "end"
+
+proc labelRoleName(r: LabelRole): string =
+  case r
+  of lrNet: "net"
+  of lrDesignator: "designator"
+  of lrValue: "value"
+  of lrRail: "rail"
+
 proc portDirName(d: PortDirection): string =
   case d
   of pdUnspecified: "unspecified"
@@ -41,6 +54,8 @@ proc sceneToJson*(s: Schematic): JsonNode =
     o["value"] = %p.value
     o["symbol"] = %p.symbol
     o["isBox"] = %p.isBox
+    o["inkW"] = %p.inkW
+    o["inkH"] = %p.inkH
     o["x"] = %p.x
     o["y"] = %p.y
     o["rotation"] = %p.rotation
@@ -86,6 +101,10 @@ proc sceneToJson*(s: Schematic): JsonNode =
     lo["text"] = %lb.text
     lo["x"] = %lb.x
     lo["y"] = %lb.y
+    lo["anchor"] = %textAnchorName(lb.anchor)
+    lo["size"] = %lb.size
+    lo["role"] = %labelRoleName(lb.role)
+    lo["owner"] = %lb.owner
     labels.add lo
   result["labels"] = labels
 

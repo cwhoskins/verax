@@ -37,7 +37,9 @@
 ##
 ## Rail decisions come from `netlist/kinds.isGround`/`isRail`, never from a
 ## name guess: a ground or supply net is not wired as a tree but drawn as a
-## local stub at each pin. Symbol/kind selection is a small registry keyed by
+## local stub at each pin, leaving along that pin's outward escape direction
+## so it always juts *away* from the body -- a negative supply on a box's
+## bottom edge stubs down, not up through the body. Symbol/kind selection is a small registry keyed by
 ## `Component.kind`, with a fallback box for anything unrecognised -- the
 ## same "refuse to guess, draw a box" stance the rest of the library takes
 ## toward parts it cannot model.
@@ -83,12 +85,31 @@ const
   packAspect = 1.2
     ## Shelf width as a multiple of `sqrt(total inflated block area)`: a
     ## slightly landscape sheet, the shape a schematic is printed on.
+  labelGap = 6.0
+    ## Clearance between a label's text box and the drawn ink it names.
+  designatorSize = 12.0
+  valueSize = 10.0
+  netLabelSize = 12.0
+  labelLineGap = 2.0
+    ## Vertical space between the designator and value lines of one part's
+    ## stacked label block.
+  glyphAspect = 0.6
+    ## Monospace advance width as a fraction of font size -- matches the
+    ## per-character estimates already used for box pin names (`sideChars *
+    ## 6.0` at size 9) and port bodies (`portName.len * 8.0` at size 10).
 
 type
   SymbolDef = object
     name: string
     isBox: bool
     bodyW, bodyH: float
+    inkW, inkH: float
+      ## The bounding box of what `svg.drawPart` actually strokes for this
+      ## symbol, at rotation 0 -- which for the horizontal two-terminal
+      ## symbols is far shorter than the `bodyW`/`bodyH` pin span. `layout`
+      ## and `svg` are the two files that must agree on drawn geometry: a
+      ## change to a symbol's drawing in `svg.nim` needs the matching extent
+      ## updated here (see `inkExtent`). Used only to place labels.
     slots: seq[Point]
       ## Positional pin slots: `slots[i]` is the slot of the `i`-th pin in
       ## `Component.pins` order.
@@ -110,24 +131,77 @@ type
     ## along it.
     a, b: Point
 
-proc boxSlots(n: int): tuple[slots: seq[Point], halfW, halfH: float] =
-  ## Deterministic fallback-box pin placement: the left edge top to bottom,
-  ## then the right edge top to bottom. `halfW`/`halfH` are the half-extents
-  ## the body rectangle is drawn with.
-  let vSpacing = 34.0
-  let halfW = 70.0
-  let left = (n + 1) div 2
-  let right = n - left
-  let rows = max(left, right)
-  let halfH = max(24.0, float(rows) * vSpacing / 2.0)
-  for i in 0 ..< left:
-    let y = (float(i) - float(left - 1) / 2.0) * vSpacing
-    result.slots.add Point(x: -halfW, y: y)
-  for i in 0 ..< right:
-    let y = (float(i) - float(right - 1) / 2.0) * vSpacing
-    result.slots.add Point(x: halfW, y: y)
+const boxStub* = 20.0
+  ## How far a fallback-box pin sits outside the *drawn* rectangle. `boxSlots`
+  ## puts the pin (and hence its routing escape point) on the `bodyW`/`bodyH`
+  ## extent so routing stays grid-aligned; `svg` insets the visible rectangle
+  ## by this much and draws a stub from that edge out to the pin.
+
+proc boxSlots(c: Component): tuple[slots: seq[Point], halfW, halfH: float] =
+  ## Deterministic fallback-box pin placement, keyed on pin type: declared
+  ## power pins leave the top edge, ground pins the bottom, inputs the left and
+  ## outputs the right; every other pin fills the left edge then the right.
+  ## Within an edge the pins are spread symmetrically about the body centre.
+  ## `halfW`/`halfH` are the pin extent -- pins sit on this rectangle so their
+  ## escape points land on the routing grid, and `svg` draws the body itself
+  ## `boxStub` smaller so each pin visibly juts out with its name just inside.
+  const
+    pitch = 40.0       ## row spacing on the left/right edges
+    endPitch = 80.0     ## column spacing on the top/bottom edges -- wider so a
+                        ## rail stub's net-name label clears the next pin
+  var names: seq[string]
+  var top, bot, left, right: seq[int]
+  var i = 0
+  for name, p in c.pins:
+    names.add name
+    case p.kind
+    of ptPower: top.add i
+    of ptGround: bot.add i
+    of ptInput: left.add i
+    of ptOutput: right.add i
+    elif left.len <= right.len: left.add i
+    else: right.add i
+    inc i
+  let n = i
+  let rows = max(left.len, right.len)
+  let cols = max(top.len, bot.len)
+  var sideChars = 0
+  for idx in left & right: sideChars = max(sideChars, names[idx].len)
+  # Inner (drawn) half-extents: room for the pin rows/columns plus a margin, a
+  # floor that keeps room for the centred designator/value text, and width for
+  # the longest side-pin name printed inside. The pin extent adds `boxStub`.
+  let innerW = max(max(float(cols) * endPitch / 2.0 + 16.0, 46.0),
+                   float(sideChars) * 6.0 + 14.0)
+  let innerH = max(float(rows) * pitch / 2.0 + 16.0, 30.0)
+  let halfW = innerW + boxStub
+  let halfH = innerH + boxStub
+  proc spread(count, k: int, step: float): float =
+    (float(k) - float(count - 1) / 2.0) * step
+  result.slots.setLen(n)
+  for k, idx in left:
+    result.slots[idx] = Point(x: -halfW, y: spread(left.len, k, pitch))
+  for k, idx in right:
+    result.slots[idx] = Point(x: halfW, y: spread(right.len, k, pitch))
+  for k, idx in top:
+    result.slots[idx] = Point(x: spread(top.len, k, endPitch), y: -halfH)
+  for k, idx in bot:
+    result.slots[idx] = Point(x: spread(bot.len, k, endPitch), y: halfH)
   result.halfW = halfW
   result.halfH = halfH
+
+proc inkExtent(name: string, bodyW, bodyH: float): tuple[w, h: float] =
+  ## The bounding box of what `svg.drawPart` strokes for symbol `name`, at
+  ## rotation 0. These literals mirror `svg.nim`'s drawing code -- the resistor
+  ## zigzag is +/-10 tall (`svg.zigzag`), the source circle is r=16, the
+  ## transistor has leads on three sides -- and the two files must be kept in
+  ## step. Only labels read this; it never feeds an obstacle rect.
+  case name
+  of "resistor", "diode": (bodyW, 20.0)
+  of "capacitor", "passive": (bodyW, 24.0)
+  of "inductor": (bodyW, 16.0)
+  of "voltage_source", "current_source": (32.0, bodyH)
+  of "transistor": (bodyH, bodyH)
+  else: (bodyW, bodyH)          # source4, box: the drawn shape is the body
 
 proc symbolFor(c: Component): SymbolDef =
   ## The symbol for `c.kind`, with pin slots relative to the part centre.
@@ -137,9 +211,11 @@ proc symbolFor(c: Component): SymbolDef =
   ## box), or when its pin count does not match the symbol's slots.
   let n = c.pins.len
   proc box(): SymbolDef =
-    let b = boxSlots(n)
+    let b = boxSlots(c)
     SymbolDef(name: "box", isBox: true, bodyW: b.halfW * 2.0,
-              bodyH: b.halfH * 2.0, slots: b.slots)
+              bodyH: b.halfH * 2.0,
+              inkW: b.halfW * 2.0 - 2.0 * boxStub,
+              inkH: b.halfH * 2.0 - 2.0 * boxStub, slots: b.slots)
 
   if c.subNetlist != nil:
     return box()
@@ -179,7 +255,8 @@ proc symbolFor(c: Component): SymbolDef =
     byName["IN-"] = Point(x: -bodyW / 2.0, y: 20.0)
     for pinName, _ in c.pins:
       if not byName.hasKey(pinName): return box()
-    return SymbolDef(name: "source4", bodyW: bodyW, bodyH: bodyH, byName: byName)
+    return SymbolDef(name: "source4", bodyW: bodyW, bodyH: bodyH,
+                     inkW: bodyW, inkH: bodyH, byName: byName)
   of "bjt", "mosfet", "jfet", "transistor":
     result = SymbolDef(name: "transistor", bodyW: h, bodyH: h,
       slots: @[Point(x: 0.0, y: -pinSpan), Point(x: -pinSpan, y: 0.0),
@@ -189,6 +266,7 @@ proc symbolFor(c: Component): SymbolDef =
 
   if result.slots.len != n:
     return box()
+  (result.inkW, result.inkH) = inkExtent(result.name, result.bodyW, result.bodyH)
 
 proc sameCoord(a, b: float): bool {.inline.} = abs(a - b) < 1e-9
 
@@ -258,27 +336,39 @@ proc addOcc(occ: var seq[OccSeg], a, b: Point) {.inline.} =
   if sameCoord(a.x, b.x) and sameCoord(a.y, b.y): return
   occ.add OccSeg(a: a, b: b)
 
-proc shortenedStubEnd(p: Point, dy: float, occ: seq[OccSeg]): Point =
-  ## The end of a vertical rail stub from `p` toward `p.y + dy`, shortened
-  ## just enough that it shares no positive-length collinear portion with an
-  ## occupied segment. Perpendicular occupied segments are ignored (a crossing
-  ## is allowed); only a vertical segment on the same x shortens the stub.
-  let dir = if dy > 0.0: 1.0 else: -1.0
-  var limit = p.y + dy
+proc shortenedStubEnd(p, dir: Point, span: float, occ: seq[OccSeg]): Point =
+  ## The end of a rail/ground stub leaving `p` along axis unit vector `dir`
+  ## (one of ±x / ±y) for `span`, shortened just enough that it shares no
+  ## positive-length collinear portion with an occupied segment. Perpendicular
+  ## occupied segments are ignored (a crossing is allowed); only a segment
+  ## collinear with the stub shortens it.
+  ##
+  ## `dir` is the pin's outward escape direction, so the stub always juts away
+  ## from the body -- a negative-supply pin on a box's bottom edge stubs
+  ## *down*, not up through the body.
+  let vertical = abs(dir.y) > abs(dir.x)
+  # Work in a 1-D coordinate `t` along `dir`: the pin is at t = 0, the
+  # unshortened end at t = span, and an obstacle interval [o1, o2].
+  proc along(q: Point): float =
+    if vertical: (q.y - p.y) * (if dir.y >= 0.0: 1.0 else: -1.0)
+    else: (q.x - p.x) * (if dir.x >= 0.0: 1.0 else: -1.0)
+  var limit = span
   for s in occ:
-    if not sameCoord(s.a.x, s.b.x): continue
-    if not sameCoord(s.a.x, p.x): continue
-    let o1 = min(s.a.y, s.b.y)
-    let o2 = max(s.a.y, s.b.y)
-    if dir > 0.0:
-      if o2 <= p.y + 1e-9: continue
-      if o1 >= p.y + dy - 1e-9: continue
-      limit = min(limit, if o1 <= p.y + 1e-9: p.y else: o1)
+    if vertical:
+      if not (sameCoord(s.a.x, s.b.x) and sameCoord(s.a.x, p.x)): continue
     else:
-      if o1 >= p.y - 1e-9: continue
-      if o2 <= p.y + dy + 1e-9: continue
-      limit = max(limit, if o2 >= p.y - 1e-9: p.y else: o2)
-  Point(x: p.x, y: limit)
+      if not (sameCoord(s.a.y, s.b.y) and sameCoord(s.a.y, p.y)): continue
+    let ta = along(s.a)
+    let tb = along(s.b)
+    let o1 = min(ta, tb)
+    let o2 = max(ta, tb)
+    if o2 <= 1e-9: continue                 # entirely behind the pin
+    if o1 >= span - 1e-9: continue          # entirely past the stub end
+    limit = min(limit, max(0.0, o1))
+  if vertical:
+    Point(x: p.x, y: p.y + limit * (if dir.y >= 0.0: 1.0 else: -1.0))
+  else:
+    Point(x: p.x + limit * (if dir.x >= 0.0: 1.0 else: -1.0), y: p.y)
 
 proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
                          sources: seq[int], occ: seq[OccSeg]):
@@ -338,6 +428,91 @@ proc escapeDir(part: SchematicPart, pt: Point): Point =
     Point(x: (if dx >= 0.0: 1.0 else: -1.0), y: 0.0)
   else:
     Point(x: 0.0, y: (if dy >= 0.0: 1.0 else: -1.0))
+
+# --- label placement --------------------------------------------------------
+# Designator/value text (and net + rail names) is placed here, against the
+# finished wire and body geometry, rather than at fixed offsets in `svg.nim`.
+# The search is a first-fit over a small ordered set of candidate spots around
+# the thing being named; if every candidate collides, candidate 0 is used
+# anyway, so the pass is total and a label is never dropped.
+
+type
+  Rect = tuple[x1, y1, x2, y2: float]
+
+  LabelLine = tuple[text: string, size: float, role: LabelRole]
+
+  Side = enum
+    sRight, sTop, sLeft, sBottom
+
+proc rectsOverlap(a, b: Rect): bool {.inline.} =
+  a.x1 < b.x2 - 1e-9 and b.x1 < a.x2 - 1e-9 and
+  a.y1 < b.y2 - 1e-9 and b.y1 < a.y2 - 1e-9
+
+proc partInk(p: SchematicPart): Rect =
+  ## The drawn-symbol box in world coords. A 90/270 rotation swaps the ink
+  ## extents: only square-bodied two-terminal symbols rotate, so their pins
+  ## still land, but a resistor's zigzag becomes tall and thin -- which is
+  ## exactly why the label then wants the (short) side, not the (long) end.
+  var w = p.inkW
+  var h = p.inkH
+  if abs(p.rotation - 90.0) < 1e-9 or abs(p.rotation - 270.0) < 1e-9:
+    swap(w, h)
+  (p.x - w / 2.0, p.y - h / 2.0, p.x + w / 2.0, p.y + h / 2.0)
+
+proc portBody(p: SchematicPort): Rect {.inline.} =
+  (p.x - p.bodyW / 2.0, p.y - p.bodyH / 2.0,
+   p.x + p.bodyW / 2.0, p.y + p.bodyH / 2.0)
+
+proc textWidth(s: string, size: float): float {.inline.} =
+  float(s.len) * glyphAspect * size
+
+proc lineBox(originX, baseline: float, s: string, anchor: TextAnchor,
+             size: float): Rect =
+  ## The ink box of one rendered line. SVG `y` is the baseline; monospace
+  ## glyphs rise ~0.8*size above it and drop ~0.2*size below.
+  let w = textWidth(s, size)
+  let x1 = case anchor
+           of taStart: originX
+           of taMiddle: originX - w / 2.0
+           of taEnd: originX - w
+  (x1, baseline - 0.8 * size, x1 + w, baseline + 0.2 * size)
+
+proc blockHeight(lines: seq[LabelLine]): float =
+  for i, ln in lines:
+    result += ln.size
+    if i > 0: result += labelLineGap
+
+proc layoutBlock(lines: seq[LabelLine], refX, refTop: float,
+                 anchor: TextAnchor, owner: string):
+    tuple[labels: seq[SchematicLabel], box: Rect] =
+  ## Stack `lines` downward from `refTop`, each line's origin at `refX` read
+  ## per `anchor`. Returns the labels and the union of their ink boxes.
+  var y = refTop
+  result.box = (Inf, Inf, -Inf, -Inf)
+  for ln in lines:
+    let baseline = y + 0.8 * ln.size
+    let lb = lineBox(refX, baseline, ln.text, anchor, ln.size)
+    result.labels.add SchematicLabel(text: ln.text, x: refX, y: baseline,
+      anchor: anchor, size: ln.size, role: ln.role, owner: owner)
+    result.box = (min(result.box.x1, lb.x1), min(result.box.y1, lb.y1),
+                  max(result.box.x2, lb.x2), max(result.box.y2, lb.y2))
+    y = baseline + 0.2 * ln.size + labelLineGap
+
+proc candidatesAround(ik: Rect, h: float, order: seq[Side]):
+    seq[tuple[refX, refTop: float, anchor: TextAnchor]] =
+  ## Candidate top-left anchors for a block of height `h` around ink rect `ik`,
+  ## the four sides in `order` first, then the four corners.
+  let cx = (ik.x1 + ik.x2) / 2.0
+  for s in order:
+    case s
+    of sRight:  result.add (ik.x2 + labelGap, (ik.y1 + ik.y2) / 2.0 - h / 2.0, taStart)
+    of sLeft:   result.add (ik.x1 - labelGap, (ik.y1 + ik.y2) / 2.0 - h / 2.0, taEnd)
+    of sTop:    result.add (cx, ik.y1 - labelGap - h, taMiddle)
+    of sBottom: result.add (cx, ik.y2 + labelGap, taMiddle)
+  result.add (ik.x2 + labelGap, ik.y1 - labelGap - h, taStart)   # top-right
+  result.add (ik.x2 + labelGap, ik.y2 + labelGap, taStart)       # bottom-right
+  result.add (ik.x1 - labelGap, ik.y1 - labelGap - h, taEnd)     # top-left
+  result.add (ik.x1 - labelGap, ik.y2 + labelGap, taEnd)         # bottom-left
 
 proc obstaclesFor(parts: seq[SchematicPart]): seq[Obstacle] =
   for p in parts:
@@ -1125,6 +1300,7 @@ proc layout*(nl: Netlist): Schematic =
                            name: c.name, value: c.attrs.getOrDefault("value", ""),
                            symbol: sd.name, isBox: sd.isBox,
                            bodyW: sd.bodyW, bodyH: sd.bodyH,
+                           inkW: sd.inkW, inkH: sd.inkH,
                            x: pos[i].x, y: pos[i].y, rotation: rots[i])
     var pi = 0
     for pinName, p in c.pins:
@@ -1271,6 +1447,7 @@ proc layout*(nl: Netlist): Schematic =
   # iteration order, then pin order) drives occupancy, so the whole scene is
   # reproducible.
   var occ: seq[OccSeg]
+  var railLabelReqs: seq[tuple[text: string, at, dir: Point]]
 
   for _, net in nl.nets:
     var pins: seq[tuple[pt: Point, partIdx: int]]
@@ -1284,16 +1461,20 @@ proc layout*(nl: Netlist): Schematic =
 
     if isGroundHere(net):
       for pin in pins:
-        let e = shortenedStubEnd(pin.pt, pinSpan, occ & escapeSeeds)
+        let dir = escapeDir(result.parts[pin.partIdx], pin.pt)
+        let e = shortenedStubEnd(pin.pt, dir, pinSpan, occ & escapeSeeds)
         result.wires.add SchematicWire(net: net.name, kind: wkGround,
                                        points: @[pin.pt, e])
         addOcc(occ, pin.pt, e)
     elif isRailHere(net):
       for pin in pins:
-        let e = shortenedStubEnd(pin.pt, -pinSpan, occ & escapeSeeds)
+        let dir = escapeDir(result.parts[pin.partIdx], pin.pt)
+        let e = shortenedStubEnd(pin.pt, dir, pinSpan, occ & escapeSeeds)
         result.wires.add SchematicWire(net: net.name, kind: wkSupply,
                                        points: @[pin.pt, e])
         addOcc(occ, pin.pt, e)
+        if net.name.len > 0:
+          railLabelReqs.add (text: net.name, at: e, dir: dir)
 
   for _, net in nl.nets:
     if isGroundHere(net) or isRailHere(net): continue
@@ -1320,26 +1501,158 @@ proc layout*(nl: Netlist): Schematic =
 
   result.junctions.sort(cmpJunction)
 
-  # --- net labels (signal nets only; rails are labelled at their stub, and
-  #     a net that got a port symbol is already named by it) ----------------
+  # --- label placement --------------------------------------------------------
+  # Part designators/values, signal-net names and supply-rail names are all
+  # placedBoxes here by a first-fit search against the finished geometry, in that
+  # order (a designator adrift from its body reads worse than a net name adrift
+  # from its pin), each tested against every label already placedBoxes. `bodyRects`
+  # are the *drawn* ink boxes and the port bodies -- not the routing-inflated
+  # obstacles: a label may sit in a routing channel, and the wire test already
+  # covers the channels a wire actually took. If every candidate collides,
+  # candidate 0 is used anyway, so a label is never dropped.
+  let allWires = result.wires
+  var placedBoxes: seq[Rect]
+  var bodyRects: seq[Rect]
+  for p in result.parts: bodyRects.add partInk(p)
+  for p in result.ports: bodyRects.add portBody(p)
+  # The ground/supply glyph `svg` caps each rail/ground stub with reaches
+  # ~10 units perpendicular and ~8 along the stub -- decoration, not a wire, so
+  # add its footprint here or a label would land across the bars.
+  for w in result.wires:
+    if w.kind in {wkGround, wkSupply} and w.points.len > 0:
+      let e = w.points[^1]
+      bodyRects.add (e.x - 13.0, e.y - 13.0, e.x + 13.0, e.y + 13.0)
+  var newLabels: seq[SchematicLabel]
+
+  # A symbol draws a short lead from each pin in to its glyph -- the span
+  # between the pin (on `bodyW`/`bodyH`) and the ink rect. `svg` strokes those,
+  # not `layout`, so they are not in `allWires`; add them here so a label on a
+  # crowded part's occupied side is still rejected off them.
+  var leadSegs: seq[tuple[a, b: Point]]
+  for p in result.parts:
+    if p.isBox: continue
+    let ik = partInk(p)
+    for pin in p.pins:
+      let pt = Point(x: pin.x, y: pin.y)
+      let d = escapeDir(p, pt)
+      let e =
+        if d.x != 0.0: Point(x: (if d.x > 0.0: ik.x2 else: ik.x1), y: pt.y)
+        elif d.y != 0.0: Point(x: pt.x, y: (if d.y > 0.0: ik.y2 else: ik.y1))
+        else: pt
+      if abs(e.x - pt.x) > 1e-6 or abs(e.y - pt.y) > 1e-6:
+        leadSegs.add (a: pt, b: e)
+
+  proc overlapArea(a, b: Rect): float =
+    let w = min(a.x2, b.x2) - max(a.x1, b.x1)
+    let h = min(a.y2, b.y2) - max(a.y1, b.y1)
+    if w > 0.0 and h > 0.0: w * h else: 0.0
+
+  proc penalty(box: Rect, skipBody: int): float =
+    ## 0 when the spot is clear; otherwise a cost, so a fully boxed-in label
+    ## falls back to the *least bad* spot rather than blindly to candidate 0.
+    ## A wire or lead crossing dominates any amount of body/label overlap.
+    let ob = @[Obstacle(x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2)]
+    for w in allWires:
+      for i in 1 ..< w.points.len:
+        if segBlocked(w.points[i - 1], w.points[i], ob): result += 1.0e6
+    for s in leadSegs:
+      if segBlocked(s.a, s.b, ob): result += 1.0e6
+    for k in 0 ..< bodyRects.len:
+      if k != skipBody: result += overlapArea(box, bodyRects[k])
+    for r in placedBoxes:
+      result += 2.0 * overlapArea(box, r)
+
+  proc place(lines: seq[LabelLine], ik: Rect, order: seq[Side],
+             owner: string, skipBody: int) =
+    if lines.len == 0: return
+    let h = blockHeight(lines)
+    let cands = candidatesAround(ik, h, order)
+    var chosen = layoutBlock(lines, cands[0].refX, cands[0].refTop,
+                             cands[0].anchor, owner)
+    var best = penalty(chosen.box, skipBody)
+    if best > 0.0:
+      for c in cands:
+        let b = layoutBlock(lines, c.refX, c.refTop, c.anchor, owner)
+        let p = penalty(b.box, skipBody)
+        if p < best - 1e-9:
+          best = p
+          chosen = b
+          if p == 0.0: break
+    for lb in chosen.labels: newLabels.add lb
+    placedBoxes.add chosen.box
+
+  for idx, p in result.parts:
+    # A box draws its own designator/value inside the body (`svg.drawPart`),
+    # where `boxSlots` reserved the room -- only symbol parts are labelled here.
+    if p.isBox: continue
+    var lines: seq[LabelLine]
+    if p.designator.len > 0: lines.add (p.designator, designatorSize, lrDesignator)
+    if p.value.len > 0: lines.add (p.value, valueSize, lrValue)
+    if lines.len == 0: continue
+    var occupied: set[Side]
+    for pin in p.pins:
+      let d = escapeDir(p, Point(x: pin.x, y: pin.y))
+      if d.x > 0.5: occupied.incl sRight
+      elif d.x < -0.5: occupied.incl sLeft
+      elif d.y > 0.5: occupied.incl sBottom
+      elif d.y < -0.5: occupied.incl sTop
+    var order: seq[Side]
+    for s in [sRight, sTop, sLeft, sBottom]:
+      if s notin occupied: order.add s
+    for s in [sRight, sTop, sLeft, sBottom]:
+      if s in occupied: order.add s
+    place(lines, partInk(p), order, p.designator, idx)
+
+  # Signal-net names: near the net's leftmost-then-topmost owned pin, as before,
+  # but now searched around it -- and the anchor pin's own wire leaves along
+  # its escape direction, so that side is tried last.
   for _, net in nl.nets:
     if isGroundHere(net) or isRailHere(net): continue
     if net.name.len == 0: continue
     if net.name in portedNets: continue
     var anchor: Point
+    var anchorEsc: Point
     var have = false
     for p in net.pins:
       if not ownsPin(p): continue
       let key = pinKey(p.component, p.name)
       if not pinPos.hasKey(key): continue
+      if not partIdxByDesig.hasKey(p.component.designator): continue
       let pt = pinPos[key]
       if not have or pt.x < anchor.x - 1e-9 or
          (abs(pt.x - anchor.x) <= 1e-9 and pt.y < anchor.y):
         anchor = pt
+        anchorEsc = escapeDir(result.parts[partIdxByDesig[p.component.designator]], pt)
         have = true
-    if have:
-      result.labels.add SchematicLabel(text: net.name, x: anchor.x,
-                                       y: anchor.y - 10.0)
+    if not have: continue
+    let escSide =
+      if anchorEsc.x > 0.5: sRight
+      elif anchorEsc.x < -0.5: sLeft
+      elif anchorEsc.y > 0.5: sBottom
+      else: sTop
+    var order: seq[Side]
+    for s in [sTop, sRight, sLeft, sBottom]:
+      if s != escSide: order.add s
+    order.add escSide
+    let dot: Rect = (anchor.x, anchor.y, anchor.x, anchor.y)
+    place(@[(net.name, netLabelSize, lrNet)], dot, order, "", -1)
+
+  # Supply-rail names: at the stub end, biased to sit past the glyph. The dot
+  # is inflated to the rail glyph's ~10-unit half-extent so the label clears
+  # the bars.
+  for req in railLabelReqs:
+    const g = 10.0
+    let dot: Rect = (req.at.x - g, req.at.y - g, req.at.x + g, req.at.y + g)
+    let horiz = abs(req.dir.x) > abs(req.dir.y)
+    let order =
+      if horiz:
+        if req.dir.x >= 0.0: @[sRight, sTop, sBottom, sLeft]
+        else: @[sLeft, sTop, sBottom, sRight]
+      else:
+        @[sRight, sLeft, sTop, sBottom]
+    place(@[(req.text, netLabelSize, lrRail)], dot, order, "", -1)
+
+  result.labels.add newLabels
 
   # --- bounding box -------------------------------------------------------
   var minX, minY, maxX, maxY: float
@@ -1359,7 +1672,11 @@ proc layout*(nl: Netlist): Schematic =
   for w in result.wires:
     for pt in w.points: includePt(pt.x, pt.y)
   for j in result.junctions: includePt(j.x, j.y)
-  for lb in result.labels: includePt(lb.x, lb.y)
+  for lb in result.labels:
+    let sz = if lb.size > 0.0: lb.size else: 12.0
+    let b = lineBox(lb.x, lb.y, lb.text, lb.anchor, sz)
+    includePt(b.x1, b.y1)
+    includePt(b.x2, b.y2)
   for p in result.ports:
     includePt(p.x - p.bodyW / 2.0, p.y - p.bodyH / 2.0)
     includePt(p.x + p.bodyW / 2.0, p.y + p.bodyH / 2.0)

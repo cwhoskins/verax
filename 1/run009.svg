@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1606" height="900" viewBox="-50 110 1606 900">
+  <title>opamp_U1B</title>
+  <rect x="-50" y="110" width="1606" height="900" fill="#ffffff"/>
+  <line x1="-80" y1="110" x2="-80" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-40" y1="110" x2="-40" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="0" y1="110" x2="0" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="40" y1="110" x2="40" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="80" y1="110" x2="80" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="120" y1="110" x2="120" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="160" y1="110" x2="160" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="200" y1="110" x2="200" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="240" y1="110" x2="240" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="280" y1="110" x2="280" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="320" y1="110" x2="320" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="360" y1="110" x2="360" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="400" y1="110" x2="400" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="440" y1="110" x2="440" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="480" y1="110" x2="480" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="520" y1="110" x2="520" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="560" y1="110" x2="560" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="600" y1="110" x2="600" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="640" y1="110" x2="640" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="680" y1="110" x2="680" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="720" y1="110" x2="720" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="760" y1="110" x2="760" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="800" y1="110" x2="800" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="840" y1="110" x2="840" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="880" y1="110" x2="880" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="920" y1="110" x2="920" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="960" y1="110" x2="960" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1000" y1="110" x2="1000" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1040" y1="110" x2="1040" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1080" y1="110" x2="1080" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1120" y1="110" x2="1120" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1160" y1="110" x2="1160" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1200" y1="110" x2="1200" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1240" y1="110" x2="1240" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1280" y1="110" x2="1280" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1320" y1="110" x2="1320" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1360" y1="110" x2="1360" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1400" y1="110" x2="1400" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1440" y1="110" x2="1440" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1480" y1="110" x2="1480" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="1520" y1="110" x2="1520" y2="1010" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="80" x2="1556" y2="80" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="120" x2="1556" y2="120" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="160" x2="1556" y2="160" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="200" x2="1556" y2="200" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="240" x2="1556" y2="240" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="280" x2="1556" y2="280" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="320" x2="1556" y2="320" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="360" x2="1556" y2="360" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="400" x2="1556" y2="400" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="440" x2="1556" y2="440" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="480" x2="1556" y2="480" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="520" x2="1556" y2="520" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="560" x2="1556" y2="560" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="600" x2="1556" y2="600" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="640" x2="1556" y2="640" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="680" x2="1556" y2="680" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="720" x2="1556" y2="720" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="760" x2="1556" y2="760" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="800" x2="1556" y2="800" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="840" x2="1556" y2="840" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="880" x2="1556" y2="880" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="920" x2="1556" y2="920" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="960" x2="1556" y2="960" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-50" y1="1000" x2="1556" y2="1000" stroke="#eef0f3" stroke-width="1"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="80,640 40,640"/>
+  <line x1="40" y1="650" x2="40" y2="630" stroke="#333333" stroke-width="2"/>
+  <line x1="36" y1="646" x2="36" y2="634" stroke="#333333" stroke-width="2"/>
+  <line x1="32" y1="642" x2="32" y2="638" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="440,320 440,280"/>
+  <line x1="430" y1="280" x2="450" y2="280" stroke="#333333" stroke-width="2"/>
+  <line x1="434" y1="276" x2="446" y2="276" stroke="#333333" stroke-width="2"/>
+  <line x1="438" y1="272" x2="442" y2="272" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="1200,480 1160,480"/>
+  <line x1="1160" y1="490" x2="1160" y2="470" stroke="#333333" stroke-width="2"/>
+  <line x1="1156" y1="486" x2="1156" y2="474" stroke="#333333" stroke-width="2"/>
+  <line x1="1152" y1="482" x2="1152" y2="478" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="720,500 760,500"/>
+  <line x1="760" y1="490" x2="760" y2="510" stroke="#333333" stroke-width="2"/>
+  <line x1="764" y1="494" x2="764" y2="506" stroke="#333333" stroke-width="2"/>
+  <line x1="768" y1="498" x2="768" y2="502" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="1000,240 1040,240"/>
+  <line x1="1040" y1="230" x2="1040" y2="250" stroke="#333333" stroke-width="2"/>
+  <line x1="1044" y1="234" x2="1044" y2="246" stroke="#333333" stroke-width="2"/>
+  <line x1="1048" y1="238" x2="1048" y2="242" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="80,840 80,800"/>
+  <line x1="70" y1="800" x2="90" y2="800" stroke="#333333" stroke-width="2"/>
+  <line x1="74" y1="796" x2="86" y2="796" stroke="#333333" stroke-width="2"/>
+  <line x1="78" y1="792" x2="82" y2="792" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="240,840 240,800"/>
+  <line x1="230" y1="800" x2="250" y2="800" stroke="#333333" stroke-width="2"/>
+  <line x1="234" y1="796" x2="246" y2="796" stroke="#333333" stroke-width="2"/>
+  <line x1="238" y1="792" x2="242" y2="792" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="760,640 788,640"/>
+  <line x1="788" y1="630" x2="788" y2="650" stroke="#333333" stroke-width="2"/>
+  <line x1="792" y1="634" x2="792" y2="646" stroke="#333333" stroke-width="2"/>
+  <line x1="796" y1="638" x2="796" y2="642" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="1360,680 1400,680"/>
+  <line x1="1400" y1="670" x2="1400" y2="690" stroke="#333333" stroke-width="2"/>
+  <line x1="1404" y1="674" x2="1404" y2="686" stroke="#333333" stroke-width="2"/>
+  <line x1="1408" y1="678" x2="1408" y2="682" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="520,480 480,480"/>
+  <line x1="480" y1="490" x2="480" y2="470" stroke="#333333" stroke-width="2"/>
+  <line x1="476" y1="486" x2="476" y2="474" stroke="#333333" stroke-width="2"/>
+  <line x1="472" y1="482" x2="472" y2="478" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="80,920 80,960"/>
+  <line x1="90" y1="960" x2="70" y2="960" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="240,920 240,960"/>
+  <line x1="250" y1="960" x2="230" y2="960" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="160,640 172,640 228,640 240,640"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="320,640 332,640 332,572 440,572 440,560"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="440,572 508,572 508,640 520,640"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="440,480 440,468 440,412 440,400"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="440,412 628,412 628,460 640,460"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="600,640 612,640 668,640 680,640"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="612,640 612,628 628,628 628,500 640,500"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="628,522 612,522 612,480 600,480"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="628,588 788,588 788,640 800,640"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="880,640 892,640 892,628 1028,628 1028,600 1040,600"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="1028,628 1028,652 1148,652 1148,640 1160,640"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="1120,600 1132,600 1132,588 1292,588 1292,480 1280,480"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="1292,522 1322,522 1322,500 1334,500"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="1240,640 1252,640 1252,652 1268,652 1268,680 1280,680"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="1268,652 1268,628 1322,628 1322,540 1334,540"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="1322,608 1478,608 1478,520 1466,520"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="720,460 732,460 732,438 748,438 748,240 760,240"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="840,240 852,240 908,240 920,240"/>
+  <g transform="rotate(180 120 640)">
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="80,640 93.333,630 106.667,650 120,630 133.333,650 146.667,630 160,640"/>
+  </g>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="240,640 253.333,630 266.667,650 280,630 293.333,650 306.667,630 320,640"/>
+  <g transform="rotate(270 440 520)">
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="400,520 413.333,510 426.667,530 440,510 453.333,530 466.667,510 480,520"/>
+  </g>
+  <line x1="520" y1="640" x2="554" y2="640" stroke="#333333" stroke-width="2"/>
+  <line x1="566" y1="640" x2="600" y2="640" stroke="#333333" stroke-width="2"/>
+  <line x1="554" y1="628" x2="554" y2="652" stroke="#333333" stroke-width="2"/>
+  <line x1="566" y1="628" x2="566" y2="652" stroke="#333333" stroke-width="2"/>
+  <g transform="rotate(270 440 360)">
+  <line x1="400" y1="360" x2="434" y2="360" stroke="#333333" stroke-width="2"/>
+  <line x1="446" y1="360" x2="480" y2="360" stroke="#333333" stroke-width="2"/>
+  <line x1="434" y1="348" x2="434" y2="372" stroke="#333333" stroke-width="2"/>
+  <line x1="446" y1="348" x2="446" y2="372" stroke="#333333" stroke-width="2"/>
+  </g>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="800,640 813.333,630 826.667,650 840,630 853.333,650 866.667,630 880,640"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="1040,600 1053.333,590 1066.667,610 1080,590 1093.333,610 1106.667,590 1120,600"/>
+  <line x1="1160" y1="640" x2="1194" y2="640" stroke="#333333" stroke-width="2"/>
+  <line x1="1206" y1="640" x2="1240" y2="640" stroke="#333333" stroke-width="2"/>
+  <line x1="1194" y1="628" x2="1194" y2="652" stroke="#333333" stroke-width="2"/>
+  <line x1="1206" y1="628" x2="1206" y2="652" stroke="#333333" stroke-width="2"/>
+  <g transform="rotate(180 1240 480)">
+  <line x1="1200" y1="480" x2="1234" y2="480" stroke="#333333" stroke-width="2"/>
+  <line x1="1246" y1="480" x2="1280" y2="480" stroke="#333333" stroke-width="2"/>
+  <line x1="1234" y1="468" x2="1234" y2="492" stroke="#333333" stroke-width="2"/>
+  <line x1="1246" y1="468" x2="1246" y2="492" stroke="#333333" stroke-width="2"/>
+  </g>
+  <rect x="640" y="450" width="80" height="60" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <text x="646" y="468" font-family="monospace" font-size="10" fill="#333333" text-anchor="start">IN+</text>
+  <text x="646" y="496" font-family="monospace" font-size="10" fill="#333333" text-anchor="start">IN-</text>
+  <text x="714" y="468" font-family="monospace" font-size="10" fill="#333333" text-anchor="end">OUT+</text>
+  <text x="714" y="496" font-family="monospace" font-size="10" fill="#333333" text-anchor="end">OUT-</text>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="760,240 773.333,230 786.667,250 800,230 813.333,250 826.667,230 840,240"/>
+  <line x1="920" y1="240" x2="954" y2="240" stroke="#333333" stroke-width="2"/>
+  <line x1="966" y1="240" x2="1000" y2="240" stroke="#333333" stroke-width="2"/>
+  <line x1="954" y1="228" x2="954" y2="252" stroke="#333333" stroke-width="2"/>
+  <line x1="966" y1="228" x2="966" y2="252" stroke="#333333" stroke-width="2"/>
+  <g transform="rotate(180 80 880)">
+  <line x1="80" y1="840" x2="80" y2="864" stroke="#333333" stroke-width="2"/>
+  <line x1="80" y1="896" x2="80" y2="920" stroke="#333333" stroke-width="2"/>
+  <circle cx="80" cy="880" r="16" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <line x1="74" y1="873" x2="86" y2="873" stroke="#333333" stroke-width="2"/>
+  <line x1="80" y1="870" x2="80" y2="876" stroke="#333333" stroke-width="2"/>
+  <line x1="74" y1="887" x2="86" y2="887" stroke="#333333" stroke-width="2"/>
+  </g>
+  <g transform="rotate(180 240 880)">
+  <line x1="240" y1="840" x2="240" y2="864" stroke="#333333" stroke-width="2"/>
+  <line x1="240" y1="896" x2="240" y2="920" stroke="#333333" stroke-width="2"/>
+  <circle cx="240" cy="880" r="16" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <line x1="234" y1="873" x2="246" y2="873" stroke="#333333" stroke-width="2"/>
+  <line x1="240" y1="870" x2="240" y2="876" stroke="#333333" stroke-width="2"/>
+  <line x1="234" y1="887" x2="246" y2="887" stroke="#333333" stroke-width="2"/>
+  </g>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="680,640 693.333,630 706.667,650 720,630 733.333,650 746.667,630 760,640"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="1280,680 1293.333,670 1306.667,690 1320,670 1333.333,690 1346.667,670 1360,680"/>
+  <rect x="1354" y="464" width="92" height="112" fill="#fdfdfd" stroke="#333333" stroke-width="2"/>
+  <line x1="1354" y1="500" x2="1334" y2="500" stroke="#333333" stroke-width="2"/>
+  <text x="1359" y="503" font-family="monospace" font-size="9" fill="#333333" text-anchor="start">INP</text>
+  <line x1="1446" y1="520" x2="1466" y2="520" stroke="#333333" stroke-width="2"/>
+  <text x="1441" y="523" font-family="monospace" font-size="9" fill="#333333" text-anchor="end">INN</text>
+  <line x1="1354" y1="540" x2="1334" y2="540" stroke="#333333" stroke-width="2"/>
+  <text x="1359" y="543" font-family="monospace" font-size="9" fill="#333333" text-anchor="start">OUT</text>
+  <text x="1359" y="477" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">XU1B</text>
+  <text x="1359" y="491" font-family="monospace" font-size="10" fill="#333333" text-anchor="start">subcircuit</text>
+  <g transform="rotate(90 560 480)">
+  <line x1="560" y1="440" x2="560" y2="464" stroke="#333333" stroke-width="2"/>
+  <line x1="560" y1="496" x2="560" y2="520" stroke="#333333" stroke-width="2"/>
+  <circle cx="560" cy="480" r="16" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <line x1="554" y1="473" x2="566" y2="473" stroke="#333333" stroke-width="2"/>
+  <line x1="560" y1="470" x2="560" y2="476" stroke="#333333" stroke-width="2"/>
+  <line x1="554" y1="487" x2="566" y2="487" stroke="#333333" stroke-width="2"/>
+  </g>
+  <circle cx="440" cy="572" r="3" fill="#333333"/>
+  <circle cx="440" cy="412" r="3" fill="#333333"/>
+  <circle cx="1028" cy="628" r="3" fill="#333333"/>
+  <circle cx="612" cy="640" r="3" fill="#333333"/>
+  <circle cx="1268" cy="652" r="3" fill="#333333"/>
+  <text x="120" y="609.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">R9</text>
+  <text x="120" y="622" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">100k</text>
+  <text x="280" y="609.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">R1</text>
+  <text x="280" y="622" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">10k</text>
+  <text x="456" y="517.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">R2</text>
+  <text x="456" y="530" font-family="monospace" font-size="10" fill="#333333" text-anchor="start">10k</text>
+  <text x="560" y="607.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">C1</text>
+  <text x="560" y="620" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">820p</text>
+  <text x="458" y="357.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">C2</text>
+  <text x="458" y="370" font-family="monospace" font-size="10" fill="#333333" text-anchor="start">680p</text>
+  <text x="840" y="609.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">R3</text>
+  <text x="840" y="622" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">10k</text>
+  <text x="1080" y="569.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">R4</text>
+  <text x="1080" y="582" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">10k</text>
+  <text x="1200" y="607.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">C3</text>
+  <text x="1200" y="620" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">2.2n</text>
+  <text x="1240" y="447.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">C4</text>
+  <text x="1240" y="460" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">330p</text>
+  <text x="680" y="429.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">EU1A_AOL</text>
+  <text x="680" y="442" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">1.000000000e+05</text>
+  <text x="800" y="209.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">RU1A_POLE</text>
+  <text x="800" y="222" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">1.000000000e+03</text>
+  <text x="960" y="207.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">CU1A_POLE</text>
+  <text x="960" y="220" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">1.591549431e-05</text>
+  <text x="102" y="877.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">V_vcc</text>
+  <text x="102" y="890" font-family="monospace" font-size="10" fill="#333333" text-anchor="start">DC 5.000000000e+00</text>
+  <text x="262" y="877.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">V_vee</text>
+  <text x="262" y="890" font-family="monospace" font-size="10" fill="#333333" text-anchor="start">DC -5.000000000e+00</text>
+  <text x="720" y="609.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">R_LEAK_vo1</text>
+  <text x="720" y="622" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">1.000000000e+09</text>
+  <text x="1320" y="649.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">R_LEAK_vout</text>
+  <text x="1320" y="662" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">1.000000000e+09</text>
+  <text x="1400" y="455.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">XU1B</text>
+  <text x="560" y="443.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">VAC_IN</text>
+  <text x="560" y="456" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">DC 0 AC 1</text>
+  <text x="166" y="631.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">vin</text>
+  <text x="326" y="655.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">na</text>
+  <text x="434" y="415.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="end">nb</text>
+  <text x="606" y="471.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">vo1</text>
+  <text x="886" y="655.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">nc</text>
+  <text x="1126" y="615.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">nd</text>
+  <text x="1240" y="631.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="middle">vout</text>
+  <text x="726" y="475.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">U1A_N1</text>
+  <text x="846" y="231.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">U1A_N2</text>
+  <text x="96" y="963.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">vcc</text>
+  <text x="256" y="963.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">vee</text>
+</svg>

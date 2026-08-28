@@ -37,6 +37,12 @@ proc pointsAttr(pts: seq[Point]): string =
   for p in pts: toks.add num(p.x) & "," & num(p.y)
   toks.join(" ")
 
+proc anchorName(a: TextAnchor): string =
+  case a
+  of taStart: "start"
+  of taMiddle: "middle"
+  of taEnd: "end"
+
 proc textAt(x, y: float, s: string, anchor = "start", size = 12): string =
   "<text x=\"" & num(x) & "\" y=\"" & num(y) &
     "\" font-family=\"monospace\" font-size=\"" & $size &
@@ -92,14 +98,36 @@ proc drawPart(p: SchematicPart): seq[string] =
 
   case p.symbol
   of "box":
-    result.add "<rect x=\"" & num(cx - hw) & "\" y=\"" & num(cy - hh) &
-      "\" width=\"" & num(p.bodyW) & "\" height=\"" & num(p.bodyH) &
+    # `bodyW`/`bodyH` is the pin extent; the visible rectangle is inset by
+    # `boxStub` so every pin juts out on a stub from the drawn edge, with its
+    # name printed just inside.
+    let bx = cx - hw + boxStub
+    let by = cy - hh + boxStub
+    result.add "<rect x=\"" & num(bx) & "\" y=\"" & num(by) &
+      "\" width=\"" & num(p.bodyW - 2.0 * boxStub) &
+      "\" height=\"" & num(p.bodyH - 2.0 * boxStub) &
       "\" fill=\"#fdfdfd\" stroke=\"#333333\" stroke-width=\"2\"/>"
-    result.add textAt(cx, cy - 4.0, p.designator, "middle")
+    for pin in p.pins:
+      if pin.x < bx + 1e-6:                       # left edge
+        result.add lineAt(bx, pin.y, pin.x, pin.y)
+        result.add textAt(bx + 5.0, pin.y + 3.0, pin.name, "start", 9)
+      elif pin.x > cx + hw - boxStub - 1e-6:      # right edge
+        result.add lineAt(cx + hw - boxStub, pin.y, pin.x, pin.y)
+        result.add textAt(cx + hw - boxStub - 5.0, pin.y + 3.0, pin.name, "end", 9)
+      elif pin.y < by + 1e-6:                     # top edge
+        result.add lineAt(pin.x, by, pin.x, pin.y)
+        result.add textAt(pin.x, by + 12.0, pin.name, "middle", 9)
+      else:                                       # bottom edge
+        result.add lineAt(pin.x, cy + hh - boxStub, pin.x, pin.y)
+        result.add textAt(pin.x, cy + hh - boxStub - 6.0, pin.name, "middle", 9)
+    # Designator and value/name stack at the top-left inside corner, clear of
+    # the centred rows and columns of pin labels.
+    result.add textAt(bx + 5.0, by + 13.0, p.designator, "start")
     let sub = if p.value.len > 0: p.value
               elif p.name.len > 0: p.name
               else: p.kind
-    if sub.len > 0: result.add textAt(cx, cy + 12.0, sub, "middle", 10)
+    if sub.len > 0:
+      result.add textAt(bx + 5.0, by + 27.0, sub, "start", 10)
 
   of "resistor":
     result.add polyAt(zigzag(cx, cy, hw, 6))
@@ -186,10 +214,10 @@ proc drawPart(p: SchematicPart): seq[string] =
   if rot != 0.0:
     result.add "</g>"
 
-  if p.symbol != "box":
-    result.add textAt(cx, cy - hh - 12.0, p.designator, "middle")
-    if p.value.len > 0:
-      result.add textAt(cx, cy + hh + 16.0, p.value, "middle", 10)
+  # A non-box symbol's designator and value are emitted as SchematicLabels by
+  # `layout`'s label pass (placed against wires and neighbouring bodies), not
+  # drawn here. A box draws its own designator/value inside the body above,
+  # where `boxSlots` has reserved the space.
 
 proc drawPort(p: SchematicPort): seq[string] =
   ## An Altium-style port pennant at `p.x, p.y` (its body centre). The
@@ -235,21 +263,37 @@ proc renderSvg*(s: Schematic): string =
   for g in drawGrid(s.minX, s.minY, s.maxX, s.maxY): L.add "  " & g
 
   for wire in s.wires:
+    # The glyph at a ground/supply stub is drawn perpendicular to the stub, so
+    # a stub that juts sideways or downward (a negative rail on a box's bottom
+    # edge) still gets an upright bar rather than one laid across the wire.
+    proc stubDirs(pts: seq[Point], fallback: Point): tuple[o, q: Point] =
+      var o = fallback
+      if pts.len >= 2:
+        let d = pts[^1] - pts[^2]
+        if abs(d.x) > abs(d.y) and abs(d.x) > 1e-6:
+          o = Point(x: (if d.x >= 0.0: 1.0 else: -1.0), y: 0.0)
+        elif abs(d.y) > 1e-6:
+          o = Point(x: 0.0, y: (if d.y >= 0.0: 1.0 else: -1.0))
+      (o: o, q: Point(x: -o.y, y: o.x))
+    proc bar(c, q: Point, hw: float): string =
+      lineAt(c.x - q.x * hw, c.y - q.y * hw, c.x + q.x * hw, c.y + q.y * hw)
     case wire.kind
     of wkSignal:
       L.add "  " & polyAt(wire.points)
     of wkGround:
       L.add "  " & polyAt(wire.points)
       let p = wire.points[^1]
-      L.add "  " & lineAt(p.x - 10.0, p.y, p.x + 10.0, p.y)
-      L.add "  " & lineAt(p.x - 6.0, p.y + 4.0, p.x + 6.0, p.y + 4.0)
-      L.add "  " & lineAt(p.x - 2.0, p.y + 8.0, p.x + 2.0, p.y + 8.0)
+      let (o, q) = stubDirs(wire.points, Point(x: 0.0, y: 1.0))
+      L.add "  " & bar(p, q, 10.0)
+      L.add "  " & bar(p + o * 4.0, q, 6.0)
+      L.add "  " & bar(p + o * 8.0, q, 2.0)
     of wkSupply:
       L.add "  " & polyAt(wire.points)
       let p = wire.points[^1]
-      L.add "  " & lineAt(p.x - 10.0, p.y, p.x + 10.0, p.y)
-      if wire.net.len > 0:
-        L.add "  " & textAt(p.x + 14.0, p.y + 4.0, wire.net)
+      let (_, q) = stubDirs(wire.points, Point(x: 0.0, y: -1.0))
+      L.add "  " & bar(p, q, 10.0)
+      # The rail's net name is emitted as an `lrRail` SchematicLabel by
+      # `layout` (placed against the finished geometry), not drawn here.
 
   for p in s.parts:
     for e in drawPart(p): L.add "  " & e
@@ -262,7 +306,8 @@ proc renderSvg*(s: Schematic): string =
       "\" r=\"3\" fill=\"#333333\"/>"
 
   for lb in s.labels:
-    L.add "  " & textAt(lb.x, lb.y, lb.text)
+    let sz = if lb.size > 0.0: int(lb.size.round) else: 12
+    L.add "  " & textAt(lb.x, lb.y, lb.text, anchorName(lb.anchor), sz)
 
   L.add "</svg>"
   result = L.join("\n") & "\n"

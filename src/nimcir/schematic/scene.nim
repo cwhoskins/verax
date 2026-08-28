@@ -33,8 +33,18 @@ type
       ## "source4", "transistor", or "box".
     isBox*: bool
     bodyW*, bodyH*: float
-      ## Body extents in world units. For a box this is the drawn rectangle;
-      ## for a symbol it is the pin-to-pin extent used to offset labels.
+      ## Pin-to-pin extents in world units: the rectangle the pins sit on, and
+      ## what the separation and routing-obstacle rects are built from. For a
+      ## symbol this is usually larger than the drawn ink (a resistor is
+      ## 80 x 80 here but its zigzag is only 80 x 20 -- see `inkW`/`inkH`). For
+      ## a box the pins jut out: the *drawn* rectangle is inset from this by
+      ## `layout.boxStub` on every side, and each pin connects to it by a stub.
+    inkW*, inkH*: float
+      ## The extent of the *drawn* symbol at rotation 0 -- for a symbol part
+      ## much smaller than the pin-to-pin `bodyW`/`bodyH`. `layout`'s label
+      ## pass measures designator/value offsets from this so text sits close to
+      ## the visible glyph rather than out at the pin span; obstacle and
+      ## separation rects are unaffected. A 90/270 rotation swaps the two.
     x*, y*: float
     rotation*: float
       ## One of 0, 90, 180, 270 degrees. `layout` picks it for an eligible
@@ -42,7 +52,8 @@ type
       ## distance to their net-mates -- so it fixes both the pin axis and which
       ## end each pin takes; a one-net part instead simply faces its lone
       ## net-mate (see `layout`'s leaf-snap pass). The SVG writer rotates the
-      ## body by this angle around the part centre and keeps the labels upright.
+      ## body by this angle around the part centre; the part's labels are
+      ## placed by `layout` outside the rotated group and stay upright.
       ## Always 0 for boxes and for non-two-terminal symbols.
     pins*: seq[SchematicPin]
 
@@ -58,9 +69,29 @@ type
     net*: string
     x*, y*: float
 
+  TextAnchor* = enum
+    taStart, taMiddle, taEnd
+
+  LabelRole* = enum
+    lrNet          ## a signal net's name, placed near one of its pins
+    lrDesignator   ## a part's reference designator ("R1")
+    lrValue        ## a part's value ("10k")
+    lrRail         ## a supply-rail net name, placed at the rail stub
+
   SchematicLabel* = object
+    ## A free-standing piece of text. `layout` places every one of these
+    ## against the finished wire and body geometry (see its label pass); the
+    ## SVG writer only renders them. `x` is the SVG text origin interpreted per
+    ## `anchor`, `y` is the text baseline.
     text*: string
     x*, y*: float
+    anchor*: TextAnchor
+    size*: float
+      ## Font size in world units. `<= 0` means "use the writer's default".
+    role*: LabelRole
+    owner*: string
+      ## The owning part's designator for `lrDesignator`/`lrValue`; "" for a
+      ## net or rail label.
 
   PortDirection* = enum
     pdUnspecified, pdInput, pdOutput, pdBidir

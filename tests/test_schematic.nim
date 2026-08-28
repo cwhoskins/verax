@@ -152,6 +152,53 @@ proc distinctWiresNeverShareCollinearRuns(s: Schematic): bool =
             return false
   true
 
+proc labelBoxT(lb: SchematicLabel): tuple[x1, y1, x2, y2: float] =
+  ## The label's ink box, by the same monospace estimate `layout` places with.
+  let sz = if lb.size > 0.0: lb.size else: 12.0
+  let w = float(lb.text.len) * 0.6 * sz
+  let x1 = case lb.anchor
+           of taStart: lb.x
+           of taMiddle: lb.x - w / 2.0
+           of taEnd: lb.x - w
+  (x1, lb.y - 0.8 * sz, x1 + w, lb.y + 0.2 * sz)
+
+proc partInkRectT(p: SchematicPart): tuple[x1, y1, x2, y2: float] =
+  var w = p.inkW
+  var h = p.inkH
+  if abs(p.rotation - 90.0) < 1e-9 or abs(p.rotation - 270.0) < 1e-9:
+    swap(w, h)
+  (p.x - w / 2.0, p.y - h / 2.0, p.x + w / 2.0, p.y + h / 2.0)
+
+proc rectsOverlapT(a, b: tuple[x1, y1, x2, y2: float]): bool =
+  a.x1 < b.x2 - 1e-9 and b.x1 < a.x2 - 1e-9 and
+  a.y1 < b.y2 - 1e-9 and b.y1 < a.y2 - 1e-9
+
+proc labelsClearOfGeometry(s: Schematic): bool =
+  ## The label invariant: no label's text box crosses a wire segment, overlaps
+  ## a part's *drawn* ink or a port body, or overlaps another label. (A label
+  ## may sit in a routing channel -- only a wire that actually took it counts.)
+  for i, lb in s.labels:
+    let box = labelBoxT(lb)
+    for w in s.wires:
+      for k in 0 ..< w.points.high:
+        if segCrossesRect(w.points[k], w.points[k + 1], box): return false
+    for p in s.parts:
+      if rectsOverlapT(box, partInkRectT(p)): return false
+    for p in s.ports:
+      if rectsOverlapT(box, (p.x - p.bodyW / 2.0, p.y - p.bodyH / 2.0,
+                             p.x + p.bodyW / 2.0, p.y + p.bodyH / 2.0)):
+        return false
+    for j in 0 ..< i:
+      if rectsOverlapT(box, labelBoxT(s.labels[j])): return false
+  true
+
+proc axisGapToInk(box, ink: tuple[x1, y1, x2, y2: float]): float =
+  ## The larger per-axis gap between two non-overlapping rects, 0 if they touch
+  ## or overlap. Small for a label that hugs its part, large for one adrift.
+  let gx = max(0.0, max(box.x1 - ink.x2, ink.x1 - box.x2))
+  let gy = max(0.0, max(box.y1 - ink.y2, ink.y1 - box.y2))
+  max(gx, gy)
+
 proc starNet(): Netlist =
   ## Three resistors whose pin 1 all meet on one signal net, forcing the net
   ## to route as a tree with a branch rather than a simple path.
@@ -250,19 +297,28 @@ test "symbol selection is keyed by kind":
   check partOf(s, "V1").symbol == "voltage_source"
   check not partOf(s, "R1").isBox
 
-test "an unrecognised kind draws as a fallback box with split pins":
+test "a fallback box places pins by type: power up, ground down, the rest split":
   let s = layout(divider())
   let u1 = partOf(s, "U1")
   check u1.isBox
   check u1.symbol == "box"
   check u1.pins.len == 4
   check u1.rotation == 0.0
-  var left, right = 0
-  for pin in u1.pins:
-    if pin.x < u1.x: inc left
-    elif pin.x > u1.x: inc right
-  check left == 2
-  check right == 2
+  proc pin(n: string): SchematicPin =
+    for p in u1.pins:
+      if p.name == n: return p
+    doAssert false, "no pin " & n
+  # VDD is ptPower -> top edge, GND is ptGround -> bottom edge, both centred on x
+  check pin("VDD").y < u1.y - 1e-6 and abs(pin("VDD").x - u1.x) < 1e-6
+  check pin("GND").y > u1.y + 1e-6 and abs(pin("GND").x - u1.x) < 1e-6
+  # SDA and SCL are the remaining pins, one to each side
+  check (pin("SDA").x < u1.x) != (pin("SCL").x < u1.x)
+  check abs(pin("SDA").y - u1.y) < 1e-6 and abs(pin("SCL").y - u1.y) < 1e-6
+  # every pin sits on the body extent, which is `boxStub` outside the drawn body
+  for p in u1.pins:
+    let onSide = abs(abs(p.x - u1.x) - u1.bodyW / 2.0) < 1e-6
+    let onEnd = abs(abs(p.y - u1.y) - u1.bodyH / 2.0) < 1e-6
+    check onSide or onEnd
 
 test "a hierarchical instance draws as a box":
   let nl = readNetlist(newStringStream("""Hier Box
@@ -305,6 +361,41 @@ test "a power rail is stubbed and labelled":
       check w.kind == wkSupply
       sawSupply = true
   check sawSupply
+
+test "a rail stub juts away from the body, not back through it":
+  # An op-amp box: V+ (ptPower) on the top edge, V- (ptGround-kinded but on an
+  # ntPower net -- a negative supply) on the bottom edge. Both rails must stub
+  # outward from their pin, so the bottom one goes *down*, away from the body.
+  let nl = newNetlist("negrail")
+  let vp = addNet(nl, newNet("VP", ntPower))
+  let vn = addNet(nl, newNet("VN", ntPower))
+  let sig = addNet(nl, newNet("sig"))
+  let u1 = addComponent(nl, newComponent("U1", kind = "opamp"))
+  discard connect(u1, "OUT", sig, ptOutput)
+  discard connect(u1, "V+", vp, ptPower)
+  discard connect(u1, "V-", vn, ptGround)
+  let r1 = addComponent(nl, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", sig, ptPassive)
+  discard connect(r1, "2", addNet(nl, newNet("0", ntGround)), ptPassive)
+  let s = layout(nl)
+  let box = partOf(s, "U1")
+  proc pin(n: string): SchematicPin =
+    for p in box.pins:
+      if p.name == n: return p
+    doAssert false, "no pin " & n
+  proc stub(net: string): SchematicWire =
+    for w in s.wires:
+      if w.net == net: return w
+    doAssert false, "no wire " & net
+  check pin("V+").y < box.y and pin("V-").y > box.y      # top / bottom edges
+  let up = stub("VP")
+  let dn = stub("VN")
+  check up.kind == wkSupply and dn.kind == wkSupply
+  # each stub starts at its pin and its far end is further from the body centre
+  check up.points[0] == Point(x: pin("V+").x, y: pin("V+").y)
+  check dn.points[0] == Point(x: pin("V-").x, y: pin("V-").y)
+  check up.points[^1].y < up.points[0].y                 # V+ stub goes up
+  check dn.points[^1].y > dn.points[0].y                 # V- stub goes down
 
 test "routing connects every pin of a signal net":
   let s = layout(divider())
@@ -470,21 +561,38 @@ test "a tall box pin escapes through its own edge, not the dominant axis":
   check abs(wire[1].y - wire[0].y) < 1e-6
 
 test "layout rotates an eligible two-terminal part and rotates its pin slots":
-  let s = layout(divider())
-  let c1 = partOf(s, "C1")
-  check c1.rotation == 90.0
-  check c1.pins.len == 2
+  # A T-junction: R1 and R2 run vertically into the shared node b, R3
+  # horizontally. The vertical parts are a 90-degree turn from the resistor
+  # symbol's default, and the pin slots turn with the body.
+  var nl = newNetlist("tee")
+  let a = addNet(nl, newNet("a"))
+  let b = addNet(nl, newNet("b"))
+  let c = addNet(nl, newNet("c"))
+  let d = addNet(nl, newNet("d"))
+  let r1 = addComponent(nl, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", a, ptPassive); discard connect(r1, "2", b, ptPassive)
+  let r2 = addComponent(nl, newComponent("R2", kind = "resistor"))
+  discard connect(r2, "1", b, ptPassive); discard connect(r2, "2", c, ptPassive)
+  let r3 = addComponent(nl, newComponent("R3", kind = "resistor"))
+  discard connect(r3, "1", b, ptPassive); discard connect(r3, "2", d, ptPassive)
+  let s = layout(nl)
+  let r1p = partOf(s, "R1")
+  check r1p.rotation == 90.0
+  check r1p.pins.len == 2
   # The two pins now lie on a vertical line through the part centre, 80 world
   # units apart (the symbol's pin span), one above and one below.
-  check abs(c1.pins[0].x - c1.pins[1].x) < 1e-6
-  check abs(c1.pins[0].x - c1.x) < 1e-6
-  check abs(abs(c1.pins[0].y - c1.pins[1].y) - 80.0) < 1e-6
-  check (c1.pins[0].y - c1.y) * (c1.pins[1].y - c1.y) < 0.0
+  check abs(r1p.pins[0].x - r1p.pins[1].x) < 1e-6
+  check abs(r1p.pins[0].x - r1p.x) < 1e-6
+  check abs(abs(r1p.pins[0].y - r1p.pins[1].y) - 80.0) < 1e-6
+  check (r1p.pins[0].y - r1p.y) * (r1p.pins[1].y - r1p.y) < 0.0
   # An unrotated horizontal part keeps its pins on the horizontal axis.
-  let r1 = partOf(s, "R1")
-  check r1.rotation == 0.0
-  check abs(r1.pins[0].y - r1.pins[1].y) < 1e-6
-  check abs(abs(r1.pins[0].x - r1.pins[1].x) - 80.0) < 1e-6
+  let r3p = partOf(s, "R3")
+  check r3p.rotation == 0.0
+  check abs(r3p.pins[0].y - r3p.pins[1].y) < 1e-6
+  check abs(abs(r3p.pins[0].x - r3p.pins[1].x) - 80.0) < 1e-6
+
+test "a vertical-default source and a fallback box are not turned":
+  let s = layout(divider())
   # A vertical-default source is already vertical, so it is not turned.
   let v1 = partOf(s, "V1")
   check v1.rotation == 0.0
@@ -613,31 +721,37 @@ test "the public json api exposes rotation additively":
   for part in node["parts"]:
     check part.hasKey("rotation")
     let rot = part["rotation"].getFloat
-    check rot in [0.0, 90.0]
+    check rot in [0.0, 90.0, 180.0, 270.0]
     rotOf[part["designator"].getStr] = rot
-  check rotOf["C1"] == 90.0
   check rotOf["R1"] == 0.0
-  check rotOf["U1"] == 0.0
+  check rotOf["R2"] == 180.0     # flipped end-for-end to shorten its wires
+  check rotOf["U1"] == 0.0       # a fallback box never rotates
 
-test "a rotated part draws its body in a rotate group with upright labels":
+test "a rotated part draws its body in a rotate group, its labels kept outside it":
   var s = Schematic(title: "rot")
   var p = SchematicPart(designator: "R1", kind: "resistor", name: "",
                         value: "1k", symbol: "resistor", isBox: false,
-                        bodyW: 80.0, bodyH: 80.0, x: 100.0, y: 100.0,
-                        rotation: 90.0)
+                        bodyW: 80.0, bodyH: 80.0, inkW: 80.0, inkH: 20.0,
+                        x: 100.0, y: 100.0, rotation: 90.0)
   p.pins.add SchematicPin(name: "1", x: 100.0, y: 60.0, net: "a")
   p.pins.add SchematicPin(name: "2", x: 100.0, y: 140.0, net: "b")
   s.parts.add p
+  # `layout` places these; a hand-built scene supplies its own.
+  s.labels.add SchematicLabel(text: "R1", x: 120.0, y: 96.0, anchor: taStart,
+                              size: 12.0, role: lrDesignator, owner: "R1")
+  s.labels.add SchematicLabel(text: "1k", x: 120.0, y: 110.0, anchor: taStart,
+                              size: 10.0, role: lrValue, owner: "R1")
   let text = renderSvg(s)
   let g = text.find("<g transform=\"rotate(90 100 100)\">")
   check g >= 0
   let gc = text.find("</g>", g)
   check gc > g
-  let label = text.find(">R1</text>")
-  check label > gc        # designator stays upright, outside the rotated group
-  check ">1k</text>" in text
+  check "<text" notin text[g ..< gc]        # no label inside the rotated group
+  check text.find(">R1</text>") > gc        # both labels emitted after it closes
+  check text.find(">1k</text>") > gc
   let node = sceneToJson(s)
   check node["parts"][0]["rotation"].getFloat == 90.0
+  check node["parts"][0]["inkH"].getFloat == 20.0
 
 test "the svg is self-contained and names its parts":
   let text = renderSvg(divider())
@@ -669,6 +783,73 @@ test "distinct wires never share a positive-length collinear run":
   for nl in [divider(), resistorChain(16), starNet()]:
     let s = layout(nl)
     check distinctWiresNeverShareCollinearRuns(s)
+
+# --- label placement -------------------------------------------------------
+
+test "no label lands on a wire, a body or another label":
+  for nl in [divider(), starNet(), twoBlocks(), decoupledMcu(),
+             resistorChain(6)]:
+    check labelsClearOfGeometry(layout(nl))
+
+test "every part label hugs its part rather than drifting off":
+  # The "needlessly far" half of the complaint: a designator/value label sits
+  # within one line-height-and-a-bit of its part's drawn ink, never out at the
+  # old pin-span offset.
+  let s = layout(divider())
+  for lb in s.labels:
+    if lb.role notin {lrDesignator, lrValue}: continue
+    let p = partOf(s, lb.owner)
+    check axisGapToInk(labelBoxT(lb), partInkRectT(p)) <= 40.0
+
+test "a vertical-pin part keeps its labels off the pin wires":
+  # V1's pins leave top and bottom, so its designator/value must go to a side.
+  let s = layout(divider())
+  let v1 = partOf(s, "V1")
+  for lb in s.labels:
+    if lb.owner != "V1": continue
+    check abs(lb.x - v1.x) >= v1.inkW / 2.0 - 1e-6
+
+test "a rotated part's labels follow the short axis of its ink":
+  # The "tee" shape turns R1 to 90 degrees: its pins now leave top and bottom,
+  # so its labels must sit left or right, clear of the vertical pin wires.
+  var nl = newNetlist("tee")
+  let a = addNet(nl, newNet("a"))
+  let b = addNet(nl, newNet("b"))
+  let c = addNet(nl, newNet("c"))
+  let d = addNet(nl, newNet("d"))
+  let r1 = addComponent(nl, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", a, ptPassive); discard connect(r1, "2", b, ptPassive)
+  r1.attrs["value"] = "1k"
+  let r2 = addComponent(nl, newComponent("R2", kind = "resistor"))
+  discard connect(r2, "1", b, ptPassive); discard connect(r2, "2", c, ptPassive)
+  let r3 = addComponent(nl, newComponent("R3", kind = "resistor"))
+  discard connect(r3, "1", b, ptPassive); discard connect(r3, "2", d, ptPassive)
+  let s = layout(nl)
+  let r1p = partOf(s, "R1")
+  check r1p.rotation == 90.0
+  check labelsClearOfGeometry(s)
+  for lb in s.labels:
+    if lb.owner != "R1": continue
+    check abs(lb.x - r1p.x) >= 8.0     # offset sideways, not stacked on the wire
+
+test "the bounding box contains every label's text box":
+  for nl in [divider(), starNet(), decoupledMcu()]:
+    let s = layout(nl)
+    for lb in s.labels:
+      let box = labelBoxT(lb)
+      check box.x1 >= s.minX - 1e-6
+      check box.y1 >= s.minY - 1e-6
+      check box.x2 <= s.maxX + 1e-6
+      check box.y2 <= s.maxY + 1e-6
+
+test "part designator and value are emitted as scene labels, not by the writer":
+  let s = layout(divider())
+  var haveR1des, haveR1val = false
+  for lb in s.labels:
+    if lb.role == lrDesignator and lb.text == "R1": haveR1des = true
+    if lb.role == lrValue and lb.owner == "R1" and lb.text == "1k": haveR1val = true
+  check haveR1des
+  check haveR1val
 
 test "a branched signal net partitions its tree without overlapping wires":
   let s = layout(starNet())
