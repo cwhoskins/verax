@@ -639,16 +639,31 @@ proc render*(r: Readiness, verbose = false): string =
   L.add "exit " & $code & " (" & exitLabel(code) & ")"
   L.join("\n")
 
+proc safeSheetName(s: string): string =
+  ## A subcircuit name reduced to a filename fragment: anything outside
+  ## `[A-Za-z0-9._-]` becomes `_`, so `runFULL.<name>.svg` is always a legal
+  ## path regardless of what the `.SUBCKT` was called.
+  result = newStringOfCap(s.len)
+  for ch in s:
+    if ch in {'A'..'Z', 'a'..'z', '0'..'9', '.', '_', '-'}: result.add ch
+    else: result.add '_'
+
 proc keepFullSchematic(nl: Netlist) =
-  ## Renders the authored design netlist as `runFULL.svg` in a run archive,
-  ## when one is being kept, before any derived fragment is simulated.
+  ## Renders the authored design as `runFULL.svg` in a run archive, plus one
+  ## `runFULL.<subckt>.svg` per distinct subcircuit it instantiates, when an
+  ## archive is being kept and before any derived fragment is simulated.
   ##
   ## The per-run `runNNN.svg` files are the *derived* fragments -- isolated,
   ## flattened, model-substituted -- so none of them is the circuit the
-  ## author wrote. This one is: the full `Design.netlist`, drawn once and
-  ## overwritten every run, so the archive carries both the design as stated
-  ## and the fragments as simulated. It is deliberately **not** an index row:
-  ## the index names one analysis run per row, and this picture is not a run.
+  ## author wrote. These are: the full `Design.netlist` and each block it
+  ## builds on, drawn with interface ports, once and overwritten every run,
+  ## so the archive carries both the design as stated and the fragments as
+  ## simulated. They are deliberately **not** index rows: the index names one
+  ## analysis run per row, and none of these pictures is a run.
+  ##
+  ## A subcircuit instantiated twice (two channels of a stereo stage, say) is
+  ## deep-cloned per instance but drawn once, keyed by `Netlist.name` -- the
+  ## `.SUBCKT` name, which is also how the deck writes it.
   ##
   ## Best effort, and off unless `$NIMCIR_KEEP_RUNS` is set, on the same
   ## reasoning as the archive itself: drawing a picture must never be able to
@@ -658,6 +673,14 @@ proc keepFullSchematic(nl: Netlist) =
   try:
     createDir(dir)
     writeSvgFile(nl, dir / "runFULL.svg")
+    var seen: seq[string]
+    proc walk(n: Netlist) =
+      for _, child in n.children:
+        if child.name.len > 0 and child.name notin seen:
+          seen.add child.name
+          writeSvgFile(child, dir / ("runFULL." & safeSheetName(child.name) & ".svg"))
+        walk(child)
+    walk(nl)
   except CatchableError:
     discard
 

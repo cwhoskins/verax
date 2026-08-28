@@ -788,7 +788,13 @@ flattened, model-substituted — so none of them is the circuit the author wrote
 `runFULL.svg` is, drawn once and overwritten every check. It is best-effort (a
 rendering failure cannot fail the check), gated only on `$NIMCIR_KEEP_RUNS`, and
 deliberately absent from `index.txt`: the index names one analysis run per row,
-and this picture is not a run, so it takes no `runNNN` slot either.
+and this picture is not a run, so it takes no `runNNN` slot either. A
+hierarchically-authored design also gets one `runFULL.<subckt>.svg` per distinct
+subcircuit it instantiates — deduplicated by the `.SUBCKT` name, so a block used
+twice is drawn once — each with its interface drawn as Altium-style port symbols
+(direction taken from pin kinds, or from whether anything on the sheet drives
+the net). These are subject to the same gate, best-effort handling and
+index exclusion.
 
 The rawfile is ngspice's own ASCII format, so it goes straight back in:
 

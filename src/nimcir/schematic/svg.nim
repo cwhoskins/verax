@@ -191,6 +191,34 @@ proc drawPart(p: SchematicPart): seq[string] =
     if p.value.len > 0:
       result.add textAt(cx, cy + hh + 16.0, p.value, "middle", 10)
 
+proc drawPort(p: SchematicPort): seq[string] =
+  ## An Altium-style port pennant at `p.x, p.y` (its body centre). The
+  ## connecting stub is a separate wire in the scene, meeting the pennant at
+  ## the edge `layout` sized it to: the pointed end for an input, unspecified
+  ## or bidirectional port, the flat end for an output. Signal reads left to
+  ## right, so every arrow points right.
+  let y = p.y
+  let h = p.bodyH / 2.0
+  let left = p.x - p.bodyW / 2.0
+  let right = p.x + p.bodyW / 2.0
+  const tip = 8.0
+  var pts: seq[Point]
+  case p.dir
+  of pdInput, pdOutput:
+    pts = @[Point(x: left, y: y - h), Point(x: right - tip, y: y - h),
+            Point(x: right, y: y), Point(x: right - tip, y: y + h),
+            Point(x: left, y: y + h)]
+  of pdBidir:
+    pts = @[Point(x: left, y: y), Point(x: left + tip, y: y - h),
+            Point(x: right - tip, y: y - h), Point(x: right, y: y),
+            Point(x: right - tip, y: y + h), Point(x: left + tip, y: y + h)]
+  of pdUnspecified:
+    pts = @[Point(x: left, y: y - h), Point(x: right, y: y - h),
+            Point(x: right, y: y + h), Point(x: left, y: y + h)]
+  result.add "<polygon points=\"" & pointsAttr(pts) &
+    "\" fill=\"#ffffff\" stroke=\"#333333\" stroke-width=\"2\"/>"
+  result.add textAt(p.x, y + 4.0, p.name, "middle", 10)
+
 proc renderSvg*(s: Schematic): string =
   ## The whole scene as one self-contained SVG document.
   let w = s.maxX - s.minX
@@ -225,6 +253,9 @@ proc renderSvg*(s: Schematic): string =
 
   for p in s.parts:
     for e in drawPart(p): L.add "  " & e
+
+  for p in s.ports:
+    for e in drawPort(p): L.add "  " & e
 
   for j in s.junctions:
     L.add "  <circle cx=\"" & num(j.x) & "\" cy=\"" & num(j.y) &

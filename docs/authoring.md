@@ -433,7 +433,10 @@ Because every `runNNN.svg` is a derived fragment, the archive also carries one
 picture of the circuit **as you wrote it**: `runFULL.svg`, the full design
 netlist, drawn once and overwritten each check before any fragment is
 simulated. It appears even when no simulation ran, and it is not a run -- it
-takes no `runNNN` slot and no `index.txt` row.
+takes no `runNNN` slot and no `index.txt` row. If the design instantiates
+subcircuits, each distinct one also gets a `runFULL.<subckt>.svg` sheet (a block
+used twice is drawn once), with its ports drawn as Altium-style port symbols --
+inputs entering from the left, outputs leaving to the right.
 
 You already get every node voltage and every voltage-source and inductor current
 — ngspice saves those unless told otherwise. What it does not save is device

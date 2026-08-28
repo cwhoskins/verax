@@ -390,7 +390,7 @@ proc buildFreeGrid(obstacles: seq[Obstacle]):
           result.adj[i].add j
           result.adj[j].add i
 
-proc routeNet(pins: seq[tuple[pt: Point, partIdx: int]],
+proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
               parts: seq[SchematicPart], obstacles: seq[Obstacle],
               free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
               occ: var seq[OccSeg]): seq[seq[Point]] =
@@ -405,8 +405,12 @@ proc routeNet(pins: seq[tuple[pt: Point, partIdx: int]],
   var nodes: seq[Point]
   var pinNode: seq[int]
   for pin in pins:
-    let part = parts[pin.partIdx]
-    let d = escapeDir(part, pin.pt)
+    # A pin with an explicit escape (a port's connection point in its edge
+    # column) uses it; a real part pin derives it from the body edge it sits
+    # on.
+    let d =
+      if pin.esc.x != 0.0 or pin.esc.y != 0.0: pin.esc
+      else: escapeDir(parts[pin.partIdx], pin.pt)
     pinNode.add nodes.len
     nodes.add pin.pt + d * routingClearance
   let base = nodes.len
@@ -578,6 +582,7 @@ proc rotationScore(sd: SymbolDef, comp: Component, centre: Point, angle: float,
     for other in p.net.pins:
       if other.component == nil or
          other.component.designator == comp.designator: continue
+      if other.component.netlist != comp.netlist: continue
       let key = pinKey(other.component, other.name)
       if not pinWorld.hasKey(key): continue
       cx += pinWorld[key].x
@@ -671,6 +676,7 @@ proc leafSnap(comps: seq[Component], syms: seq[SymbolDef], pos: var seq[Point],
     for other in theNet.pins:
       if other.component == nil or
          other.component.designator == comps[i].designator: continue
+      if other.component.netlist != comps[i].netlist: continue
       if not idxOf.hasKey(other.component.designator): continue
       let key = pinKey(other.component, other.name)
       if not pw.hasKey(key): continue
@@ -905,6 +911,36 @@ proc packGroups(pos: var seq[Point], ohw, ohh: seq[float], group: seq[int]) =
     if abs(pos[i].x) < 1e-9: pos[i].x = 0.0
     if abs(pos[i].y) < 1e-9: pos[i].y = 0.0
 
+proc portDrives(c: Component): bool =
+  ## Whether a component sitting on a port net can source a signal onto it: a
+  ## real or synthesized source, a hierarchical block, or any part
+  ## `classifyConductivity` cannot rule out (an IC, a transistor, an
+  ## unrecognised kind -- assumed capable rather than guessed harmless).
+  if c == nil: return false
+  if c.subNetlist != nil: return true
+  let k = c.kind.toLowerAscii()
+  if k in ["voltage_source", "current_source", "battery"]: return true
+  if k in behaviouralKinds: return true
+  classifyConductivity(c) == condAmbiguous
+
+proc portDirection(n: Net): PortDirection =
+  ## Which way a port net flows. An explicit `Pin.kind` wins -- `ptOutput`,
+  ## then `ptInOut`, then `ptInput` -- because that is the authored answer.
+  ## With nothing stated, a driver test decides: a net nothing on the sheet
+  ## drives is an input; a net something drives makes no directional claim
+  ## (`pdUnspecified`, a neutral symbol).
+  var sawInput = false
+  for p in n.pins:
+    case p.kind
+    of ptOutput: return pdOutput
+    of ptInOut: return pdBidir
+    of ptInput: sawInput = true
+    else: discard
+  if sawInput: return pdInput
+  for p in n.pins:
+    if portDrives(p.component): return pdUnspecified
+  pdInput
+
 proc layout*(nl: Netlist): Schematic =
   ## Places and routes `nl` into a renderer-neutral scene. Read-only with
   ## respect to the netlist; deterministic given the same netlist object.
@@ -981,6 +1017,7 @@ proc layout*(nl: Netlist): Schematic =
           let ca = ps[a].component
           let cb = ps[b].component
           if ca == nil or cb == nil or ca.designator == cb.designator: continue
+          if ca.netlist != nl or cb.netlist != nl: continue
           if not (idxOf.hasKey(ca.designator) and
                   idxOf.hasKey(cb.designator)): continue
           let i = idxOf[ca.designator]
@@ -1104,7 +1141,127 @@ proc layout*(nl: Netlist): Schematic =
     partIdxByDesig[c.designator] = result.parts.len
     result.parts.add sp
 
-  let obstacles = obstaclesFor(result.parts)
+  # A shared global net (SPICE node "0") accumulates pins from every sibling
+  # clone that wired into it, and sibling clones reuse designators, so a pin
+  # belongs to this sheet only when its component's owning netlist *is* this
+  # one -- identity, not name.
+  proc ownsPin(p: Pin): bool =
+    p.component != nil and p.component.netlist == nl
+
+  # `isGround` also fires on a net that merely has a `ptGround`-kinded pin --
+  # an op-amp's `V-` supply pin, say -- so an explicitly `ntPower` net would
+  # be drawn with a ground glyph instead of its rail stub. An explicit net
+  # kind wins here: a `ptGround` pin on a power net makes it a rail, not
+  # ground.
+  proc isGroundHere(net: Net): bool =
+    net != nil and isGround(net) and net.kind != ntPower
+  proc isRailHere(net: Net): bool =
+    net != nil and isRail(net) and not isGroundHere(net)
+
+  # Every signal pin leaves its body through a short stub in a fixed
+  # direction; a ground or supply stub must not run along one of those, or two
+  # different nets share a collinear segment. Seed the shortening test with
+  # them (they are not added to `occ` -- the signal route re-adds its own).
+  var escapeSeeds: seq[OccSeg]
+  for _, net in nl.nets:
+    if isGroundHere(net) or isRailHere(net): continue
+    for p in net.pins:
+      if not ownsPin(p): continue
+      let key = pinKey(p.component, p.name)
+      if not (pinPos.hasKey(key) and
+              partIdxByDesig.hasKey(p.component.designator)): continue
+      let pt = pinPos[key]
+      let part = result.parts[partIdxByDesig[p.component.designator]]
+      addOcc(escapeSeeds, pt, pt + escapeDir(part, pt) * routingClearance)
+
+  # --- interface ports: a fixed column per direction ------------------
+  # Each entry of `nl.ports` (declared order -- an `OrderedTable`, iterated
+  # like `nl.nets` everywhere else here) whose net carries a real signal
+  # gets an Altium-style port symbol in a column just outside the parts: the
+  # left edge for an input or an unspecified port, the right edge for an
+  # output or a bidirectional one, so signal reads left to right. Rails and
+  # ground are skipped -- they draw their own glyph. Layout fixes the column
+  # x; a port's y follows its net-mate pin, pushed down only to clear a port
+  # already placed in that column. The connecting wire is routed like any
+  # other net branch, so it never crosses a body.
+  var portedNets = initHashSet[string]()
+  var portConn = initTable[string, tuple[at: Point, inward: Point]]()
+
+  var pMinX, pMaxX = 0.0
+  var havePExt = false
+  for sp in result.parts:
+    let l = sp.x - sp.bodyW / 2.0
+    let r = sp.x + sp.bodyW / 2.0
+    if not havePExt: pMinX = l; pMaxX = r; havePExt = true
+    else:
+      if l < pMinX: pMinX = l
+      if r > pMaxX: pMaxX = r
+  if not havePExt: (pMinX, pMaxX) = (0.0, 0.0)
+  let leftColX = round((pMinX - 2.0 * grid) / grid) * grid
+  let rightColX = round((pMaxX + 2.0 * grid) / grid) * grid
+
+  type PortPlan = object
+    name, net: string
+    dir: PortDirection
+    toRight: bool
+    prefY, bodyW, bodyH: float
+  var plans: seq[PortPlan]
+  for portName, net in nl.ports:
+    if net == nil or isGroundHere(net) or isRailHere(net): continue
+    let dir = portDirection(net)
+    let toRight = dir in {pdOutput, pdBidir}
+    var anchorX, anchorY = 0.0
+    var have = false
+    for p in net.pins:
+      if not ownsPin(p): continue
+      let key = pinKey(p.component, p.name)
+      if not pinPos.hasKey(key): continue
+      let pt = pinPos[key]
+      let better =
+        if not have: true
+        elif toRight: pt.x > anchorX + 1e-9
+        else: pt.x < anchorX - 1e-9
+      if better:
+        anchorX = pt.x
+        anchorY = pt.y
+        have = true
+    if not have: continue
+    portedNets.incl net.name
+    plans.add PortPlan(name: portName, net: net.name, dir: dir, toRight: toRight,
+      prefY: anchorY, bodyH: 24.0,
+      bodyW: max(60.0, float(portName.len) * 8.0 + 28.0))
+
+  # Stack each column: preferred y first (name breaks a tie), then a fixed
+  # gap so two ports never overlap.
+  for onRight in [false, true]:
+    var col: seq[int]
+    for i, pl in plans:
+      if pl.toRight == onRight: col.add i
+    col.sort(proc(a, b: int): int =
+      result = cmp(plans[a].prefY, plans[b].prefY)
+      if result == 0: result = cmp(plans[a].name, plans[b].name))
+    var yCursor = NegInf
+    for i in col:
+      let pl = plans[i]
+      var y = round(pl.prefY / grid) * grid
+      if y < yCursor + 3.0 * grid: y = yCursor + 3.0 * grid
+      yCursor = y
+      let edgeX = (if onRight: rightColX else: leftColX)
+      var px = edgeX + (if onRight: pl.bodyW / 2.0 else: -pl.bodyW / 2.0)
+      if abs(px) < 1e-9: px = 0.0
+      if abs(y) < 1e-9: y = 0.0
+      result.ports.add SchematicPort(name: pl.name, net: pl.net, dir: pl.dir,
+        x: px, y: y, bodyW: pl.bodyW, bodyH: pl.bodyH,
+        rotation: (if onRight: 0.0 else: 180.0))
+      portConn[pl.net] = (at: Point(x: edgeX, y: y),
+                          inward: Point(x: (if onRight: -1.0 else: 1.0), y: 0.0))
+
+  var obstacles = obstaclesFor(result.parts)
+  for p in result.ports:
+    let hw = p.bodyW / 2.0 + routingClearance
+    let hh = p.bodyH / 2.0 + routingClearance
+    obstacles.add Obstacle(x1: p.x - hw, y1: p.y - hh,
+                           x2: p.x + hw, y2: p.y + hh)
   let free = buildFreeGrid(obstacles)
 
   # --- routing ------------------------------------------------------------
@@ -1115,39 +1272,23 @@ proc layout*(nl: Netlist): Schematic =
   # reproducible.
   var occ: seq[OccSeg]
 
-  # Every signal pin leaves its body through a short stub in a fixed
-  # direction; a ground or supply stub must not run along one of those, or two
-  # different nets share a collinear segment. Seed the shortening test with
-  # them (they are not added to `occ` -- the signal route re-adds its own).
-  var escapeSeeds: seq[OccSeg]
-  for _, net in nl.nets:
-    if isGround(net) or isRail(net): continue
-    for p in net.pins:
-      if p.component == nil: continue
-      let key = pinKey(p.component, p.name)
-      if not (pinPos.hasKey(key) and
-              partIdxByDesig.hasKey(p.component.designator)): continue
-      let pt = pinPos[key]
-      let part = result.parts[partIdxByDesig[p.component.designator]]
-      addOcc(escapeSeeds, pt, pt + escapeDir(part, pt) * routingClearance)
-
   for _, net in nl.nets:
     var pins: seq[tuple[pt: Point, partIdx: int]]
     for p in net.pins:
-      if p.component != nil:
+      if ownsPin(p):
         let key = pinKey(p.component, p.name)
         if pinPos.hasKey(key) and partIdxByDesig.hasKey(p.component.designator):
           pins.add (pt: pinPos[key],
                     partIdx: partIdxByDesig[p.component.designator])
     if pins.len == 0: continue
 
-    if isGround(net):
+    if isGroundHere(net):
       for pin in pins:
         let e = shortenedStubEnd(pin.pt, pinSpan, occ & escapeSeeds)
         result.wires.add SchematicWire(net: net.name, kind: wkGround,
                                        points: @[pin.pt, e])
         addOcc(occ, pin.pt, e)
-    elif isRail(net):
+    elif isRailHere(net):
       for pin in pins:
         let e = shortenedStubEnd(pin.pt, -pinSpan, occ & escapeSeeds)
         result.wires.add SchematicWire(net: net.name, kind: wkSupply,
@@ -1155,14 +1296,18 @@ proc layout*(nl: Netlist): Schematic =
         addOcc(occ, pin.pt, e)
 
   for _, net in nl.nets:
-    if isGround(net) or isRail(net): continue
-    var pins: seq[tuple[pt: Point, partIdx: int]]
+    if isGroundHere(net) or isRailHere(net): continue
+    var pins: seq[tuple[pt: Point, partIdx: int, esc: Point]]
     for p in net.pins:
-      if p.component != nil:
+      if ownsPin(p):
         let key = pinKey(p.component, p.name)
         if pinPos.hasKey(key) and partIdxByDesig.hasKey(p.component.designator):
           pins.add (pt: pinPos[key],
-                    partIdx: partIdxByDesig[p.component.designator])
+                    partIdx: partIdxByDesig[p.component.designator],
+                    esc: Point(x: 0.0, y: 0.0))
+    if portConn.hasKey(net.name):
+      let pc = portConn[net.name]
+      pins.add (pt: pc.at, partIdx: 0, esc: pc.inward)
     if pins.len < 2: continue
     var adj = initTable[Point, HashSet[Point]]()
     for poly in routeNet(pins, result.parts, obstacles, free, occ):
@@ -1175,13 +1320,16 @@ proc layout*(nl: Netlist): Schematic =
 
   result.junctions.sort(cmpJunction)
 
-  # --- net labels (signal nets only; rails are labelled at their stub) ----
+  # --- net labels (signal nets only; rails are labelled at their stub, and
+  #     a net that got a port symbol is already named by it) ----------------
   for _, net in nl.nets:
-    if isGround(net) or isRail(net): continue
+    if isGroundHere(net) or isRailHere(net): continue
     if net.name.len == 0: continue
+    if net.name in portedNets: continue
     var anchor: Point
     var have = false
     for p in net.pins:
+      if not ownsPin(p): continue
       let key = pinKey(p.component, p.name)
       if not pinPos.hasKey(key): continue
       let pt = pinPos[key]
@@ -1212,6 +1360,9 @@ proc layout*(nl: Netlist): Schematic =
     for pt in w.points: includePt(pt.x, pt.y)
   for j in result.junctions: includePt(j.x, j.y)
   for lb in result.labels: includePt(lb.x, lb.y)
+  for p in result.ports:
+    includePt(p.x - p.bodyW / 2.0, p.y - p.bodyH / 2.0)
+    includePt(p.x + p.bodyW / 2.0, p.y + p.bodyH / 2.0)
   if not have:
     minX = 0.0; minY = 0.0; maxX = 200.0; maxY = 200.0
   const pad = 40.0

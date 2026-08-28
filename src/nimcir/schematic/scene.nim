@@ -62,14 +62,35 @@ type
     text*: string
     x*, y*: float
 
+  PortDirection* = enum
+    pdUnspecified, pdInput, pdOutput, pdBidir
+
+  SchematicPort* = object
+    ## One entry of the netlist's `ports` table, drawn as an Altium-style
+    ## port symbol where its net meets the sheet edge. The connecting stub is
+    ## a plain `wkSignal` `SchematicWire` on `net`, not carried here.
+    name*: string
+      ## The published port name, which need not be the net's own name.
+    net*: string
+    dir*: PortDirection
+    x*, y*: float
+      ## Body centre, in world units.
+    bodyW*, bodyH*: float
+    rotation*: float
+      ## 0 -- body extends to the right of its connection point (an output or
+      ## bidirectional port); 180 -- body extends to the left (an input or an
+      ## unspecified port). Never any other value.
+
   Schematic* = object
     ## The renderable view of one netlist level: placed parts, per-net wires,
-    ## junction dots and net labels, plus the world-space bounding box.
+    ## junction dots, net labels and interface ports, plus the world-space
+    ## bounding box.
     title*: string
     parts*: seq[SchematicPart]
     wires*: seq[SchematicWire]
     junctions*: seq[SchematicJunction]
     labels*: seq[SchematicLabel]
+    ports*: seq[SchematicPort]
     minX*, minY*, maxX*, maxY*: float
 
 proc `+`*(a, b: Point): Point {.inline.} = Point(x: a.x + b.x, y: a.y + b.y)

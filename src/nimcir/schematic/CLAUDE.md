@@ -13,10 +13,17 @@ implements.
   `SchematicPart`s (position, symbol, body extents, a `rotation` of 0/90/180/270,
   per-pin world positions),
   `SchematicWire`s (per-net polylines, tagged signal/ground/supply),
-  `SchematicJunction`s, `SchematicLabel`s and a bounding box — all in world
-  units with no SVG, DOM or JSON types. `Point` carries the arithmetic the
-  placement and routing passes use; it relies on the compiler's structural
-  `==` and generic object `hash` (both key on the grid-snapped coordinates).
+  `SchematicJunction`s, `SchematicLabel`s, `SchematicPort`s and a bounding box —
+  all in world units with no SVG, DOM or JSON types. `Point` carries the
+  arithmetic the placement and routing passes use; it relies on the compiler's
+  structural `==` and generic object `hash` (both key on the grid-snapped
+  coordinates). A `SchematicPort` is one entry of `Netlist.ports` drawn at the
+  sheet edge: a body centre, extents, a `PortDirection` (`pdInput`/`pdOutput`/
+  `pdBidir`/`pdUnspecified`) and a `rotation` of 0 (body extends right) or 180
+  (left) — never any other value. Its connecting stub is **not** a field: it is
+  emitted as an ordinary `wkSignal` wire on the port's net, so a port stays
+  inside the occupancy system and the net's polylines rather than being a
+  special case.
 - **`layout.nim`** — `layout(nl: Netlist): Schematic`, pure and deterministic.
   Eligible two-terminal parts take one of four orientations (0/90/180/270,
   `rotationChoices`): `bestRotation` picks the one minimising each pin's
@@ -94,6 +101,27 @@ implements.
   stating, not assuming: iteration order is graph insertion order throughout,
   `Table`/`HashSet` keys are only ever *looked up* (never iterated) except
   where their contents are sorted afterwards (`junctions`).
+  **Interface ports** come from `nl.ports` (declared order — an `OrderedTable`,
+  iterated like `nl.nets`). A rail or ground port is skipped: it already draws
+  its own glyph, and `isGround`/`isRail` are consulted through local wrappers
+  that let an explicit `ntPower` net kind beat a stray `ptGround`-kinded pin (an
+  op-amp's `V-` supply pin) — otherwise that net would render as ground.
+  `portDirection` reads pin kinds first (`ptOutput` → `pdOutput`, `ptInOut` →
+  `pdBidir`, `ptInput` → `pdInput`) and falls back to a driver test: a net
+  nothing on the sheet drives is an input, one something drives makes no
+  directional claim. Ports live in a **fixed column** just outside the parts —
+  the left edge for `pdInput`/`pdUnspecified`, the right edge for
+  `pdOutput`/`pdBidir`, so signal reads left to right — and `layout` picks each
+  port's `y` from its net-mate pin, pushed down only to clear a port already
+  placed in that column. The port body is a routing obstacle and its
+  connection point is fed to `routeNet` as an extra net pin with an explicit
+  inward escape, so the connecting wire is a normal net branch that never
+  crosses a body; the plain text label for a ported net is suppressed.
+  One trap this pass has to handle: rendering a subcircuit **instance's
+  cloned child** directly (what `verify`'s per-subckt sheets do) means its
+  shared global net `"0"` carries pins from every sibling clone, and siblings
+  reuse designators — so pins are filtered by owning-`Netlist` identity, not by
+  name, everywhere `layout` walks `net.pins`.
 - **`svg.nim`** — `renderSvg`/`writeSvgFile`. Self-contained SVG: every colour
   a literal, every style inlined, a graph-paper grid, wires as polylines,
   junction circles, ground/power symbols and a small symbol library (resistor
@@ -103,12 +131,20 @@ implements.
   labels stay outside the group, so they remain upright. Anything a kind table
   does not recognise — and any hierarchical instance — is drawn as a
   **fallback box** with pins placed down the left edge then the right edge.
+  `drawPort` draws each `SchematicPort` as one `<polygon>` pennant with its
+  name centred: a flat-left/point-right pentagon for `pdInput`/`pdOutput`, a
+  both-ends-pointed hexagon for `pdBidir`, a plain rectangle for
+  `pdUnspecified` — every arrow points right (signal flow), and the polygon is
+  computed directly rather than in a `rotate()` group so the text stays upright
+  without the outside-the-group dance a part needs.
 - **`json.nim`** — the public JSON API (`sceneToJson`, `sceneToJsonString`,
   `writeSceneJsonFile`), for a future interactive frontend that consumes the
   scene without re-parsing the SVG. Each part carries its `rotation` as an
-  additive numeric field. The run archive itself stays SVG-only.
+  additive numeric field; ports are a `ports` array with `dir` as a string
+  (`portDirName`). The run archive itself stays SVG-only.
 
 **Dependency direction stays intact**: `schematic` imports only `netlist`, and
 `spice/ngspice` imports `schematic` to archive a per-run SVG while `verify`
-imports it to archive the authored design as `runFULL.svg` — both consumers sit
+imports it to archive the authored design as `runFULL.svg` plus one
+`runFULL.<subckt>.svg` per distinct instantiated subcircuit — both consumers sit
 above it on the existing spine, never across or up it.

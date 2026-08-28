@@ -59,6 +59,33 @@ proc dividerBoard(): Design =
 
     role "power_rail", vdd_rail, rail = vdd, voltage = 3.3.V, band = 5.pct
 
+proc gainBlock(): Netlist =
+  ## A trivial one-resistor block with two signal ports, to be instantiated
+  ## more than once.
+  subckt("GAIN_BLOCK", [IN, OUT]):
+    net IN, kind = ntSignal
+    net OUT, kind = ntSignal
+    component R1, kind = "resistor", value = "1k":
+      pin "1", IN, kind = ptPassive
+      pin "2", OUT, kind = ptPassive
+
+proc twoChannelBoard(): Design =
+  ## One subcircuit instantiated twice -- the stereo shape.
+  design("two_channel"):
+    net inL, kind = ntSignal
+    net inR, kind = ntSignal
+    net outL, kind = ntSignal
+    net outR, kind = ntSignal
+    net gnd, kind = ntGround, name = "0"
+    component RTL, kind = "resistor", value = "10k":
+      pin "1", outL, kind = ptPassive
+      pin "2", gnd, kind = ptPassive
+    component RTR, kind = "resistor", value = "10k":
+      pin "1", outR, kind = ptPassive
+      pin "2", gnd, kind = ptPassive
+    instance XL, gainBlock(), [inL, outL]
+    instance XR, gainBlock(), [inR, outR]
+
 test "runFULL.svg is written before readiness, even with no simulation":
   let dir = createTempDir("nimcir_verifykeeptest_", "")
   defer: removeDir(dir)
@@ -73,6 +100,47 @@ test "runFULL.svg is written before readiness, even with no simulation":
   let svg = readFile(dir / "runFULL.svg")
   check svg.startsWith("<?xml")
   check ">R1</text>" in svg
+
+test "a subcircuit gets its own runFULL.<name>.svg sheet, deduped by name":
+  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  defer: removeDir(dir)
+  withEnv("NIMCIR_KEEP_RUNS", dir):
+    discard verify(twoChannelBoard(), offlineCapabilities)
+
+  check fileExists(dir / "runFULL.svg")
+  # GAIN_BLOCK is instantiated twice but drawn once.
+  check fileExists(dir / "runFULL.GAIN_BLOCK.svg")
+  check not fileExists(dir / "runFULL.XL.svg")
+  check not fileExists(dir / "runFULL.XR.svg")
+
+  # The child sheet shows the block's own interface as ports.
+  let child = readFile(dir / "runFULL.GAIN_BLOCK.svg")
+  check "<polygon" in child
+  check ">IN</text>" in child
+  check ">OUT</text>" in child
+
+  # No index row for any of the pictures.
+  check not fileExists(dir / "index.txt")
+
+test "a flat design writes only runFULL.svg":
+  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  defer: removeDir(dir)
+  withEnv("NIMCIR_KEEP_RUNS", dir):
+    discard verify(bareBoard(), offlineCapabilities)
+  check fileExists(dir / "runFULL.svg")
+  for f in walkFiles(dir / "runFULL.*.svg"):
+    check false  # no runFULL.<name>.svg for a design with no subcircuits
+
+test "a child sheet is overwritten, not slotted":
+  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  defer: removeDir(dir)
+  createDir(dir)
+  writeFile(dir / "runFULL.GAIN_BLOCK.svg", "sentinel")
+  withEnv("NIMCIR_KEEP_RUNS", dir):
+    discard verify(twoChannelBoard(), offlineCapabilities)
+  let child = readFile(dir / "runFULL.GAIN_BLOCK.svg")
+  check child.startsWith("<?xml")
+  check "sentinel" notin child
 
 test "runFULL.svg is overwritten, not appended or slotted":
   let dir = createTempDir("nimcir_verifykeeptest_", "")

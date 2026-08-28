@@ -17,6 +17,13 @@ proc wireKindName(k: WireKind): string =
   of wkGround: "ground"
   of wkSupply: "supply"
 
+proc portDirName(d: PortDirection): string =
+  case d
+  of pdUnspecified: "unspecified"
+  of pdInput: "input"
+  of pdOutput: "output"
+  of pdBidir: "bidir"
+
 proc sceneToJson*(s: Schematic): JsonNode =
   result = newJObject()
   result["title"] = %s.title
@@ -81,6 +88,20 @@ proc sceneToJson*(s: Schematic): JsonNode =
     lo["y"] = %lb.y
     labels.add lo
   result["labels"] = labels
+
+  var ports = newJArray()
+  for pt in s.ports:
+    var o = newJObject()
+    o["name"] = %pt.name
+    o["net"] = %pt.net
+    o["dir"] = %portDirName(pt.dir)
+    o["x"] = %pt.x
+    o["y"] = %pt.y
+    o["bodyW"] = %pt.bodyW
+    o["bodyH"] = %pt.bodyH
+    o["rotation"] = %pt.rotation
+    ports.add o
+  result["ports"] = ports
 
 proc sceneToJson*(nl: Netlist): JsonNode =
   ## Convenience: lay out `nl` and serialize the scene.

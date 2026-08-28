@@ -699,6 +699,165 @@ test "the overlap helper allows crossings and shared vertices, not collinear run
   check collinearOverlapT(Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0),
                           Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0))
 
+# --- interface ports ---------------------------------------------------
+
+proc portedSubckt(): Netlist =
+  ## Shaped like `designs/lib/riaa.nim`'s `RIAA_CHANNEL`: an all-passive
+  ## input, an op-amp-driven output, a power rail, a rail whose only clue is
+  ## a `ptGround`-kinded op-amp supply pin, ground, plus a bidirectional bus
+  ## port, an unspecified port a bare IC drives, and a declared port with no
+  ## pins. Every interface net is registered with `addPort`.
+  result = newNetlist("PORTED")
+  let inn = addNet(result, newNet("IN"))
+  let amp = addNet(result, newNet("amp"))
+  let fb = addNet(result, newNet("fb"))
+  let outn = addNet(result, newNet("OUT"))
+  let vp = addNet(result, newNet("VP", ntPower))
+  let vn = addNet(result, newNet("VN", ntPower))
+  let bus = addNet(result, newNet("BUS"))
+  let drv = addNet(result, newNet("DRV"))
+  let nc = addNet(result, newNet("NC"))
+  let gnd = addNet(result, newNet("0", ntGround))
+
+  let rl = addComponent(result, newComponent("RL", kind = "resistor"))
+  discard connect(rl, "1", inn, ptPassive)
+  discard connect(rl, "2", gnd, ptPassive)
+  let cin = addComponent(result, newComponent("CIN", kind = "capacitor"))
+  discard connect(cin, "1", inn, ptPassive)
+  discard connect(cin, "2", amp, ptPassive)
+
+  let u1 = addComponent(result, newComponent("U1", kind = "opamp"))
+  discard connect(u1, "IN+", amp, ptInput)
+  discard connect(u1, "IN-", fb, ptInput)
+  discard connect(u1, "OUT", outn, ptOutput)
+  discard connect(u1, "V+", vp, ptPower)
+  discard connect(u1, "V-", vn, ptGround)
+
+  let rf = addComponent(result, newComponent("RF", kind = "resistor"))
+  discard connect(rf, "1", outn, ptPassive)
+  discard connect(rf, "2", fb, ptPassive)
+  let rg = addComponent(result, newComponent("RG", kind = "resistor"))
+  discard connect(rg, "1", fb, ptPassive)
+  discard connect(rg, "2", gnd, ptPassive)
+
+  let u2 = addComponent(result, newComponent("U2", kind = "mcu"))
+  discard connect(u2, "IO", bus, ptInOut)
+  discard connect(u2, "DRV", drv, ptPassive)
+  let rd = addComponent(result, newComponent("RD", kind = "resistor"))
+  discard connect(rd, "1", drv, ptPassive)
+  discard connect(rd, "2", gnd, ptPassive)
+  let rb = addComponent(result, newComponent("RB", kind = "resistor"))
+  discard connect(rb, "1", bus, ptPassive)
+  discard connect(rb, "2", gnd, ptPassive)
+
+  for (name, n) in [("IN", inn), ("OUT", outn), ("VP", vp), ("VN", vn),
+                    ("BUS", bus), ("DRV", drv), ("NC", nc), ("GND", gnd)]:
+    addPort(result, name, n)
+
+proc portOf(s: Schematic, name: string): SchematicPort =
+  for p in s.ports:
+    if p.name == name: return p
+  doAssert false, "no port named " & name
+
+proc hasPort(s: Schematic, name: string): bool =
+  for p in s.ports:
+    if p.name == name: return true
+  false
+
+test "a port net's direction: pin kind first, then a driver test":
+  let s = layout(portedSubckt())
+  # IN is all-passive with nothing driving it -> input, via the fallback.
+  check portOf(s, "IN").dir == pdInput
+  # OUT carries a ptOutput pin.
+  check portOf(s, "OUT").dir == pdOutput
+  # BUS carries a ptInOut pin.
+  check portOf(s, "BUS").dir == pdBidir
+  # DRV is passive-pinned but a bare IC sits on it.
+  check portOf(s, "DRV").dir == pdUnspecified
+
+test "rail, ground and pinless ports draw no port symbol":
+  let s = layout(portedSubckt())
+  check not hasPort(s, "VP")
+  check not hasPort(s, "VN")
+  check not hasPort(s, "GND")
+  check not hasPort(s, "NC")
+  check s.ports.len == 4
+
+test "a ptGround supply pin does not turn an ntPower net into ground":
+  let s = layout(portedSubckt())
+  var vnSupply = false
+  for w in s.wires:
+    if w.net == "VN":
+      check w.kind == wkSupply
+      vnSupply = true
+    if w.net == "VN": check w.kind != wkGround
+  check vnSupply
+
+test "input ports sit left of every part, output ports right of every part":
+  let s = layout(portedSubckt())
+  let inp = portOf(s, "IN")
+  let outp = portOf(s, "OUT")
+  for p in s.parts:
+    check inp.x + inp.bodyW / 2.0 <= p.x - p.bodyW / 2.0 + 1e-9
+    check outp.x - outp.bodyW / 2.0 >= p.x + p.bodyW / 2.0 - 1e-9
+
+test "a ported net carries no duplicate text label":
+  let s = layout(portedSubckt())
+  for lb in s.labels:
+    check lb.text notin ["IN", "OUT", "BUS", "DRV"]
+
+test "ports do not overlap part bodies, and wires still never overlap":
+  let s = layout(portedSubckt())
+  check distinctWiresNeverShareCollinearRuns(s)
+  for pt in s.ports:
+    let pr = (x1: pt.x - pt.bodyW / 2.0, y1: pt.y - pt.bodyH / 2.0,
+              x2: pt.x + pt.bodyW / 2.0, y2: pt.y + pt.bodyH / 2.0)
+    for p in s.parts:
+      let hw = p.bodyW / 2.0
+      let hh = p.bodyH / 2.0
+      check pr.x2 <= p.x - hw + 1e-9 or pr.x1 >= p.x + hw - 1e-9 or
+            pr.y2 <= p.y - hh + 1e-9 or pr.y1 >= p.y + hh - 1e-9
+
+test "the bounding box contains every port body":
+  let s = layout(portedSubckt())
+  for pt in s.ports:
+    check pt.x - pt.bodyW / 2.0 >= s.minX - 1e-9
+    check pt.x + pt.bodyW / 2.0 <= s.maxX + 1e-9
+    check pt.y - pt.bodyH / 2.0 >= s.minY - 1e-9
+    check pt.y + pt.bodyH / 2.0 <= s.maxY + 1e-9
+
+test "port layout is deterministic":
+  check sceneToJsonString(portedSubckt()) == sceneToJsonString(portedSubckt())
+
+test "the public json api exposes ports additively":
+  let node = parseJson(sceneToJsonString(portedSubckt()))
+  check node.hasKey("ports")
+  check node["ports"].len == 4
+  # existing keys untouched
+  check node.hasKey("parts")
+  check node.hasKey("wires")
+  check node.hasKey("labels")
+  var dirs: seq[string]
+  for p in node["ports"]: dirs.add p["dir"].getStr
+  check "input" in dirs
+  check "output" in dirs
+  check "bidir" in dirs
+  check "unspecified" in dirs
+
+test "renderSvg draws one polygon per port, each named":
+  let text = renderSvg(portedSubckt())
+  var polys = 0
+  var i = 0
+  while true:
+    let n = text.find("<polygon", i)
+    if n < 0: break
+    inc polys
+    i = n + 1
+  check polys == 4
+  check ">IN</text>" in text
+  check ">OUT</text>" in text
+  check ">BUS</text>" in text
+
 # --- the archive, which needs the simulator -----------------------------
 
 suite "run archive svg":
