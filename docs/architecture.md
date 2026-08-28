@@ -56,8 +56,8 @@ back-edges: nothing below ever learns about anything above it.
                        \              /
                         \          spice/  --> spice/xspice/
                          \          /
-                          netlist/            parts/     pcb/
-                             |     \___________|__________|
+                          netlist/    schematic/    parts/     pcb/
+                             |   \________|___________|________/
                              |
                     units.nim   eng.nim       (below everything)
 ```
@@ -92,6 +92,7 @@ drag in `osproc` and the whole analysis tree.
 | submodule | owns | must not know about |
 |---|---|---|
 | `netlist/` | the electrical graph: nets, components, pins, hierarchy, annotations, environment, SPICE file format | simulation, geometry, intent |
+| `schematic/` | a renderer-neutral schematic scene and deterministic placement/routing, with SVG/JSON writers | simulation, geometry, intent (it is a leaf over `netlist`) |
 | `spice/` | turning a netlist into something a simulator can solve, and running it | what question is being asked |
 | `analysis/` | asking a question and extracting a number from the answer | what claim the number is for |
 | `contract/` | what the circuit must do, and comparing a number against it | how any number is produced |
@@ -751,8 +752,11 @@ the design file alone is guesswork.
 
 `--keep-runs=<dir>` (or `$NIMCIR_KEEP_RUNS`) keeps the **results** as well as
 the deck. Per simulation it leaves `run000.cir`, `run000.raw` and `run000.log`,
-plus one `index.txt` row naming the run's label, analysis card, netlist, plot,
-whether the data is real or complex, and its vector, point and byte counts:
+plus a `run000.svg` -- a self-contained schematic of the *derived* fragment
+that ran, laid out and routed by `schematic/` (see
+docs/netlist-converter-research.md) -- and one `index.txt` row naming the run's
+label, analysis card, netlist, plot, whether the data is real or complex, and
+its vector, point and byte counts:
 
 ```
 slot    status  label            analysis                 netlist       plot              data     vectors  points
@@ -776,6 +780,15 @@ that rawfile byte for byte apart from the header timestamp. And a **failed** run
 gets an index row and keeps its deck and log, because that is precisely the run
 someone wants to read; both files are already on disk by the time anything
 raises.
+
+One file in the archive is not a run at all: `runFULL.svg`, a schematic of the
+*authored* `Design.netlist` written by `verify` before `readiness` runs
+anything. The per-run `runNNN.svg` files are the derived fragments — isolated,
+flattened, model-substituted — so none of them is the circuit the author wrote;
+`runFULL.svg` is, drawn once and overwritten every check. It is best-effort (a
+rendering failure cannot fail the check), gated only on `$NIMCIR_KEEP_RUNS`, and
+deliberately absent from `index.txt`: the index names one analysis run per row,
+and this picture is not a run, so it takes no `runNNN` slot either.
 
 The rawfile is ngspice's own ASCII format, so it goes straight back in:
 

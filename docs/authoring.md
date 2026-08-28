@@ -396,8 +396,8 @@ run archive:
 nimcir check --keep-runs=./runs designs/sensor_node.nim
 ```
 
-That leaves one deck, one rawfile and one ngspice log per simulation, plus an
-`index.txt` telling you which is which:
+That leaves one deck, one rawfile, one ngspice log and one SVG per simulation,
+plus an `index.txt` telling you which is which:
 
 ```
 slot    status  label            analysis                netlist       plot             points
@@ -421,6 +421,19 @@ actually ran, so `cd runs && ngspice -b run002.cir` re-runs that exact fragment
 re-checking the whole design. And a run that *failed* keeps its deck and log too,
 with `failed` in the index, so a convergence error leaves you the deck that
 caused it.
+
+The `run002.svg` is the same fragment as a schematic: a fast, read-only
+"does the topology look like I think it does" view. It is heuristic -- parts are
+force-placed, wires are orthogonal spanning trees, and anything the symbol
+library does not recognise is drawn as a labelled box -- so it is for eyeballing
+connectivity, not for publication. It is rendered from the derived netlist
+*before* ngspice runs, which is why even a failed run leaves its SVG behind.
+
+Because every `runNNN.svg` is a derived fragment, the archive also carries one
+picture of the circuit **as you wrote it**: `runFULL.svg`, the full design
+netlist, drawn once and overwritten each check before any fragment is
+simulated. It appears even when no simulation ran, and it is not a run -- it
+takes no `runNNN` slot and no `index.txt` row.
 
 You already get every node voltage and every voltage-source and inductor current
 — ngspice saves those unless told otherwise. What it does not save is device

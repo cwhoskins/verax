@@ -8,6 +8,7 @@
 import std/[complex, streams, osproc, os, strutils, tables, tempfiles, times]
 import ../netlist/types
 import ../netlist/formats/spice as spiceFormat
+import ../schematic
 import ./backend
 import ./xspice/cmpath
 import ./xspice/instance
@@ -120,6 +121,20 @@ proc parseRawfile(path: string): SimResult =
         result.vectors[varNames[varIdx].toLowerAscii].cvalues.add parseComplexTok(tok, path)
         inc i
     inc pointIdx
+
+proc keepSchematic(nl: Netlist, dir, slot: string) =
+  ## Renders the derived netlist as a self-contained SVG and writes it beside
+  ## the deck, rawfile and log in a run archive, when one is being kept.
+  ##
+  ## The SVG is a pure function of the netlist that is already in hand, so
+  ## drawing it cannot change what is simulated -- the same rule the archive
+  ## itself obeys. Best effort, like `keepDeck`: a rendering failure must
+  ## never be able to fail a run.
+  if dir.len == 0: return
+  try:
+    writeSvgFile(nl, dir / (slot & ".svg"))
+  except CatchableError:
+    discard
 
 proc keepDeck(deckPath: string) =
   ## Copies the deck just handed to ngspice into `$NIMCIR_KEEP_DECKS`, if set.
@@ -442,6 +457,7 @@ proc run*(nl: Netlist, analysis: string, setup: seq[string] = @[],
     fullCards.add ".endc"
     writeDeckFile(nl, fullCards, deckPath)
     keepDeck(deckPath)
+    keepSchematic(nl, keepDir, stem)
 
     let process = startProcess("ngspice", args = @["-b", "-o", logPath, deckPath],
                                 options = {poUsePath})

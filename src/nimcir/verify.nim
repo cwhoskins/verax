@@ -49,8 +49,10 @@ import std/[algorithm, editdistance, os, osproc, sets, strutils, tables,
             wordwrap]
 
 import ./eng
+import ./netlist/types
 import ./netlist/annotations
 import ./netlist/environment
+import ./schematic
 import ./analysis/io_check
 import ./analysis/evaluators/contract_eval
 
@@ -637,11 +639,34 @@ proc render*(r: Readiness, verbose = false): string =
   L.add "exit " & $code & " (" & exitLabel(code) & ")"
   L.join("\n")
 
+proc keepFullSchematic(nl: Netlist) =
+  ## Renders the authored design netlist as `runFULL.svg` in a run archive,
+  ## when one is being kept, before any derived fragment is simulated.
+  ##
+  ## The per-run `runNNN.svg` files are the *derived* fragments -- isolated,
+  ## flattened, model-substituted -- so none of them is the circuit the
+  ## author wrote. This one is: the full `Design.netlist`, drawn once and
+  ## overwritten every run, so the archive carries both the design as stated
+  ## and the fragments as simulated. It is deliberately **not** an index row:
+  ## the index names one analysis run per row, and this picture is not a run.
+  ##
+  ## Best effort, and off unless `$NIMCIR_KEEP_RUNS` is set, on the same
+  ## reasoning as the archive itself: drawing a picture must never be able to
+  ## change what is checked, or fail it.
+  let dir = getEnv("NIMCIR_KEEP_RUNS")
+  if dir.len == 0: return
+  try:
+    createDir(dir)
+    writeSvgFile(nl, dir / "runFULL.svg")
+  except CatchableError:
+    discard
+
 proc verify*(d: Design, allowed = allCapabilities, verbose = false,
              strict = false): int =
   ## Check a design, print the report, and hand back the exit code.
   ##
   ## The one line a design file ends with: `quit(verify(d))`.
+  keepFullSchematic(d.netlist)
   let r = readiness(d, allowed)
   echo render(r, verbose)
   exitCode(r, strict)

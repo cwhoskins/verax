@@ -1,8 +1,8 @@
 # Package-root modules
 
-`src/nimcir.nim` is the top-level package module; it is intentionally *not* a re-export hub — submodules (`submodule.nim`, `netlist.nim`, `spice.nim`, `analysis.nim`, `pcb.nim`, `contract.nim`, `parts.nim`) are imported directly by their own path (e.g. `import nimcir/netlist`), not through `nimcir.nim`.
+`src/nimcir.nim` is the top-level package module; it is intentionally *not* a re-export hub — submodules (`submodule.nim`, `netlist.nim`, `schematic.nim`, `spice.nim`, `analysis.nim`, `pcb.nim`, `contract.nim`, `parts.nim`) are imported directly by their own path (e.g. `import nimcir/netlist`), not through `nimcir.nim`.
 
-Each submodule directory carries its own `CLAUDE.md`: `netlist/`, `spice/` (and `spice/xspice/`), `analysis/`, `contract/`, `pcb/`, `parts/`.
+Each submodule directory carries its own `CLAUDE.md`: `netlist/`, `schematic/`, `spice/` (and `spice/xspice/`), `analysis/`, `contract/`, `pcb/`, `parts/`.
 
 Three package-root modules sit outside any submodule because the dependency order (`netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`) gives them nowhere else to live — but for two different reasons. `units.nim` and `eng.nim` sit *below* every submodule: more than one needs them and none may own them. `verify.nim` sits *above* every submodule: it needs `contract` and `analysis` at once and neither may depend on it.
 
@@ -10,7 +10,7 @@ Three package-root modules sit outside any submodule because the dependency orde
 
 `src/nimcir/eng.nim` is the one package-root helper: `eng(x, unit)` renders a float in engineering notation with an SI prefix (`20.1 mohm`, `600 pH`, `15.9 MHz`) for report text and messages. It sits at the root because both `spice` and `analysis` need it and `analysis` already depends on `spice`. It is **presentation only** — a value written into a deck must go through `netlist/formats/spice.spiceValue`, which always emits an explicit exponent, because SPICE reads a trailing letter as a unit multiplier (`15.9M` in a deck is 15.9 *milli*).
 
-`src/nimcir/verify.nim` is the runner: it checks a `Design` and renders one *readiness report*. It is the only module that imports `contract` and `analysis` together, which is why it cannot live in either — `contract` must never gain an edge to `analysis`, since a design staying inspectable with no simulator in the build is what that separation buys.
+`src/nimcir/verify.nim` is the runner: it checks a `Design` and renders one *readiness report*. It is the only module that imports `contract` and `analysis` together, which is why it cannot live in either — `contract` must never gain an edge to `analysis`, since a design staying inspectable with no simulator in the build is what that separation buys. When `$NIMCIR_KEEP_RUNS` is set it also writes `runFULL.svg` — a schematic of the authored `Design.netlist` — before `readiness` runs, best-effort and overwritten each check, so the run archive carries the design as written beside the derived `runNNN.svg` fragments.
 
 **It imports `analysis/evaluators/contract_eval` unconditionally, and that is the point.** Without it a perfectly good requirement reports `no evaluator produces 'z_max_in_band'` — which is false; `spice.pdn` produces it, the module registering that evaluator merely was not imported. A reader who believes the message deletes a correct requirement. With one entry point that always registers the simulated evaluators and gates on *capabilities* instead, the same claim reports `requires capSpiceAc, which was not offered` — true, and it says what to do about it. What is *offered* remains the caller's choice (`allowed`), so nothing is forced to simulate.
 

@@ -1,0 +1,553 @@
+## The schematic pipeline: deterministic layout/routing, self-contained SVG,
+## the public JSON API, and the per-run SVG in the run archive.
+##
+## The properties worth pinning here are not aesthetic. They are: the same
+## netlist renders the same scene every time; placement never mutates the
+## graph; a rail is detected by annotation rather than by name; an
+## unrecognised kind and a hierarchical instance fall back to a box with
+## deterministic pin placement; and the archive's SVG is a pure function of
+## the netlist, so drawing it cannot change what was simulated.
+
+import std/[json, math, os, streams, strutils, tables, tempfiles, unittest]
+
+import nimcir/netlist
+import nimcir/netlist/formats/spice
+import nimcir/schematic
+import nimcir/spice/ngspice
+
+let haveNgspice = findExe("ngspice").len > 0
+
+proc divider(): Netlist =
+  ## A two-resistor divider with an output cap and an unmodelled MCU (whose
+  ## VDD pin makes `vin` a power rail, and whose kind has no symbol).
+  result = newNetlist("rc_divider")
+  let vin = addNet(result, newNet("vin"))
+  let vout = addNet(result, newNet("vout"))
+  let gnd = addNet(result, newNet("0", ntGround))
+
+  let v1 = addComponent(result, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", vin)
+  discard connect(v1, "-", gnd)
+  v1.attrs["value"] = "DC 10 AC 1"
+
+  let r1 = addComponent(result, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", vin, ptPassive)
+  discard connect(r1, "2", vout, ptPassive)
+  r1.attrs["value"] = "1k"
+
+  let r2 = addComponent(result, newComponent("R2", kind = "resistor"))
+  discard connect(r2, "1", vout, ptPassive)
+  discard connect(r2, "2", gnd, ptPassive)
+  r2.attrs["value"] = "1k"
+
+  let c1 = addComponent(result, newComponent("C1", kind = "capacitor"))
+  discard connect(c1, "1", vout, ptPassive)
+  discard connect(c1, "2", gnd, ptPassive)
+  c1.attrs["value"] = "100n"
+
+  let u1 = addComponent(result, newComponent("U1", kind = "mcu"))
+  discard connect(u1, "VDD", vin, ptPower)
+  discard connect(u1, "GND", gnd, ptGround)
+  discard connect(u1, "SDA", vout, ptInOut)
+  discard connect(u1, "SCL", vout, ptInOut)
+
+proc plainDivider(): Netlist =
+  ## A simulatable RC divider -- the shape a derived simulation fragment
+  ## actually has -- for the archive test, which must be able to run it.
+  result = newNetlist("rc_divider")
+  let vin = addNet(result, newNet("vin"))
+  let vout = addNet(result, newNet("vout"))
+  let gnd = addNet(result, newNet("0", ntGround))
+
+  let v1 = addComponent(result, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", vin)
+  discard connect(v1, "-", gnd)
+  v1.attrs["value"] = "DC 10 AC 1"
+
+  let r1 = addComponent(result, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", vin, ptPassive)
+  discard connect(r1, "2", vout, ptPassive)
+  r1.attrs["value"] = "1k"
+
+  let r2 = addComponent(result, newComponent("R2", kind = "resistor"))
+  discard connect(r2, "1", vout, ptPassive)
+  discard connect(r2, "2", gnd, ptPassive)
+  r2.attrs["value"] = "1k"
+
+  let c1 = addComponent(result, newComponent("C1", kind = "capacitor"))
+  discard connect(c1, "1", vout, ptPassive)
+  discard connect(c1, "2", gnd, ptPassive)
+  c1.attrs["value"] = "100n"
+
+proc partOf(s: Schematic, desig: string): SchematicPart =
+  for p in s.parts:
+    if p.designator == desig: return p
+  doAssert false, "no part named " & desig
+
+proc wirePoints(s: Schematic, net: string): seq[Point] =
+  for w in s.wires:
+    if w.net == net:
+      for p in w.points: result.add p
+
+proc pinPoints(s: Schematic, desig, net: string): seq[Point] =
+  for pin in partOf(s, desig).pins:
+    if pin.net == net: result.add Point(x: pin.x, y: pin.y)
+
+proc segCrossesRect(a, b: Point, r: tuple[x1, y1, x2, y2: float]): bool =
+  ## Strict-interior crossing of an axis-aligned segment and a rectangle.
+  const eps = 1e-9
+  if abs(a.x - b.x) < eps:            # vertical
+    if a.x <= r.x1 + eps or a.x >= r.x2 - eps: return false
+    let lo = min(a.y, b.y)
+    let hi = max(a.y, b.y)
+    return hi > r.y1 + eps and lo < r.y2 - eps
+  elif abs(a.y - b.y) < eps:          # horizontal
+    if a.y <= r.y1 + eps or a.y >= r.y2 - eps: return false
+    let lo = min(a.x, b.x)
+    let hi = max(a.x, b.x)
+    return hi > r.x1 + eps and lo < r.x2 - eps
+  false
+
+proc inflatedRect(p: SchematicPart): tuple[x1, y1, x2, y2: float] =
+  ## The part body inflated by the fixed routing clearance (12 world units).
+  let hw = p.bodyW / 2.0 + 12.0
+  let hh = p.bodyH / 2.0 + 12.0
+  (x1: p.x - hw, y1: p.y - hh, x2: p.x + hw, y2: p.y + hh)
+
+proc pinPartIndex(s: Schematic): Table[Point, int] =
+  ## Pin point -> index of the part it belongs to.
+  for i, p in s.parts:
+    for pin in p.pins:
+      result[Point(x: pin.x, y: pin.y)] = i
+
+proc positiveOverlapT(a1, a2, b1, b2: float): bool =
+  let lo = max(min(a1, a2), min(b1, b2))
+  let hi = min(max(a1, a2), max(b1, b2))
+  hi - lo > 1e-9
+
+proc collinearOverlapT(a, b, c, d: Point): bool =
+  ## True when the axis-aligned segments a-b and c-d share a positive-length
+  ## collinear run. Touching at one point is not an overlap.
+  let av = abs(a.x - b.x) < 1e-9
+  let cv = abs(c.x - d.x) < 1e-9
+  if av != cv: return false
+  if av:
+    return abs(a.x - c.x) < 1e-9 and positiveOverlapT(a.y, b.y, c.y, d.y)
+  else:
+    return abs(a.y - c.y) < 1e-9 and positiveOverlapT(a.x, b.x, c.x, d.x)
+
+proc distinctWiresNeverShareCollinearRuns(s: Schematic): bool =
+  ## The routing invariant: two distinct `SchematicWire` objects may meet at a
+  ## vertex and may cross perpendicularly, but never overlap along a
+  ## positive-length collinear segment.
+  for i in 0 ..< s.wires.len:
+    for k in 0 ..< s.wires[i].points.high:
+      let a = s.wires[i].points[k]
+      let b = s.wires[i].points[k + 1]
+      if abs(a.x - b.x) < 1e-9 and abs(a.y - b.y) < 1e-9: continue
+      for j in 0 ..< i:
+        for m in 0 ..< s.wires[j].points.high:
+          if collinearOverlapT(a, b, s.wires[j].points[m],
+                               s.wires[j].points[m + 1]):
+            return false
+  true
+
+proc starNet(): Netlist =
+  ## Three resistors whose pin 1 all meet on one signal net, forcing the net
+  ## to route as a tree with a branch rather than a simple path.
+  result = newNetlist("star")
+  let gnd = addNet(result, newNet("0", ntGround))
+  let star = addNet(result, newNet("star"))
+  for i in 1 .. 3:
+    let r = addComponent(result, newComponent("R" & $i, kind = "resistor"))
+    discard connect(r, "1", star, ptPassive)
+    discard connect(r, "2", gnd, ptPassive)
+
+proc resistorChain(n: int): Netlist =
+  ## `n` resistors in series sharing a signal net between neighbours -- a
+  ## crowded netlist whose force layout would overlap without the separation
+  ## pass.
+  result = newNetlist("chain")
+  var prev = addNet(result, newNet("n0"))
+  for i in 1 .. n:
+    let net = addNet(result, newNet("n" & $i))
+    let r = addComponent(result, newComponent("R" & $i, kind = "resistor"))
+    discard connect(r, "1", prev, ptPassive)
+    discard connect(r, "2", net, ptPassive)
+    prev = net
+
+template withEnv(key, value: string, body: untyped) =
+  let had = existsEnv(key)
+  let old = getEnv(key)
+  putEnv(key, value)
+  try:
+    body
+  finally:
+    if had: putEnv(key, old) else: delEnv(key)
+
+# --- the scene, which needs no simulator --------------------------------
+
+test "layout is deterministic":
+  let nl = divider()
+  let a = renderSvg(nl)
+  let b = renderSvg(nl)
+  check a == b
+  check sceneToJsonString(nl) == sceneToJsonString(nl)
+
+test "layout produces one part per component, wired to the right nets":
+  let s = layout(divider())
+  check s.parts.len == 5
+  check partOf(s, "R1").pins[0].net == "vin"
+  check partOf(s, "R1").pins[1].net == "vout"
+  check partOf(s, "C1").pins[1].net == "0"
+  check partOf(s, "V1").pins[0].net == "vin"
+
+test "symbol selection is keyed by kind":
+  let s = layout(divider())
+  check partOf(s, "R1").symbol == "resistor"
+  check partOf(s, "C1").symbol == "capacitor"
+  check partOf(s, "V1").symbol == "voltage_source"
+  check not partOf(s, "R1").isBox
+
+test "an unrecognised kind draws as a fallback box with split pins":
+  let s = layout(divider())
+  let u1 = partOf(s, "U1")
+  check u1.isBox
+  check u1.symbol == "box"
+  check u1.pins.len == 4
+  check u1.rotation == 0.0
+  var left, right = 0
+  for pin in u1.pins:
+    if pin.x < u1.x: inc left
+    elif pin.x > u1.x: inc right
+  check left == 2
+  check right == 2
+
+test "a hierarchical instance draws as a box":
+  let nl = readNetlist(newStringStream("""Hier Box
+.SUBCKT BUF IN OUT
+R1 IN OUT 100
+.ENDS BUF
+X1 net1 net2 BUF
+R2 net2 0 1k
+.END
+"""))
+  let s = layout(nl)
+  let x1 = partOf(s, "X1")
+  check x1.isBox
+  check x1.symbol == "box"
+  check x1.pins.len == 2
+  check x1.rotation == 0.0
+
+test "ground nets are stubbed, never routed":
+  let s = layout(divider())
+  for w in s.wires:
+    if w.net == "0":
+      check w.kind == wkGround
+      check w.points.len == 2
+  var routed = false
+  for w in s.wires:
+    if w.net == "0" and w.kind == wkSignal: routed = true
+  check not routed
+
+test "a power rail is stubbed and labelled":
+  let nl = newNetlist("rail")
+  let vcc = addNet(nl, newNet("vcc", ntPower))
+  let gnd = addNet(nl, newNet("0", ntGround))
+  let r1 = addComponent(nl, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", vcc, ptPower)
+  discard connect(r1, "2", gnd, ptPassive)
+  let s = layout(nl)
+  var sawSupply = false
+  for w in s.wires:
+    if w.net == "vcc":
+      check w.kind == wkSupply
+      sawSupply = true
+  check sawSupply
+
+test "routing connects every pin of a signal net":
+  let s = layout(divider())
+  let pts = wirePoints(s, "vout")
+  for desig in ["R1", "R2", "C1", "U1"]:
+    for p in pinPoints(s, desig, "vout"):
+      check p in pts
+
+test "a controlled source is a rectangular source4 with inputs left, outputs right":
+  let nl = newNetlist("buf")
+  let inp = addNet(nl, newNet("inp"))
+  let inn = addNet(nl, newNet("inn"))
+  let outp = addNet(nl, newNet("outp"))
+  let outn = addNet(nl, newNet("outn"))
+  let e1 = addComponent(nl, newComponent("E1", kind = "vcvs"))
+  # Declare the pins out of the canonical order: placement must key on the
+  # pin name, never on declaration order.
+  discard connect(e1, "IN-", inn)
+  discard connect(e1, "OUT+", outp)
+  discard connect(e1, "IN+", inp)
+  discard connect(e1, "OUT-", outn)
+  let s = layout(nl)
+  let p = partOf(s, "E1")
+  check p.symbol == "source4"
+  check not p.isBox
+  check p.bodyW > p.bodyH
+  var byName = initTable[string, Point]()
+  for pin in p.pins: byName[pin.name] = Point(x: pin.x, y: pin.y)
+  check byName["OUT+"].x > p.x
+  check byName["OUT-"].x > p.x
+  check byName["IN+"].x < p.x
+  check byName["IN-"].x < p.x
+  check byName["OUT+"].y < byName["OUT-"].y
+  check byName["IN+"].y < byName["IN-"].y
+  check p.rotation == 0.0
+  # The public JSON identifier stays "source4".
+  let node = parseJson(sceneToJsonString(s))
+  check node["parts"][0]["symbol"].getStr == "source4"
+
+test "the source4 symbol renders as a labelled rectangle, not a diamond":
+  let nl = newNetlist("buf")
+  let inp = addNet(nl, newNet("inp"))
+  let inn = addNet(nl, newNet("inn"))
+  let outp = addNet(nl, newNet("outp"))
+  let outn = addNet(nl, newNet("outn"))
+  let g1 = addComponent(nl, newComponent("G1", kind = "vccs"))
+  discard connect(g1, "IN+", inp)
+  discard connect(g1, "IN-", inn)
+  discard connect(g1, "OUT+", outp)
+  discard connect(g1, "OUT-", outn)
+  let text = renderSvg(nl)
+  check "<rect" in text
+  check ">IN+</text>" in text
+  check ">IN-</text>" in text
+  check ">OUT+</text>" in text
+  check ">OUT-</text>" in text
+  check "<polygon" notin text
+
+test "placement never overlaps inflated component bodies":
+  for s in [layout(divider()), layout(resistorChain(16))]:
+    for i in 0 ..< s.parts.len:
+      for j in i + 1 ..< s.parts.len:
+        let a = s.parts[i]
+        let b = s.parts[j]
+        let dx = abs(a.x - b.x)
+        let dy = abs(a.y - b.y)
+        const clear = 12.0
+        # raw bodies never overlap
+        check dx >= (a.bodyW + b.bodyW) / 2.0 - 1e-6 or
+              dy >= (a.bodyH + b.bodyH) / 2.0 - 1e-6
+        # clearance-inflated bodies never overlap
+        check dx >= (a.bodyW + b.bodyW) / 2.0 + 2.0 * clear - 1e-6 or
+              dy >= (a.bodyH + b.bodyH) / 2.0 + 2.0 * clear - 1e-6
+        # and the channel between inflated bodies stays wider than the
+        # clearance, so a route fits between them
+        check dx >= (a.bodyW + b.bodyW) / 2.0 + 3.0 * clear - 1e-6 or
+              dy >= (a.bodyH + b.bodyH) / 2.0 + 3.0 * clear - 1e-6
+
+test "signal wires keep the routing clearance except at their own pins":
+  let s = layout(divider())
+  let pinPart = pinPartIndex(s)
+  for w in s.wires:
+    if w.kind != wkSignal: continue
+    check w.points.len >= 2
+    # direct pin access: every signal wire ends at the pin it connects (the
+    # first wire also starts at a pin; later wires start at a tree vertex)
+    check w.points[^1] in pinPart
+    for k in 0 ..< w.points.high:
+      let a = w.points[k]
+      let b = w.points[k + 1]
+      for pi, p in s.parts:
+        let r = inflatedRect(p)
+        # the short outward stub from a pin of `p` to its escape point is the
+        # one place a wire may be inside `p`'s inflated body
+        if pinPart.getOrDefault(a, -1) == pi or pinPart.getOrDefault(b, -1) == pi:
+          continue
+        check not segCrossesRect(a, b, r)
+
+test "a tall box pin escapes through its own edge, not the dominant axis":
+  let nl = newNetlist("tall")
+  let a = addNet(nl, newNet("a"))
+  let u1 = addComponent(nl, newComponent("U1", kind = "mcu"))
+  # 12 pins -> a fallback box with 6 rows; its top-left pin sits at y = -85,
+  # farther from the centre than its x = -70, which a dominant-axis rule would
+  # misread as a vertical pin.
+  discard connect(u1, "P0", a, ptPassive)
+  for i in 1 ..< 12:
+    discard connect(u1, "P" & $i, addNet(nl, newNet("d" & $i)), ptPassive)
+  let r1 = addComponent(nl, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", a, ptPassive)
+  discard connect(r1, "2", addNet(nl, newNet("b")), ptPassive)
+  let s = layout(nl)
+  let p0 = partOf(s, "U1").pins[0]
+  var wire: seq[Point]
+  for w in s.wires:
+    if w.net == "a" and w.kind == wkSignal:
+      wire = w.points
+  check wire.len >= 2
+  check abs(wire[0].x - p0.x) < 1e-6 and abs(wire[0].y - p0.y) < 1e-6
+  # the first hop is horizontally out through the left edge
+  check wire[1].x < wire[0].x
+  check abs(wire[1].y - wire[0].y) < 1e-6
+
+test "layout rotates an eligible two-terminal part and rotates its pin slots":
+  let s = layout(divider())
+  let c1 = partOf(s, "C1")
+  check c1.rotation == 90.0
+  check c1.pins.len == 2
+  # The two pins now lie on a vertical line through the part centre, 80 world
+  # units apart (the symbol's pin span), one above and one below.
+  check abs(c1.pins[0].x - c1.pins[1].x) < 1e-6
+  check abs(c1.pins[0].x - c1.x) < 1e-6
+  check abs(abs(c1.pins[0].y - c1.pins[1].y) - 80.0) < 1e-6
+  check (c1.pins[0].y - c1.y) * (c1.pins[1].y - c1.y) < 0.0
+  # An unrotated horizontal part keeps its pins on the horizontal axis.
+  let r1 = partOf(s, "R1")
+  check r1.rotation == 0.0
+  check abs(r1.pins[0].y - r1.pins[1].y) < 1e-6
+  check abs(abs(r1.pins[0].x - r1.pins[1].x) - 80.0) < 1e-6
+  # A vertical-default source is already vertical, so it is not turned.
+  let v1 = partOf(s, "V1")
+  check v1.rotation == 0.0
+  check abs(v1.pins[0].x - v1.pins[1].x) < 1e-6
+  # A fallback box never rotates.
+  check partOf(s, "U1").rotation == 0.0
+
+test "a three-terminal transistor never rotates":
+  let nl = newNetlist("elig")
+  let a = addNet(nl, newNet("a"))
+  let b = addNet(nl, newNet("b"))
+  let c = addNet(nl, newNet("c"))
+  let q1 = addComponent(nl, newComponent("Q1", kind = "transistor"))
+  discard connect(q1, "C", a)
+  discard connect(q1, "B", b)
+  discard connect(q1, "E", c)
+  let s = layout(nl)
+  check partOf(s, "Q1").rotation == 0.0
+
+test "rotation is deterministic":
+  let a = layout(divider())
+  let b = layout(divider())
+  check a.parts.len == b.parts.len
+  for i in 0 ..< a.parts.len:
+    check a.parts[i].rotation == b.parts[i].rotation
+
+test "the public json api exposes rotation additively":
+  let node = parseJson(sceneToJsonString(divider()))
+  var rotOf = initTable[string, float]()
+  for part in node["parts"]:
+    check part.hasKey("rotation")
+    let rot = part["rotation"].getFloat
+    check rot in [0.0, 90.0]
+    rotOf[part["designator"].getStr] = rot
+  check rotOf["C1"] == 90.0
+  check rotOf["R1"] == 0.0
+  check rotOf["U1"] == 0.0
+
+test "a rotated part draws its body in a rotate group with upright labels":
+  var s = Schematic(title: "rot")
+  var p = SchematicPart(designator: "R1", kind: "resistor", name: "",
+                        value: "1k", symbol: "resistor", isBox: false,
+                        bodyW: 80.0, bodyH: 80.0, x: 100.0, y: 100.0,
+                        rotation: 90.0)
+  p.pins.add SchematicPin(name: "1", x: 100.0, y: 60.0, net: "a")
+  p.pins.add SchematicPin(name: "2", x: 100.0, y: 140.0, net: "b")
+  s.parts.add p
+  let text = renderSvg(s)
+  let g = text.find("<g transform=\"rotate(90 100 100)\">")
+  check g >= 0
+  let gc = text.find("</g>", g)
+  check gc > g
+  let label = text.find(">R1</text>")
+  check label > gc        # designator stays upright, outside the rotated group
+  check ">1k</text>" in text
+  let node = sceneToJson(s)
+  check node["parts"][0]["rotation"].getFloat == 90.0
+
+test "the svg is self-contained and names its parts":
+  let text = renderSvg(divider())
+  check text.startsWith("<?xml")
+  check "<svg xmlns=\"http://www.w3.org/2000/svg\"" in text
+  check ">R1</text>" in text
+  check ">V1</text>" in text
+  check "#" in text
+  check "class=" notin text
+  check text.endsWith("</svg>\n")
+
+test "the public json api round-trips the scene":
+  let node = parseJson(sceneToJsonString(divider()))
+  check node["title"].getStr == "rc_divider"
+  check node["parts"].len == 5
+  check node.hasKey("wires")
+  check node.hasKey("junctions")
+  check node.hasKey("labels")
+  check node["parts"][0].hasKey("designator")
+  check node["parts"][0].hasKey("pins")
+  check node["parts"][0]["pins"][0].hasKey("net")
+
+test "an empty netlist still renders a valid document":
+  let text = renderSvg(newNetlist("empty"))
+  check "<svg" in text
+  check text.endsWith("</svg>\n")
+
+test "distinct wires never share a positive-length collinear run":
+  for nl in [divider(), resistorChain(16), starNet()]:
+    let s = layout(nl)
+    check distinctWiresNeverShareCollinearRuns(s)
+
+test "a branched signal net partitions its tree without overlapping wires":
+  let s = layout(starNet())
+  var starWires = 0
+  for w in s.wires:
+    if w.net == "star" and w.kind == wkSignal:
+      inc starWires
+      check w.points.len >= 2
+  # Three pins on one net -> exactly two wires, one per attached pin.
+  check starWires == 2
+  # Every pin of the net appears on some emitted wire.
+  let pts = wirePoints(s, "star")
+  for desig in ["R1", "R2", "R3"]:
+    for p in pinPoints(s, desig, "star"):
+      check p in pts
+
+test "the overlap helper allows crossings and shared vertices, not collinear runs":
+  # Perpendicular crossing.
+  check not collinearOverlapT(Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0),
+                              Point(x: 5.0, y: -5.0), Point(x: 5.0, y: 5.0))
+  # Meeting at one endpoint.
+  check not collinearOverlapT(Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0),
+                              Point(x: 10.0, y: 0.0), Point(x: 20.0, y: 0.0))
+  # Positive-length collinear overlap.
+  check collinearOverlapT(Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0),
+                          Point(x: 5.0, y: 0.0), Point(x: 15.0, y: 0.0))
+  # Identical collinear segments.
+  check collinearOverlapT(Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0),
+                          Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0))
+
+# --- the archive, which needs the simulator -----------------------------
+
+suite "run archive svg":
+  if not haveNgspice:
+    echo "  [skipped: ngspice not found on PATH]"
+  else:
+    test "an svg lands beside the deck, rawfile and log":
+      let dir = createTempDir("nimcir_svgtests_", "")
+      defer: removeDir(dir)
+      withEnv("NIMCIR_KEEP_RUNS", dir):
+        discard run(plainDivider(), ".op")
+
+      check fileExists(dir / "run000.svg")
+      let svg = readFile(dir / "run000.svg")
+      check svg.startsWith("<?xml")
+      check ">R1</text>" in svg
+      check ">C1</text>" in svg
+      check ">V1</text>" in svg
+
+    test "a failed run still keeps its svg, like its deck and log":
+      # `keepSchematic` renders before ngspice runs, so a convergence failure
+      # leaves the picture of the fragment that failed -- the one worth reading.
+      let dir = createTempDir("nimcir_svgtests_", "")
+      defer: removeDir(dir)
+      withEnv("NIMCIR_KEEP_RUNS", dir):
+        expect(SpiceSimError):
+          discard run(divider(), ".op")
+
+      check fileExists(dir / "run000.svg")
+      check ">U1</text>" in readFile(dir / "run000.svg")

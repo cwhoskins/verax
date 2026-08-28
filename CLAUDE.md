@@ -17,11 +17,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `nimcir` is a proprietary-licensed Nim library for describing a circuit, stating what it must do, and checking that by simulation.
 
-Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, and nothing depends backwards.
+Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, `netlist` <- `schematic`, and nothing depends backwards.
 
 | Submodule | What it is |
 | --- | --- |
 | `src/nimcir/netlist/` | The format-agnostic in-memory netlist: types, graph, the annotation vocabulary, the authoring DSL, and file-format readers/writers under `formats/`. |
+| `src/nimcir/schematic/` | A heuristic "does the topology look right" visualizer: a renderer-neutral scene, deterministic placement/routing, and self-contained SVG plus a public JSON API. Depends only on `netlist`. |
 | `src/nimcir/spice/` | Runs simulations through an external SPICE backend (ngspice) and owns the simulation-only netlist transforms — isolation, flattening, device models. `spice/xspice/` authors XSPICE code models. |
 | `src/nimcir/analysis/` | Answers questions *about* a netlist, from pure graph walks up to full simulation (PDN, start-up, transient, op-amp, DC sweep, derating). |
 | `src/nimcir/contract/` | Design *intent*: roles, assertions and the evaluator registry. Depends only on `netlist`, so a design stays inspectable with no simulator in the build. |
