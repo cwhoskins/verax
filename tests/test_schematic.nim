@@ -93,6 +93,29 @@ proc pinPoints(s: Schematic, desig, net: string): seq[Point] =
   for pin in partOf(s, desig).pins:
     if pin.net == net: result.add Point(x: pin.x, y: pin.y)
 
+proc visualBends(poly: seq[Point]): int =
+  ## Direction changes along a polyline, counting every interior vertex --
+  ## including the corners where the endpoint pin stubs meet the routed path.
+  for k in 1 ..< poly.len - 1:
+    let a = poly[k - 1]
+    let b = poly[k]
+    let c = poly[k + 1]
+    let abHoriz = abs(a.y - b.y) < 1e-9
+    let bcHoriz = abs(b.y - c.y) < 1e-9
+    if abHoriz != bcHoriz: inc result
+
+proc routeBends(poly: seq[Point]): int =
+  ## Direction changes along a signal wire's *routed* portion: the first and
+  ## last segments are the short outward pin stubs and are free, so only the
+  ## interior vertices are charged.
+  for k in 2 ..< poly.len - 2:
+    let a = poly[k - 1]
+    let b = poly[k]
+    let c = poly[k + 1]
+    let abHoriz = abs(a.y - b.y) < 1e-9
+    let bcHoriz = abs(b.y - c.y) < 1e-9
+    if abHoriz != bcHoriz: inc result
+
 proc segCrossesRect(a, b: Point, r: tuple[x1, y1, x2, y2: float]): bool =
   ## Strict-interior crossing of an axis-aligned segment and a rectangle.
   const eps = 1e-9
@@ -865,6 +888,76 @@ test "a branched signal net partitions its tree without overlapping wires":
   for desig in ["R1", "R2", "R3"]:
     for p in pinPoints(s, desig, "star"):
       check p in pts
+
+proc bendTee(): Netlist =
+  ## A T-junction: R1 and R2 vertical, R3 horizontal, all three meeting on
+  ## net `b`. R1's pin is equidistant (96 world units) from R2's and R3's
+  ## escape points, but R3 is reachable in one bend while R2 needs two on the
+  ## obstacle-boundary grid.
+  result = newNetlist("tee")
+  let a = addNet(result, newNet("a"))
+  let b = addNet(result, newNet("b"))
+  let c = addNet(result, newNet("c"))
+  let d = addNet(result, newNet("d"))
+  let r1 = addComponent(result, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", a, ptPassive); discard connect(r1, "2", b, ptPassive)
+  let r2 = addComponent(result, newComponent("R2", kind = "resistor"))
+  discard connect(r2, "1", b, ptPassive); discard connect(r2, "2", c, ptPassive)
+  let r3 = addComponent(result, newComponent("R3", kind = "resistor"))
+  discard connect(r3, "1", b, ptPassive); discard connect(r3, "2", d, ptPassive)
+
+proc transistorAndBox(): Netlist =
+  ## One signal net between a transistor's top pin (vertical escape) and a
+  ## fallback box's left-edge pin (horizontal escape): the two escape points
+  ## sit on a diagonal with a single grid corner between them.
+  result = newNetlist("tb")
+  let sig = addNet(result, newNet("sig"))
+  let gnd = addNet(result, newNet("0", ntGround))
+  let q1 = addComponent(result, newComponent("Q1", kind = "transistor"))
+  discard connect(q1, "B", sig, ptPassive)      # first pin -> top slot, escapes up
+  discard connect(q1, "C", addNet(result, newNet("c")), ptPassive)
+  discard connect(q1, "E", addNet(result, newNet("e")), ptPassive)
+  let u1 = addComponent(result, newComponent("U1", kind = "mcu"))
+  discard connect(u1, "IO", sig, ptInOut)       # left edge, escapes left
+  discard connect(u1, "GND", gnd, ptGround)
+
+test "bend-aware routing prefers the equal-length pin with the fewest bends":
+  # On the tee's net b, R2's and R3's escape points are both 96 world units
+  # from R1's, so a length-only tie-break (lowest pin index) attaches R2
+  # first and draws a two-bend staircase. The lexicographic (length, then
+  # bends) cost attaches R3 first: one clean L.
+  let s = layout(bendTee())
+  check partOf(s, "R1").rotation == 90.0
+  check partOf(s, "R3").rotation == 0.0
+  var first: seq[Point]
+  for w in s.wires:
+    if w.net == "b" and w.kind == wkSignal:
+      first = w.points
+      break
+  check first.len == 5
+  if first.len == 5:
+    check first[0] == pinPoints(s, "R1", "b")[0]
+    check first[^1] == pinPoints(s, "R3", "b")[0]
+    check routeBends(first) == 1
+
+test "pin escape stubs are free, not charged as route bends":
+  let s = layout(transistorAndBox())
+  var wire: seq[Point]
+  for w in s.wires:
+    if w.net == "sig" and w.kind == wkSignal:
+      wire = w.points
+      break
+  check wire.len == 5
+  if wire.len == 5:
+    let qPin = pinPoints(s, "Q1", "sig")[0]
+    let uPin = pinPoints(s, "U1", "sig")[0]
+    check (wire[0] == qPin and wire[^1] == uPin) or
+          (wire[0] == uPin and wire[^1] == qPin)
+    # The first and last segments are the 12-unit outward stubs; the routed
+    # path between the two escape points is a single-bend L, so the whole wire
+    # has three visual corners but only one routed bend.
+    check visualBends(wire) == 3
+    check routeBends(wire) == 1
 
 test "the overlap helper allows crossings and shared vertices, not collinear runs":
   # Perpendicular crossing.

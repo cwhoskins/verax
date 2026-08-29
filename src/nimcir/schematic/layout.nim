@@ -52,7 +52,13 @@
 ## steered so they only touch that geometry, never run along it. Signal nets
 ## grow as a tree from the first pin, attaching each next pin to the closest
 ## point already wired, so the per-net polylines partition the tree's segments
-## exactly once.
+## exactly once. The path search is **bend-aware**: its state is
+## `(node, incoming axis)` and its cost is the lexicographic pair (Manhattan
+## length, bend count), so among all shortest obstacle-avoiding paths it
+## picks the one with the fewest bends (ties by lowest node index, then
+## axis). Sources are seeded in both axis states, making the first graph edge
+## free; the short pin stubs at either endpoint are outside the graph and so
+## never charged as bends.
 
 import std/[algorithm, math, sets, strutils, tables]
 import ../netlist/types
@@ -370,46 +376,93 @@ proc shortenedStubEnd(p, dir: Point, span: float, occ: seq[OccSeg]): Point =
   else:
     Point(x: p.x + limit * (if dir.x >= 0.0: 1.0 else: -1.0), y: p.y)
 
-proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
-                         sources: seq[int], occ: seq[OccSeg]):
-    tuple[dist: seq[float], prev: seq[int]] =
-  ## Multi-source Dijkstra over the routing graph with deterministic
-  ## tie-breaking: the lowest node index wins equal distances, and an
-  ## equal-length relaxation never replaces a predecessor. Edges that would
-  ## run along an occupied segment are skipped.
-  let v = nodes.len
-  result.dist = newSeq[float](v)
-  result.prev = newSeq[int](v)
-  var used = newSeq[bool](v)
-  for i in 0 ..< v:
-    result.dist[i] = Inf
-    result.prev[i] = -1
-  for s in sources:
-    if s >= 0 and s < v: result.dist[s] = 0.0
-  for _ in 0 ..< v:
-    var u = -1
-    for i in 0 ..< v:
-      if not used[i] and (u < 0 or result.dist[i] < result.dist[u] - 1e-9):
-        u = i
-    if u < 0 or result.dist[u] == Inf: break
-    used[u] = true
-    for w in adj[u]:
-      if used[w]: continue
-      if not edgeAllowed(nodes[u], nodes[w], occ): continue
-      let nd = result.dist[u] + manhattan(nodes[u], nodes[w])
-      if nd < result.dist[w] - 1e-9:
-        result.dist[w] = nd
-        result.prev[w] = u
+type
+  RouteAxis = enum
+    raHoriz, raVert
+    ## The axis of the edge a route arrived through. Only the axis matters for
+    ## charging a bend: a turn is any switch between the two axes, never a 180
+    ## degree reversal along the same axis.
 
-proc pathTo(prev: seq[int], dst: int): seq[int] =
-  ## The node-index path from a Dijkstra source to `dst`, source first.
-  if dst < 0 or dst >= prev.len: return @[]
-  result.add dst
-  var cur = dst
+  RouteResult = tuple[
+    distLen: seq[float],
+    distBends: seq[int],
+    prev: seq[int]]
+
+proc lexBefore(l1: float, b1: int, l2: float, b2: int): bool {.inline.} =
+  ## Strict lexicographic order on (Manhattan length, bend count): a route is
+  ## better only when it is shorter, or exactly as short with fewer bends.
+  l1 < l2 - 1e-9 or (abs(l1 - l2) <= 1e-9 and b1 < b2)
+
+proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
+                         sources: seq[int], occ: seq[OccSeg]): RouteResult =
+  ## Multi-source bend-aware Dijkstra over the routing graph. The state is
+  ## `(node, incoming axis)`, so the cost of leaving a node depends on the
+  ## axis the route arrived through; the cost of a route is the lexicographic
+  ## pair (Manhattan length, bend count), so among all shortest routes the
+  ## fewest-bend one wins. Every source is seeded in *both* axis states at
+  ## zero cost, which makes the first graph edge free: a route may leave a
+  ## source in either axis without charging a bend. Edges that would run along
+  ## an occupied segment are skipped.
+  ##
+  ## Determinism is restated on states. A state id is `2*node + axis`
+  ## (`raHoriz` first), so equal (length, bends) distances are settled by the
+  ## lowest node index, then the horizontal state; and a relaxation that is
+  ## not strictly better never replaces a predecessor, so the first
+  ## (lowest-id) predecessor wins.
+  let v = nodes.len
+  let sv = 2 * v
+  result.distLen = newSeq[float](sv)
+  result.distBends = newSeq[int](sv)
+  result.prev = newSeq[int](sv)
+  var used = newSeq[bool](sv)
+  for s in 0 ..< sv:
+    result.distLen[s] = Inf
+    result.prev[s] = -1
+  for s in sources:
+    if s >= 0 and s < v:
+      result.distLen[2 * s] = 0.0
+      result.distLen[2 * s + 1] = 0.0
+
+  for _ in 0 ..< sv:
+    var u = -1
+    for s in 0 ..< sv:
+      if used[s] or result.distLen[s] == Inf: continue
+      if u < 0 or
+         lexBefore(result.distLen[s], result.distBends[s],
+                   result.distLen[u], result.distBends[u]) or
+         (abs(result.distLen[s] - result.distLen[u]) <= 1e-9 and
+          result.distBends[s] == result.distBends[u] and s < u):
+        u = s
+    if u < 0: break
+    used[u] = true
+    let i = u div 2
+    let inAxis = if u mod 2 == 0: raHoriz else: raVert
+    for j in adj[i]:
+      if sameCoord(nodes[i].x, nodes[j].x) and
+         sameCoord(nodes[i].y, nodes[j].y):
+        continue
+      let edgeAxis =
+        if sameCoord(nodes[i].x, nodes[j].x): raVert else: raHoriz
+      let t = 2 * j + ord(edgeAxis)
+      if used[t]: continue
+      if not edgeAllowed(nodes[i], nodes[j], occ): continue
+      let ndLen = result.distLen[u] + manhattan(nodes[i], nodes[j])
+      let ndBends = result.distBends[u] + (if inAxis == edgeAxis: 0 else: 1)
+      if lexBefore(ndLen, ndBends, result.distLen[t], result.distBends[t]):
+        result.distLen[t] = ndLen
+        result.distBends[t] = ndBends
+        result.prev[t] = u
+
+proc pathToState(prev: seq[int], dstState: int): seq[int] =
+  ## The node-index path from a Dijkstra source state to `dstState`, source
+  ## first. `prev` maps a state id (`2*node + axis`) to its predecessor state.
+  if dstState < 0 or dstState >= prev.len: return @[]
+  result.add dstState div 2
+  var cur = dstState
   while prev[cur] >= 0:
     cur = prev[cur]
     if cur < 0: return @[]
-    result.add cur
+    result.add cur div 2
   result.reverse()
 
 proc escapeDir(part: SchematicPart, pt: Point): Point =
@@ -571,12 +624,13 @@ proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
               occ: var seq[OccSeg]): seq[seq[Point]] =
   ## Routes one signal net as an occupancy-aware tree. The first connected pin
   ## is pin 0; every later pin is connected to the closest point already in
-  ## the tree by a shortest path that keeps body clearance and never runs
-  ## along an occupied segment. Each returned polyline is one `SchematicWire`:
-  ## it starts at the attachment point (a pin on the first connection, a tree
-  ## node afterwards) and ends at the pin it connects, so the union of the
-  ## polylines covers the tree exactly once and two wires of the net share at
-  ## most a vertex.
+  ## the tree by a shortest path -- lexicographically (Manhattan length, then
+  ## bends), so an equal-length route with fewer bends wins -- that keeps body
+  ## clearance and never runs along an occupied segment. Each returned
+  ## polyline is one `SchematicWire`: it starts at the attachment point (a pin
+  ## on the first connection, a tree node afterwards) and ends at the pin it
+  ## connects, so the union of the polylines covers the tree exactly once and
+  ## two wires of the net share at most a vertex.
   var nodes: seq[Point]
   var pinNode: seq[int]
   for pin in pins:
@@ -623,19 +677,38 @@ proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
     for i in 0 ..< v:
       if inTree[i]: sources.add i
 
-    let (dist, prev) = dijkstraFromSources(nodes, adj, sources, occ)
+    let rr = dijkstraFromSources(nodes, adj, sources, occ)
 
     var bestPin = -1
-    var bestDist = Inf
+    var bestLen = Inf
+    var bestBends = 0
+    var bestState = -1
     for i in 0 ..< pins.len:
       if connected[i]: continue
-      let d = dist[pinNode[i]]
-      if bestPin < 0 or d < bestDist - 1e-9 or
-         (abs(d - bestDist) <= 1e-9 and i < bestPin):
+      let n0 = pinNode[i]
+      var s = -1
+      var sl = Inf
+      var sb = 0
+      for ax in [raHoriz, raVert]:
+        let sid = 2 * n0 + ord(ax)
+        if rr.distLen[sid] < sl - 1e-9 or
+           (abs(rr.distLen[sid] - sl) <= 1e-9 and
+            (s < 0 or rr.distBends[sid] < sb)):
+          s = sid
+          sl = rr.distLen[sid]
+          sb = rr.distBends[sid]
+      if bestPin < 0 or
+         sl < bestLen - 1e-9 or
+         (abs(sl - bestLen) <= 1e-9 and
+          (sb < bestBends or (sb == bestBends and i < bestPin))):
         bestPin = i
-        bestDist = d
+        bestLen = sl
+        bestBends = sb
+        bestState = s
 
-    var pathIdx = pathTo(prev, pinNode[bestPin])
+    var pathIdx: seq[int]
+    if bestState >= 0:
+      pathIdx = pathToState(rr.prev, bestState)
     if pathIdx.len == 0:
       # The free grid should always connect an escape point, but keep the old
       # fallback: route directly from the lowest-index tree node.

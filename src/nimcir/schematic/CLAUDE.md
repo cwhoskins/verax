@@ -81,7 +81,15 @@ implements.
   from the first pin, each next pin attaching to the closest already-wired
   point through a Hanan free-space grid built from the inflated obstacle
   boundaries so no segment enters an inflated body; a wire
-  reaches each pin directly through a short outward stub. **Rail decisions come from
+  reaches each pin directly through a short outward stub. The path search is
+  **bend-aware**: state is `(node, incoming axis)` and cost is the
+  lexicographic pair (Manhattan length, then bend count), so among all
+  shortest obstacle-avoiding paths the fewest-bend one is chosen. Each source
+  is seeded in both axis states -- the first graph edge is free whichever
+  axis it takes -- and the short pin stubs at the two endpoints sit outside
+  the graph, so neither is charged as a bend; equal (length, bends) pairs fall
+  back to the lowest node index, then the horizontal axis state. **Rail
+  decisions come from
   `netlist/kinds.isGround`/`isRail`, never from name guessing**: a ground net
   draws a local ground stub at each pin, a supply net a local stub labelled
   with the net name, and neither is wired as a tree. Each stub leaves its pin
