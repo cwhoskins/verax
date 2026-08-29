@@ -15,6 +15,8 @@ import nimcir/netlist/formats/spice
 import nimcir/schematic
 import nimcir/spice/ngspice
 
+import designs/lib/riaa
+
 let haveNgspice = findExe("ngspice").len > 0
 
 proc divider(): Netlist =
@@ -889,13 +891,53 @@ test "different nets never touch collinearly nor crowd in parallel":
     check distinctWiresNeverShareCollinearRuns(s)
     check differentNetsRespectSeparation(s)
 
+test "the real RIAA channel routes through the placement-routing feedback":
+  # `designs/lib/riaa.nim`'s `RIAA_CHANNEL` is the case the feedback loop
+  # exists for: under the stronger cross-net rules the `fb` net's first pin is
+  # boxed in, and a single feedback move unblocks it. The recovered scene must
+  # still uphold the hard routing invariants, and the feedback move must not
+  # leave raw symbol bodies overlapping (placement separation may relax, but
+  # symbols never overlap).
+  let s = layout(riaaChannel())
+  check s.parts.len == 12
+  check distinctWiresNeverShareCollinearRuns(s)
+  check differentNetsRespectSeparation(s)
+  for i in 0 ..< s.parts.len:
+    for j in i + 1 ..< s.parts.len:
+      let a = s.parts[i]
+      let b = s.parts[j]
+      let dx = abs(a.x - b.x)
+      let dy = abs(a.y - b.y)
+      check dx >= (a.bodyW + b.bodyW) / 2.0 - 1e-6 or
+            dy >= (a.bodyH + b.bodyH) / 2.0 - 1e-6
+
+test "the placement-routing feedback is deterministic":
+  let a = layout(riaaChannel())
+  let b = layout(riaaChannel())
+  check a.parts.len == b.parts.len
+  for i in 0 ..< a.parts.len:
+    check a.parts[i].x == b.parts[i].x
+    check a.parts[i].y == b.parts[i].y
+    check a.parts[i].rotation == b.parts[i].rotation
+  check a.wires.len == b.wires.len
+  for i in 0 ..< a.wires.len:
+    check a.wires[i].net == b.wires[i].net
+    check a.wires[i].points.len == b.wires[i].points.len
+    for k in 0 ..< a.wires[i].points.len:
+      check a.wires[i].points[k] == b.wires[i].points[k]
+
 test "an impossible route under the stronger rules raises AssertionDefect":
   # A long resistor chain eventually crowds the Hanan lanes until one net can
   # no longer satisfy the 8-unit cross-net separation. `layout` must then fail
   # loudly with an AssertionDefect -- the old unchecked straight fallback would
-  # have drawn a wire across bodies and other nets.
-  expect(AssertionDefect):
+  # have drawn a wire across bodies and other nets. The feedback loop declines
+  # to re-route a sheet this large, and says so in the assertion.
+  try:
     discard layout(resistorChain(37))
+    check false
+  except AssertionDefect as e:
+    check "no reachable pin state on the free grid" in e.msg
+    check "exceed the feedback loop's limit" in e.msg
 
 test "the stronger separation helpers distinguish crowding from crossing":
   # Perpendicular crossing stays allowed.

@@ -62,9 +62,17 @@
 ## picks the one with the fewest bends (ties by lowest node index, then
 ## axis). Sources are seeded in both axis states, making the first graph edge
 ## free; the short pin stubs at either endpoint are outside the graph and so
-## never charged as bends. A pin with no valid path under those rules is an
-## internal invariant failure: `routeNet` raises `doAssert` (`AssertionDefect`)
-## instead of falling back to an unchecked straight line.
+## never charged as bends. A pin with no valid path under those rules is the
+## one *recoverable* routing failure: `routeNet` returns `ok = false` with the
+## first unconnected pin, and `layout` runs a deterministic placement-routing
+## feedback loop (`recoverRouting`) that moves candidate parts -- those with
+## at least two non-ground / non-rail nets, in insertion order -- to nearby
+## grid cells and re-routes, keeping any move that routes strictly further,
+## within a private budget of 4 accepted moves and 65 total attempts (and
+## only for sheets of at most 24 parts, where the re-route is cheap). If no
+## move fixes the sheet, `layout` raises one enriched `AssertionDefect` naming
+## the net, pin, position and budgets; path-integrity failures inside
+## `routeNet` still assert immediately.
 
 import std/[algorithm, math, sets, strutils, tables]
 import ../netlist/types
@@ -484,6 +492,16 @@ type
     distBends: seq[int],
     prev: seq[int]]
 
+  RouteOutcome = object
+    ## The result of routing one signal net. `ok` is false only for the one
+    ## recoverable failure -- no pin state reachable on the free grid -- which
+    ## the placement-routing feedback loop may move out of. Every
+    ## path-integrity failure inside `routeNet` is still an immediate
+    ## `doAssert`, because those are internal bugs, never placement problems.
+    ok: bool
+    polys: seq[seq[Point]]
+    failPin: int
+
 proc lexBefore(l1: float, b1: int, l2: float, b2: int): bool {.inline.} =
   ## Strict lexicographic order on (Manhattan length, bend count): a route is
   ## better only when it is shorter, or exactly as short with fewer bends.
@@ -718,7 +736,7 @@ proc buildFreeGrid(obstacles: seq[Obstacle]):
 proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
               parts: seq[SchematicPart], obstacles: seq[Obstacle],
               free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
-              occ: var seq[OccSeg], netName: string): seq[seq[Point]] =
+              occ: var seq[OccSeg], netName: string): RouteOutcome =
   ## Routes one signal net as an occupancy-aware tree. The first connected pin
   ## is pin 0; every later pin is connected to the closest point already in
   ## the tree by a shortest path -- lexicographically (Manhattan length, then
@@ -731,10 +749,13 @@ proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
   ## and ends at the pin it connects, so the union of the polylines covers the
   ## tree exactly once and two wires of the net share at most a vertex.
   ##
-  ## A pin that cannot be reached on the free grid under those rules is an
-  ## internal invariant failure -- the free grid is complete for orthogonal
-  ## obstacle-avoiding paths, so `layout` asserts rather than drawing an
-  ## unchecked straight fallback that would cross bodies or other nets.
+  ## A pin that cannot be reached on the free grid under those rules is the
+  ## one *recoverable* failure: the outcome is `ok = false` with `failPin` set
+  ## to the first unconnected pin, and the placement-routing feedback loop may
+  ## move parts and try again. Every path-integrity failure below is still an
+  ## immediate `doAssert` -- those are internal bugs, never a case to paper
+  ## over with an unchecked straight fallback that would cross bodies or other
+  ## nets.
   var nodes: seq[Point]
   var pinNode: seq[int]
   for pin in pins:
@@ -763,13 +784,14 @@ proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
     for j in nbrs:
       adj[base + i].add base + j
 
-  if pins.len < 2: return @[]
+  if pins.len < 2: return RouteOutcome(ok: true)
 
   var connected = newSeq[bool](pins.len)
   connected[0] = true
   var inTree = newSeq[bool](v)
   inTree[pinNode[0]] = true
   var first = true
+  var polys: seq[seq[Point]]
 
   while true:
     var un = -1
@@ -810,9 +832,8 @@ proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
         bestBends = sb
         bestState = s
 
-    doAssert bestState >= 0,
-      "schematic route: net \"" & netName &
-      "\" has no reachable pin state on the free grid"
+    if bestState < 0:
+      return RouteOutcome(ok: false, failPin: un)
     let pathIdx = pathToState(rr.prev, bestState)
     doAssert pathIdx.len > 0,
       "schematic route: empty path for net \"" & netName & "\""
@@ -846,7 +867,7 @@ proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
       doAssert sameCoord(deduped[k].x, deduped[k + 1].x) or
                 sameCoord(deduped[k].y, deduped[k + 1].y),
         "schematic route: non-axis-aligned segment for net \"" & netName & "\""
-    result.add deduped
+    polys.add deduped
 
     for idx in pathIdx: inTree[idx] = true
     for k in 0 ..< deduped.len - 1:
@@ -860,6 +881,8 @@ proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
         if not inTree[t] and pointOnSegment(nodes[t], a, b):
           inTree[t] = true
     connected[bestPin] = true
+
+  RouteOutcome(ok: true, polys: polys)
 
 proc addSegments(adj: var Table[Point, HashSet[Point]], poly: seq[Point]) =
   for i in 0 ..< poly.len - 1:
@@ -1308,182 +1331,36 @@ proc portDirection(n: Net): PortDirection =
     if portDrives(p.component): return pdUnspecified
   pdInput
 
-proc layout*(nl: Netlist): Schematic =
-  ## Places and routes `nl` into a renderer-neutral scene. Read-only with
-  ## respect to the netlist; deterministic given the same netlist object.
-  result.title = nl.name
+type
+  RouteScene = object
+    ## Everything between placement and label placement, produced from a
+    ## candidate set of centres and rotations: the placed parts and ports, the
+    ## routed wires and junctions, and the maps the label pass still needs.
+    ## `ok` is false when a signal net could not be routed; `failOrd` is that
+    ## net's ordinal among signal nets (a later failure is further progress).
+    ok: bool
+    failOrd: int
+    failNet: string
+    failPin: int
+    failPt: Point
+    parts: seq[SchematicPart]
+    ports: seq[SchematicPort]
+    wires: seq[SchematicWire]
+    junctions: seq[SchematicJunction]
+    pinPos: Table[string, Point]
+    partIdxByDesig: Table[string, int]
+    portedNets: HashSet[string]
+    railLabelReqs: seq[tuple[text: string, at, dir: Point]]
 
-  var comps: seq[Component]
-  for _, c in nl.components: comps.add c
-  let n = comps.len
-
-  var syms = newSeq[SymbolDef](n)
-  for i, c in comps: syms[i] = symbolFor(c)
-
-  # --- placement: golden-angle seed, then Fruchterman-Reingold ------------
-  var pos = newSeq[Point](n)
-  for i in 0 ..< n:
-    let t = float(i) * 2.399963229728653
-    let r = 70.0 * sqrt(float(i + 1))
-    pos[i] = Point(x: r * cos(t), y: r * sin(t))
-
-  var idxOf = initTable[string, int]()
-  for i, c in comps: idxOf[c.designator] = i
-
-  # Orientation is co-optimised with placement: the attraction force below acts
-  # pin-to-pin, so it needs each part's rotation, and the rotation that
-  # minimises a part's wire depends on where its neighbours have been pushed.
-  # Each iteration re-picks every rotation from a *snapshot* of the current
-  # centres and rotations (fresh-write, snapshot-read), so the result never
-  # depends on the order parts are visited. The last stretch of iterations
-  # leaves rotation frozen so the centres settle against a fixed orientation,
-  # and a final pass after separation gives the definitive assignment.
-  var rots = newSeq[float](n)
-
-  let k = 110.0
-  let iterations = 250
-  let temp0 = 2.0 * k
-  for it in 0 ..< iterations:
-    let temp = temp0 * (1.0 - float(it) / float(iterations))
-    var disp = newSeq[Point](n)
-
-    if it < iterations - 30:
-      let pw = pinWorldPositions(comps, syms, pos, rots)
-      var newRots = rots
-      for i in 0 ..< n:
-        newRots[i] = bestRotation(syms[i], comps[i], pos[i], rots[i], pw, grid)
-      rots = newRots
-    let pinWorld = pinWorldPositions(comps, syms, pos, rots)
-
-    for i in 0 ..< n:
-      for j in i + 1 ..< n:
-        let dx = pos[i].x - pos[j].x
-        let dy = pos[i].y - pos[j].y
-        var d = sqrt(dx * dx + dy * dy)
-        if d < 0.01: d = 0.01
-        let f = k * k / d
-        let fx = dx / d * f
-        let fy = dy / d * f
-        disp[i].x += fx
-        disp[i].y += fy
-        disp[j].x -= fx
-        disp[j].y -= fy
-
-    for _, net in nl.nets:
-      if isGround(net): continue
-      let w = if isRail(net): 0.35 else: 1.0
-      # Pin-to-pin, not centre-to-centre: a net with pins on three parts pulls
-      # each pair together, and a parallel pair sharing two nets is pulled by
-      # both wires at once -- so its lowest-energy rest is the two parts side
-      # by side with both pin pairs short, which centre-to-centre could never
-      # express (both nets were the same centre vector, i.e. one doubled tug
-      # toward overlap).
-      let ps = net.pins
-      for a in 0 ..< ps.len:
-        for b in a + 1 ..< ps.len:
-          let ca = ps[a].component
-          let cb = ps[b].component
-          if ca == nil or cb == nil or ca.designator == cb.designator: continue
-          if ca.netlist != nl or cb.netlist != nl: continue
-          if not (idxOf.hasKey(ca.designator) and
-                  idxOf.hasKey(cb.designator)): continue
-          let i = idxOf[ca.designator]
-          let j = idxOf[cb.designator]
-          let pa = pinWorld.getOrDefault(pinKey(ca, ps[a].name), pos[i])
-          let pb = pinWorld.getOrDefault(pinKey(cb, ps[b].name), pos[j])
-          let dx = pa.x - pb.x
-          let dy = pa.y - pb.y
-          var d = sqrt(dx * dx + dy * dy)
-          if d < 0.01: d = 0.01
-          let f = d * d / k * w
-          let fx = dx / d * f
-          let fy = dy / d * f
-          disp[i].x -= fx
-          disp[i].y -= fy
-          disp[j].x += fx
-          disp[j].y += fy
-
-    for i in 0 ..< n:
-      disp[i].x -= pos[i].x * 0.08
-      disp[i].y -= pos[i].y * 0.08
-
-    for i in 0 ..< n:
-      let d = sqrt(disp[i].x * disp[i].x + disp[i].y * disp[i].y)
-      if d > 0.0:
-        let lim = min(d, temp)
-        pos[i].x += disp[i].x / d * lim
-        pos[i].y += disp[i].y / d * lim
-
-  # Snap centres to the grid, normalising -0.0 away so hashing stays exact.
-  for i in 0 ..< n:
-    pos[i].x = round(pos[i].x / grid) * grid
-    pos[i].y = round(pos[i].y / grid) * grid
-    if abs(pos[i].x) < 1e-9: pos[i].x = 0.0
-    if abs(pos[i].y) < 1e-9: pos[i].y = 0.0
-
-  # --- separation: inflated bodies never overlap, channels remain ---------
-  # Each component is placed in deterministic order at the nearest grid cell
-  # whose inflated body is clear of every already-placed body. Searching an
-  # expanding ring outward from the force-layout position keeps the result
-  # close to the layout while guaranteeing non-overlap (no best-effort pass).
-  var ohw = newSeq[float](n)
-  var ohh = newSeq[float](n)
-  for i in 0 ..< n:
-    ohw[i] = syms[i].bodyW / 2.0 + placementPad
-    ohh[i] = syms[i].bodyH / 2.0 + placementPad
-
-  let maxR = max(64, 4 * n)
-  var placed: seq[int]
-  for i in 0 ..< n:
-    let cx = pos[i].x
-    let cy = pos[i].y
-    var done = false
-    for r in 0 .. maxR:
-      for dy in -r .. r:
-        for dx in -r .. r:
-          if max(abs(dx), abs(dy)) != r: continue
-          let x = cx + float(dx) * grid
-          let y = cy + float(dy) * grid
-          if not overlapsAny(i, x, y, pos, ohw, ohh, placed):
-            pos[i] = Point(x: x, y: y)
-            done = true
-            break
-        if done: break
-      if done: break
-    doAssert done,
-      "schematic placement could not separate component " & comps[i].designator
-    placed.add i
-
-  # --- packing: blocks that share no signal net are pulled back together --
-  # The force layout's only long-range counter-force is a weak gravity, so
-  # two disconnected sub-circuits drift as far apart as the repulsion carries
-  # them. Group the parts by signal-net connectivity and shelf-pack the group
-  # bounding boxes with a fixed gutter. A rigid grid-snapped translation per
-  # group, so separation and the grid snap both survive it.
-  let group = groupsOf(nl, comps, pos, idxOf)
-  packGroups(pos, ohw, ohh, group)
-
-  # --- orientation: the definitive assignment once the centres are final ---
-  # Separation and packing have moved parts since the loop froze rotation, so
-  # re-pick every one from the settled centres. One pass, snapshot-read and
-  # fresh-write like the loop, and with no hysteresis -- this is the answer,
-  # not an increment toward it.
-  block:
-    let pw = pinWorldPositions(comps, syms, pos, rots)
-    var newRots = rots
-    for i in 0 ..< n:
-      newRots[i] = bestRotation(syms[i], comps[i], pos[i], rots[i], pw, 0.0)
-    rots = newRots
-
-  # --- leaf cleanup: a one-signal-net part snapped beside its net-mate ----
-  # A part with a single non-ground / non-rail net still sits and points
-  # wherever its one spring left it. Pull each up against the pin it connects
-  # to and turn it to face there, so the router draws a short straight stub
-  # rather than a long detour. Last, so it owns both the position and the
-  # orientation of the leaves it touches.
-  leafSnap(comps, syms, pos, rots, ohw, ohh, idxOf)
-
-  # --- parts, with absolute pin positions --------------------------------
+proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
+                pos: seq[Point], rots: seq[float],
+                idxOf: Table[string, int]): RouteScene =
+  ## Build the routed scene for the given centres/rotations. Pure and
+  ## deterministic. `ok` is false only when `routeNet` reports an unreachable
+  ## pin, the one recoverable routing failure; everything else remains an
+  ## immediate assertion. Attempt zero (`layout`'s first call) passes through
+  ## this proc unchanged, so a netlist that already routes produces exactly
+  ## the scene it did before the feedback loop existed.
   var pinPos = initTable[string, Point]()
   var partIdxByDesig = initTable[string, int]()
   for i, c in comps:
@@ -1669,6 +1546,7 @@ proc layout*(nl: Netlist): Schematic =
         if net.name.len > 0:
           railLabelReqs.add (text: net.name, at: e, dir: dir)
 
+  var sigOrd = 0
   for _, net in nl.nets:
     if isGroundHere(net) or isRailHere(net): continue
     var pins: seq[tuple[pt: Point, partIdx: int, esc: Point]]
@@ -1682,17 +1560,340 @@ proc layout*(nl: Netlist): Schematic =
     if portConn.hasKey(net.name):
       let pc = portConn[net.name]
       pins.add (pt: pc.at, partIdx: 0, esc: pc.inward)
-    if pins.len < 2: continue
+    if pins.len < 2:
+      inc sigOrd
+      continue
     var adj = initTable[Point, HashSet[Point]]()
-    for poly in routeNet(pins, result.parts, obstacles, free, occ, net.name):
+    let ro = routeNet(pins, result.parts, obstacles, free, occ, net.name)
+    if not ro.ok:
+      result.ok = false
+      result.failOrd = sigOrd
+      result.failNet = net.name
+      result.failPin = ro.failPin
+      if ro.failPin >= 0 and ro.failPin < pins.len:
+        result.failPt = pins[ro.failPin].pt
+      return
+    for poly in ro.polys:
       result.wires.add SchematicWire(net: net.name, kind: wkSignal,
                                      points: poly)
       addSegments(adj, poly)
     for p, nbrs in adj:
       if nbrs.len >= 3:
         result.junctions.add SchematicJunction(net: net.name, x: p.x, y: p.y)
+    inc sigOrd
 
   result.junctions.sort(cmpJunction)
+  result.ok = true
+  result.pinPos = pinPos
+  result.partIdxByDesig = partIdxByDesig
+  result.portedNets = portedNets
+  result.railLabelReqs = railLabelReqs
+
+proc recomputeRotations(comps: seq[Component], syms: seq[SymbolDef],
+                        pos: seq[Point], rots: seq[float]): seq[float] =
+  ## The same definitive rotation pass `layout` runs after separation: one
+  ## snapshot-read, fresh-write sweep with no hysteresis. Used after a
+  ## feedback move so a moved part's neighbours may re-orient; `leafSnap` is
+  ## deliberately not rerun.
+  let pw = pinWorldPositions(comps, syms, pos, rots)
+  result = rots
+  for i in 0 ..< comps.len:
+    result[i] = bestRotation(syms[i], comps[i], pos[i], rots[i], pw, 0.0)
+
+proc feedbackCandidateParts(comps: seq[Component]): seq[int] =
+  ## Parts the feedback loop may move, in insertion order: only parts with at
+  ## least two non-ground / non-rail nets. A leaf (one signal net) has already
+  ## been snapped by `leafSnap`, and a rail-only part has no tree route to
+  ## unblock; moving either would not be followed by `leafSnap`, so the loop
+  ## leaves both alone.
+  for i, c in comps:
+    var signal = 0
+    for _, p in c.pins:
+      if p.net != nil and not isGround(p.net) and not isRail(p.net):
+        inc signal
+        if signal >= 2: break
+    if signal >= 2: result.add i
+
+const
+  feedbackAcceptedBudget = 4
+    ## Most moves the placement-routing feedback loop may keep.
+  feedbackAttemptBudget = 65
+    ## Most candidate moves the feedback loop may try in total.
+  feedbackMaxRadius = 4
+    ## Furthest grid step a candidate move may take a part from its current
+    ## centre; each part's rings are searched nearest-first.
+  feedbackMaxParts = 24
+    ## Feedback is only attempted on sheets of at most this many components.
+    ## Every candidate move re-runs the whole route, which is O(parts^4) in
+    ## the worst case; on a crowded large sheet that cost buys nothing, so a
+    ## failure there is reported immediately after attempt zero.
+
+proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
+                    pos: seq[Point], rots: seq[float],
+                    idxOf: Table[string, int]): RouteScene =
+  ## The placement-routing feedback loop. When `routeScene` cannot route a
+  ## signal net it tries deterministic single-part moves and keeps any move
+  ## that routes strictly further than the best layout so far, up to
+  ## `feedbackAcceptedBudget` accepted moves and `feedbackAttemptBudget`
+  ## candidates. Movable parts are `feedbackCandidateParts` (two or more
+  ## signal nets), in insertion order; each is tried on the rings of grid
+  ## cells around its current centre, nearest first, up to
+  ## `feedbackMaxRadius`. A candidate cell is rejected only when it would
+  ## overlap another part's *raw* body -- the placement separation clearance
+  ## is allowed to relax during recovery, but symbols never overlap. After a
+  ## move the eligible rotations are recomputed (`recomputeRotations`);
+  ## `leafSnap` is not rerun.
+  var best = routeScene(nl, comps, syms, pos, rots, idxOf)
+  if best.ok: return best
+
+  if comps.len > feedbackMaxParts:
+    doAssert false,
+      "schematic route: net \"" & best.failNet &
+      "\" pin " & $best.failPin & " at (" & $best.failPt.x & ", " &
+      $best.failPt.y & ") has no reachable pin state on the free grid; " &
+      $comps.len & " parts exceed the feedback loop's limit of " &
+      $feedbackMaxParts
+
+  var bestPos = pos
+  var bestRots = rots
+  var accepted = 0
+  var attempts = 0
+  var allParts = newSeq[int](comps.len)
+  for i in 0 ..< comps.len: allParts[i] = i
+  var rawW = newSeq[float](comps.len)
+  var rawH = newSeq[float](comps.len)
+  for i in 0 ..< comps.len:
+    rawW[i] = syms[i].bodyW / 2.0
+    rawH[i] = syms[i].bodyH / 2.0
+
+  let order = feedbackCandidateParts(comps)
+
+  while accepted < feedbackAcceptedBudget and attempts < feedbackAttemptBudget and
+        not best.ok:
+    var improved = false
+    for partIdx in order:
+      for r in 1 .. feedbackMaxRadius:
+        for dy in -r .. r:
+          for dx in -r .. r:
+            if max(abs(dx), abs(dy)) != r: continue
+            if attempts >= feedbackAttemptBudget: break
+            inc attempts
+            let x = bestPos[partIdx].x + float(dx) * grid
+            let y = bestPos[partIdx].y + float(dy) * grid
+            if overlapsAny(partIdx, x, y, bestPos, rawW, rawH, allParts): continue
+            var candPos = bestPos
+            candPos[partIdx] = Point(x: x, y: y)
+            let candRots = recomputeRotations(comps, syms, candPos, bestRots)
+            let cand = routeScene(nl, comps, syms, candPos, candRots, idxOf)
+            if cand.ok or cand.failOrd > best.failOrd:
+              best = cand
+              bestPos = candPos
+              bestRots = candRots
+              inc accepted
+              improved = true
+              break
+          if improved: break
+        if improved: break
+      if improved: break
+    if not improved: break
+
+  if not best.ok:
+    doAssert false,
+      "schematic route: net \"" & best.failNet &
+      "\" pin " & $best.failPin & " at (" & $best.failPt.x & ", " &
+      $best.failPt.y & ") has no reachable pin state on the free grid after " &
+      $accepted & " accepted moves and " & $attempts & " attempts"
+  best
+
+proc layout*(nl: Netlist): Schematic =
+  ## Places and routes `nl` into a renderer-neutral scene. Read-only with
+  ## respect to the netlist; deterministic given the same netlist object.
+  result.title = nl.name
+
+  var comps: seq[Component]
+  for _, c in nl.components: comps.add c
+  let n = comps.len
+
+  var syms = newSeq[SymbolDef](n)
+  for i, c in comps: syms[i] = symbolFor(c)
+
+  # --- placement: golden-angle seed, then Fruchterman-Reingold ------------
+  var pos = newSeq[Point](n)
+  for i in 0 ..< n:
+    let t = float(i) * 2.399963229728653
+    let r = 70.0 * sqrt(float(i + 1))
+    pos[i] = Point(x: r * cos(t), y: r * sin(t))
+
+  var idxOf = initTable[string, int]()
+  for i, c in comps: idxOf[c.designator] = i
+
+  # Orientation is co-optimised with placement: the attraction force below acts
+  # pin-to-pin, so it needs each part's rotation, and the rotation that
+  # minimises a part's wire depends on where its neighbours have been pushed.
+  # Each iteration re-picks every rotation from a *snapshot* of the current
+  # centres and rotations (fresh-write, snapshot-read), so the result never
+  # depends on the order parts are visited. The last stretch of iterations
+  # leaves rotation frozen so the centres settle against a fixed orientation,
+  # and a final pass after separation gives the definitive assignment.
+  var rots = newSeq[float](n)
+
+  let k = 110.0
+  let iterations = 250
+  let temp0 = 2.0 * k
+  for it in 0 ..< iterations:
+    let temp = temp0 * (1.0 - float(it) / float(iterations))
+    var disp = newSeq[Point](n)
+
+    if it < iterations - 30:
+      let pw = pinWorldPositions(comps, syms, pos, rots)
+      var newRots = rots
+      for i in 0 ..< n:
+        newRots[i] = bestRotation(syms[i], comps[i], pos[i], rots[i], pw, grid)
+      rots = newRots
+    let pinWorld = pinWorldPositions(comps, syms, pos, rots)
+
+    for i in 0 ..< n:
+      for j in i + 1 ..< n:
+        let dx = pos[i].x - pos[j].x
+        let dy = pos[i].y - pos[j].y
+        var d = sqrt(dx * dx + dy * dy)
+        if d < 0.01: d = 0.01
+        let f = k * k / d
+        let fx = dx / d * f
+        let fy = dy / d * f
+        disp[i].x += fx
+        disp[i].y += fy
+        disp[j].x -= fx
+        disp[j].y -= fy
+
+    for _, net in nl.nets:
+      if isGround(net): continue
+      let w = if isRail(net): 0.35 else: 1.0
+      # Pin-to-pin, not centre-to-centre: a net with pins on three parts pulls
+      # each pair together, and a parallel pair sharing two nets is pulled by
+      # both wires at once -- so its lowest-energy rest is the two parts side
+      # by side with both pin pairs short, which centre-to-centre could never
+      # express (both nets were the same centre vector, i.e. one doubled tug
+      # toward overlap).
+      let ps = net.pins
+      for a in 0 ..< ps.len:
+        for b in a + 1 ..< ps.len:
+          let ca = ps[a].component
+          let cb = ps[b].component
+          if ca == nil or cb == nil or ca.designator == cb.designator: continue
+          if ca.netlist != nl or cb.netlist != nl: continue
+          if not (idxOf.hasKey(ca.designator) and
+                  idxOf.hasKey(cb.designator)): continue
+          let i = idxOf[ca.designator]
+          let j = idxOf[cb.designator]
+          let pa = pinWorld.getOrDefault(pinKey(ca, ps[a].name), pos[i])
+          let pb = pinWorld.getOrDefault(pinKey(cb, ps[b].name), pos[j])
+          let dx = pa.x - pb.x
+          let dy = pa.y - pb.y
+          var d = sqrt(dx * dx + dy * dy)
+          if d < 0.01: d = 0.01
+          let f = d * d / k * w
+          let fx = dx / d * f
+          let fy = dy / d * f
+          disp[i].x -= fx
+          disp[i].y -= fy
+          disp[j].x += fx
+          disp[j].y += fy
+
+    for i in 0 ..< n:
+      disp[i].x -= pos[i].x * 0.08
+      disp[i].y -= pos[i].y * 0.08
+
+    for i in 0 ..< n:
+      let d = sqrt(disp[i].x * disp[i].x + disp[i].y * disp[i].y)
+      if d > 0.0:
+        let lim = min(d, temp)
+        pos[i].x += disp[i].x / d * lim
+        pos[i].y += disp[i].y / d * lim
+
+  # Snap centres to the grid, normalising -0.0 away so hashing stays exact.
+  for i in 0 ..< n:
+    pos[i].x = round(pos[i].x / grid) * grid
+    pos[i].y = round(pos[i].y / grid) * grid
+    if abs(pos[i].x) < 1e-9: pos[i].x = 0.0
+    if abs(pos[i].y) < 1e-9: pos[i].y = 0.0
+
+  # --- separation: inflated bodies never overlap, channels remain ---------
+  # Each component is placed in deterministic order at the nearest grid cell
+  # whose inflated body is clear of every already-placed body. Searching an
+  # expanding ring outward from the force-layout position keeps the result
+  # close to the layout while guaranteeing non-overlap (no best-effort pass).
+  var ohw = newSeq[float](n)
+  var ohh = newSeq[float](n)
+  for i in 0 ..< n:
+    ohw[i] = syms[i].bodyW / 2.0 + placementPad
+    ohh[i] = syms[i].bodyH / 2.0 + placementPad
+
+  let maxR = max(64, 4 * n)
+  var placed: seq[int]
+  for i in 0 ..< n:
+    let cx = pos[i].x
+    let cy = pos[i].y
+    var done = false
+    for r in 0 .. maxR:
+      for dy in -r .. r:
+        for dx in -r .. r:
+          if max(abs(dx), abs(dy)) != r: continue
+          let x = cx + float(dx) * grid
+          let y = cy + float(dy) * grid
+          if not overlapsAny(i, x, y, pos, ohw, ohh, placed):
+            pos[i] = Point(x: x, y: y)
+            done = true
+            break
+        if done: break
+      if done: break
+    doAssert done,
+      "schematic placement could not separate component " & comps[i].designator
+    placed.add i
+
+  # --- packing: blocks that share no signal net are pulled back together --
+  # The force layout's only long-range counter-force is a weak gravity, so
+  # two disconnected sub-circuits drift as far apart as the repulsion carries
+  # them. Group the parts by signal-net connectivity and shelf-pack the group
+  # bounding boxes with a fixed gutter. A rigid grid-snapped translation per
+  # group, so separation and the grid snap both survive it.
+  let group = groupsOf(nl, comps, pos, idxOf)
+  packGroups(pos, ohw, ohh, group)
+
+  # --- orientation: the definitive assignment once the centres are final ---
+  # Separation and packing have moved parts since the loop froze rotation, so
+  # re-pick every one from the settled centres. One pass, snapshot-read and
+  # fresh-write like the loop, and with no hysteresis -- this is the answer,
+  # not an increment toward it.
+  rots = recomputeRotations(comps, syms, pos, rots)
+
+  # --- leaf cleanup: a one-signal-net part snapped beside its net-mate ----
+  # A part with a single non-ground / non-rail net still sits and points
+  # wherever its one spring left it. Pull each up against the pin it connects
+  # to and turn it to face there, so the router draws a short straight stub
+  # rather than a long detour. Last, so it owns both the position and the
+  # orientation of the leaves it touches.
+  leafSnap(comps, syms, pos, rots, ohw, ohh, idxOf)
+
+  let scene = recoverRouting(nl, comps, syms, pos, rots, idxOf)
+
+  result.parts = scene.parts
+  result.ports = scene.ports
+  result.wires = scene.wires
+  result.junctions = scene.junctions
+  var pinPos = scene.pinPos
+  var partIdxByDesig = scene.partIdxByDesig
+  var portedNets = scene.portedNets
+  var railLabelReqs = scene.railLabelReqs
+
+  # These wrappers mirror the ones inside `routeScene`; the label pass needs
+  # the same rail/ground reading when it decides which nets get a name label.
+  proc ownsPin(p: Pin): bool =
+    p.component != nil and p.component.netlist == nl
+  proc isGroundHere(net: Net): bool =
+    net != nil and isGround(net) and net.kind != ntPower
+  proc isRailHere(net: Net): bool =
+    net != nil and isRail(net) and not isGroundHere(net)
 
   # --- label placement --------------------------------------------------------
   # Part designators/values, signal-net names and supply-rail names are all

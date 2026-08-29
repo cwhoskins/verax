@@ -112,10 +112,30 @@ implements.
   segments are seeded into the shortening test before any ground/supply stub
   is drawn, so a rail stub cannot end up running along one (a case tighter
   placement makes reachable). If no bend-aware path can be found under those
-  rules, `routeNet` raises an internal `doAssert` (`AssertionDefect`) — the
-  free grid is complete for orthogonal obstacle-avoiding paths, so an
-  unreachable pin is a bug, never a case to paper over with an unchecked
-  straight fallback. Within one signal net the wires are grown as a tree
+  rules, `routeNet` returns a recoverable `RouteOutcome` (`ok = false` with
+  the first unconnected `failPin`) instead of raising — ordinary
+  unreachability is a placement problem, not a bug. `layout` then runs a
+  **placement–routing feedback loop** (`recoverRouting`): it tries
+  deterministic single-part moves and keeps any move that routes strictly
+  further than the best layout so far, up to a private budget of
+  `feedbackAcceptedBudget` (4) accepted moves and `feedbackAttemptBudget`
+  (65) total attempts. Movable parts are those with at least two
+  non-ground / non-rail nets (`feedbackCandidateParts`, insertion order);
+  each is tried on rings of grid cells around its current centre up to
+  `feedbackMaxRadius` (4), and a candidate cell is rejected only when it
+  would overlap another part's *raw* body — the placement separation
+  clearance may relax during recovery, but symbols never overlap. After each
+  move the eligible rotations are recomputed (`recomputeRotations`, the same
+  definitive pass used after separation); `leafSnap` is deliberately not
+  rerun. Attempt-zero layouts are untouched: a netlist that already routes
+  takes exactly the path it took before the loop existed. If recovery still
+  cannot route — or the sheet has more than `feedbackMaxParts` (24)
+  components, where re-routing per candidate is too expensive — `layout`
+  raises one enriched `doAssert` naming the net, pin, position and the
+  accepted/attempt budgets. Path-integrity failures inside `routeNet` (empty
+  path, wrong endpoint, occupancy violation, non-axis segment) stay
+  immediate assertions: those are bugs, never placement problems. Within one
+  signal net the wires are grown as a tree
   (each next pin attaches to the closest already-wired point), so the net's
   polylines partition its segments exactly once. Controlled sources (`vcvs`,
   `vccs`, `cccs`, `ccvs`) draw as a rectangular `source4` buffer/controlled
