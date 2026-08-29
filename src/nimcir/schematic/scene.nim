@@ -61,9 +61,13 @@ type
     net*: string
     kind*: WireKind
     points*: seq[Point]
-      ## Axis-aligned polyline. Two distinct wires may share a vertex and may
-      ## cross perpendicularly, but never overlap along a positive-length
-      ## collinear segment (see `layout.nim`).
+      ## Axis-aligned polyline. Two wires of the *same* net may share a vertex
+      ## (and may continue straight through one), but never overlap along a
+      ## positive-length collinear segment. Two wires of *different* nets may
+      ## cross perpendicularly, but never touch collinearly -- not even
+      ## end-to-end -- and keep at least `wireMinSeparation` (8 world units) of
+      ## centreline separation wherever they run parallel and their
+      ## projections overlap (see `layout.nim`).
 
   SchematicJunction* = object
     net*: string

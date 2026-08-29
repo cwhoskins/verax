@@ -99,17 +99,25 @@ implements.
   up through the body, and a rail on a side pin stubs sideways. The glyph
   (`svg.nim`) is drawn perpendicular to whatever direction the stub took. Junction dots
   appear where three or more segments meet. Routing is occupancy-aware and
-  upholds one hard geometric invariant: **two distinct `SchematicWire` objects
-  never share a positive-length collinear segment.** They may share a vertex
-  and may cross perpendicularly; signal routes and rail stubs are emitted in
-  a deterministic order and later geometry is steered or shortened so it only
-  touches what is already there — this includes each **signal pin's escape
-  stub**: those fixed short outward segments are seeded into the shortening
-  test before any ground/supply stub is drawn, so a rail stub cannot end up
-  running along one (a case tighter placement makes reachable). Within one
-  signal net the wires are grown as a tree (each next pin attaches to the
-  closest already-wired point), so the net's polylines partition its segments
-  exactly once. Controlled sources (`vcvs`,
+  upholds one hard geometric invariant, stronger across nets than within one:
+  **two wires of the same net never share a positive-length collinear
+  segment** (they may meet at a vertex and may continue straight through one),
+  while **two wires of different nets never touch collinearly at all — not
+  even end-to-end — and keep at least `wireMinSeparation` (8 world units) of
+  centreline separation wherever they run parallel and their projections
+  overlap.** Different nets may still cross perpendicularly. Signal routes and
+  rail stubs are emitted in a deterministic order and later geometry is
+  steered or shortened so it only touches what is already there — this
+  includes each **signal pin's escape stub**: those fixed short outward
+  segments are seeded into the shortening test before any ground/supply stub
+  is drawn, so a rail stub cannot end up running along one (a case tighter
+  placement makes reachable). If no bend-aware path can be found under those
+  rules, `routeNet` raises an internal `doAssert` (`AssertionDefect`) — the
+  free grid is complete for orthogonal obstacle-avoiding paths, so an
+  unreachable pin is a bug, never a case to paper over with an unchecked
+  straight fallback. Within one signal net the wires are grown as a tree
+  (each next pin attaches to the closest already-wired point), so the net's
+  polylines partition its segments exactly once. Controlled sources (`vcvs`,
   `vccs`, `cccs`, `ccvs`) draw as a rectangular `source4` buffer/controlled
   source with `OUT+`/`OUT-` on the right edge and `IN+`/`IN-` on the left,
   keyed by pin name rather than declaration order, and labelled inside the
@@ -176,7 +184,10 @@ implements.
   a change to a symbol's drawing here needs the matching entry updated there.
   A rotated part is drawn with a `rotate(rotation)` group around its centre;
   its `SchematicLabel`s were placed by `layout` outside any group and rendered
-  after it, so they stay upright. Anything a kind table
+  after it, so they stay upright. **Painter order** is grid, wires, junction
+  dots, part symbols, ports, labels: dots sit on top of the wires they join
+  but under any symbol fill, so a dot that lands at a part pin or port edge
+  never paints over the symbol. Anything a kind table
   does not recognise — and any hierarchical instance — is drawn as a
   **fallback box** (`boxSlots` in `layout.nim`): `ptPower` pins leave the top
   edge, `ptGround` the bottom, `ptInput` the left and `ptOutput` the right,

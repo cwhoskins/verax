@@ -44,12 +44,16 @@
 ## same "refuse to guess, draw a box" stance the rest of the library takes
 ## toward parts it cannot model.
 ##
-## The routing invariant is **no shared collinear runs**: two distinct
-## `SchematicWire` objects may meet at a vertex and may cross perpendicularly,
-## but they never overlap along a positive-length segment. Routing is
-## occupancy-aware -- every emitted signal segment and every ground/supply
-## stub is recorded, and later routes (and later stubs) are shortened or
-## steered so they only touch that geometry, never run along it. Signal nets
+## The routing invariant is **no shared collinear runs within one net, and
+## stronger across nets**: two wires of the same net may meet at a vertex and
+## may continue straight through one, but never overlap along a positive-length
+## segment; two wires of different nets may cross perpendicularly, but never
+## touch collinearly (not even end-to-end) and keep at least
+## `wireMinSeparation` (8 world units) of centreline separation wherever they
+## run parallel and their projections overlap. Routing is occupancy-aware --
+## every emitted signal segment and every ground/supply stub is recorded with
+## its net, and later routes (and later stubs) are shortened or steered so
+## they only touch that geometry, never run along it or crowd it. Signal nets
 ## grow as a tree from the first pin, attaching each next pin to the closest
 ## point already wired, so the per-net polylines partition the tree's segments
 ## exactly once. The path search is **bend-aware**: its state is
@@ -58,7 +62,9 @@
 ## picks the one with the fewest bends (ties by lowest node index, then
 ## axis). Sources are seeded in both axis states, making the first graph edge
 ## free; the short pin stubs at either endpoint are outside the graph and so
-## never charged as bends.
+## never charged as bends. A pin with no valid path under those rules is an
+## internal invariant failure: `routeNet` raises `doAssert` (`AssertionDefect`)
+## instead of falling back to an unchecked straight line.
 
 import std/[algorithm, math, sets, strutils, tables]
 import ../netlist/types
@@ -71,6 +77,13 @@ const
   routingClearance = 12.0
     ## Minimum distance a signal wire keeps from a component body. Routing
     ## obstacles are component bodies inflated by this amount on every side.
+  wireMinSeparation = 8.0
+    ## Minimum centreline distance between two parallel, projection-overlapping
+    ## segments of *different* nets. Two different nets may still cross
+    ## perpendicularly, but may never run side by side closer than this and may
+    ## never touch collinearly (not even end-to-end). Within one net only a
+    ## positive-length collinear overlap is forbidden, so the tree's own
+    ## branches may attach at, and continue straight through, a shared vertex.
   placementPad = 20.0
     ## Placement inflates each body by this much per side. Two bodies placed
     ## at least `2 * placementPad` apart therefore leave their
@@ -132,10 +145,16 @@ type
   OccSeg = object
     ## One already-emitted axis-aligned wire segment. Occupancy is what stops
     ## two distinct `SchematicWire` objects from ever sharing a positive-length
-    ## collinear segment: a new route may cross an occupied segment
-    ## perpendicularly and may share either of its endpoints, but may not run
-    ## along it.
+    ## collinear segment, and across different nets it enforces the stronger
+    ## `wireMinSeparation` rule: a new route may cross an occupied segment
+    ## perpendicularly, but if it runs parallel to one it must stay at least
+    ## `wireMinSeparation` away wherever their projections overlap, and two
+    ## different nets may never touch collinearly -- not even end-to-end.
     a, b: Point
+    net: string
+      ## The net this segment belongs to. Same-net contacts are allowed except
+      ## for a positive-length collinear overlap; different-net contacts are
+      ## held to the stronger rules above.
 
 const boxStub* = 20.0
   ## How far a fallback-box pin sits outside the *drawn* rectangle. `boxSlots`
@@ -309,7 +328,7 @@ proc positiveOverlap(a1, a2, b1, b2: float): bool {.inline.} =
 proc collinearOverlap(a, b, c, d: Point): bool =
   ## True when the axis-aligned segments `a`-`b` and `c`-`d` share any
   ## positive-length collinear portion. Touching at a single point is not an
-  ## overlap, which is what lets two wires meet at a vertex.
+  ## overlap, which is what lets two wires of the *same* net meet at a vertex.
   let av = sameCoord(a.x, b.x)
   let cv = sameCoord(c.x, d.x)
   if av != cv: return false
@@ -317,6 +336,45 @@ proc collinearOverlap(a, b, c, d: Point): bool =
     return sameCoord(a.x, c.x) and positiveOverlap(a.y, b.y, c.y, d.y)
   else:
     return sameCoord(a.y, c.y) and positiveOverlap(a.x, b.x, c.x, d.x)
+
+proc closedIntervalIntersect(a1, a2, b1, b2: float): bool {.inline.} =
+  ## Whether `[a1, a2]` and `[b1, b2]` intersect, even at a single point.
+  let lo = max(min(a1, a2), min(b1, b2))
+  let hi = min(max(a1, a2), max(b1, b2))
+  hi >= lo - 1e-9
+
+proc collinearClosed(a, b, c, d: Point): bool =
+  ## True when the axis-aligned segments `a`-`b` and `c`-`d` lie on the same
+  ## line and their intervals share any point -- a positive-length overlap *or*
+  ## an end-to-end touch. The stronger form of `collinearOverlap`, used only
+  ## across different nets: two different nets may not touch collinearly at
+  ## all, because a wire ending where another begins reads as one continuous
+  ## wire.
+  let av = sameCoord(a.x, b.x)
+  let cv = sameCoord(c.x, d.x)
+  if av != cv: return false
+  if av:
+    return sameCoord(a.x, c.x) and closedIntervalIntersect(a.y, b.y, c.y, d.y)
+  else:
+    return sameCoord(a.y, c.y) and closedIntervalIntersect(a.x, b.x, c.x, d.x)
+
+proc parallelTooClose(a, b, c, d: Point): bool =
+  ## True when the two axis-aligned segments are parallel (same axis) on
+  ## distinct lines whose centreline separation is below `wireMinSeparation`,
+  ## and their projections along that axis overlap by more than a point.
+  ## Perpendicular segments never match (the axes differ), so a perpendicular
+  ## crossing stays allowed.
+  let av = sameCoord(a.x, b.x)
+  let cv = sameCoord(c.x, d.x)
+  if av != cv: return false
+  if av:
+    if sameCoord(a.x, c.x): return false            # collinear, handled above
+    if abs(a.x - c.x) >= wireMinSeparation - 1e-9: return false
+    return positiveOverlap(a.y, b.y, c.y, d.y)
+  else:
+    if sameCoord(a.y, c.y): return false
+    if abs(a.y - c.y) >= wireMinSeparation - 1e-9: return false
+    return positiveOverlap(a.x, b.x, c.x, d.x)
 
 proc pointOnSegment(p, a, b: Point): bool =
   ## True when `p` lies on the closed axis-aligned segment `a`-`b`.
@@ -331,23 +389,37 @@ proc pointOnSegment(p, a, b: Point): bool =
     let hi = max(a.x, b.x)
     return p.x >= lo - 1e-9 and p.x <= hi + 1e-9
 
-proc edgeAllowed(a, b: Point, occ: seq[OccSeg]): bool =
-  ## A candidate routing edge is usable unless it runs along an already
-  ## emitted segment. Perpendicular crossings stay allowed.
+proc edgeAllowed(a, b: Point, netName: string, occ: seq[OccSeg]): bool =
+  ## A candidate routing edge is usable unless it collides with an already
+  ## emitted segment. Within one net only a positive-length collinear overlap
+  ## is forbidden (a new branch may attach at, and continue straight through,
+  ## a shared vertex). Across different nets the rule is stronger: a
+  ## perpendicular crossing stays allowed, but a collinear touch -- even
+  ## end-to-end -- is forbidden, and a parallel segment must keep at least
+  ## `wireMinSeparation` of centreline separation wherever its projection
+  ## overlaps an occupied segment's.
   for s in occ:
-    if collinearOverlap(a, b, s.a, s.b): return false
+    if s.net == netName:
+      if collinearOverlap(a, b, s.a, s.b): return false
+    else:
+      if collinearClosed(a, b, s.a, s.b): return false
+      if parallelTooClose(a, b, s.a, s.b): return false
   true
 
-proc addOcc(occ: var seq[OccSeg], a, b: Point) {.inline.} =
+proc addOcc(occ: var seq[OccSeg], a, b: Point, net: string) {.inline.} =
   if sameCoord(a.x, b.x) and sameCoord(a.y, b.y): return
-  occ.add OccSeg(a: a, b: b)
+  occ.add OccSeg(a: a, b: b, net: net)
 
-proc shortenedStubEnd(p, dir: Point, span: float, occ: seq[OccSeg]): Point =
+proc shortenedStubEnd(p, dir: Point, span: float, netName: string,
+                      occ: seq[OccSeg]): Point =
   ## The end of a rail/ground stub leaving `p` along axis unit vector `dir`
-  ## (one of ±x / ±y) for `span`, shortened just enough that it shares no
-  ## positive-length collinear portion with an occupied segment. Perpendicular
-  ## occupied segments are ignored (a crossing is allowed); only a segment
-  ## collinear with the stub shortens it.
+  ## (one of ±x / ±y) for `span`, shortened just enough that it violates no
+  ## occupancy rule. A perpendicular occupied segment is ignored (a crossing
+  ## is allowed). Against a segment of the *same* net only a positive-length
+  ## collinear overlap shortens the stub; against a segment of a *different*
+  ## net a collinear touch -- even end-to-end -- shortens it, and a parallel
+  ## segment closer than `wireMinSeparation` shortens it to just before the
+  ## two projections overlap.
   ##
   ## `dir` is the pin's outward escape direction, so the stub always juts away
   ## from the body -- a negative-supply pin on a box's bottom edge stubs
@@ -360,17 +432,41 @@ proc shortenedStubEnd(p, dir: Point, span: float, occ: seq[OccSeg]): Point =
     else: (q.x - p.x) * (if dir.x >= 0.0: 1.0 else: -1.0)
   var limit = span
   for s in occ:
-    if vertical:
-      if not (sameCoord(s.a.x, s.b.x) and sameCoord(s.a.x, p.x)): continue
-    else:
-      if not (sameCoord(s.a.y, s.b.y) and sameCoord(s.a.y, p.y)): continue
+    let sVertical = sameCoord(s.a.x, s.b.x)
+    let parallel = if vertical: sVertical else: not sVertical
+    if not parallel: continue
+    let collinear =
+      if vertical: sameCoord(s.a.x, p.x)
+      else: sameCoord(s.a.y, p.y)
     let ta = along(s.a)
     let tb = along(s.b)
     let o1 = min(ta, tb)
     let o2 = max(ta, tb)
-    if o2 <= 1e-9: continue                 # entirely behind the pin
-    if o1 >= span - 1e-9: continue          # entirely past the stub end
-    limit = min(limit, max(0.0, o1))
+    if s.net == netName:
+      # Same net: only a positive-length collinear overlap is forbidden.
+      if not collinear: continue
+      if o2 <= 1e-9: continue               # entirely behind the pin
+      if o1 >= span - 1e-9: continue        # entirely past the stub end
+      limit = min(limit, max(0.0, o1))
+    else:
+      # Different net: no collinear touch, and parallel projections must keep
+      # `wireMinSeparation` of centreline separation.
+      if collinear:
+        if o2 <= 1e-9: continue             # entirely behind the pin
+        if o1 <= 1e-9:
+          limit = 0.0                       # occupied reaches the pin itself
+        else:
+          limit = min(limit, max(0.0, o1 - 1e-6))
+      else:
+        if vertical:
+          if abs(s.a.x - p.x) >= wireMinSeparation - 1e-9: continue
+        else:
+          if abs(s.a.y - p.y) >= wireMinSeparation - 1e-9: continue
+        if o2 <= 1e-9: continue             # entirely behind the pin
+        if o1 <= 1e-9:
+          limit = 0.0                       # overlap starts at the pin
+        else:
+          limit = min(limit, max(0.0, o1))
   if vertical:
     Point(x: p.x, y: p.y + limit * (if dir.y >= 0.0: 1.0 else: -1.0))
   else:
@@ -394,15 +490,16 @@ proc lexBefore(l1: float, b1: int, l2: float, b2: int): bool {.inline.} =
   l1 < l2 - 1e-9 or (abs(l1 - l2) <= 1e-9 and b1 < b2)
 
 proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
-                         sources: seq[int], occ: seq[OccSeg]): RouteResult =
+                         sources: seq[int], occ: seq[OccSeg],
+                         netName: string): RouteResult =
   ## Multi-source bend-aware Dijkstra over the routing graph. The state is
   ## `(node, incoming axis)`, so the cost of leaving a node depends on the
   ## axis the route arrived through; the cost of a route is the lexicographic
   ## pair (Manhattan length, bend count), so among all shortest routes the
   ## fewest-bend one wins. Every source is seeded in *both* axis states at
   ## zero cost, which makes the first graph edge free: a route may leave a
-  ## source in either axis without charging a bend. Edges that would run along
-  ## an occupied segment are skipped.
+  ## source in either axis without charging a bend. Edges that would violate
+  ## the net-aware occupancy rules are skipped (see `edgeAllowed`).
   ##
   ## Determinism is restated on states. A state id is `2*node + axis`
   ## (`raHoriz` first), so equal (length, bends) distances are settled by the
@@ -445,7 +542,7 @@ proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
         if sameCoord(nodes[i].x, nodes[j].x): raVert else: raHoriz
       let t = 2 * j + ord(edgeAxis)
       if used[t]: continue
-      if not edgeAllowed(nodes[i], nodes[j], occ): continue
+      if not edgeAllowed(nodes[i], nodes[j], netName, occ): continue
       let ndLen = result.distLen[u] + manhattan(nodes[i], nodes[j])
       let ndBends = result.distBends[u] + (if inAxis == edgeAxis: 0 else: 1)
       if lexBefore(ndLen, ndBends, result.distLen[t], result.distBends[t]):
@@ -621,16 +718,23 @@ proc buildFreeGrid(obstacles: seq[Obstacle]):
 proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
               parts: seq[SchematicPart], obstacles: seq[Obstacle],
               free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
-              occ: var seq[OccSeg]): seq[seq[Point]] =
+              occ: var seq[OccSeg], netName: string): seq[seq[Point]] =
   ## Routes one signal net as an occupancy-aware tree. The first connected pin
   ## is pin 0; every later pin is connected to the closest point already in
   ## the tree by a shortest path -- lexicographically (Manhattan length, then
   ## bends), so an equal-length route with fewer bends wins -- that keeps body
-  ## clearance and never runs along an occupied segment. Each returned
-  ## polyline is one `SchematicWire`: it starts at the attachment point (a pin
-  ## on the first connection, a tree node afterwards) and ends at the pin it
-  ## connects, so the union of the polylines covers the tree exactly once and
-  ## two wires of the net share at most a vertex.
+  ## clearance, never runs along an occupied segment, and upholds the
+  ## stronger different-net rule: no collinear touch (even end-to-end) and at
+  ## least `wireMinSeparation` between parallel, projection-overlapping
+  ## segments. Each returned polyline is one `SchematicWire`: it starts at the
+  ## attachment point (a pin on the first connection, a tree node afterwards)
+  ## and ends at the pin it connects, so the union of the polylines covers the
+  ## tree exactly once and two wires of the net share at most a vertex.
+  ##
+  ## A pin that cannot be reached on the free grid under those rules is an
+  ## internal invariant failure -- the free grid is complete for orthogonal
+  ## obstacle-avoiding paths, so `layout` asserts rather than drawing an
+  ## unchecked straight fallback that would cross bodies or other nets.
   var nodes: seq[Point]
   var pinNode: seq[int]
   for pin in pins:
@@ -677,7 +781,7 @@ proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
     for i in 0 ..< v:
       if inTree[i]: sources.add i
 
-    let rr = dijkstraFromSources(nodes, adj, sources, occ)
+    let rr = dijkstraFromSources(nodes, adj, sources, occ, netName)
 
     var bestPin = -1
     var bestLen = Inf
@@ -706,13 +810,22 @@ proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
         bestBends = sb
         bestState = s
 
-    var pathIdx: seq[int]
-    if bestState >= 0:
-      pathIdx = pathToState(rr.prev, bestState)
-    if pathIdx.len == 0:
-      # The free grid should always connect an escape point, but keep the old
-      # fallback: route directly from the lowest-index tree node.
-      pathIdx = @[sources[0], pinNode[bestPin]]
+    doAssert bestState >= 0,
+      "schematic route: net \"" & netName &
+      "\" has no reachable pin state on the free grid"
+    let pathIdx = pathToState(rr.prev, bestState)
+    doAssert pathIdx.len > 0,
+      "schematic route: empty path for net \"" & netName & "\""
+    doAssert pathIdx[^1] == pinNode[bestPin],
+      "schematic route: path for net \"" & netName &
+      "\" does not end at its target pin"
+    doAssert inTree[pathIdx[0]],
+      "schematic route: path for net \"" & netName &
+      "\" does not start at the routed tree"
+    for k in 0 ..< pathIdx.high:
+      doAssert edgeAllowed(nodes[pathIdx[k]], nodes[pathIdx[k + 1]], netName, occ),
+        "schematic route: path edge for net \"" & netName &
+        "\" violates occupancy"
 
     var poly: seq[Point]
     if first:
@@ -727,13 +840,19 @@ proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
       if deduped.len == 0 or
          not (sameCoord(deduped[^1].x, p.x) and sameCoord(deduped[^1].y, p.y)):
         deduped.add p
+    doAssert deduped.len >= 2,
+      "schematic route: degenerate polyline for net \"" & netName & "\""
+    for k in 0 ..< deduped.len - 1:
+      doAssert sameCoord(deduped[k].x, deduped[k + 1].x) or
+                sameCoord(deduped[k].y, deduped[k + 1].y),
+        "schematic route: non-axis-aligned segment for net \"" & netName & "\""
     result.add deduped
 
     for idx in pathIdx: inTree[idx] = true
     for k in 0 ..< deduped.len - 1:
       let a = deduped[k]
       let b = deduped[k + 1]
-      addOcc(occ, a, b)
+      addOcc(occ, a, b, netName)
       # Every graph node that this new wire runs through is now part of the
       # net's tree, so a later wire may attach to any point along it (shared
       # vertex) instead of being forced to run along the same segment.
@@ -1421,7 +1540,8 @@ proc layout*(nl: Netlist): Schematic =
               partIdxByDesig.hasKey(p.component.designator)): continue
       let pt = pinPos[key]
       let part = result.parts[partIdxByDesig[p.component.designator]]
-      addOcc(escapeSeeds, pt, pt + escapeDir(part, pt) * routingClearance)
+      addOcc(escapeSeeds, pt, pt + escapeDir(part, pt) * routingClearance,
+             net.name)
 
   # --- interface ports: a fixed column per direction ------------------
   # Each entry of `nl.ports` (declared order -- an `OrderedTable`, iterated
@@ -1535,17 +1655,17 @@ proc layout*(nl: Netlist): Schematic =
     if isGroundHere(net):
       for pin in pins:
         let dir = escapeDir(result.parts[pin.partIdx], pin.pt)
-        let e = shortenedStubEnd(pin.pt, dir, pinSpan, occ & escapeSeeds)
+        let e = shortenedStubEnd(pin.pt, dir, pinSpan, net.name, occ & escapeSeeds)
         result.wires.add SchematicWire(net: net.name, kind: wkGround,
                                        points: @[pin.pt, e])
-        addOcc(occ, pin.pt, e)
+        addOcc(occ, pin.pt, e, net.name)
     elif isRailHere(net):
       for pin in pins:
         let dir = escapeDir(result.parts[pin.partIdx], pin.pt)
-        let e = shortenedStubEnd(pin.pt, dir, pinSpan, occ & escapeSeeds)
+        let e = shortenedStubEnd(pin.pt, dir, pinSpan, net.name, occ & escapeSeeds)
         result.wires.add SchematicWire(net: net.name, kind: wkSupply,
                                        points: @[pin.pt, e])
-        addOcc(occ, pin.pt, e)
+        addOcc(occ, pin.pt, e, net.name)
         if net.name.len > 0:
           railLabelReqs.add (text: net.name, at: e, dir: dir)
 
@@ -1564,7 +1684,7 @@ proc layout*(nl: Netlist): Schematic =
       pins.add (pt: pc.at, partIdx: 0, esc: pc.inward)
     if pins.len < 2: continue
     var adj = initTable[Point, HashSet[Point]]()
-    for poly in routeNet(pins, result.parts, obstacles, free, occ):
+    for poly in routeNet(pins, result.parts, obstacles, free, occ, net.name):
       result.wires.add SchematicWire(net: net.name, kind: wkSignal,
                                      points: poly)
       addSegments(adj, poly)

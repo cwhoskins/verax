@@ -295,15 +295,19 @@ proc renderSvg*(s: Schematic): string =
       # The rail's net name is emitted as an `lrRail` SchematicLabel by
       # `layout` (placed against the finished geometry), not drawn here.
 
+  # Junction dots are painted right after the wires and before any symbol:
+  # a dot marks where three or more segments of one net meet, so it must sit
+  # on top of the wires it joins, but under a part body or port pennant should
+  # one ever touch it (a symbol's white fill is the foreground).
+  for j in s.junctions:
+    L.add "  <circle cx=\"" & num(j.x) & "\" cy=\"" & num(j.y) &
+      "\" r=\"3\" fill=\"#333333\"/>"
+
   for p in s.parts:
     for e in drawPart(p): L.add "  " & e
 
   for p in s.ports:
     for e in drawPort(p): L.add "  " & e
-
-  for j in s.junctions:
-    L.add "  <circle cx=\"" & num(j.x) & "\" cy=\"" & num(j.y) &
-      "\" r=\"3\" fill=\"#333333\"/>"
 
   for lb in s.labels:
     let sz = if lb.size > 0.0: int(lb.size.round) else: 12

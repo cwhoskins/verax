@@ -160,8 +160,8 @@ proc collinearOverlapT(a, b, c, d: Point): bool =
     return abs(a.y - c.y) < 1e-9 and positiveOverlapT(a.x, b.x, c.x, d.x)
 
 proc distinctWiresNeverShareCollinearRuns(s: Schematic): bool =
-  ## The routing invariant: two distinct `SchematicWire` objects may meet at a
-  ## vertex and may cross perpendicularly, but never overlap along a
+  ## The within-net routing invariant: two distinct `SchematicWire` objects may
+  ## meet at a vertex and may cross perpendicularly, but never overlap along a
   ## positive-length collinear segment.
   for i in 0 ..< s.wires.len:
     for k in 0 ..< s.wires[i].points.high:
@@ -173,6 +173,61 @@ proc distinctWiresNeverShareCollinearRuns(s: Schematic): bool =
           if collinearOverlapT(a, b, s.wires[j].points[m],
                                s.wires[j].points[m + 1]):
             return false
+  true
+
+proc closedIntervalIntersectT(a1, a2, b1, b2: float): bool =
+  let lo = max(min(a1, a2), min(b1, b2))
+  let hi = min(max(a1, a2), max(b1, b2))
+  hi >= lo - 1e-9
+
+proc collinearTouchT(a, b, c, d: Point): bool =
+  ## True when the axis-aligned segments a-b and c-d lie on the same line and
+  ## their intervals share any point -- a positive-length overlap *or* an
+  ## end-to-end touch.
+  let av = abs(a.x - b.x) < 1e-9
+  let cv = abs(c.x - d.x) < 1e-9
+  if av != cv: return false
+  if av:
+    return abs(a.x - c.x) < 1e-9 and
+           closedIntervalIntersectT(a.y, b.y, c.y, d.y)
+  else:
+    return abs(a.y - c.y) < 1e-9 and
+           closedIntervalIntersectT(a.x, b.x, c.x, d.x)
+
+proc parallelTooCloseT(a, b, c, d: Point): bool =
+  ## True when the axis-aligned segments are parallel on distinct lines closer
+  ## than 8 world units and their projections along that axis overlap by more
+  ## than a point.
+  const sep = 8.0
+  let av = abs(a.x - b.x) < 1e-9
+  let cv = abs(c.x - d.x) < 1e-9
+  if av != cv: return false
+  if av:
+    if abs(a.x - c.x) < 1e-9: return false
+    if abs(a.x - c.x) >= sep - 1e-9: return false
+    return positiveOverlapT(a.y, b.y, c.y, d.y)
+  else:
+    if abs(a.y - c.y) < 1e-9: return false
+    if abs(a.y - c.y) >= sep - 1e-9: return false
+    return positiveOverlapT(a.x, b.x, c.x, d.x)
+
+proc differentNetsRespectSeparation(s: Schematic): bool =
+  ## The stronger cross-net invariant: two wires of different nets never touch
+  ## collinearly (not even end-to-end) and keep at least 8 world units of
+  ## centreline separation wherever they run parallel and their projections
+  ## overlap.
+  var segs: seq[tuple[net: string, a, b: Point]]
+  for w in s.wires:
+    for k in 0 ..< w.points.high:
+      let a = w.points[k]
+      let b = w.points[k + 1]
+      if abs(a.x - b.x) < 1e-9 and abs(a.y - b.y) < 1e-9: continue
+      segs.add (w.net, a, b)
+  for i in 0 ..< segs.len:
+    for j in 0 ..< i:
+      if segs[i].net == segs[j].net: continue
+      if collinearTouchT(segs[i].a, segs[i].b, segs[j].a, segs[j].b): return false
+      if parallelTooCloseT(segs[i].a, segs[i].b, segs[j].a, segs[j].b): return false
   true
 
 proc labelBoxT(lb: SchematicLabel): tuple[x1, y1, x2, y2: float] =
@@ -476,6 +531,22 @@ test "the source4 symbol renders as a labelled rectangle, not a diamond":
   check ">OUT+</text>" in text
   check ">OUT-</text>" in text
   check "<polygon" notin text
+
+test "junction dots are painted under part symbols":
+  # Painter order: a junction dot sits on top of the wires it joins but under
+  # any symbol fill, so it never paints over a body.
+  var s = Schematic(title: "ord")
+  s.parts.add SchematicPart(designator: "U1", kind: "mcu", name: "", value: "",
+                            symbol: "box", isBox: true,
+                            bodyW: 120.0, bodyH: 80.0, inkW: 80.0, inkH: 40.0,
+                            x: 0.0, y: 0.0, rotation: 0.0)
+  s.junctions.add SchematicJunction(net: "a", x: -60.0, y: 0.0)
+  let text = renderSvg(s)
+  let dot = text.find("r=\"3\"")
+  let body = text.find("fill=\"#fdfdfd\"")
+  check dot >= 0
+  check body >= 0
+  check dot < body
 
 proc blockBBox(s: Schematic, desigs: openArray[string]):
     tuple[x1, y1, x2, y2: float] =
@@ -807,6 +878,45 @@ test "distinct wires never share a positive-length collinear run":
     let s = layout(nl)
     check distinctWiresNeverShareCollinearRuns(s)
 
+test "different nets never touch collinearly nor crowd in parallel":
+  # The stronger cross-net invariant: two different nets may cross
+  # perpendicularly, but never touch collinearly (not even end-to-end) and
+  # keep at least 8 world units of centreline separation wherever they run
+  # parallel and their projections overlap.
+  for nl in [divider(), resistorChain(16), starNet(), twoBlocks(),
+             decoupledMcu()]:
+    let s = layout(nl)
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
+
+test "an impossible route under the stronger rules raises AssertionDefect":
+  # A long resistor chain eventually crowds the Hanan lanes until one net can
+  # no longer satisfy the 8-unit cross-net separation. `layout` must then fail
+  # loudly with an AssertionDefect -- the old unchecked straight fallback would
+  # have drawn a wire across bodies and other nets.
+  expect(AssertionDefect):
+    discard layout(resistorChain(37))
+
+test "the stronger separation helpers distinguish crowding from crossing":
+  # Perpendicular crossing stays allowed.
+  check not parallelTooCloseT(Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0),
+                              Point(x: 5.0, y: -5.0), Point(x: 5.0, y: 5.0))
+  # Parallel, distinct lines 4 < 8 apart, projections overlap -> too close.
+  check parallelTooCloseT(Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0),
+                          Point(x: 0.0, y: 4.0), Point(x: 10.0, y: 4.0))
+  # Parallel, distinct lines exactly 8 apart -> allowed.
+  check not parallelTooCloseT(Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0),
+                              Point(x: 0.0, y: 8.0), Point(x: 10.0, y: 8.0))
+  # Parallel and close, but projections only meet at a point -> allowed.
+  check not parallelTooCloseT(Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0),
+                              Point(x: 10.0, y: 4.0), Point(x: 20.0, y: 4.0))
+  # Collinear end-to-end contact is a touch.
+  check collinearTouchT(Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0),
+                        Point(x: 10.0, y: 0.0), Point(x: 20.0, y: 0.0))
+  # Collinear but separated by a gap is not a touch.
+  check not collinearTouchT(Point(x: 0.0, y: 0.0), Point(x: 10.0, y: 0.0),
+                            Point(x: 11.0, y: 0.0), Point(x: 20.0, y: 0.0))
+
 # --- label placement -------------------------------------------------------
 
 test "no label lands on a wire, a body or another label":
@@ -1027,6 +1137,12 @@ proc portedSubckt(): Netlist =
   for (name, n) in [("IN", inn), ("OUT", outn), ("VP", vp), ("VN", vn),
                     ("BUS", bus), ("DRV", drv), ("NC", nc), ("GND", gnd)]:
     addPort(result, name, n)
+
+test "ports and bend-tested topologies also respect the separation":
+  for nl in [portedSubckt(), bendTee(), transistorAndBox()]:
+    let s = layout(nl)
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
 
 proc portOf(s: Schematic, name: string): SchematicPort =
   for p in s.ports:
