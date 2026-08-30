@@ -116,6 +116,33 @@ type
       ## bidirectional port); 180 -- body extends to the left (an input or an
       ## unspecified port). Never any other value.
 
+  SchematicFallback* = object
+    ## One pin whose signal net could not be routed as a real wire: a net with
+    ## a single dangling pin, or a net whose route failed under the hard
+    ## occupancy rules. It is drawn as a short dashed amber/orange stub leaving
+    ## the pin, capped with an open-endpoint marker, with the exact net name
+    ## labelled at the pin. A fallback is a marker of intent, never
+    ## connectivity: it never joins the occupancy set, never produces a
+    ## junction, and cannot steer or be steered by another net's route.
+    ## `points` is the stub polyline from the pin outward; when even the short
+    ## stub has no room (`points.len == 0`), the fallback is zero-space -- no
+    ## wire, only the marker and label at the pin.
+    net*: string
+      ## The exact net name, used verbatim for the fallback's label.
+    part*: string
+      ## The owning part's designator; "" for a port connection point.
+    pin*: string
+      ## The pin name; "" for a port connection point.
+    x*, y*: float
+      ## The pin position: the marker and label anchor.
+    ex*, ey*: float
+      ## The pin's outward unit escape direction (one of ±x / ±y), used by
+      ## the label pass to keep the fallback name off the side the stub
+      ## leaves from.
+    points*: seq[Point]
+      ## The dashed stub polyline from the pin outward; empty for a
+      ## zero-space fallback.
+
   Schematic* = object
     ## The renderable view of one netlist level: placed parts, per-net wires,
     ## junction dots, net labels and interface ports, plus the world-space
@@ -126,6 +153,7 @@ type
     junctions*: seq[SchematicJunction]
     labels*: seq[SchematicLabel]
     ports*: seq[SchematicPort]
+    fallbacks*: seq[SchematicFallback]
     minX*, minY*, maxX*, maxY*: float
 
 proc `+`*(a, b: Point): Point {.inline.} = Point(x: a.x + b.x, y: a.y + b.y)

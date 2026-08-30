@@ -81,6 +81,44 @@ proc plainDivider(): Netlist =
   discard connect(c1, "2", gnd, ptPassive)
   c1.attrs["value"] = "100n"
 
+proc fullRiaaTop(): Netlist =
+  ## The top sheet of `designs/riaa_preamp.nim`: two `riaaChannel()` instances
+  ## plus the shared supplies. Its four signal nets (`inL`, `outL`, `inR`,
+  ## `outR`) each touch exactly one pin -- the channel box's port -- so each
+  ## is a dangling single-pin net and must be drawn as a fallback marker.
+  result = newNetlist("riaa_top")
+  let gnd = addNet(result, newNet("0", ntGround))
+  let vp = addNet(result, newNet("vp", ntPower))
+  let vn = addNet(result, newNet("vn", ntPower))
+  let inL = addNet(result, newNet("inL"))
+  let outL = addNet(result, newNet("outL"))
+  let inR = addNet(result, newNet("inR"))
+  let outR = addNet(result, newNet("outR"))
+
+  let v1 = addComponent(result, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", vp, ptPower)
+  discard connect(v1, "-", gnd, ptGround)
+  v1.attrs["value"] = "DC 15"
+  let v2 = addComponent(result, newComponent("V2", kind = "voltage_source"))
+  discard connect(v2, "+", vn, ptPower)
+  discard connect(v2, "-", gnd, ptGround)
+  v2.attrs["value"] = "DC -15"
+  let c1 = addComponent(result, newComponent("C1", kind = "capacitor"))
+  discard connect(c1, "1", vp, ptPassive)
+  discard connect(c1, "2", gnd, ptPassive)
+  c1.attrs["value"] = "220u"
+  let c2 = addComponent(result, newComponent("C2", kind = "capacitor"))
+  discard connect(c2, "1", vn, ptPassive)
+  discard connect(c2, "2", gnd, ptPassive)
+  c2.attrs["value"] = "220u"
+
+  var globals = initOrderedTable[string, Net]()
+  globals["0"] = gnd
+  discard instantiate(result, "XL", riaaChannel(), @[inL, outL, vp, vn, gnd],
+                      globals)
+  discard instantiate(result, "XR", riaaChannel(), @[inR, outR, vp, vn, gnd],
+                      globals)
+
 proc partOf(s: Schematic, desig: string): SchematicPart =
   for p in s.parts:
     if p.designator == desig: return p
@@ -230,6 +268,25 @@ proc differentNetsRespectSeparation(s: Schematic): bool =
       if segs[i].net == segs[j].net: continue
       if collinearTouchT(segs[i].a, segs[i].b, segs[j].a, segs[j].b): return false
       if parallelTooCloseT(segs[i].a, segs[i].b, segs[j].a, segs[j].b): return false
+  true
+
+proc fallbacksClearOfWires(s: Schematic): bool =
+  ## A fallback stub is a marker, never connectivity: it must not touch a real
+  ## wire collinearly (not even end-to-end) nor run closer than 8 world units
+  ## to a parallel real wire, exactly as if it were a foreign net. A
+  ## perpendicular crossing stays allowed -- the dashed amber marker reads as
+  ## "unconnected", not as a junction.
+  for f in s.fallbacks:
+    for k in 0 ..< f.points.high:
+      let a = f.points[k]
+      let b = f.points[k + 1]
+      if abs(a.x - b.x) < 1e-9 and abs(a.y - b.y) < 1e-9: continue
+      for w in s.wires:
+        for m in 0 ..< w.points.high:
+          let c = w.points[m]
+          let d = w.points[m + 1]
+          if collinearTouchT(a, b, c, d): return false
+          if parallelTooCloseT(a, b, c, d): return false
   true
 
 proc labelBoxT(lb: SchematicLabel): tuple[x1, y1, x2, y2: float] =
@@ -926,18 +983,102 @@ test "the placement-routing feedback is deterministic":
     for k in 0 ..< a.wires[i].points.len:
       check a.wires[i].points[k] == b.wires[i].points[k]
 
-test "an impossible route under the stronger rules raises AssertionDefect":
+test "the RIAA top sheet's dangling channel ports become fallback markers":
+  # The full stereo design (`designs/riaa_preamp.nim`) is not importable as a
+  # netlist -- it runs `verify` at import -- so this builds its top sheet with
+  # the importable `riaaChannel()` builder. The four channel ports (`inL`,
+  # `outL`, `inR`, `outR`) each carry exactly one pin on the top sheet, so
+  # each must be drawn as a dashed fallback stub rather than vanishing, and
+  # the child channel sheet itself must still route with no fallbacks.
+  let s = layout(fullRiaaTop())
+  check s.fallbacks.len == 4
+  for f in s.fallbacks:
+    check f.net in ["inL", "inR", "outL", "outR"]
+    check f.part in ["XL", "XR"]
+    check f.pin in ["IN", "OUT"]
+    check f.points.len == 2
+  check fallbacksClearOfWires(s)
+  check distinctWiresNeverShareCollinearRuns(s)
+  check differentNetsRespectSeparation(s)
+
+  let child = layout(riaaChannel())
+  check child.fallbacks.len == 0
+
+  # The archive renders the same scene through `renderSvg`; the top sheet's
+  # picture carries the dashed amber markers while the child's does not.
+  let topSvg = renderSvg(s)
+  check "stroke-dasharray=\"6 4\"" in topSvg
+  check "stroke=\"#e67e22\"" in topSvg
+  let childSvg = renderSvg(child)
+  check "stroke-dasharray=\"6 4\"" notin childSvg
+
+  # The public JSON API exposes the same fallback records.
+  let node = sceneToJson(s)
+  check node["fallbacks"].len == 4
+  check node["fallbacks"][0]["net"].getStr in ["inL", "inR", "outL", "outR"]
+
+test "an impossible route falls back to dashed markers, never an assertion":
   # A long resistor chain eventually crowds the Hanan lanes until one net can
-  # no longer satisfy the 8-unit cross-net separation. `layout` must then fail
-  # loudly with an AssertionDefect -- the old unchecked straight fallback would
-  # have drawn a wire across bodies and other nets. The feedback loop declines
-  # to re-route a sheet this large, and says so in the assertion.
-  try:
-    discard layout(resistorChain(37))
-    check false
-  except AssertionDefect as e:
-    check "no reachable pin state on the free grid" in e.msg
-    check "exceed the feedback loop's limit" in e.msg
+  # no longer satisfy the 8-unit cross-net separation. `layout` must then
+  # degrade that net to dashed fallback markers instead of raising -- the old
+  # unchecked straight fallback would have drawn a wire across bodies and
+  # other nets, and the old AssertionDefect made the archive unrenderable. The
+  # real wires that remain still uphold the hard invariants, and the fallbacks
+  # never join them as connectivity.
+  let s = layout(resistorChain(37))
+  check s.fallbacks.len > 0
+  check distinctWiresNeverShareCollinearRuns(s)
+  check differentNetsRespectSeparation(s)
+  check fallbacksClearOfWires(s)
+  for f in s.fallbacks:
+    check f.net.len > 0
+    check f.part.len > 0
+    check f.pin.len > 0
+    check f.points.len == 2
+    check f.points[0] == Point(x: f.x, y: f.y)
+
+test "a single dangling pin is a dashed stub with its exact net name":
+  var nl = newNetlist("dangling")
+  let a = addNet(nl, newNet("a"))
+  let gnd = addNet(nl, newNet("0", ntGround))
+  let r1 = addComponent(nl, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", a, ptPassive)
+  discard connect(r1, "2", gnd, ptPassive)
+  let s = layout(nl)
+  check s.fallbacks.len == 1
+  let f = s.fallbacks[0]
+  check f.net == "a"
+  check f.part == "R1"
+  check f.pin == "1"
+  check f.points.len == 2
+  check f.points[0] == pinPoints(s, "R1", "a")[0]
+  # No signal wire was routed for the dangling net -- only the marker.
+  var routed = false
+  for w in s.wires:
+    if w.net == "a" and w.kind == wkSignal: routed = true
+  check not routed
+  check fallbacksClearOfWires(s)
+  # The exact net name is still labelled at the pin.
+  var saw = false
+  for lb in s.labels:
+    if lb.role == lrNet and lb.text == "a": saw = true
+  check saw
+
+test "a zero-space fallback keeps a public record, marker and label but no wire":
+  var s = Schematic(title: "zero")
+  s.fallbacks.add SchematicFallback(net: "dang", part: "R1", pin: "1",
+                                    x: 40.0, y: 40.0, ex: -1.0, ey: 0.0)
+  s.minX = 0.0; s.minY = 0.0; s.maxX = 100.0; s.maxY = 100.0
+  s.labels.add SchematicLabel(text: "dang", x: 40.0, y: 36.0, anchor: taMiddle,
+                              size: 12.0, role: lrNet, owner: "")
+  let svg = renderSvg(s)
+  check "stroke-dasharray=\"6 4\"" notin svg      # no wire
+  check "stroke=\"#e67e22\"" in svg                # the marker is amber
+  check "<circle" in svg
+  let node = sceneToJson(s)
+  check node["fallbacks"].len == 1
+  check node["fallbacks"][0]["net"].getStr == "dang"
+  check node["fallbacks"][0]["points"].len == 0
 
 test "the stronger separation helpers distinguish crowding from crossing":
   # Perpendicular crossing stays allowed.

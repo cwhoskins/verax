@@ -124,6 +124,12 @@ const
     ## Monospace advance width as a fraction of font size -- matches the
     ## per-character estimates already used for box pin names (`sideChars *
     ## 6.0` at size 9) and port bodies (`portName.len * 8.0` at size 10).
+  fallbackNetName = "\x1f_schematic_fallback"
+    ## A sentinel net name passed to `shortenedStubEnd` when sizing a
+    ## fallback stub. A fallback is not connectivity, so every already-emitted
+    ## wire is treated as a *foreign* net: the stub must never touch one
+    ## collinearly and must keep `wireMinSeparation` from parallel runs,
+    ## exactly like a real route across two nets.
 
 type
   SymbolDef = object
@@ -502,6 +508,16 @@ type
     polys: seq[seq[Point]]
     failPin: int
 
+  ## One endpoint a signal net must connect: a placed part pin, or a port's
+  ## connection point with an explicit inward escape. `pinName` is empty for a
+  ## port point; `fallbackFor` uses it to record *which* pin a fallback
+  ## belongs to.
+  RoutePin = tuple[
+    pt: Point,
+    partIdx: int,
+    esc: Point,
+    pinName: string]
+
 proc lexBefore(l1: float, b1: int, l2: float, b2: int): bool {.inline.} =
   ## Strict lexicographic order on (Manhattan length, bend count): a route is
   ## better only when it is shorter, or exactly as short with fewer bends.
@@ -596,6 +612,29 @@ proc escapeDir(part: SchematicPart, pt: Point): Point =
     Point(x: (if dx >= 0.0: 1.0 else: -1.0), y: 0.0)
   else:
     Point(x: 0.0, y: (if dy >= 0.0: 1.0 else: -1.0))
+
+proc fallbackStub(p: Point, dir: Point, span: float, occ: seq[OccSeg]):
+    seq[Point] =
+  ## The dashed stub for a fallback pin: a short outward segment, shortened
+  ## against every already-emitted wire as if it were a foreign net. An empty
+  ## result means the pin has no room in its escape direction -- a zero-space
+  ## fallback with no wire, only the marker and label at the pin.
+  let e = shortenedStubEnd(p, dir, span, fallbackNetName, occ)
+  if sameCoord(e.x, p.x) and sameCoord(e.y, p.y): return @[]
+  @[p, e]
+
+proc fallbackFor(pin: RoutePin, parts: seq[SchematicPart], netName: string,
+                 occ: seq[OccSeg]): SchematicFallback =
+  ## The public record for one unrouteable pin. The stub direction is the
+  ## pin's normal outward escape (or a port point's inward escape), so the
+  ## dashed marker leaves the body the way a real wire would have.
+  let dir =
+    if pin.esc.x != 0.0 or pin.esc.y != 0.0: pin.esc
+    else: escapeDir(parts[pin.partIdx], pin.pt)
+  result = SchematicFallback(net: netName,
+    part: (if pin.pinName.len > 0: parts[pin.partIdx].designator else: ""),
+    pin: pin.pinName, x: pin.pt.x, y: pin.pt.y, ex: dir.x, ey: dir.y,
+    points: fallbackStub(pin.pt, dir, routingClearance, occ))
 
 # --- label placement --------------------------------------------------------
 # Designator/value text (and net + rail names) is placed here, against the
@@ -733,7 +772,7 @@ proc buildFreeGrid(obstacles: seq[Obstacle]):
           result.adj[i].add j
           result.adj[j].add i
 
-proc routeNet(pins: seq[tuple[pt: Point, partIdx: int, esc: Point]],
+proc routeNet(pins: seq[RoutePin],
               parts: seq[SchematicPart], obstacles: seq[Obstacle],
               free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
               occ: var seq[OccSeg], netName: string): RouteOutcome =
@@ -1347,6 +1386,7 @@ type
     ports: seq[SchematicPort]
     wires: seq[SchematicWire]
     junctions: seq[SchematicJunction]
+    fallbacks: seq[SchematicFallback]
     pinPos: Table[string, Point]
     partIdxByDesig: Table[string, int]
     portedNets: HashSet[string]
@@ -1354,11 +1394,16 @@ type
 
 proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                 pos: seq[Point], rots: seq[float],
-                idxOf: Table[string, int]): RouteScene =
+                idxOf: Table[string, int],
+                withFallbacks = false): RouteScene =
   ## Build the routed scene for the given centres/rotations. Pure and
   ## deterministic. `ok` is false only when `routeNet` reports an unreachable
-  ## pin, the one recoverable routing failure; everything else remains an
-  ## immediate assertion. Attempt zero (`layout`'s first call) passes through
+  ## pin and `withFallbacks` is false -- the one recoverable routing failure,
+  ## which the placement-routing feedback loop may move out of. With
+  ## `withFallbacks` true a net that cannot be routed is not a failure: every
+  ## pin of it is recorded as a `SchematicFallback` and the remaining nets are
+  ## still routed normally, so an impossible route degrades to a dashed marker
+  ## instead of raising. Attempt zero (`layout`'s first call) passes through
   ## this proc unchanged, so a netlist that already routes produces exactly
   ## the scene it did before the feedback loop existed.
   var pinPos = initTable[string, Point]()
@@ -1547,25 +1592,45 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
           railLabelReqs.add (text: net.name, at: e, dir: dir)
 
   var sigOrd = 0
+  var pendingFallbacks: seq[tuple[pin: RoutePin, netName: string]]
   for _, net in nl.nets:
     if isGroundHere(net) or isRailHere(net): continue
-    var pins: seq[tuple[pt: Point, partIdx: int, esc: Point]]
+    var pins: seq[RoutePin]
     for p in net.pins:
       if ownsPin(p):
         let key = pinKey(p.component, p.name)
         if pinPos.hasKey(key) and partIdxByDesig.hasKey(p.component.designator):
           pins.add (pt: pinPos[key],
                     partIdx: partIdxByDesig[p.component.designator],
-                    esc: Point(x: 0.0, y: 0.0))
+                    esc: Point(x: 0.0, y: 0.0),
+                    pinName: p.name)
     if portConn.hasKey(net.name):
       let pc = portConn[net.name]
-      pins.add (pt: pc.at, partIdx: 0, esc: pc.inward)
+      pins.add (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: "")
     if pins.len < 2:
+      # A net with a single pin is a dangling connection: a dashed stub +
+      # marker + label instead of disappearing. The stub is finalised after
+      # every real wire is routed, so it never runs along one. This is not a
+      # routing failure -- `ok` stays true -- so it is recorded in every
+      # route, not only the fallback route.
+      if pins.len == 1:
+        pendingFallbacks.add (pin: pins[0], netName: net.name)
       inc sigOrd
       continue
     var adj = initTable[Point, HashSet[Point]]()
+    let occBefore = occ
     let ro = routeNet(pins, result.parts, obstacles, free, occ, net.name)
     if not ro.ok:
+      if withFallbacks:
+        # `routeNet` may have recorded the net's already-connected branches
+        # in `occ` before it failed; none of them are emitted, so drop them
+        # before the next net routes. The whole net is then drawn as
+        # fallbacks -- a marker at each pin, never a real wire.
+        occ = occBefore
+        for pin in pins:
+          pendingFallbacks.add (pin: pin, netName: net.name)
+        inc sigOrd
+        continue
       result.ok = false
       result.failOrd = sigOrd
       result.failNet = net.name
@@ -1581,6 +1646,12 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       if nbrs.len >= 3:
         result.junctions.add SchematicJunction(net: net.name, x: p.x, y: p.y)
     inc sigOrd
+
+  # Fallback stubs are sized against the *complete* occupancy set, so a
+  # dashed marker never runs along a real wire that routed after the net it
+  # belongs to failed.
+  for req in pendingFallbacks:
+    result.fallbacks.add fallbackFor(req.pin, result.parts, req.netName, occ)
 
   result.junctions.sort(cmpJunction)
   result.ok = true
@@ -1626,7 +1697,7 @@ const
     ## Feedback is only attempted on sheets of at most this many components.
     ## Every candidate move re-runs the whole route, which is O(parts^4) in
     ## the worst case; on a crowded large sheet that cost buys nothing, so a
-    ## failure there is reported immediately after attempt zero.
+    ## failure there is drawn as fallbacks immediately after attempt zero.
 
 proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                     pos: seq[Point], rots: seq[float],
@@ -1642,17 +1713,15 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   ## overlap another part's *raw* body -- the placement separation clearance
   ## is allowed to relax during recovery, but symbols never overlap. After a
   ## move the eligible rotations are recomputed (`recomputeRotations`);
-  ## `leafSnap` is not rerun.
+  ## `leafSnap` is not rerun. When no move fixes the sheet -- or the sheet is
+  ## too large for the loop to be attempted -- the best positions are re-routed
+  ## with fallbacks enabled: an unrouteable net becomes a dashed marker per
+  ## pin instead of an assertion.
   var best = routeScene(nl, comps, syms, pos, rots, idxOf)
   if best.ok: return best
 
   if comps.len > feedbackMaxParts:
-    doAssert false,
-      "schematic route: net \"" & best.failNet &
-      "\" pin " & $best.failPin & " at (" & $best.failPt.x & ", " &
-      $best.failPt.y & ") has no reachable pin state on the free grid; " &
-      $comps.len & " parts exceed the feedback loop's limit of " &
-      $feedbackMaxParts
+    return routeScene(nl, comps, syms, pos, rots, idxOf, withFallbacks = true)
 
   var bestPos = pos
   var bestRots = rots
@@ -1698,11 +1767,8 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     if not improved: break
 
   if not best.ok:
-    doAssert false,
-      "schematic route: net \"" & best.failNet &
-      "\" pin " & $best.failPin & " at (" & $best.failPt.x & ", " &
-      $best.failPt.y & ") has no reachable pin state on the free grid after " &
-      $accepted & " accepted moves and " & $attempts & " attempts"
+    return routeScene(nl, comps, syms, bestPos, bestRots, idxOf,
+                      withFallbacks = true)
   best
 
 proc layout*(nl: Netlist): Schematic =
@@ -1881,6 +1947,7 @@ proc layout*(nl: Netlist): Schematic =
   result.ports = scene.ports
   result.wires = scene.wires
   result.junctions = scene.junctions
+  result.fallbacks = scene.fallbacks
   var pinPos = scene.pinPos
   var partIdxByDesig = scene.partIdxByDesig
   var portedNets = scene.portedNets
@@ -1936,6 +2003,17 @@ proc layout*(nl: Netlist): Schematic =
       if abs(e.x - pt.x) > 1e-6 or abs(e.y - pt.y) > 1e-6:
         leadSegs.add (a: pt, b: e)
 
+  # Fallback stubs are drawn by `svg` like wires (dashed, amber), so a label
+  # must avoid crossing them exactly as it avoids a real wire -- even though
+  # the stub is not connectivity and never appears in `allWires`.
+  var fallbackSegs: seq[tuple[a, b: Point]]
+  for f in result.fallbacks:
+    for k in 0 ..< f.points.high:
+      let a = f.points[k]
+      let b = f.points[k + 1]
+      if abs(a.x - b.x) > 1e-6 or abs(a.y - b.y) > 1e-6:
+        fallbackSegs.add (a: a, b: b)
+
   proc overlapArea(a, b: Rect): float =
     let w = min(a.x2, b.x2) - max(a.x1, b.x1)
     let h = min(a.y2, b.y2) - max(a.y1, b.y1)
@@ -1950,6 +2028,8 @@ proc layout*(nl: Netlist): Schematic =
       for i in 1 ..< w.points.len:
         if segBlocked(w.points[i - 1], w.points[i], ob): result += 1.0e6
     for s in leadSegs:
+      if segBlocked(s.a, s.b, ob): result += 1.0e6
+    for s in fallbackSegs:
       if segBlocked(s.a, s.b, ob): result += 1.0e6
     for k in 0 ..< bodyRects.len:
       if k != skipBody: result += overlapArea(box, bodyRects[k])
@@ -1999,11 +2079,16 @@ proc layout*(nl: Netlist): Schematic =
 
   # Signal-net names: near the net's leftmost-then-topmost owned pin, as before,
   # but now searched around it -- and the anchor pin's own wire leaves along
-  # its escape direction, so that side is tried last.
+  # its escape direction, so that side is tried last. A net drawn as fallbacks
+  # is labelled at each fallback pin instead (below), so its name is not
+  # duplicated by this pass.
+  var fallbackNets = initHashSet[string]()
+  for f in result.fallbacks: fallbackNets.incl f.net
   for _, net in nl.nets:
     if isGroundHere(net) or isRailHere(net): continue
     if net.name.len == 0: continue
     if net.name in portedNets: continue
+    if net.name in fallbackNets: continue
     var anchor: Point
     var anchorEsc: Point
     var have = false
@@ -2030,6 +2115,23 @@ proc layout*(nl: Netlist): Schematic =
     order.add escSide
     let dot: Rect = (anchor.x, anchor.y, anchor.x, anchor.y)
     place(@[(net.name, netLabelSize, lrNet)], dot, order, "", -1)
+
+  # Fallback names: the exact net name at each fallback pin, searched like a
+  # net name but with the pin's escape side -- where the dashed stub leaves --
+  # tried last. A zero-space fallback has no stub but still gets its name at
+  # the pin, so a dangling connection is never anonymous.
+  for f in result.fallbacks:
+    let escSide =
+      if f.ex > 0.5: sRight
+      elif f.ex < -0.5: sLeft
+      elif f.ey > 0.5: sBottom
+      else: sTop
+    var order: seq[Side]
+    for s in [sTop, sRight, sLeft, sBottom]:
+      if s != escSide: order.add s
+    order.add escSide
+    let dot: Rect = (f.x, f.y, f.x, f.y)
+    place(@[(f.net, netLabelSize, lrNet)], dot, order, "", -1)
 
   # Supply-rail names: at the stub end, biased to sit past the glyph. The dot
   # is inflated to the rail glyph's ~10-unit half-extent so the label clears
@@ -2066,6 +2168,9 @@ proc layout*(nl: Netlist): Schematic =
   for w in result.wires:
     for pt in w.points: includePt(pt.x, pt.y)
   for j in result.junctions: includePt(j.x, j.y)
+  for f in result.fallbacks:
+    includePt(f.x, f.y)
+    for pt in f.points: includePt(pt.x, pt.y)
   for lb in result.labels:
     let sz = if lb.size > 0.0: lb.size else: 12.0
     let b = lineBox(lb.x, lb.y, lb.text, lb.anchor, sz)

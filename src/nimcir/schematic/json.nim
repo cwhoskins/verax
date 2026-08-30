@@ -122,6 +122,24 @@ proc sceneToJson*(s: Schematic): JsonNode =
     ports.add o
   result["ports"] = ports
 
+  var fallbacks = newJArray()
+  for f in s.fallbacks:
+    var o = newJObject()
+    o["net"] = %f.net
+    o["part"] = %f.part
+    o["pin"] = %f.pin
+    o["x"] = %f.x
+    o["y"] = %f.y
+    var pts = newJArray()
+    for pt in f.points:
+      var pto = newJObject()
+      pto["x"] = %pt.x
+      pto["y"] = %pt.y
+      pts.add pto
+    o["points"] = pts
+    fallbacks.add o
+  result["fallbacks"] = fallbacks
+
 proc sceneToJson*(nl: Netlist): JsonNode =
   ## Convenience: lay out `nl` and serialize the scene.
   sceneToJson(layout(nl))

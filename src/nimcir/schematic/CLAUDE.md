@@ -26,7 +26,13 @@ implements.
   (left) — never any other value. Its connecting stub is **not** a field: it is
   emitted as an ordinary `wkSignal` wire on the port's net, so a port stays
   inside the occupancy system and the net's polylines rather than being a
-  special case.
+  special case. A `SchematicFallback` is the scene's "could not wire this"
+  record: the exact `net` name, the owning `part`/`pin` ("" for a port
+  connection point), the pin position, the pin's outward `ex`/`ey` escape and
+  a `points` polyline for the dashed marker stub. An empty `points` is a
+  **zero-space** fallback — no wire, only the marker and label at the pin.
+  Fallbacks are stored in `Schematic.fallbacks`, *not* in `wires`, so they
+  never reach the occupancy set or the junction pass.
 - **`layout.nim`** — `layout(nl: Netlist): Schematic`, pure and deterministic.
   Eligible two-terminal parts take one of four orientations (0/90/180/270,
   `rotationChoices`): `bestRotation` picks the one minimising each pin's
@@ -131,8 +137,17 @@ implements.
   takes exactly the path it took before the loop existed. If recovery still
   cannot route — or the sheet has more than `feedbackMaxParts` (24)
   components, where re-routing per candidate is too expensive — `layout`
-  raises one enriched `doAssert` naming the net, pin, position and the
-  accepted/attempt budgets. Path-integrity failures inside `routeNet` (empty
+  re-routes the best positions with fallbacks enabled instead of raising:
+  the unrouteable net contributes no real wires, and every one of its pins
+  becomes a `SchematicFallback` (a short dashed amber/orange stub sized
+  against the complete occupancy set, so it never touches a real wire
+  collinearly nor crowds it in parallel; an empty `points` is a zero-space
+  fallback with only the marker and label at the pin). A signal net with a
+  single dangling pin is treated the same way in *every* route — it is not a
+  routing failure (`ok` stays true), but it is never silently dropped.
+  Fallback stubs are not connectivity: they are finalised after all real
+  wires, are never added to `occ`, and never produce a junction.
+  Path-integrity failures inside `routeNet` (empty
   path, wrong endpoint, occupancy violation, non-axis segment) stay
   immediate assertions: those are bugs, never placement problems. Within one
   signal net the wires are grown as a tree
@@ -168,7 +183,9 @@ implements.
   name, everywhere `layout` walks `net.pins`.
   Finally a **label pass** places every free-standing `SchematicLabel` — each
   non-box part's designator+value as one stacked block, each signal net's name
-  near its leftmost-then-topmost pin, each supply rail's name at its stub — by
+  near its leftmost-then-topmost pin, each supply rail's name at its stub, and
+  each fallback's exact net name at its pin (the fallback net is then skipped
+  by the ordinary net-name pass, so a fallback is never labelled twice) — by
   a first-fit search over candidate spots around the thing named. It measures
   from `inkW`/`inkH`, the *drawn* symbol box, not the pin span, so a resistor's
   designator sits just above its zigzag rather than 40 units past it; a
@@ -176,9 +193,10 @@ implements.
   ones **no pin escapes through** first — right, top, left, bottom — then the
   occupied ones, then the four corners); a candidate is rejected if its text
   box (`0.6·size` per monospace char) crosses any wire, any symbol lead stub,
-  any drawn-ink rect, port body or ground/supply glyph footprint, or a label
-  already placed. A net name's anchor pin has that pin's own escape side tried
-  **last** — its wire leaves there. Placement order
+  any dashed fallback stub, any drawn-ink rect, port body or ground/supply
+  glyph footprint, or a label already placed. A net name's anchor pin has
+  that pin's own escape side tried **last** — its wire leaves there. Placement
+  order
   is parts, then net names, then rail names, each scored against all before
   it; a wire or lead crossing outweighs any body/label overlap, and the
   lowest-penalty candidate wins (earliest on a tie), so a boxed-in label on a
@@ -204,10 +222,15 @@ implements.
   a change to a symbol's drawing here needs the matching entry updated there.
   A rotated part is drawn with a `rotate(rotation)` group around its centre;
   its `SchematicLabel`s were placed by `layout` outside any group and rendered
-  after it, so they stay upright. **Painter order** is grid, wires, junction
-  dots, part symbols, ports, labels: dots sit on top of the wires they join
+  after it, so they stay upright. `drawFallback` renders each
+  `SchematicFallback` as a dashed amber/orange polyline (`stroke-dasharray`)
+  capped with a small open-circle endpoint marker; an empty `points` draws
+  only the marker at the pin. **Painter order** is grid, wires, fallback
+  stubs, junction dots, part symbols, ports, labels: dots sit on top of the
+  wires they join
   but under any symbol fill, so a dot that lands at a part pin or port edge
-  never paints over the symbol. Anything a kind table
+  never paints over the symbol, and a fallback marker stays on the wire layer
+  rather than the symbol layer. Anything a kind table
   does not recognise — and any hierarchical instance — is drawn as a
   **fallback box** (`boxSlots` in `layout.nim`): `ptPower` pins leave the top
   edge, `ptGround` the bottom, `ptInput` the left and `ptOutput` the right,
@@ -231,7 +254,9 @@ implements.
   `writeSceneJsonFile`), for a future interactive frontend that consumes the
   scene without re-parsing the SVG. Each part carries its `rotation` as an
   additive numeric field; ports are a `ports` array with `dir` as a string
-  (`portDirName`). The run archive itself stays SVG-only.
+  (`portDirName`); fallbacks are a `fallbacks` array carrying the exact
+  `net`/`part`/`pin`, the pin `x`/`y`, and the dashed stub `points` (empty
+  for a zero-space fallback). The run archive itself stays SVG-only.
 
 **Dependency direction stays intact**: `schematic` imports only `netlist`, and
 `spice/ngspice` imports `schematic` to archive a per-run SVG while `verify`

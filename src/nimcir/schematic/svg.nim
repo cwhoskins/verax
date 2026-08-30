@@ -247,6 +247,23 @@ proc drawPort(p: SchematicPort): seq[string] =
     "\" fill=\"#ffffff\" stroke=\"#333333\" stroke-width=\"2\"/>"
   result.add textAt(p.x, y + 4.0, p.name, "middle", 10)
 
+proc drawFallback(f: SchematicFallback): seq[string] =
+  ## A dashed amber/orange stub plus an open-endpoint marker. The stub reads
+  ## as "this net is here, and is deliberately not connected" rather than as
+  ## copper: it is dashed, amber, and never joins the occupancy set. A
+  ## zero-space fallback (empty `points`) draws only the marker at the pin.
+  const amber = "#e67e22"
+  if f.points.len >= 2:
+    result.add "<polyline fill=\"none\" stroke=\"" & amber &
+      "\" stroke-width=\"2\" stroke-dasharray=\"6 4\" points=\"" &
+      pointsAttr(f.points) & "\"/>"
+    let e = f.points[^1]
+    result.add "<circle cx=\"" & num(e.x) & "\" cy=\"" & num(e.y) &
+      "\" r=\"4\" fill=\"#ffffff\" stroke=\"" & amber & "\" stroke-width=\"2\"/>"
+  else:
+    result.add "<circle cx=\"" & num(f.x) & "\" cy=\"" & num(f.y) &
+      "\" r=\"4\" fill=\"#ffffff\" stroke=\"" & amber & "\" stroke-width=\"2\"/>"
+
 proc renderSvg*(s: Schematic): string =
   ## The whole scene as one self-contained SVG document.
   let w = s.maxX - s.minX
@@ -294,6 +311,12 @@ proc renderSvg*(s: Schematic): string =
       L.add "  " & bar(p, q, 10.0)
       # The rail's net name is emitted as an `lrRail` SchematicLabel by
       # `layout` (placed against the finished geometry), not drawn here.
+
+  # Fallback stubs are drawn with the wires -- before junction dots and
+  # symbols -- so a marker under a body stays under its white fill, exactly
+  # like a real wire would.
+  for f in s.fallbacks:
+    for e in drawFallback(f): L.add "  " & e
 
   # Junction dots are painted right after the wires and before any symbol:
   # a dot marks where three or more segments of one net meet, so it must sit
