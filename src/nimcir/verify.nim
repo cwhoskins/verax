@@ -680,13 +680,14 @@ proc keepFullSchematic(nl: Netlist) =
   if dir.len == 0: return
   try:
     createDir(dir)
-    writeScenePair(layout(nl), dir / "runFULL")
+    let options = archiveLayoutOptions()
+    writeScenePair(layout(nl, options), dir / "runFULL")
     var seen: seq[string]
     proc walk(n: Netlist) =
       for _, child in n.children:
         if child.name.len > 0 and child.name notin seen:
           seen.add child.name
-          writeScenePair(layout(child),
+          writeScenePair(layout(child, options),
                          dir / ("runFULL." & safeSheetName(child.name)))
         walk(child)
     walk(nl)
@@ -716,6 +717,9 @@ type
     saveCurrents*: bool
       ## Ask ngspice for device terminal currents as well as the node
       ## voltages it saves anyway. Only meaningful alongside `keepRuns`.
+    schematicLayout*: string
+      ## Normalized archive-layout spelling, or empty when the environment's
+      ## selection (if any) should remain in effect.
 
 proc parseCapabilities*(text: string): set[Capability] =
   ## `--caps=op,ac` and friends. `capStatic` is always included: withholding
@@ -751,6 +755,9 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
       # Absolute, because the path is baked into each archived deck's own
       # `write` line and the design binary inherits the caller's directory.
       result.keepRuns = absolutePath(a["--keep-runs=".len .. ^1])
+    elif a.startsWith("--schematic-layout="):
+      result.schematicLayout = layoutPolicyName(parseLayoutPolicy(
+        a["--schematic-layout=".len .. ^1]))
 
 # --- the catalog: what may be claimed ------------------------------------
 #
@@ -958,4 +965,6 @@ proc verifyMain*(d: Design, args = commandLineParams()): int =
   # has none.
   if o.keepRuns.len > 0: putEnv("NIMCIR_KEEP_RUNS", o.keepRuns)
   if o.saveCurrents: putEnv("NIMCIR_SAVE_CURRENTS", "1")
+  if o.schematicLayout.len > 0:
+    putEnv("NIMCIR_SCHEMATIC_LAYOUT", o.schematicLayout)
   verify(d, o.allowed, o.verbose, o.strict)

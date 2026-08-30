@@ -340,6 +340,18 @@ proc routeNet(pins: seq[RoutePin],
 
   RouteOutcome(ok: true, polys: polys)
 
+proc routeConstrainedNet(pins: seq[RoutePin], parts: seq[SchematicPart],
+                         obstacles: seq[Obstacle],
+                         free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
+                         occ: var seq[OccSeg], netName: string,
+                         seeds, glyphs: seq[OccSeg]): RouteOutcome =
+  ## A trunk-and-tap attempt is atomic: its growing tree is useful only if all
+  ## taps reach it. On failure restore occupancy before the next net is tried,
+  ## so the caller can emit marker-only fallbacks for the complete net.
+  let before = occ
+  result = routeNet(pins, parts, obstacles, free, occ, netName, seeds, glyphs)
+  if not result.ok: occ = before
+
 proc addSegments(adj: var Table[Point, HashSet[Point]], poly: seq[Point]) =
   for i in 0 ..< poly.len - 1:
     let p = poly[i]

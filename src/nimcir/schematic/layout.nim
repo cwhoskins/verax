@@ -16,6 +16,7 @@ include ./symbols
 include ./router
 include ./labels
 include ./placement
+include ./constrained
 include ./routing
 
 proc layout*(nl: Netlist, options: LayoutOptions): Schematic
@@ -47,6 +48,12 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
 
   var idxOf = initTable[string, int]()
   for i, c in comps: idxOf[c.designator] = i
+
+  # The historical policy deliberately leaves this golden-angle seed alone.
+  # Layer columns are opt-in because changing even this first position changes
+  # the established serialized SVG/JSON output.
+  if options.policy == lpConstrainedLayered and options.stageEnabled(lsSemanticSeed):
+    constrainedSemanticSeed(comps, pos, idxOf)
 
   # Orientation is co-optimised with placement: the attraction force below acts
   # pin-to-pin, so it needs each part's rotation, and the rotation that
@@ -132,6 +139,12 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
         pos[i].x += disp[i].x / d * lim
         pos[i].y += disp[i].y / d * lim
 
+  # Reassert deterministic left-to-right layers before the existing
+  # legalization pass. It is policy-gated so lpHistorical remains unchanged.
+  if options.policy == lpConstrainedLayered and
+     options.stageEnabled(lsConstrainedRefinement):
+    constrainedRefine(comps, pos, idxOf)
+
   # Snap centres to the grid, normalising -0.0 away so hashing stays exact.
   for i in 0 ..< n:
     pos[i].x = round(pos[i].x / grid) * grid
@@ -205,19 +218,28 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   if options.stageEnabled(lsTerminalRepair):
     repairTerminalClearance(comps, syms, pos, rots, ohw, ohh)
 
+  # `recoverRouting` is the bounded routing-aware repair: candidates are
+  # accepted only when they route strictly further. Its dedicated stage is an
+  # opt-in alias for constrained policy callers; historical stage semantics
+  # remain exactly as before.
+  let useRecovery = options.stageEnabled(lsRecoverRouting) or
+    (options.policy == lpConstrainedLayered and
+     options.stageEnabled(lsRoutingAwareRepair))
   let scene =
-    if options.stageEnabled(lsRecoverRouting):
+    if useRecovery:
       recoverRouting(nl, comps, syms, pos, rots, idxOf, options)
     else:
       # A disabled recovery policy still produces the ordinary typed fallback
       # scene for an unrouteable net rather than raising.
-      routeScene(nl, comps, syms, pos, rots, idxOf, withFallbacks = true)
+      routeScene(nl, comps, syms, pos, rots, idxOf, withFallbacks = true,
+                 constrained = options.policy == lpConstrainedLayered)
 
   result.parts = scene.parts
   result.ports = scene.ports
   result.wires = scene.wires
   result.junctions = scene.junctions
   result.fallbacks = scene.fallbacks
+
   var pinPos = scene.pinPos
   var partIdxByDesig = scene.partIdxByDesig
   var portedNets = scene.portedNets

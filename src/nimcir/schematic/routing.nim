@@ -23,7 +23,7 @@ type
 proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                 pos: seq[Point], rots: seq[float],
                 idxOf: Table[string, int],
-                withFallbacks = false): RouteScene =
+                withFallbacks = false, constrained = false): RouteScene =
   ## Build the routed scene for the given centres/rotations. Pure and
   ## deterministic. `ok` is false only when `routeNet` reports an unreachable
   ## pin and `withFallbacks` is false -- the one recoverable routing failure,
@@ -272,8 +272,13 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       continue
     var adj = initTable[Point, HashSet[Point]]()
     let occBefore = occ
-    let ro = routeNet(pins, result.parts, obstacles, free, occ, net.name,
-                      escapeSeeds, glyphs)
+    let ro =
+      if constrained:
+        routeConstrainedNet(pins, result.parts, obstacles, free, occ, net.name,
+                            escapeSeeds, glyphs)
+      else:
+        routeNet(pins, result.parts, obstacles, free, occ, net.name,
+                 escapeSeeds, glyphs)
     if not ro.ok:
       if withFallbacks:
         # `routeNet` may have recorded the net's already-connected branches
@@ -362,11 +367,14 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   ## too large for the loop to be attempted -- the best positions are re-routed
   ## with fallbacks enabled: an unrouteable net becomes a dashed marker per
   ## pin instead of an assertion.
-  var best = routeScene(nl, comps, syms, pos, rots, idxOf)
+  let constrained = options.policy == lpConstrainedLayered
+  var best = routeScene(nl, comps, syms, pos, rots, idxOf,
+                        constrained = constrained)
   if best.ok: return best
 
   if comps.len > options.feedbackMaxParts:
-    return routeScene(nl, comps, syms, pos, rots, idxOf, withFallbacks = true)
+    return routeScene(nl, comps, syms, pos, rots, idxOf,
+                      withFallbacks = true, constrained = constrained)
 
   var bestPos = pos
   var bestRots = rots
@@ -398,7 +406,8 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
             var candPos = bestPos
             candPos[partIdx] = Point(x: x, y: y)
             let candRots = recomputeRotations(comps, syms, candPos, bestRots)
-            let cand = routeScene(nl, comps, syms, candPos, candRots, idxOf)
+            let cand = routeScene(nl, comps, syms, candPos, candRots, idxOf,
+                                  constrained = constrained)
             if cand.ok or cand.failOrd > best.failOrd:
               best = cand
               bestPos = candPos
@@ -413,6 +422,6 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
 
   if not best.ok:
     return routeScene(nl, comps, syms, bestPos, bestRots, idxOf,
-                      withFallbacks = true)
+                      withFallbacks = true, constrained = constrained)
   best
 

@@ -370,7 +370,10 @@ Three parts, and each answers a different question:
   the number and what it does and does not cover. (`NIMCIR_KEEP_DECKS=<dir>`
   writes out the decks themselves; `--keep-runs=<dir>` writes out the decks,
   the raw results, ngspice's log, and an SVG schematic with its JSON scene,
-  with an `index.txt` saying which run is which — see below.)
+  with an `index.txt` saying which run is which — see below. Use
+  `--schematic-layout=constrained-layered` to opt those archived schematic
+  artifacts into the constrained layered layout; the historical layout is the
+  default.)
 - **`assuming:`** — numbers the design does not contain and the tool invented
   anyway: a package-typical ESR, an assumed pin capacitance, a leak resistor
   on an open net. They sit **under the run that rests on them**, because which
@@ -426,7 +429,15 @@ The `run002.svg` is the same fragment as a schematic: a fast, read-only
 "does the topology look like I think it does" view. It is heuristic -- parts are
 force-placed, wires are orthogonal spanning trees, and anything the symbol
 library does not recognise is drawn as a labelled box -- so it is for eyeballing
-connectivity, not for publication. The `run002.json` beside it is the same
+connectivity, not for publication. Library callers can explicitly select
+a `LayoutOptions` copied from `defaultLayoutOptions()` with `policy` set to
+`lpConstrainedLayered` for a bounded topology-layered alternative on ordinary
+sheets (tens of components):
+output-pin flow seeds left-to-right columns, the existing orthogonal router
+builds each net as an atomic trunk-and-tap tree, and its bounded repair falls
+back to per-pin markers if a complete tree cannot be made. The default
+`lpHistorical` policy remains byte-identical for existing archives. The
+`run002.json` beside it is the same
 routed scene through the public JSON API, for tools that would rather read
 geometry than parse SVG. Both are rendered from the derived netlist *before*
 ngspice runs, which is why even a failed run leaves its picture behind.
@@ -965,7 +976,11 @@ one that passed.
 
 `--offline` (graph walks only, no simulator), `--caps=op,dc,ac,tran` (offer a
 specific subset), `--verbose` (show the full plan and the passing assertions),
-`--strict` (promote warnings and un-evaluated claims to failures).
+`--strict` (promote warnings and un-evaluated claims to failures), and
+`--schematic-layout=historical|constrained-layered` (choose the layout used
+only for SVG/JSON artifacts in a run archive; `historical` is the default).
+The same archive-only selection can be supplied as
+`NIMCIR_SCHEMATIC_LAYOUT=historical|constrained-layered`.
 
 ## Numbers the tool invents for you
 

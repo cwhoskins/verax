@@ -153,6 +153,18 @@ suite "run archive":
       check cols[3] == ".op"
       check cols[5] == "rc_divider"
 
+    test "the archive schematic uses the constrained layout from the environment":
+      let dir = createTempDir("nimcir_keeptest_", "")
+      defer: removeDir(dir)
+      var options = defaultLayoutOptions()
+      options.policy = lpConstrainedLayered
+      withEnv("NIMCIR_KEEP_RUNS", dir):
+        withEnv("NIMCIR_SCHEMATIC_LAYOUT", "constrained-layered"):
+          discard run(dividerNetlist(), ".op")
+
+      check readFile(dir / "run000.json") ==
+            sceneToJsonString(layout(dividerNetlist(), options))
+
     test "a second run takes the next slot and appends a row":
       let dir = createTempDir("nimcir_keeptest_", "")
       defer: removeDir(dir)

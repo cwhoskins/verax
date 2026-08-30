@@ -4,7 +4,7 @@
 ## hermetic and needs no simulator -- the graded exit codes are a property of
 ## how results are classified, not of what a simulation returned.
 
-import std/[strutils, tables, unittest]
+import std/[os, strutils, tables, unittest]
 
 import nimcir/contract/dsl
 import nimcir/verify
@@ -166,6 +166,19 @@ suite "capabilities":
     check parseVerifyArgs(["--caps=ac,tran"]).allowed ==
           {capStatic, capSpiceAc, capSpiceTran}
     check parseCapabilities(".op") == {capStatic, capSpiceOp}
+    check parseVerifyArgs(["--schematic-layout=constrained-layered"]).schematicLayout ==
+          "constrained-layered"
+
+  test "the schematic-layout flag bridges to the archive environment":
+    let had = existsEnv("NIMCIR_SCHEMATIC_LAYOUT")
+    let old = getEnv("NIMCIR_SCHEMATIC_LAYOUT")
+    try:
+      discard verifyMain(claimingNothing(),
+        @["--offline", "--schematic-layout=constrained-layered"])
+      check getEnv("NIMCIR_SCHEMATIC_LAYOUT") == "constrained-layered"
+    finally:
+      if had: putEnv("NIMCIR_SCHEMATIC_LAYOUT", old)
+      else: delEnv("NIMCIR_SCHEMATIC_LAYOUT")
 
   test "an unknown capability is rejected rather than ignored":
     # `dc` used to be the example here, which is what an enum member's
@@ -173,6 +186,8 @@ suite "capabilities":
     check parseCapabilities("dc") == {capStatic, capSpiceDc}
     expect ValueError:
       discard parseCapabilities("noise")
+    expect ValueError:
+      discard parseVerifyArgs(["--schematic-layout=diagonal"])
 
   test "unrecognised flags are left for the design file":
     let o = parseVerifyArgs(["--something-else", "--strict"])

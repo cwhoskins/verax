@@ -3,11 +3,14 @@
 ## The stage identifiers are intentionally stable: callers may disable optional
 ## passes, while the built-in coordinator retains the canonical ordering.
 
+import std/[os, strutils]
+
 type
   StageId* = enum
-    lsPrepare, lsForcePlacement, lsSeparate, lsPack, lsOrient, lsLeafSnap,
-    lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting, lsLabels,
-    lsBounds
+    lsPrepare, lsSemanticSeed, lsForcePlacement, lsConstrainedRefinement,
+    lsSeparate, lsPack, lsOrient, lsLeafSnap, lsTerminalRepair,
+    lsPrepareRouting, lsRoute, lsRecoverRouting, lsRoutingAwareRepair,
+    lsLabels, lsBounds
 
   ## An explicit canonical stage description. `LayoutOptions.stages` filters
   ## this sequence; it cannot reorder it.
@@ -15,9 +18,15 @@ type
     id*: StageId
     enabled*: bool
 
+  LayoutPolicy* = enum
+    ## Historical output remains the default. `lpConstrainedLayered` is an
+    ## explicit, deterministic opt-in for ordinary (tens-of-parts) sheets.
+    lpHistorical, lpConstrainedLayered
+
   LayoutOptions* = object
     ## Enabled stages from the built-in, canonical pipeline. A set configures
     ## membership only; it never changes stage order.
+    policy*: LayoutPolicy
     stages*: set[StageId]
     feedbackAcceptedBudget*: int
     feedbackAttemptBudget*: int
@@ -27,7 +36,11 @@ const allLayoutStages* = {lsPrepare..lsBounds}
 
 const canonicalStages*: array[StageId, StageSpec] = [
   StageSpec(id: lsPrepare, enabled: true),
+  # These stages are inert under lpHistorical; lpConstrainedLayered gives
+  # them deterministic topology/layer and bounded repair meanings.
+  StageSpec(id: lsSemanticSeed, enabled: true),
   StageSpec(id: lsForcePlacement, enabled: true),
+  StageSpec(id: lsConstrainedRefinement, enabled: true),
   StageSpec(id: lsSeparate, enabled: true),
   StageSpec(id: lsPack, enabled: true),
   StageSpec(id: lsOrient, enabled: true),
@@ -36,6 +49,7 @@ const canonicalStages*: array[StageId, StageSpec] = [
   StageSpec(id: lsPrepareRouting, enabled: true),
   StageSpec(id: lsRoute, enabled: true),
   StageSpec(id: lsRecoverRouting, enabled: true),
+  StageSpec(id: lsRoutingAwareRepair, enabled: true),
   StageSpec(id: lsLabels, enabled: true),
   StageSpec(id: lsBounds, enabled: true)]
 
@@ -47,8 +61,32 @@ proc stageSpecs*(options: LayoutOptions): seq[StageSpec] =
 
 proc defaultLayoutOptions*(): LayoutOptions =
   ## The historical layout policy and budgets.
-  LayoutOptions(stages: allLayoutStages, feedbackAcceptedBudget: 4,
-                feedbackAttemptBudget: 65, feedbackMaxParts: 24)
+  LayoutOptions(policy: lpHistorical, stages: allLayoutStages,
+                feedbackAcceptedBudget: 4, feedbackAttemptBudget: 65,
+                feedbackMaxParts: 24)
+
+proc layoutPolicyName*(policy: LayoutPolicy): string =
+  case policy
+  of lpHistorical: "historical"
+  of lpConstrainedLayered: "constrained-layered"
+
+proc parseLayoutPolicy*(text: string): LayoutPolicy =
+  ## Parses the one public spelling used by the CLI and archive environment.
+  case text.strip().toLowerAscii()
+  of "historical": lpHistorical
+  of "constrained-layered": lpConstrainedLayered
+  else:
+    raise newException(ValueError,
+      "unknown schematic layout '" & text &
+      "'; expected historical or constrained-layered")
+
+proc archiveLayoutOptions*(): LayoutOptions =
+  ## Archive rendering is historical unless explicitly selected through the
+  ## environment bridge. Layout calls outside archive writers stay unchanged.
+  result = defaultLayoutOptions()
+  let configured = getEnv("NIMCIR_SCHEMATIC_LAYOUT")
+  if configured.len > 0:
+    result.policy = parseLayoutPolicy(configured)
 
 proc stageEnabled*(options: LayoutOptions, stage: StageId): bool {.inline.} =
   stage in options.stages

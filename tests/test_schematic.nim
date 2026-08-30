@@ -546,6 +546,111 @@ test "layout is deterministic":
   check a == b
   check sceneToJsonString(nl) == sceneToJsonString(nl)
 
+test "constrained layered policy is opt-in and keeps historical output unchanged":
+  let nl = divider()
+  let historical = layout(nl)
+  var defaulted = defaultLayoutOptions()
+  check layout(nl, defaulted) == historical
+  defaulted.policy = lpConstrainedLayered
+  let constrained = layout(nl, defaulted)
+  check constrained.parts.len == historical.parts.len
+  check distinctWiresNeverShareCollinearRuns(constrained)
+  check differentNetsRespectSeparation(constrained)
+
+test "constrained layered policy places output flow in increasing columns":
+  let nl = newNetlist("layered")
+  let a = addNet(nl, newNet("a"))
+  let b = addNet(nl, newNet("b"))
+  let c = addNet(nl, newNet("c"))
+  let u1 = addComponent(nl, newComponent("U1", kind = "mcu"))
+  discard connect(u1, "OUT", a, ptOutput)
+  let u2 = addComponent(nl, newComponent("U2", kind = "mcu"))
+  discard connect(u2, "IN", a, ptInput)
+  discard connect(u2, "OUT", b, ptOutput)
+  let u3 = addComponent(nl, newComponent("U3", kind = "mcu"))
+  discard connect(u3, "IN", b, ptInput)
+  discard connect(u3, "OUT", c, ptOutput)
+  let r1 = addComponent(nl, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", c, ptPassive)
+  discard connect(r1, "2", addNet(nl, newNet("d")), ptPassive)
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(nl, options)
+  check partOf(s, "U1").x < partOf(s, "U2").x
+  check partOf(s, "U2").x < partOf(s, "U3").x
+  # The final sink has no declared output, so it shares or follows its driver;
+  # it never reverses the stated output flow.
+  check partOf(s, "U3").x <= partOf(s, "R1").x
+
+test "constrained layering follows input ports and feedback paths semantically":
+  # The input port has no pin direction at all: it must use portDirection's
+  # existing no-driver fallback. The local-feedback case below uses an
+  # unrecognised two-terminal kind, proving this walk is not passive-gated.
+  block:
+    let nl = newNetlist("port_input_layer")
+    let inn = addNet(nl, newNet("IN"))
+    let mid = addNet(nl, newNet("mid"))
+    let link = addComponent(nl, newComponent("LINK", kind = "resistor"))
+    discard connect(link, "1", inn, ptPassive)
+    discard connect(link, "2", mid, ptPassive)
+    let sink = addComponent(nl, newComponent("UIN", kind = "mcu"))
+    discard connect(sink, "IN", mid, ptInput)
+    addPort(nl, "IN", inn)
+    var options = defaultLayoutOptions()
+    options.policy = lpConstrainedLayered
+    options.stages.excl lsRecoverRouting
+    options.stages.excl lsRoutingAwareRepair
+    let s = layout(nl, options)
+    check partOf(s, "LINK").x < partOf(s, "UIN").x
+
+  # A feedback chain returning to the same component is a local loop, not an
+  # earlier-layer feedback edge: the traversed device stays in the source's
+  # semantic column.
+  block:
+    let nl = newNetlist("local_feedback")
+    let outn = addNet(nl, newNet("out"))
+    let fbn = addNet(nl, newNet("fb"))
+    let amp = addComponent(nl, newComponent("U1", kind = "opamp"))
+    discard connect(amp, "OUT", outn, ptOutput)
+    discard connect(amp, "IN-", fbn, ptInput)
+    let link = addComponent(nl, newComponent("RFB", kind = "mystery"))
+    discard connect(link, "1", outn, ptPassive)
+    discard connect(link, "2", fbn, ptPassive)
+    var options = defaultLayoutOptions()
+    options.policy = lpConstrainedLayered
+    options.stages.excl lsRecoverRouting
+    options.stages.excl lsRoutingAwareRepair
+    let s = layout(nl, options)
+    check partOf(s, "RFB").x == partOf(s, "U1").x
+
+  # Insertion order would otherwise put RFB before its source. A genuine
+  # return to an earlier component instead keeps the path passive right of
+  # the output that drives it.
+  block:
+    let nl = newNetlist("feedback_right")
+    let out1 = addNet(nl, newNet("out1"))
+    let out2 = addNet(nl, newNet("out2"))
+    let fb = addNet(nl, newNet("fb"))
+    let ctrl = addNet(nl, newNet("ctrl"))
+    let link = addComponent(nl, newComponent("RFB", kind = "mystery"))
+    discard connect(link, "1", out2, ptPassive)
+    discard connect(link, "2", fb, ptPassive)
+    let first = addComponent(nl, newComponent("U1", kind = "mcu"))
+    discard connect(first, "OUT", out1, ptOutput)
+    discard connect(first, "IN", fb, ptInput)
+    let second = addComponent(nl, newComponent("U2", kind = "mcu"))
+    discard connect(second, "IN", out1, ptInput)
+    discard connect(second, "OUT", out2, ptOutput)
+    # A third connected terminal stops the two-terminal feedback walker here.
+    discard connect(second, "CTRL", ctrl, ptInOut)
+    var options = defaultLayoutOptions()
+    options.policy = lpConstrainedLayered
+    options.stages.excl lsRecoverRouting
+    options.stages.excl lsRoutingAwareRepair
+    let s = layout(nl, options)
+    check partOf(s, "U1").x < partOf(s, "U2").x
+    check partOf(s, "U2").x < partOf(s, "RFB").x
+
 test "layout produces one part per component, wired to the right nets":
   let s = layout(divider())
   check s.parts.len == 5
@@ -1375,6 +1480,20 @@ test "an impossible route falls back to dashed markers, never an assertion":
     check f.points.len == 2
     check f.points[0] == Point(x: f.x, y: f.y)
 
+test "constrained trunk-and-tap fallback is atomic":
+  # A failed tree must leave no partial real branches for that net: the
+  # constrained route restores occupancy and emits only per-pin markers.
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(resistorChain(37), options)
+  var fallbackNets = initHashSet[string]()
+  for f in s.fallbacks: fallbackNets.incl f.net
+  check fallbackNets.len > 0
+  for w in s.wires:
+    if w.kind == wkSignal:
+      check w.net notin fallbackNets
+  check fallbacksClearOfWires(s)
+
 test "fallback diagnostics route through exact terminal Hanan axes":
   # Both pins escape left through off-centre box-edge positions. Their escape
   # y coordinates are not obstacle-boundary axes, so the one-bend route needs
@@ -1844,6 +1963,18 @@ test "layout options preserve the default pipeline":
         sceneToJsonString(layout(nl, defaultLayoutOptions()))
   check allLayoutStages == {lsPrepare..lsBounds}
   check defaultLayoutOptions().stageSpecs.len == ord(StageId.high) + 1
+
+test "reserved no-op pipeline stages preserve byte-identical output":
+  let nl = divider()
+  let baseline = layout(nl)
+  let baselineJson = sceneToJsonString(baseline)
+  let baselineSvg = renderSvg(baseline)
+  for stage in [lsSemanticSeed, lsConstrainedRefinement, lsRoutingAwareRepair]:
+    var options = defaultLayoutOptions()
+    options.stages.excl stage
+    let scene = layout(nl, options)
+    check sceneToJsonString(scene) == baselineJson
+    check renderSvg(scene) == baselineSvg
 
 test "layout options can suppress labels and bounds":
   var options = defaultLayoutOptions()

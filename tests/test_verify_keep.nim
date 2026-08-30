@@ -205,6 +205,20 @@ test "a subcircuit gets its own runFULL.<name> svg+json sheet, deduped by name":
   # No index row for any of the pictures.
   check not fileExists(dir / "index.txt")
 
+test "the archive uses the constrained layout selected through the environment":
+  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  defer: removeDir(dir)
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  withEnv("NIMCIR_KEEP_RUNS", dir):
+    withEnv("NIMCIR_SCHEMATIC_LAYOUT", "constrained-layered"):
+      discard verify(twoChannelBoard(), offlineCapabilities)
+
+  check readFile(dir / "runFULL.json") ==
+        sceneToJsonString(layout(twoChannelBoard().netlist, options))
+  check readFile(dir / "runFULL.GAIN_BLOCK.json") ==
+        sceneToJsonString(layout(gainBlock(), options))
+
 test "a flat design writes only runFULL.svg and runFULL.json":
   let dir = createTempDir("nimcir_verifykeeptest_", "")
   defer: removeDir(dir)

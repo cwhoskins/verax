@@ -220,6 +220,9 @@ check flags (forwarded to the design file):
                      is which
   --save-currents    with --keep-runs, also save device terminal currents
                      (.op/.tran/.dc only; node voltages are saved anyway)
+  --schematic-layout=historical|constrained-layered
+                     choose the layout of archived SVG and JSON schematics
+                     (historical is the default)
   --path:<dir>       where nimcir's sources live (usually found automatically)
 
 exit codes:

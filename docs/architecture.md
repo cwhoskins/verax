@@ -800,7 +800,11 @@ instantiates — deduplicated by the `.SUBCKT` name, so a block used twice is
 drawn once — each with its interface drawn as Altium-style port symbols
 (direction taken from pin kinds, or from whether anything on the sheet drives
 the net). These are subject to the same gate, best-effort handling and
-index exclusion.
+index exclusion. `--schematic-layout=constrained-layered` (or
+`$NIMCIR_SCHEMATIC_LAYOUT=constrained-layered`) opts these archived SVG/JSON
+artifacts into the constrained layered policy; the default remains the
+byte-compatible historical policy. This affects no simulation or ordinary
+`layout` call.
 
 The rawfile is ngspice's own ASCII format, so it goes straight back in:
 
