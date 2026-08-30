@@ -1838,6 +1838,30 @@ test "renderSvg draws one polygon per port, each named":
   check ">OUT</text>" in text
   check ">BUS</text>" in text
 
+test "layout options preserve the default pipeline":
+  let nl = divider()
+  check sceneToJsonString(layout(nl)) ==
+        sceneToJsonString(layout(nl, defaultLayoutOptions()))
+  check allLayoutStages == {lsPrepare..lsBounds}
+  check defaultLayoutOptions().stageSpecs.len == ord(StageId.high) + 1
+
+test "layout options can suppress labels and bounds":
+  var options = defaultLayoutOptions()
+  options.stages.excl lsLabels
+  options.stages.excl lsBounds
+  let s = layout(divider(), options)
+  check s.labels.len == 0
+  check s.minX == 0.0
+  check s.minY == 0.0
+  check s.maxX == 0.0
+  check s.maxY == 0.0
+
+test "layout options reject missing routing prerequisites":
+  var options = defaultLayoutOptions()
+  options.stages.excl lsPrepareRouting
+  expect ValueError:
+    discard layout(divider(), options)
+
 # --- the archive, which needs the simulator -----------------------------
 
 suite "run archive svg":

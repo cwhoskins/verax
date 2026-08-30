@@ -340,22 +340,13 @@ proc feedbackCandidateParts(comps: seq[Component]): seq[int] =
     if signal >= 2: result.add i
 
 const
-  feedbackAcceptedBudget = 4
-    ## Most moves the placement-routing feedback loop may keep.
-  feedbackAttemptBudget = 65
-    ## Most candidate moves the feedback loop may try in total.
   feedbackMaxRadius = 4
     ## Furthest grid step a candidate move may take a part from its current
     ## centre; each part's rings are searched nearest-first.
-  feedbackMaxParts = 24
-    ## Feedback is only attempted on sheets of at most this many components.
-    ## Every candidate move re-runs the whole route, which is O(parts^4) in
-    ## the worst case; on a crowded large sheet that cost buys nothing, so a
-    ## failure there is drawn as fallbacks immediately after attempt zero.
 
 proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                     pos: seq[Point], rots: seq[float],
-                    idxOf: Table[string, int]): RouteScene =
+                    idxOf: Table[string, int], options: LayoutOptions): RouteScene =
   ## The placement-routing feedback loop. When `routeScene` cannot route a
   ## signal net it tries deterministic single-part moves and keeps any move
   ## that routes strictly further than the best layout so far, up to
@@ -374,7 +365,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   var best = routeScene(nl, comps, syms, pos, rots, idxOf)
   if best.ok: return best
 
-  if comps.len > feedbackMaxParts:
+  if comps.len > options.feedbackMaxParts:
     return routeScene(nl, comps, syms, pos, rots, idxOf, withFallbacks = true)
 
   var bestPos = pos
@@ -391,15 +382,15 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
 
   let order = feedbackCandidateParts(comps)
 
-  while accepted < feedbackAcceptedBudget and attempts < feedbackAttemptBudget and
-        not best.ok:
+  while accepted < options.feedbackAcceptedBudget and
+        attempts < options.feedbackAttemptBudget and not best.ok:
     var improved = false
     for partIdx in order:
       for r in 1 .. feedbackMaxRadius:
         for dy in -r .. r:
           for dx in -r .. r:
             if max(abs(dx), abs(dy)) != r: continue
-            if attempts >= feedbackAttemptBudget: break
+            if attempts >= options.feedbackAttemptBudget: break
             inc attempts
             let x = bestPos[partIdx].x + float(dx) * grid
             let y = bestPos[partIdx].y + float(dy) * grid

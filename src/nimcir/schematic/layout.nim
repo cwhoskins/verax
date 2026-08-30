@@ -9,6 +9,7 @@ import ../netlist/types
 import ../netlist/kinds
 import ../netlist/annotations
 import ./scene
+import ./pipeline
 
 include ./geometry
 include ./symbols
@@ -17,9 +18,17 @@ include ./labels
 include ./placement
 include ./routing
 
+proc layout*(nl: Netlist, options: LayoutOptions): Schematic
+
 proc layout*(nl: Netlist): Schematic =
+  ## Places and routes `nl` with the historical pipeline configuration.
+  layout(nl, defaultLayoutOptions())
+
+proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   ## Places and routes `nl` into a renderer-neutral scene. Read-only with
   ## respect to the netlist; deterministic given the same netlist object.
+  ## `options.stages` is filtered from the fixed canonical stage order.
+  validateLayoutOptions(options)
   result.title = nl.name
 
   var comps: seq[Component]
@@ -50,7 +59,7 @@ proc layout*(nl: Netlist): Schematic =
   var rots = newSeq[float](n)
 
   let k = 110.0
-  let iterations = 250
+  let iterations = if options.stageEnabled(lsForcePlacement): 250 else: 0
   let temp0 = 2.0 * k
   for it in 0 ..< iterations:
     let temp = temp0 * (1.0 - float(it) / float(iterations))
@@ -169,15 +178,17 @@ proc layout*(nl: Netlist): Schematic =
   # them. Group the parts by signal-net connectivity and shelf-pack the group
   # bounding boxes with a fixed gutter. A rigid grid-snapped translation per
   # group, so separation and the grid snap both survive it.
-  let group = groupsOf(nl, comps, pos, idxOf)
-  packGroups(pos, ohw, ohh, group)
+  if options.stageEnabled(lsPack):
+    let group = groupsOf(nl, comps, pos, idxOf)
+    packGroups(pos, ohw, ohh, group)
 
   # --- orientation: the definitive assignment once the centres are final ---
   # Separation and packing have moved parts since the loop froze rotation, so
   # re-pick every one from the settled centres. One pass, snapshot-read and
   # fresh-write like the loop, and with no hysteresis -- this is the answer,
   # not an increment toward it.
-  rots = recomputeRotations(comps, syms, pos, rots)
+  if options.stageEnabled(lsOrient):
+    rots = recomputeRotations(comps, syms, pos, rots)
 
   # --- leaf cleanup: a one-signal-net part snapped beside its net-mate ----
   # A part with a single non-ground / non-rail net still sits and points
@@ -185,14 +196,22 @@ proc layout*(nl: Netlist): Schematic =
   # to and turn it to face there, so the router draws a short straight stub
   # rather than a long detour. Last, so it owns both the position and the
   # orientation of the leaves it touches.
-  leafSnap(comps, syms, pos, rots, ohw, ohh, idxOf)
+  if options.stageEnabled(lsLeafSnap):
+    leafSnap(comps, syms, pos, rots, ohw, ohh, idxOf)
 
   # Reserve complete, unshortened rail/ground glyphs before routing. This
   # bounded pass moves the smallest implicated symbols first; routing still
   # owns the defensive shortening/blocking path for irreducible crowding.
-  repairTerminalClearance(comps, syms, pos, rots, ohw, ohh)
+  if options.stageEnabled(lsTerminalRepair):
+    repairTerminalClearance(comps, syms, pos, rots, ohw, ohh)
 
-  let scene = recoverRouting(nl, comps, syms, pos, rots, idxOf)
+  let scene =
+    if options.stageEnabled(lsRecoverRouting):
+      recoverRouting(nl, comps, syms, pos, rots, idxOf, options)
+    else:
+      # A disabled recovery policy still produces the ordinary typed fallback
+      # scene for an unrouteable net rather than raising.
+      routeScene(nl, comps, syms, pos, rots, idxOf, withFallbacks = true)
 
   result.parts = scene.parts
   result.ports = scene.ports
@@ -399,7 +418,8 @@ proc layout*(nl: Netlist): Schematic =
         @[sRight, sLeft, sTop, sBottom]
     place(@[(req.text, netLabelSize, lrRail)], dot, order, "", -1)
 
-  result.labels.add newLabels
+  if options.stageEnabled(lsLabels):
+    result.labels.add newLabels
 
   # --- bounding box -------------------------------------------------------
   var minX, minY, maxX, maxY: float
@@ -437,6 +457,9 @@ proc layout*(nl: Netlist): Schematic =
   result.minY = minY - pad
   result.maxX = maxX + pad
   result.maxY = maxY + pad
+  if not options.stageEnabled(lsBounds):
+    result.minX = 0.0; result.minY = 0.0
+    result.maxX = 0.0; result.maxY = 0.0
 
 
 include ./diagnostics

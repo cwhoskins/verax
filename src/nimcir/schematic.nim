@@ -9,7 +9,8 @@
 
 import nimcir/schematic/scene
 import nimcir/schematic/layout
+import nimcir/schematic/pipeline
 import nimcir/schematic/svg
 import nimcir/schematic/json
 
-export scene, layout, svg, json
+export scene, layout, pipeline, svg, json
