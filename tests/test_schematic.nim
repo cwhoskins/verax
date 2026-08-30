@@ -865,11 +865,10 @@ test "a parallel pair ends up adjacent and co-oriented, not scattered":
     let dq = pinPoints(s, "CP", net)[0]
     check abs(dp.x - dq.x) + abs(dp.y - dq.y) <= 160.0
 
-test "a one-net leaf snaps up against its single net-mate, pin facing it":
-  # CSH hangs off the mid node to ground: one signal net, so the force layout
-  # gives it a single spring and leaves it adrift with its pin facing away.
-  # leafSnap pulls it up against a mid-node pin and turns it so its own mid pin
-  # faces there -- a short straight stub, not an L across the sheet.
+test "a powered one-net leaf keeps its ground pin down":
+  # CSH hangs off the mid node to ground. Power direction is stronger than the
+  # old straight-stub preference, so leafSnap keeps its ground pin down while
+  # placing the signal pin toward its mate.
   var nl = newNetlist("leaf")
   let inn = addNet(nl, newNet("in"))
   let mid = addNet(nl, newNet("mid"))
@@ -891,15 +890,78 @@ test "a one-net leaf snaps up against its single net-mate, pin facing it":
   discard connect(csh, "1", mid, ptPassive); discard connect(csh, "2", g, ptPassive)
   csh.attrs["value"] = "1n"
   let s = layout(nl)
-  let lp = pinPoints(s, "CSH", "mid")[0]
-  # CSH's mid pin lands on a line with some other mid pin (a straight stub) and
-  # within a grid step of it.
-  var best = 1e18
-  for mate in ["RS", "RO"]:
-    let mp = pinPoints(s, mate, "mid")[0]
-    if (abs(lp.x - mp.x) < 1e-6 or abs(lp.y - mp.y) < 1e-6):
-      best = min(best, abs(lp.x - mp.x) + abs(lp.y - mp.y))
-  check best <= 80.0 + 1e-6
+  let cshPart = partOf(s, "CSH")
+  let groundPin = pinPoints(s, "CSH", "0")[0]
+  check groundPin.y > cshPart.y
+
+test "a powered one-net leaf snaps straight to its signal mate when clear":
+  # In this uncluttered case the power-directed capacitor has a free cell on
+  # the side of V1 its signal pin faces. It must remain ground-down while
+  # leafSnap makes that signal connection aligned, near, and repeatable.
+  let nl = newNetlist("powered_leaf_snap")
+  let mid = addNet(nl, newNet("mid"))
+  let gnd = addNet(nl, newNet("0", ntGround))
+  let csh = addComponent(nl, newComponent("CSH", kind = "capacitor"))
+  discard connect(csh, "1", mid, ptPassive)
+  discard connect(csh, "2", gnd, ptGround)
+  let v1 = addComponent(nl, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", gnd, ptGround)
+  discard connect(v1, "-", mid, ptPassive)
+
+  let s = layout(nl)
+  let cshPart = partOf(s, "CSH")
+  let signalPin = pinPoints(s, "CSH", "mid")[0]
+  let matePin = pinPoints(s, "V1", "mid")[0]
+  check pinPoints(s, "CSH", "0")[0].y > cshPart.y
+  check abs(signalPin.x - matePin.x) < 1e-6 or
+        abs(signalPin.y - matePin.y) < 1e-6
+  check abs(signalPin.x - matePin.x) + abs(signalPin.y - matePin.y) <= 3.0 * 40.0
+  var midWire: SchematicWire
+  for wire in s.wires:
+    if wire.net == "mid": midWire = wire
+  check signalPin in midWire.points and matePin in midWire.points
+  let again = layout(nl)
+  check partOf(again, "CSH").x == cshPart.x
+  check partOf(again, "CSH").y == cshPart.y
+  check pinPoints(again, "CSH", "mid")[0] == signalPin
+
+test "power-aware rotation puts ground and rail pins in their semantic directions":
+  # Direction outranks wire length: ground and non-positive rails point down,
+  # while positive and unannotated rails point up. An explicit ntPower kind
+  # also beats the ptGround convention used by an op-amp V- pin.
+  let nl = newNetlist("power_rotation")
+  let gnd = addNet(nl, newNet("0", ntGround))
+  let vp = addNet(nl, newNet("VP", ntPower))
+  vp.attrs["voltage"] = "5"
+  let vn = addNet(nl, newNet("VN", ntPower))
+  vn.attrs["voltage"] = "-5"
+  let vu = addNet(nl, newNet("VU", ntPower))
+  let sig = addNet(nl, newNet("sig"))
+
+  let cpos = addComponent(nl, newComponent("CP", kind = "capacitor"))
+  discard connect(cpos, "1", vp, ptPower)
+  discard connect(cpos, "2", gnd, ptGround)
+  let cneg = addComponent(nl, newComponent("CN", kind = "capacitor"))
+  discard connect(cneg, "1", vn, ptGround) # V- convention, but ntPower wins
+  discard connect(cneg, "2", vu, ptPower)
+  let rleaf = addComponent(nl, newComponent("RL", kind = "resistor"))
+  discard connect(rleaf, "1", sig, ptPassive)
+  discard connect(rleaf, "2", gnd, ptGround)
+  let mate = addComponent(nl, newComponent("RM", kind = "resistor"))
+  discard connect(mate, "1", sig, ptPassive)
+  discard connect(mate, "2", addNet(nl, newNet("other")), ptPassive)
+
+  let s = layout(nl)
+  proc pinY(desig, name: string): float =
+    let p = partOf(s, desig)
+    for pin in p.pins:
+      if pin.name == name: return pin.y - p.y
+    doAssert false, "no pin " & desig & "." & name
+  check pinY("CP", "1") < 0.0       # +5 V up
+  check pinY("CP", "2") > 0.0       # ground down
+  check pinY("CN", "1") > 0.0       # annotated -5 V rail down despite ptGround
+  check pinY("CN", "2") < 0.0       # unannotated rail up
+  check pinY("RL", "2") > 0.0       # leafSnap preserves ground-down
 
 test "a three-terminal transistor never rotates":
   let nl = newNetlist("elig")
@@ -928,8 +990,8 @@ test "the public json api exposes rotation additively":
     let rot = part["rotation"].getFloat
     check rot in [0.0, 90.0, 180.0, 270.0]
     rotOf[part["designator"].getStr] = rot
-  check rotOf["R1"] == 0.0
-  check rotOf["R2"] == 180.0     # flipped end-for-end to shorten its wires
+  check rotOf["R1"] == 90.0      # unannotated rail pin points up
+  check rotOf["R2"] == 90.0      # ground pin points down
   check rotOf["U1"] == 0.0       # a fallback box never rotates
 
 test "a rotated part draws its body in a rotate group, its labels kept outside it":

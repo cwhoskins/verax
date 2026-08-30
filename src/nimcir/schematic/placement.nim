@@ -62,6 +62,49 @@ proc pinWorldPositions(comps: seq[Component], syms: seq[SymbolDef],
         pos[i] + rotatedSlot(slotOf(syms[i], pinName, ord), rots[i])
       inc ord
 
+proc isGroundForOrientation(net: Net): bool {.inline.} =
+  ## An explicit power-net kind beats a stray `ptGround` pin (such as V- on an
+  ## op-amp): it is a rail, not ground.
+  net != nil and isGround(net) and net.kind != ntPower
+
+proc isRailForOrientation(net: Net): bool {.inline.} =
+  net != nil and isRail(net) and not isGroundForOrientation(net)
+
+proc powerRank(sd: SymbolDef, comp: Component, angle: float): array[4, int] =
+  ## Orientation penalties, compared lexicographically before wire length:
+  ## ground, non-positive rails, positive rails, then unannotated rails.
+  ## Thus semantic power direction is never traded for a shorter wire.
+  var ord = 0
+  for pinName, p in comp.pins:
+    let slot = rotatedSlot(slotOf(sd, pinName, ord), angle)
+    inc ord
+    if isGroundForOrientation(p.net):
+      if slot.y <= 0.0: inc result[0]       # ground points down
+    elif isRailForOrientation(p.net):
+      let voltage = railVoltage(p.net)
+      if voltage.has:
+        if voltage.value <= 0.0:
+          if slot.y <= 0.0: inc result[1]   # negative/zero rail points down
+        elif slot.y >= 0.0:
+          inc result[2]                     # positive rail points up
+      elif slot.y >= 0.0:
+        inc result[3]                       # unannotated rail points up
+
+proc rankLess(a, b: array[4, int]): bool {.inline.} =
+  for i in 0 ..< a.len:
+    if a[i] != b[i]: return a[i] < b[i]
+  false
+
+proc rankEqual(a, b: array[4, int]): bool {.inline.} =
+  for i in 0 ..< a.len:
+    if a[i] != b[i]: return false
+  true
+
+proc hasPowerDirection(comp: Component): bool {.inline.} =
+  for _, p in comp.pins:
+    if isGroundForOrientation(p.net) or isRailForOrientation(p.net): return true
+  false
+
 proc rotationScore(sd: SymbolDef, comp: Component, centre: Point, angle: float,
                    pinWorld: Table[string, Point]): float =
   ## Total Manhattan distance from each of this part's pins, placed at `angle`,
@@ -89,19 +132,27 @@ proc rotationScore(sd: SymbolDef, comp: Component, centre: Point, angle: float,
 
 proc bestRotation(sd: SymbolDef, comp: Component, centre: Point, current: float,
                   pinWorld: Table[string, Point], margin: float): float =
-  ## The orientation in `rotationChoices` with the lowest `rotationScore`, ties
-  ## broken toward the smaller angle. `margin` is hysteresis: the incumbent
-  ## `current` is only abandoned when the best alternative beats it by more
-  ## than `margin`, so a part cannot flip back and forth between iterations on
-  ## a sub-grid difference.
+  ## Power direction has a strong lexicographic rank; wire length only breaks
+  ## equal power ranks. `margin` applies solely within the incumbent's rank,
+  ## so hysteresis cannot retain an electrically backwards orientation.
   if not rotatable(sd): return 0.0
   var bestAngle = 0.0
   var bestScore = Inf
+  var bestRank: array[4, int]
+  var first = true
   for angle in rotationChoices:
+    let rank = powerRank(sd, comp, angle)
     let s = rotationScore(sd, comp, centre, angle, pinWorld)
-    if s < bestScore - 1e-9 or (abs(s - bestScore) <= 1e-9 and angle < bestAngle):
+    if first or rankLess(rank, bestRank) or
+       (rankEqual(rank, bestRank) and
+        (s < bestScore - 1e-9 or
+         (abs(s - bestScore) <= 1e-9 and angle < bestAngle))):
+      first = false
+      bestRank = rank
       bestScore = s
       bestAngle = angle
+  let currentRank = powerRank(sd, comp, current)
+  if not rankEqual(bestRank, currentRank): return bestAngle
   if abs(bestAngle - current) < 1e-9: return current
   if bestScore <= rotationScore(sd, comp, centre, current, pinWorld) - margin:
     bestAngle
@@ -158,7 +209,8 @@ proc leafSnap(comps: seq[Component], syms: seq[SymbolDef], pos: var seq[Point],
     block:
       var ord = 0
       for pinName, p in comps[i].pins:
-        if p.net != nil and not isGround(p.net) and not isRail(p.net):
+        if p.net != nil and not isGroundForOrientation(p.net) and
+           not isRailForOrientation(p.net):
           if theNet == nil:
             theNet = p.net; myPin = pinName; myOrd = ord
           elif p.net != theNet: multi = true
@@ -193,7 +245,14 @@ proc leafSnap(comps: seq[Component], syms: seq[SymbolDef], pos: var seq[Point],
         break
       inc ord
     let m = pos[j] + mslot
-    let dir = slotEscape(mslot, syms[j].bodyW, syms[j].bodyH)
+    var dir = slotEscape(mslot, syms[j].bodyW, syms[j].bodyH)
+    var powerAngle = 0.0
+    let powerDirected = hasPowerDirection(comps[i])
+    if powerDirected:
+      # Put the leaf on the side implied by its power-aware orientation, then
+      # its sole signal pin still faces back to the mate after the turn.
+      powerAngle = bestRotation(syms[i], comps[i], pos[i], rots[i], pw, 0.0)
+      dir = axisUnit(rotatedSlot(slotOf(syms[i], myPin, myOrd), powerAngle)) * -1.0
     let reach = ohw[i] + ohw[j]
     let target = Point(x: round((m.x + dir.x * reach) / grid) * grid,
                        y: round((m.y + dir.y * reach) / grid) * grid)
@@ -217,13 +276,16 @@ proc leafSnap(comps: seq[Component], syms: seq[SymbolDef], pos: var seq[Point],
     if not found: continue
     pos[i] = best
 
-    # Turn the leaf so its connected pin points back at the mate (along -dir).
-    let wantSlot = Point(x: -dir.x, y: -dir.y)
-    let baseSlot = slotOf(syms[i], myPin, myOrd)
-    for angle in rotationChoices:
-      if axisUnit(rotatedSlot(baseSlot, angle)) == wantSlot:
-        rots[i] = angle
-        break
+    if powerDirected:
+      rots[i] = powerAngle
+    else:
+      # Turn the leaf so its connected pin points back at the mate (along -dir).
+      let wantSlot = Point(x: -dir.x, y: -dir.y)
+      let baseSlot = slotOf(syms[i], myPin, myOrd)
+      for angle in rotationChoices:
+        if axisUnit(rotatedSlot(baseSlot, angle)) == wantSlot:
+          rots[i] = angle
+          break
 
 proc ufFind(parent: var seq[int], x: int): int =
   ## Union-find root with path compression. The root of a class is always its

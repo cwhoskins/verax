@@ -35,10 +35,15 @@ implements.
   never reach the occupancy set or the junction pass.
 - **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, and `diagnostics.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary.
   Eligible two-terminal parts take one of four orientations (0/90/180/270,
-  `rotationChoices`): `bestRotation` picks the one minimising each pin's
-  Manhattan distance to the centroid of its net-mates' pins, so both the pin
-  axis **and which end each pin takes** fall out of one wirelength test — a
-  180° flip when it shortens the wires, no separate rule. Only the square
+  `rotationChoices`): `bestRotation` first applies a **strong lexicographic
+  power-direction rank** — ground pins down; rails annotated at <=0 V down;
+  rails annotated >0 V up; unannotated rails up — then minimises each pin's
+  Manhattan distance to the centroid of its net-mates' pins within equal
+  ranks. An explicit `ntPower` kind beats a stray `ptGround` pin (an op-amp
+  V- supply is still a rail), and hysteresis never retains a worse power
+  rank. Thus both the pin axis **and which end each pin takes** fall out of
+  semantic direction followed by wirelength — a 180° flip when it shortens
+  the wires, no separate rule. Only the square
   two-terminal symbols are eligible, so a quarter turn never swaps
   `bodyW`/`bodyH` and the obstacle/separation rects stay valid. Because the
   attraction force is **pin-to-pin**, rotation is co-optimised *inside* the
@@ -75,7 +80,9 @@ implements.
   (`leafSnap`) takes each square two-terminal part with exactly one
   non-ground / non-rail net, moves it to the nearest free grid cell out along
   its one net-mate pin's escape axis, and turns it so its connected pin faces
-  back at that mate — a single spring fixes a leaf's distance but not its
+  back at that mate — except a powered leaf uses the same strong
+  power-direction rank and is placed on the corresponding side so its signal
+  pin still faces the mate — a single spring fixes a leaf's distance but not its
   direction or alignment, so the force layout leaves it adrift with its pin
   pointing away, and the rotation score's four-way ties (a shunt element sits
   symmetrically between its neighbours) were breaking on nothing better than

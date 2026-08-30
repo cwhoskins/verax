@@ -7,6 +7,7 @@
 import std/[algorithm, math, sets, strutils, tables]
 import ../netlist/types
 import ../netlist/kinds
+import ../netlist/annotations
 import ./scene
 
 include ./geometry
