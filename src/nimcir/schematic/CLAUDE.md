@@ -33,7 +33,7 @@ implements.
   **zero-space** fallback — no wire, only the marker and label at the pin.
   Fallbacks are stored in `Schematic.fallbacks`, *not* in `wires`, so they
   never reach the occupancy set or the junction pass.
-- **`layout.nim`** — `layout(nl: Netlist): Schematic`, pure and deterministic.
+- **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, and `diagnostics.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary.
   Eligible two-terminal parts take one of four orientations (0/90/180/270,
   `rotationChoices`): `bestRotation` picks the one minimising each pin's
   Manhattan distance to the centroid of its net-mates' pins, so both the pin
