@@ -36,7 +36,7 @@ proc lexBefore(l1: float, b1: int, l2: float, b2: int): bool {.inline.} =
   l1 < l2 - 1e-9 or (abs(l1 - l2) <= 1e-9 and b1 < b2)
 
 proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
-                         sources: seq[int], occ, seeds: seq[OccSeg],
+                         sources: seq[int], occ, seeds, glyphs: seq[OccSeg],
                          netName: string): RouteResult =
   ## Multi-source bend-aware Dijkstra over the routing graph. The state is
   ## `(node, incoming axis)`, so the cost of leaving a node depends on the
@@ -88,7 +88,7 @@ proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
         if sameCoord(nodes[i].x, nodes[j].x): raVert else: raHoriz
       let t = 2 * j + ord(edgeAxis)
       if used[t]: continue
-      if not edgeAllowed(nodes[i], nodes[j], netName, occ, seeds): continue
+      if not edgeAllowed(nodes[i], nodes[j], netName, occ, seeds, glyphs): continue
       let ndLen = result.distLen[u] + manhattan(nodes[i], nodes[j])
       let ndBends = result.distBends[u] + (if inAxis == edgeAxis: 0 else: 1)
       if lexBefore(ndLen, ndBends, result.distLen[t], result.distBends[t]):
@@ -183,7 +183,7 @@ proc routeNet(pins: seq[RoutePin],
               parts: seq[SchematicPart], obstacles: seq[Obstacle],
               free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
               occ: var seq[OccSeg], netName: string,
-              seeds: seq[OccSeg]): RouteOutcome =
+              seeds, glyphs: seq[OccSeg]): RouteOutcome =
   ## Routes one signal net as an occupancy-aware tree. The first connected pin
   ## is pin 0; every later pin is connected to the closest point already in
   ## the tree by a shortest path -- lexicographically (Manhattan length, then
@@ -258,7 +258,7 @@ proc routeNet(pins: seq[RoutePin],
     for i in 0 ..< v:
       if inTree[i]: sources.add i
 
-    let rr = dijkstraFromSources(nodes, adj, sources, occ, seeds, netName)
+    let rr = dijkstraFromSources(nodes, adj, sources, occ, seeds, glyphs, netName)
 
     var bestPin = -1
     var bestLen = Inf
@@ -300,7 +300,7 @@ proc routeNet(pins: seq[RoutePin],
       "\" does not start at the routed tree"
     for k in 0 ..< pathIdx.high:
       doAssert edgeAllowed(nodes[pathIdx[k]], nodes[pathIdx[k + 1]], netName,
-                           occ, seeds),
+                           occ, seeds, glyphs),
         "schematic route: path edge for net \"" & netName &
         "\" violates occupancy"
 

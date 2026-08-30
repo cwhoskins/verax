@@ -192,7 +192,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                            x2: p.x + hw, y2: p.y + hh)
   var escapeTerminals: seq[Point]
   for seed in escapeSeeds: escapeTerminals.add seed.b
-  let free = buildFreeGrid(obstacles, escapeTerminals)
+  var free = buildFreeGrid(obstacles, escapeTerminals)
 
   # --- routing ------------------------------------------------------------
   # Rail stubs are emitted first so their segments are occupied before any
@@ -216,19 +216,33 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     if isGroundHere(net):
       for pin in pins:
         let dir = escapeDir(result.parts[pin.partIdx], pin.pt)
-        let e = shortenedStubEnd(pin.pt, dir, pinSpan, net.name, occ & escapeSeeds)
+        let e0 = shortenedStubEnd(pin.pt, dir, pinSpan, net.name, occ & escapeSeeds)
+        let e = shortenedGlyphStubEnd(pin.pt, e0, wkGround, net.name, escapeSeeds)
         result.wires.add SchematicWire(net: net.name, kind: wkGround,
                                        points: @[pin.pt, e])
         addOcc(occ, pin.pt, e, net.name)
     elif isRailHere(net):
       for pin in pins:
         let dir = escapeDir(result.parts[pin.partIdx], pin.pt)
-        let e = shortenedStubEnd(pin.pt, dir, pinSpan, net.name, occ & escapeSeeds)
+        let e0 = shortenedStubEnd(pin.pt, dir, pinSpan, net.name, occ & escapeSeeds)
+        let e = shortenedGlyphStubEnd(pin.pt, e0, wkSupply, net.name, escapeSeeds)
         result.wires.add SchematicWire(net: net.name, kind: wkSupply,
                                        points: @[pin.pt, e])
         addOcc(occ, pin.pt, e, net.name)
         if net.name.len > 0:
           railLabelReqs.add (text: net.name, at: e, dir: dir)
+
+  # A rail/ground terminal is more than its wire stem: SVG caps it with one
+  # supply bar or three ground bars. Signals may cross ordinary wires, but not
+  # this terminal ink, so give every glyph endpoint a Hanan axis and pass its
+  # complete geometry to the signal router as a crossing blocker.
+  var glyphs: seq[OccSeg]
+  for w in result.wires:
+    for g in terminalGlyphSegments(w):
+      glyphs.add g
+      escapeTerminals.add g.a
+      escapeTerminals.add g.b
+  free = buildFreeGrid(obstacles, escapeTerminals)
 
   var sigOrd = 0
   var pendingFallbacks: seq[tuple[pin: RoutePin, netName: string]]
@@ -259,7 +273,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     var adj = initTable[Point, HashSet[Point]]()
     let occBefore = occ
     let ro = routeNet(pins, result.parts, obstacles, free, occ, net.name,
-                      escapeSeeds)
+                      escapeSeeds, glyphs)
     if not ro.ok:
       if withFallbacks:
         # `routeNet` may have recorded the net's already-connected branches

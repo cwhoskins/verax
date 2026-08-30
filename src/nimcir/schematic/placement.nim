@@ -287,6 +287,161 @@ proc leafSnap(comps: seq[Component], syms: seq[SymbolDef], pos: var seq[Point],
           rots[i] = angle
           break
 
+type
+  TerminalPlan = object
+    owner: int
+    net: string
+    glyphs: seq[OccSeg]
+  SignalEscape = object
+    owner: int
+    net: string
+    a, b: Point
+
+proc terminalClearance(comps: seq[Component], syms: seq[SymbolDef],
+                       pos: seq[Point], rots: seq[float]):
+    tuple[violations: int, involved: seq[bool]] =
+  ## Count prospective *full-length* power/ground terminal glyph collisions.
+  ## This is deliberately a placement predicate, before routing has shortened
+  ## a terminal stem: a 40-unit glyph must clear foreign signal escapes,
+  ## routing-inflated foreign bodies, and a differently-named terminal glyph.
+  ## The router retains its shortening/blocking checks for arrangements this
+  ## bounded repair cannot improve.
+  let n = comps.len
+  result.involved = newSeq[bool](n)
+  var terminals: seq[TerminalPlan]
+  var escapes: seq[SignalEscape]
+  for i, c in comps:
+    var ord = 0
+    for pinName, p in c.pins:
+      let slot = rotatedSlot(slotOf(syms[i], pinName, ord), rots[i])
+      let pt = pos[i] + slot
+      let dir = slotEscape(slot, syms[i].bodyW, syms[i].bodyH)
+      if p.net != nil and (isGroundForOrientation(p.net) or
+                            isRailForOrientation(p.net)):
+        let kind = if isGroundForOrientation(p.net): wkGround else: wkSupply
+        terminals.add TerminalPlan(owner: i, net: p.net.name,
+          glyphs: terminalGlyphSegments(SchematicWire(net: p.net.name,
+            kind: kind, points: @[pt, pt + dir * pinSpan])))
+      elif p.net != nil:
+        escapes.add SignalEscape(owner: i, net: p.net.name, a: pt,
+                                 b: pt + dir * routingClearance)
+      inc ord
+
+  for ti, t in terminals:
+    var bad = false
+    for g in t.glyphs:
+      # The terminal begins at its own body boundary, so only foreign bodies
+      # are obstacles here.
+      for j in 0 ..< n:
+        if j == t.owner: continue
+        let hw = syms[j].bodyW / 2.0 + routingClearance
+        let hh = syms[j].bodyH / 2.0 + routingClearance
+        if segBlocked(g.a, g.b, @[Obstacle(x1: pos[j].x - hw, y1: pos[j].y - hh,
+                                            x2: pos[j].x + hw, y2: pos[j].y + hh)]):
+          bad = true
+          result.involved[j] = true
+      for e in escapes:
+        if e.net != t.net and segmentsTouch(g.a, g.b, e.a, e.b):
+          bad = true
+          result.involved[e.owner] = true
+    for ui, u in terminals:
+      if ui == ti or u.net == t.net: continue
+      for g in t.glyphs:
+        for h in u.glyphs:
+          if segmentsTouch(g.a, g.b, h.a, h.b):
+            bad = true
+            result.involved[u.owner] = true
+    if bad:
+      inc result.violations
+      result.involved[t.owner] = true
+
+proc protectedLeaf(c: Component, sd: SymbolDef): bool =
+  ## `leafSnap` owns a square passive leaf's final close, aligned placement.
+  ## Prefer a different implicated part when possible rather than undoing that
+  ## established cleanup; the leaf remains available if it is the only choice.
+  if not rotatable(sd) or not hasPowerDirection(c): return false
+  var signals = 0
+  for _, p in c.pins:
+    if p.net != nil and not isGroundForOrientation(p.net) and
+       not isRailForOrientation(p.net):
+      inc signals
+  signals == 1
+
+proc terminalRepairClass(c: Component, sd: SymbolDef): int =
+  ## Prefer moving compact passive symbols. Boxes and larger active symbols are
+  ## still eligible when they are the only way to release a terminal corridor.
+  if not sd.isBox and sd.slots.len == 2:
+    var passive = true
+    for _, p in c.pins:
+      if p.kind notin {ptPassive, ptPower, ptGround}: passive = false
+    if passive: return 0
+    return 1
+  2
+
+const
+  terminalRepairAcceptedBudget = 8
+  terminalRepairAttemptBudget = 160
+  terminalRepairMaxRadius = 6
+
+proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
+                             pos: var seq[Point], rots: seq[float],
+                             ohw, ohh: seq[float]) =
+  ## Deterministic, bounded post-placement repair. It only keeps a grid move
+  ## that strictly reduces full-glyph conflicts, preserving the ordinary
+  ## placement separation invariant and leaving routing as the final safeguard.
+  # A two-part sheet is the canonical powered-leaf presentation: leafSnap has
+  # already selected its one useful alignment, while no third part can release
+  # a corridor. Keep that established minimal layout and let stem shortening
+  # handle its terminal overlap.
+  if comps.len < 3: return
+  var state = terminalClearance(comps, syms, pos, rots)
+  var accepted = 0
+  var attempts = 0
+  var all = newSeq[int](comps.len)
+  for i in 0 ..< comps.len: all[i] = i
+  while state.violations > 0 and accepted < terminalRepairAcceptedBudget and
+        attempts < terminalRepairAttemptBudget:
+    var order: seq[int]
+    var haveUnprotected = false
+    for i in 0 ..< comps.len:
+      if state.involved[i] and not protectedLeaf(comps[i], syms[i]):
+        haveUnprotected = true
+    for i in 0 ..< comps.len:
+      if state.involved[i] and
+         (haveUnprotected == false or not protectedLeaf(comps[i], syms[i])):
+        order.add i
+    order.sort(proc(a, b: int): int =
+      result = cmp(terminalRepairClass(comps[a], syms[a]),
+                   terminalRepairClass(comps[b], syms[b]))
+      if result == 0:
+        result = cmp(syms[a].bodyW * syms[a].bodyH,
+                     syms[b].bodyW * syms[b].bodyH)
+      if result == 0: result = cmp(a, b))
+    var improved = false
+    for i in order:
+      for r in 1 .. terminalRepairMaxRadius:
+        for dy in -r .. r:
+          for dx in -r .. r:
+            if max(abs(dx), abs(dy)) != r: continue
+            if attempts >= terminalRepairAttemptBudget: break
+            inc attempts
+            let x = pos[i].x + float(dx) * grid
+            let y = pos[i].y + float(dy) * grid
+            if overlapsAny(i, x, y, pos, ohw, ohh, all): continue
+            var candidate = pos
+            candidate[i] = Point(x: x, y: y)
+            let next = terminalClearance(comps, syms, candidate, rots)
+            if next.violations < state.violations:
+              pos = candidate
+              state = next
+              inc accepted
+              improved = true
+              break
+          if improved: break
+        if improved: break
+      if improved: break
+    if not improved: break
+
 proc ufFind(parent: var seq[int], x: int): int =
   ## Union-find root with path compression. The root of a class is always its
   ## smallest member index (see `ufUnion`), so a class id is a stable function

@@ -187,6 +187,11 @@ proc layout*(nl: Netlist): Schematic =
   # orientation of the leaves it touches.
   leafSnap(comps, syms, pos, rots, ohw, ohh, idxOf)
 
+  # Reserve complete, unshortened rail/ground glyphs before routing. This
+  # bounded pass moves the smallest implicated symbols first; routing still
+  # owns the defensive shortening/blocking path for irreducible crowding.
+  repairTerminalClearance(comps, syms, pos, rots, ohw, ohh)
+
   let scene = recoverRouting(nl, comps, syms, pos, rots, idxOf)
 
   result.parts = scene.parts

@@ -325,6 +325,81 @@ proc escapeSeedsT(s: Schematic): seq[tuple[net: string, a, b: Point]] =
                  Point(x: port.x + port.bodyW / 2.0, y: port.y)
     result.add (port.net, conn, conn + inward * clear)
 
+proc terminalGlyphSegmentsT(w: SchematicWire): seq[tuple[a, b: Point]] =
+  ## The stem plus every bar rendered by `svg.renderSvg` for a rail terminal.
+  if w.kind notin {wkGround, wkSupply} or w.points.len < 2: return
+  let a = w.points[^2]
+  let p = w.points[^1]
+  let d = p - a
+  let o = if abs(d.x) > abs(d.y):
+            Point(x: (if d.x >= 0.0: 1.0 else: -1.0), y: 0.0)
+          else:
+            Point(x: 0.0, y: (if d.y >= 0.0: 1.0 else: -1.0))
+  let q = Point(x: -o.y, y: o.x)
+  result.add (a, p)
+  result.add (p - q * 10.0, p + q * 10.0)
+  if w.kind == wkGround:
+    result.add (p + o * 4.0 - q * 6.0, p + o * 4.0 + q * 6.0)
+    result.add (p + o * 8.0 - q * 2.0, p + o * 8.0 + q * 2.0)
+
+proc segmentsTouchT(a, b, c, d: Point): bool =
+  let av = abs(a.x - b.x) < 1e-9
+  let cv = abs(c.x - d.x) < 1e-9
+  if av == cv: return collinearTouchT(a, b, c, d)
+  if av:
+    return a.x >= min(c.x, d.x) - 1e-9 and a.x <= max(c.x, d.x) + 1e-9 and
+           c.y >= min(a.y, b.y) - 1e-9 and c.y <= max(a.y, b.y) + 1e-9
+  c.x >= min(a.x, b.x) - 1e-9 and c.x <= max(a.x, b.x) + 1e-9 and
+    a.y >= min(c.y, d.y) - 1e-9 and a.y <= max(c.y, d.y) + 1e-9
+
+proc signalWiresClearTerminalGlyphs(s: Schematic): bool =
+  ## Signal geometry must clear both terminal stems and their visible bars.
+  for w in s.wires:
+    if w.kind != wkSignal: continue
+    for k in 0 ..< w.points.high:
+      for terminal in s.wires:
+        if terminal.kind notin {wkGround, wkSupply}: continue
+        for glyph in terminalGlyphSegmentsT(terminal):
+          if segmentsTouchT(w.points[k], w.points[k + 1], glyph.a, glyph.b):
+            return false
+  true
+
+proc fullTerminalGlyphsClearPlacementReservations(s: Schematic): bool =
+  ## The placement repair is judged against the prospective 40-unit glyph,
+  ## not the possibly shortened terminal the routing safeguard ultimately
+  ## emits. It must clear foreign signal corridors, inflated foreign bodies,
+  ## and terminal ink on another net.
+  type Planned = object
+    owner: int
+    net: string
+    glyphs: seq[tuple[a, b: Point]]
+  let owners = pinPartIndex(s)
+  let seeds = escapeSeedsT(s)
+  var planned: seq[Planned]
+  for w in s.wires:
+    if w.kind notin {wkGround, wkSupply} or w.points.len < 1: continue
+    let pt = w.points[0]
+    let owner = owners.getOrDefault(pt, -1)
+    if owner < 0: continue
+    let endPt = pt + escapeDirT(s.parts[owner], pt) * 40.0
+    planned.add Planned(owner: owner, net: w.net,
+      glyphs: terminalGlyphSegmentsT(SchematicWire(net: w.net, kind: w.kind,
+                                                    points: @[pt, endPt])))
+  for ti, t in planned:
+    for g in t.glyphs:
+      for i, p in s.parts:
+        if i != t.owner and segCrossesRect(g.a, g.b, inflatedRect(p)):
+          return false
+      for seed in seeds:
+        if seed.net != t.net and segmentsTouchT(g.a, g.b, seed.a, seed.b):
+          return false
+    for ui, u in planned:
+      if ui == ti or u.net == t.net: continue
+      for g in t.glyphs:
+        for h in u.glyphs:
+          if segmentsTouchT(g.a, g.b, h.a, h.b): return false
+  true
+
 proc signalWiresRespectForeignSeeds(s: Schematic): bool =
   ## A signal wire may touch a foreign-net escape seed at an endpoint and may
   ## cross it perpendicularly, but never runs along any positive-length part
@@ -1164,6 +1239,33 @@ test "different nets never touch collinearly nor crowd in parallel":
     let s = layout(nl)
     check distinctWiresNeverShareCollinearRuns(s)
     check differentNetsRespectSeparation(s)
+
+test "signal wires clear complete ground and supply terminal glyphs":
+  # Focused rail/ground coverage: each terminal's stem and every bar emitted
+  # by SVG are forbidden to signal routing, unlike an ordinary wire crossing.
+  check signalWiresClearTerminalGlyphs(layout(divider()))
+  check signalWiresClearTerminalGlyphs(layout(decoupledMcu()))
+
+  # The real RIAA channel and its hierarchical top sheet exercise dense
+  # positive/negative rails, ground terminals, fallback markers and boxes.
+  check signalWiresClearTerminalGlyphs(layout(riaaChannel()))
+  check signalWiresClearTerminalGlyphs(layout(fullRiaaTop()))
+
+  # Sheet-wide compatibility: existing ordinary signal-to-signal crossings
+  # remain governed by the separation helper (perpendicular crossings allowed)
+  # rather than being turned into terminal-style blockers.
+  for nl in [resistorChain(16), starNet(), twoBlocks()]:
+    check differentNetsRespectSeparation(layout(nl))
+
+test "placement reserves full terminal glyphs before routing":
+  # The compact divider is the minimal mixed signal/terminal case; RIAA adds
+  # dense rails, boxes and interface corridors. A second RIAA layout pins the
+  # repair's deterministic candidate ordering without changing public scene
+  # schema or routing safeguards.
+  check fullTerminalGlyphsClearPlacementReservations(layout(divider()))
+  check fullTerminalGlyphsClearPlacementReservations(layout(riaaChannel()))
+  check sceneToJsonString(layout(riaaChannel())) ==
+        sceneToJsonString(layout(riaaChannel()))
 
 test "a signal wire never threads a foreign-net escape seed":
   # Every signal pin and every interface port owns a short escape stub to the

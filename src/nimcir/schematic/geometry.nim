@@ -166,7 +166,65 @@ proc pointOnSegment(p, a, b: Point): bool =
     let hi = max(a.x, b.x)
     return p.x >= lo - 1e-9 and p.x <= hi + 1e-9
 
-proc edgeAllowed(a, b: Point, netName: string, occ, seeds: seq[OccSeg]): bool =
+proc segmentsTouch(a, b, c, d: Point): bool =
+  ## Whether two non-zero axis-aligned segments meet at all, including at an
+  ## endpoint. Unlike wire occupancy, this deliberately treats a perpendicular
+  ## crossing as contact: terminal glyph ink is not a wire crossing.
+  let av = sameCoord(a.x, b.x)
+  let cv = sameCoord(c.x, d.x)
+  if av == cv:
+    return collinearClosed(a, b, c, d)
+  if av:
+    return a.x >= min(c.x, d.x) - 1e-9 and a.x <= max(c.x, d.x) + 1e-9 and
+           c.y >= min(a.y, b.y) - 1e-9 and c.y <= max(a.y, b.y) + 1e-9
+  return c.x >= min(a.x, b.x) - 1e-9 and c.x <= max(a.x, b.x) + 1e-9 and
+         a.y >= min(c.y, d.y) - 1e-9 and a.y <= max(c.y, d.y) + 1e-9
+
+proc terminalGlyphSegments(w: SchematicWire): seq[OccSeg] =
+  ## The complete visible terminal glyph: its stem plus the bar(s) SVG draws
+  ## at the stem's far end. These are routing blockers for signals, rather
+  ## than ordinary occupancy, because a signal must not cross a terminal bar.
+  if w.kind notin {wkGround, wkSupply} or w.points.len < 2: return
+  let a = w.points[^2]
+  let p = w.points[^1]
+  let d = p - a
+  let o = if abs(d.x) > abs(d.y):
+            Point(x: (if d.x >= 0.0: 1.0 else: -1.0), y: 0.0)
+          else:
+            Point(x: 0.0, y: (if d.y >= 0.0: 1.0 else: -1.0))
+  let q = Point(x: -o.y, y: o.x)
+  result.add OccSeg(a: a, b: p, net: w.net)
+  result.add OccSeg(a: p - q * 10.0, b: p + q * 10.0, net: w.net)
+  if w.kind == wkGround:
+    let p4 = p + o * 4.0
+    let p8 = p + o * 8.0
+    result.add OccSeg(a: p4 - q * 6.0, b: p4 + q * 6.0, net: w.net)
+    result.add OccSeg(a: p8 - q * 2.0, b: p8 + q * 2.0, net: w.net)
+
+proc shortenedGlyphStubEnd(p, e: Point, kind: WireKind,
+                           netName: string, seeds: seq[OccSeg]): Point =
+  ## Shorten a terminal stem when its bars would cover a fixed signal escape.
+  ## Signal escapes are emitted unchanged, so the terminal yields instead.
+  let d = e - p
+  let span = abs(d.x) + abs(d.y)
+  if span < 1e-9: return e
+  let dir = Point(x: d.x / span, y: d.y / span)
+  for step in countdown(int(floor(span)), 0):
+    let candidate = p + dir * float(step)
+    let glyphs = terminalGlyphSegments(SchematicWire(net: netName, kind: kind,
+                                                       points: @[p, candidate]))
+    var clear = true
+    for g in glyphs:
+      for seed in seeds:
+        if seed.net != netName and segmentsTouch(g.a, g.b, seed.a, seed.b):
+          clear = false
+          break
+      if not clear: break
+    if clear: return candidate
+  p
+
+proc edgeAllowed(a, b: Point, netName: string, occ, seeds,
+                 glyphs: seq[OccSeg]): bool =
   ## A candidate routing edge is usable unless it collides with an already
   ## emitted segment or threads a fixed escape seed. Within one net only a
   ## positive-length collinear overlap is forbidden (a new branch may attach
@@ -191,6 +249,8 @@ proc edgeAllowed(a, b: Point, netName: string, occ, seeds: seq[OccSeg]): bool =
       if parallelTooClose(a, b, s.a, s.b): return false
   for s in seeds:
     if collinearOverlap(a, b, s.a, s.b): return false
+  for g in glyphs:
+    if segmentsTouch(a, b, g.a, g.b): return false
   true
 
 proc addOcc(occ: var seq[OccSeg], a, b: Point, net: string) {.inline.} =

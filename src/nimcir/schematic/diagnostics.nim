@@ -59,7 +59,7 @@ type
       ## the final scene.
 
 proc classifyBlock(a, b: Point, netName: string,
-                   occ, seeds: seq[OccSeg]):
+                   occ, seeds, glyphs: seq[OccSeg]):
     tuple[kind: RerouteBlockKind, net: string] =
   ## Which occupancy/seed rule blocks the axis-aligned edge `a`-`b` for
   ## `netName`, together with the offending net. Mirrors `edgeAllowed`;
@@ -71,6 +71,8 @@ proc classifyBlock(a, b: Point, netName: string,
       return (rbOccupancy, s.net)
   for s in seeds:
     if collinearOverlap(a, b, s.a, s.b): return (rbEscapeSeed, s.net)
+  for g in glyphs:
+    if segmentsTouch(a, b, g.a, g.b): return (rbOccupancy, g.net)
   doAssert false, "schematic diagnostic: rejected edge has no blocker"
   (rbOccupancy, "")
 
@@ -78,7 +80,7 @@ proc sceneRouterInputs(s: Schematic):
     tuple[railNets: HashSet[string], obstacles: seq[Obstacle],
           owners: seq[string],
           free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
-          occ: seq[OccSeg], seeds: seq[OccSeg]] =
+          occ: seq[OccSeg], seeds, glyphs: seq[OccSeg]] =
   ## Rebuilds everything `routeNet` needs from a finished scene alone. Rail
   ## and ground nets are identified by the kind of their emitted stubs, since
   ## a scene no longer carries the netlist's `Net.kind` annotation. Obstacle
@@ -113,6 +115,11 @@ proc sceneRouterInputs(s: Schematic):
 
   var escapeTerminals: seq[Point]
   for seed in result.seeds: escapeTerminals.add seed.b
+  for w in s.wires:
+    for g in terminalGlyphSegments(w):
+      result.glyphs.add g
+      escapeTerminals.add g.a
+      escapeTerminals.add g.b
   result.free = buildFreeGrid(result.obstacles, escapeTerminals)
 
 proc endpointsFor(s: Schematic, net: string):
@@ -142,7 +149,7 @@ proc blockReason(pin: RoutePin, parts: seq[SchematicPart],
                  escapeNodes: seq[Point], failIdx: int,
                  obstacles: seq[Obstacle], owners: seq[string],
                  free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
-                 occ, seeds: seq[OccSeg], netName: string):
+                 occ, seeds, glyphs: seq[OccSeg], netName: string):
     tuple[kind: RerouteBlockKind, detail: string] =
   ## A first-order explanation of why the failed pin's escape point is
   ## unreachable. Honest about its depth: it inspects the pin's own escape
@@ -173,8 +180,8 @@ proc blockReason(pin: RoutePin, parts: seq[SchematicPart],
     if segBlocked(e, n, obstacles):
       inc obstacleCount
       return
-    if not edgeAllowed(e, n, netName, occ, seeds):
-      let blk = classifyBlock(e, n, netName, occ, seeds)
+    if not edgeAllowed(e, n, netName, occ, seeds, glyphs):
+      let blk = classifyBlock(e, n, netName, occ, seeds, glyphs)
       if blk.kind == rbOccupancy:
         inc occupancyCount
         if occupancyNet.len == 0: occupancyNet = blk.net
@@ -235,7 +242,7 @@ proc diagnoseFallbackNet*(s: Schematic, net: string): FallbackReroute =
 
   var occ = ctx.occ
   let ro = routeNet(ep.pins, s.parts, ctx.obstacles, ctx.free, occ, net,
-                    ctx.seeds)
+                    ctx.seeds, ctx.glyphs)
   result.routed = ro.ok
   result.polys = ro.polys
   if ro.ok: return
@@ -249,7 +256,7 @@ proc diagnoseFallbackNet*(s: Schematic, net: string): FallbackReroute =
     result.failY = ep.pins[fi].pt.y
     (result.blockKind, result.blockDetail) =
       blockReason(ep.pins[fi], s.parts, escapeNodes, fi, ctx.obstacles,
-                  ctx.owners, ctx.free, ctx.occ, ctx.seeds, net)
+                  ctx.owners, ctx.free, ctx.occ, ctx.seeds, ctx.glyphs, net)
 
 proc diagnoseFallbackNets*(s: Schematic, nets: seq[string]): seq[FallbackReroute] =
   ## `diagnoseFallbackNet` over each net, in the given order.

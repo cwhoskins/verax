@@ -89,8 +89,14 @@ implements.
   the smaller angle. It runs last and owns both the position and the
   orientation of the leaves it touches; position is only ever moved *closer* to
   the mate pin, parts are visited in insertion order against the others' final
-  centres, so it can only help and stays deterministic. Routing is per signal
-  net: a tree grows
+  centres, so it can only help and stays deterministic. A bounded deterministic
+  **terminal-clearance repair** then reserves each prospective full 40-unit
+  ground/supply glyph against foreign signal escape corridors,
+  routing-inflated foreign bodies and different-net terminal glyphs. It tries
+  implicated small passive parts first and keeps only grid moves that strictly
+  reduce conflicts; protected powered leaves retain their `leafSnap` placement
+  when another part can move. Routing-time glyph blockers and stem shortening
+  remain the safeguard for irreducible crowding. Routing is per signal net: a tree grows
   from the first pin, each next pin attaching to the closest already-wired
   point through a Hanan free-space grid built from the inflated obstacle
   boundaries and signal-terminal escape coordinates, so an off-centre pin can
