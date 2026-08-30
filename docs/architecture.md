@@ -754,9 +754,13 @@ the design file alone is guesswork.
 the deck. Per simulation it leaves `run000.cir`, `run000.raw` and `run000.log`,
 plus a `run000.svg` -- a self-contained schematic of the *derived* fragment
 that ran, laid out and routed by `schematic/` (see
-docs/netlist-converter-research.md) -- and one `index.txt` row naming the run's
-label, analysis card, netlist, plot, whether the data is real or complex, and
-its vector, point and byte counts:
+docs/netlist-converter-research.md) -- and a `run000.json` holding the same
+routed scene through the public JSON API, writable *and* readable back by
+`schematic`'s strict `jsonToScene` reader (which is what lets a scene-based
+fallback diagnostic ask, from the archive alone, why a dashed marker is
+there) -- and one `index.txt` row naming the
+run's label, analysis card, netlist, plot, whether the data is real or complex,
+and its vector, point and byte counts:
 
 ```
 slot    status  label            analysis                 netlist       plot              data     vectors  points
@@ -783,15 +787,17 @@ raises.
 
 One file in the archive is not a run at all: `runFULL.svg`, a schematic of the
 *authored* `Design.netlist` written by `verify` before `readiness` runs
-anything. The per-run `runNNN.svg` files are the derived fragments — isolated,
-flattened, model-substituted — so none of them is the circuit the author wrote;
-`runFULL.svg` is, drawn once and overwritten every check. It is best-effort (a
-rendering failure cannot fail the check), gated only on `$NIMCIR_KEEP_RUNS`, and
-deliberately absent from `index.txt`: the index names one analysis run per row,
-and this picture is not a run, so it takes no `runNNN` slot either. A
-hierarchically-authored design also gets one `runFULL.<subckt>.svg` per distinct
-subcircuit it instantiates — deduplicated by the `.SUBCKT` name, so a block used
-twice is drawn once — each with its interface drawn as Altium-style port symbols
+anything, with its `runFULL.json` scene written from the same routed layout.
+The per-run `runNNN.svg`/`runNNN.json` files are the derived fragments —
+isolated, flattened, model-substituted — so none of them is the circuit the
+author wrote; `runFULL.svg` is, drawn once and overwritten every check. It is
+best-effort (a rendering failure cannot fail the check), gated only on
+`$NIMCIR_KEEP_RUNS`, and deliberately absent from `index.txt`: the index names
+one analysis run per row, and this picture is not a run, so it takes no
+`runNNN` slot either. A hierarchically-authored design also gets one
+`runFULL.<subckt>.svg`/`runFULL.<subckt>.json` per distinct subcircuit it
+instantiates — deduplicated by the `.SUBCKT` name, so a block used twice is
+drawn once — each with its interface drawn as Altium-style port symbols
 (direction taken from pin kinds, or from whether anything on the sheet drives
 the net). These are subject to the same gate, best-effort handling and
 index exclusion.

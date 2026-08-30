@@ -369,8 +369,8 @@ Three parts, and each answers a different question:
   never the netlist you wrote, and this is what says which analysis produced
   the number and what it does and does not cover. (`NIMCIR_KEEP_DECKS=<dir>`
   writes out the decks themselves; `--keep-runs=<dir>` writes out the decks,
-  the raw results and ngspice's log, with an `index.txt` saying which run is
-  which — see below.)
+  the raw results, ngspice's log, and an SVG schematic with its JSON scene,
+  with an `index.txt` saying which run is which — see below.)
 - **`assuming:`** — numbers the design does not contain and the tool invented
   anyway: a package-typical ESR, an assumed pin capacitance, a leak resistor
   on an open net. They sit **under the run that rests on them**, because which
@@ -396,8 +396,8 @@ run archive:
 nimcir check --keep-runs=./runs designs/sensor_node.nim
 ```
 
-That leaves one deck, one rawfile, one ngspice log and one SVG per simulation,
-plus an `index.txt` telling you which is which:
+That leaves one deck, one rawfile, one ngspice log, one SVG schematic and its
+JSON scene per simulation, plus an `index.txt` telling you which is which:
 
 ```
 slot    status  label            analysis                netlist       plot             points
@@ -426,15 +426,18 @@ The `run002.svg` is the same fragment as a schematic: a fast, read-only
 "does the topology look like I think it does" view. It is heuristic -- parts are
 force-placed, wires are orthogonal spanning trees, and anything the symbol
 library does not recognise is drawn as a labelled box -- so it is for eyeballing
-connectivity, not for publication. It is rendered from the derived netlist
-*before* ngspice runs, which is why even a failed run leaves its SVG behind.
+connectivity, not for publication. The `run002.json` beside it is the same
+routed scene through the public JSON API, for tools that would rather read
+geometry than parse SVG. Both are rendered from the derived netlist *before*
+ngspice runs, which is why even a failed run leaves its picture behind.
 
 Because every `runNNN.svg` is a derived fragment, the archive also carries one
 picture of the circuit **as you wrote it**: `runFULL.svg`, the full design
 netlist, drawn once and overwritten each check before any fragment is
-simulated. It appears even when no simulation ran, and it is not a run -- it
-takes no `runNNN` slot and no `index.txt` row. If the design instantiates
-subcircuits, each distinct one also gets a `runFULL.<subckt>.svg` sheet (a block
+simulated, with a `runFULL.json` scene written from the same layout. It appears
+even when no simulation ran, and it is not a run -- it takes no `runNNN` slot
+and no `index.txt` row. If the design instantiates subcircuits, each distinct
+one also gets a `runFULL.<subckt>.svg`/`runFULL.<subckt>.json` sheet (a block
 used twice is drawn once), with its ports drawn as Altium-style port symbols --
 inputs entering from the left, outputs leaving to the right.
 

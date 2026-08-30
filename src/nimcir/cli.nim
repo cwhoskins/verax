@@ -215,8 +215,9 @@ check flags (forwarded to the design file):
   --verbose          show the full plan and the passing claims
   --strict           treat warnings and unevaluated claims as failures
   --keep-runs=<dir>  archive every simulation there: the deck handed to
-                     ngspice, its raw results, its log, and an index.txt
-                     saying which run is which
+                     ngspice, its raw results, its log, an SVG schematic
+                     and its JSON scene, and an index.txt saying which run
+                     is which
   --save-currents    with --keep-runs, also save device terminal currents
                      (.op/.tran/.dc only; node voltages are saved anyway)
   --path:<dir>       where nimcir's sources live (usually found automatically)

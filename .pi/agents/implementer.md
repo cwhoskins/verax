@@ -2,7 +2,7 @@
 name: implementer
 description: Implements an approved plan and its tests using the strongest DeepSeek coding model.
 tools: read, grep, find, ls, bash, edit, write
-model: deepseek/deepseek-v4-pro
+model: openai-codex/gpt-5.6-terra
 ---
 You are the code implementer for the nimcir repository.
 

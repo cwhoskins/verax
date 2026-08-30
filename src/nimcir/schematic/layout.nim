@@ -403,21 +403,31 @@ proc pointOnSegment(p, a, b: Point): bool =
     let hi = max(a.x, b.x)
     return p.x >= lo - 1e-9 and p.x <= hi + 1e-9
 
-proc edgeAllowed(a, b: Point, netName: string, occ: seq[OccSeg]): bool =
+proc edgeAllowed(a, b: Point, netName: string, occ, seeds: seq[OccSeg]): bool =
   ## A candidate routing edge is usable unless it collides with an already
-  ## emitted segment. Within one net only a positive-length collinear overlap
-  ## is forbidden (a new branch may attach at, and continue straight through,
-  ## a shared vertex). Across different nets the rule is stronger: a
-  ## perpendicular crossing stays allowed, but a collinear touch -- even
-  ## end-to-end -- is forbidden, and a parallel segment must keep at least
-  ## `wireMinSeparation` of centreline separation wherever its projection
-  ## overlaps an occupied segment's.
+  ## emitted segment or threads a fixed escape seed. Within one net only a
+  ## positive-length collinear overlap is forbidden (a new branch may attach
+  ## at, and continue straight through, a shared vertex). Across different
+  ## nets the rule is stronger: a perpendicular crossing stays allowed, but a
+  ## collinear touch -- even end-to-end -- is forbidden, and a parallel
+  ## segment must keep at least `wireMinSeparation` of centreline separation
+  ## wherever its projection overlaps an occupied segment's.
+  ##
+  ## Escape seeds are *prospective* stubs, not emitted wires, so the stronger
+  ## different-net rule does not apply to them: a route may touch a foreign
+  ## seed at an endpoint and may cross it perpendicularly, but may not run
+  ## along any positive-length part of it -- the seed's open interior must
+  ## stay clear for the net that owns it. Same-net seeds obey the same
+  ## positive-length-only rule, so the net tag is irrelevant here (it still
+  ## matters for the rail/ground stub shortening test).
   for s in occ:
     if s.net == netName:
       if collinearOverlap(a, b, s.a, s.b): return false
     else:
       if collinearClosed(a, b, s.a, s.b): return false
       if parallelTooClose(a, b, s.a, s.b): return false
+  for s in seeds:
+    if collinearOverlap(a, b, s.a, s.b): return false
   true
 
 proc addOcc(occ: var seq[OccSeg], a, b: Point, net: string) {.inline.} =
@@ -524,7 +534,7 @@ proc lexBefore(l1: float, b1: int, l2: float, b2: int): bool {.inline.} =
   l1 < l2 - 1e-9 or (abs(l1 - l2) <= 1e-9 and b1 < b2)
 
 proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
-                         sources: seq[int], occ: seq[OccSeg],
+                         sources: seq[int], occ, seeds: seq[OccSeg],
                          netName: string): RouteResult =
   ## Multi-source bend-aware Dijkstra over the routing graph. The state is
   ## `(node, incoming axis)`, so the cost of leaving a node depends on the
@@ -576,7 +586,7 @@ proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
         if sameCoord(nodes[i].x, nodes[j].x): raVert else: raHoriz
       let t = 2 * j + ord(edgeAxis)
       if used[t]: continue
-      if not edgeAllowed(nodes[i], nodes[j], netName, occ): continue
+      if not edgeAllowed(nodes[i], nodes[j], netName, occ, seeds): continue
       let ndLen = result.distLen[u] + manhattan(nodes[i], nodes[j])
       let ndBends = result.distBends[u] + (if inAxis == edgeAxis: 0 else: 1)
       if lexBefore(ndLen, ndBends, result.distLen[t], result.distBends[t]):
@@ -635,6 +645,37 @@ proc fallbackFor(pin: RoutePin, parts: seq[SchematicPart], netName: string,
     part: (if pin.pinName.len > 0: parts[pin.partIdx].designator else: ""),
     pin: pin.pinName, x: pin.pt.x, y: pin.pt.y, ex: dir.x, ey: dir.y,
     points: fallbackStub(pin.pt, dir, routingClearance, occ))
+
+proc fallbackEscapeDir*(parts: seq[SchematicPart], ports: seq[SchematicPort],
+                        f: SchematicFallback): Point =
+  ## The outward escape direction a fallback's `ex`/`ey` records, recomputed
+  ## from the scene it belongs to. A part pin's fallback leaves along that
+  ## pin's body-edge outward normal (`escapeDir`); a port connection point's
+  ## fallback leaves along the port's inward escape (toward the sheet
+  ## centre), read from the port's rotation. Used by the JSON reader to fill
+  ## the `ex`/`ey` a legacy unversioned archive never stored.
+  ##
+  ## Returns `(0, 0)` when the scene cannot identify the owning pin or port:
+  ## the honest answer for a record whose owner is missing, never an invented
+  ## direction.
+  if f.part.len > 0:
+    for p in parts:
+      if p.designator != f.part: continue
+      for pin in p.pins:
+        if pin.name == f.pin:
+          return escapeDir(p, Point(x: pin.x, y: pin.y))
+    return Point(x: 0.0, y: 0.0)
+  # A port connection point: `f.x`/`f.y` is the point where the port's stub
+  # meets its body edge. `rotation` 0 puts the body to the right of that
+  # point (inward escape -x); 180 puts it to the left (inward escape +x).
+  for p in ports:
+    if p.net != f.net: continue
+    let hw = p.bodyW / 2.0
+    let onRight = abs(p.rotation) < 1e-9
+    let cx = if onRight: p.x - hw else: p.x + hw
+    if abs(cx - f.x) < 1e-6 and abs(p.y - f.y) < 1e-6:
+      return Point(x: (if onRight: -1.0 else: 1.0), y: 0.0)
+  Point(x: 0.0, y: 0.0)
 
 # --- label placement --------------------------------------------------------
 # Designator/value text (and net + rail names) is placed here, against the
@@ -736,18 +777,25 @@ proc insideAny(p: Point, obstacles: seq[Obstacle]): bool =
       return true
   false
 
-proc buildFreeGrid(obstacles: seq[Obstacle]):
+proc buildFreeGrid(obstacles: seq[Obstacle], terminals: openArray[Point]):
     tuple[nodes: seq[Point], adj: seq[seq[int]]] =
-  ## The Hanan grid: every obstacle boundary x against every boundary y, with
-  ## points inside an obstacle dropped. Two co-linear, mutually visible points
-  ## are joined. This is the shared free-space graph every net's escape points
-  ## hook into; because it contains every obstacle corner and every projection
-  ## between them, it is complete for orthogonal paths among these rectangles.
+  ## The Hanan grid: every inflated-obstacle boundary and signal-terminal
+  ## escape coordinate supplies an x or y axis; points inside an obstacle are
+  ## dropped. Including terminal axes lets an off-centre side pin turn after
+  ## its outward stub instead of requiring its tangential coordinate to happen
+  ## to coincide with an obstacle boundary. This shared free-space graph
+  ## contains every obstacle corner and terminal projection needed for
+  ## orthogonal paths among these rectangles. Adjacent visible nodes on an
+  ## axis are enough: an intervening collinear node has the same length and
+  ## introduces no bend.
   var xs: seq[float]
   var ys: seq[float]
   for o in obstacles:
     xs.add o.x1; xs.add o.x2
     ys.add o.y1; ys.add o.y2
+  for terminal in terminals:
+    xs.add terminal.x
+    ys.add terminal.y
   xs.sort()
   ys.sort()
   var uxs: seq[float]
@@ -764,18 +812,38 @@ proc buildFreeGrid(obstacles: seq[Obstacle]):
 
   let v = result.nodes.len
   result.adj = newSeq[seq[int]](v)
-  for i in 0 ..< v:
-    for j in i + 1 ..< v:
-      if sameCoord(result.nodes[i].x, result.nodes[j].x) or
-         sameCoord(result.nodes[i].y, result.nodes[j].y):
-        if not segBlocked(result.nodes[i], result.nodes[j], obstacles):
-          result.adj[i].add j
-          result.adj[j].add i
+  var nodeAt = initTable[Point, int]()
+  for i, p in result.nodes: nodeAt[p] = i
+
+  # Linking every visible pair is geometrically redundant (the intervening
+  # collinear nodes preserve both Manhattan length and bend count) and becomes
+  # prohibitively quadratic once terminal axes are present.
+  template linkAdjacent(a, b: int) =
+    if a >= 0 and b >= 0 and
+       not segBlocked(result.nodes[a], result.nodes[b], obstacles):
+      result.adj[a].add b
+      result.adj[b].add a
+
+  for x in uxs:
+    var prev = -1
+    for y in uys:
+      let here = nodeAt.getOrDefault(Point(x: x, y: y), -1)
+      if here >= 0:
+        linkAdjacent(prev, here)
+        prev = here
+  for y in uys:
+    var prev = -1
+    for x in uxs:
+      let here = nodeAt.getOrDefault(Point(x: x, y: y), -1)
+      if here >= 0:
+        linkAdjacent(prev, here)
+        prev = here
 
 proc routeNet(pins: seq[RoutePin],
               parts: seq[SchematicPart], obstacles: seq[Obstacle],
               free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
-              occ: var seq[OccSeg], netName: string): RouteOutcome =
+              occ: var seq[OccSeg], netName: string,
+              seeds: seq[OccSeg]): RouteOutcome =
   ## Routes one signal net as an occupancy-aware tree. The first connected pin
   ## is pin 0; every later pin is connected to the closest point already in
   ## the tree by a shortest path -- lexicographically (Manhattan length, then
@@ -787,6 +855,14 @@ proc routeNet(pins: seq[RoutePin],
   ## attachment point (a pin on the first connection, a tree node afterwards)
   ## and ends at the pin it connects, so the union of the polylines covers the
   ## tree exactly once and two wires of the net share at most a vertex.
+  ##
+  ## `seeds` are the fixed escape stubs of every signal pin and port
+  ## connection point, read-only. A route may touch a seed at an endpoint and
+  ## may cross it perpendicularly, but may not run along any positive-length
+  ## part of it -- the seed's open interior stays clear for the net that owns
+  ## it. They are never added to `occ`, which stays the emitted-wire set a
+  ## fallback stub sizes itself against -- a pin's own seed must not read as
+  ## a foreign wire there.
   ##
   ## A pin that cannot be reached on the free grid under those rules is the
   ## one *recoverable* failure: the outcome is `ok = false` with `failPin` set
@@ -842,7 +918,7 @@ proc routeNet(pins: seq[RoutePin],
     for i in 0 ..< v:
       if inTree[i]: sources.add i
 
-    let rr = dijkstraFromSources(nodes, adj, sources, occ, netName)
+    let rr = dijkstraFromSources(nodes, adj, sources, occ, seeds, netName)
 
     var bestPin = -1
     var bestLen = Inf
@@ -883,7 +959,8 @@ proc routeNet(pins: seq[RoutePin],
       "schematic route: path for net \"" & netName &
       "\" does not start at the routed tree"
     for k in 0 ..< pathIdx.high:
-      doAssert edgeAllowed(nodes[pathIdx[k]], nodes[pathIdx[k + 1]], netName, occ),
+      doAssert edgeAllowed(nodes[pathIdx[k]], nodes[pathIdx[k + 1]], netName,
+                           occ, seeds),
         "schematic route: path edge for net \"" & netName &
         "\" violates occupancy"
 
@@ -1448,10 +1525,14 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   proc isRailHere(net: Net): bool =
     net != nil and isRail(net) and not isGroundHere(net)
 
-  # Every signal pin leaves its body through a short stub in a fixed
-  # direction; a ground or supply stub must not run along one of those, or two
-  # different nets share a collinear segment. Seed the shortening test with
-  # them (they are not added to `occ` -- the signal route re-adds its own).
+  # Every signal pin -- and every interface port's connection point -- leaves
+  # its body through a short fixed-direction stub to the routing grid. Those
+  # stubs are seeded here, tagged with their own net, and handed to the two
+  # consumers that must respect them: the rail/ground stub shortening test,
+  # and the signal route's occupancy check. They are never added to `occ`:
+  # `occ` is the emitted-wire set a fallback stub sizes itself against, and a
+  # pin's own escape seed must not read as a foreign wire there (it would
+  # zero every fallback marker).
   var escapeSeeds: seq[OccSeg]
   for _, net in nl.nets:
     if isGroundHere(net) or isRailHere(net): continue
@@ -1544,8 +1625,13 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       result.ports.add SchematicPort(name: pl.name, net: pl.net, dir: pl.dir,
         x: px, y: y, bodyW: pl.bodyW, bodyH: pl.bodyH,
         rotation: (if onRight: 0.0 else: 180.0))
-      portConn[pl.net] = (at: Point(x: edgeX, y: y),
-                          inward: Point(x: (if onRight: -1.0 else: 1.0), y: 0.0))
+      let conn = Point(x: edgeX, y: y)
+      let inward = Point(x: (if onRight: -1.0 else: 1.0), y: 0.0)
+      portConn[pl.net] = (at: conn, inward: inward)
+      # A port's connecting stub is a signal wire like any other pin's, so a
+      # foreign net must not thread it either; seed it exactly like a part
+      # pin's escape stub above.
+      addOcc(escapeSeeds, conn, conn + inward * routingClearance, pl.net)
 
   var obstacles = obstaclesFor(result.parts)
   for p in result.ports:
@@ -1553,7 +1639,9 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     let hh = p.bodyH / 2.0 + routingClearance
     obstacles.add Obstacle(x1: p.x - hw, y1: p.y - hh,
                            x2: p.x + hw, y2: p.y + hh)
-  let free = buildFreeGrid(obstacles)
+  var escapeTerminals: seq[Point]
+  for seed in escapeSeeds: escapeTerminals.add seed.b
+  let free = buildFreeGrid(obstacles, escapeTerminals)
 
   # --- routing ------------------------------------------------------------
   # Rail stubs are emitted first so their segments are occupied before any
@@ -1619,7 +1707,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       continue
     var adj = initTable[Point, HashSet[Point]]()
     let occBefore = occ
-    let ro = routeNet(pins, result.parts, obstacles, free, occ, net.name)
+    let ro = routeNet(pins, result.parts, obstacles, free, occ, net.name,
+                      escapeSeeds)
     if not ro.ok:
       if withFallbacks:
         # `routeNet` may have recorded the net's already-connected branches
@@ -2186,3 +2275,270 @@ proc layout*(nl: Netlist): Schematic =
   result.minY = minY - pad
   result.maxX = maxX + pad
   result.maxY = maxY + pad
+
+# --- fallback reroute diagnostic --------------------------------------------
+# A *final-scene* diagnostic, deliberately not a historical replay: it takes
+# the finished `Schematic` (the one archived beside the SVG), rebuilds the
+# router's inputs from the scene alone -- obstacles from part/port bodies,
+# occupancy from the emitted wires, escape seeds from part pins and ports,
+# rail/ground identity from wire kind -- and re-runs `routeNet` for one
+# fallback net against that final geometry. The answer is therefore "could
+# this net route as a tree in the scene that was actually drawn", not "why
+# did it fail at the exact moment the original layout first tried it". The
+# occupancy seen by the reroute is the complete final set, and no placement
+# feedback move is attempted, so a net that the original layout fell back on
+# may (or may not) route here -- either answer is information, and the
+# limitation is stated rather than hidden.
+
+type
+  RerouteBlockKind* = enum
+    ## What a final-scene reroute names as the first-order blocker of an
+    ## unreachable pin's escape point.
+    rbObstacle
+      ## An inflated part/port body blocks the escape point or every edge out
+      ## of it -- placement left no routing channel there.
+    rbOccupancy
+      ## The final scene's own emitted wires block the route (a collinear
+      ## touch or a too-close parallel run against a foreign net, or a
+      ## same-net collinear overlap).
+    rbEscapeSeed
+      ## A foreign pin/port's fixed escape stub blocks the route's first hop.
+
+  FallbackReroute* = object
+    ## The result of re-routing one fallback net against a finished scene's
+    ## final geometry (see the module note above).
+    net*: string
+      ## The exact fallback net name.
+    pins*: int
+      ## How many route endpoints the net has in the scene (part pins plus
+      ## interface-port connection points). 0 means the net has no endpoint;
+      ## 1 means a single dangling pin, which `layout` always draws as a
+      ## fallback but never treats as a routing failure.
+    routed*: bool
+      ## Whether `routeNet` can connect every endpoint as a real tree under
+      ## the final occupancy. `true` for a dangling single pin.
+    failPin*: int
+      ## The index of the first unreachable endpoint when `routed` is false;
+      ## -1 otherwise.
+    failPart*: string
+      ## The owning part's designator of the unreachable endpoint; "" for a
+      ## port connection point.
+    failPinName*: string
+      ## The unreachable pin's name; "" for a port connection point.
+    failX*, failY*: float
+      ## The unreachable endpoint's world position.
+    blockKind*: RerouteBlockKind
+      ## The first-order blocker classification when `routed` is false.
+    blockDetail*: string
+      ## A short human-readable expansion of `blockKind`, including the
+      ## offending net or owner name where the scene identifies one.
+    polys*: seq[seq[Point]]
+      ## When `routed`, the polylines `routeNet` would emit for the net in
+      ## the final scene.
+
+proc classifyBlock(a, b: Point, netName: string,
+                   occ, seeds: seq[OccSeg]):
+    tuple[kind: RerouteBlockKind, net: string] =
+  ## Which occupancy/seed rule blocks the axis-aligned edge `a`-`b` for
+  ## `netName`, together with the offending net. Mirrors `edgeAllowed`;
+  ## Its caller invokes this only after `edgeAllowed` rejects the edge.
+  for s in occ:
+    if s.net == netName:
+      if collinearOverlap(a, b, s.a, s.b): return (rbOccupancy, s.net)
+    elif collinearClosed(a, b, s.a, s.b) or parallelTooClose(a, b, s.a, s.b):
+      return (rbOccupancy, s.net)
+  for s in seeds:
+    if collinearOverlap(a, b, s.a, s.b): return (rbEscapeSeed, s.net)
+  doAssert false, "schematic diagnostic: rejected edge has no blocker"
+  (rbOccupancy, "")
+
+proc sceneRouterInputs(s: Schematic):
+    tuple[railNets: HashSet[string], obstacles: seq[Obstacle],
+          owners: seq[string],
+          free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
+          occ: seq[OccSeg], seeds: seq[OccSeg]] =
+  ## Rebuilds everything `routeNet` needs from a finished scene alone. Rail
+  ## and ground nets are identified by the kind of their emitted stubs, since
+  ## a scene no longer carries the netlist's `Net.kind` annotation. Obstacle
+  ## owners are kept in parallel so a diagnosis can name the body that blocks
+  ## a pin.
+  for w in s.wires:
+    if w.kind in {wkGround, wkSupply}: result.railNets.incl w.net
+
+  result.obstacles = obstaclesFor(s.parts)
+  for p in s.parts: result.owners.add "part " & p.designator
+  for p in s.ports:
+    let hw = p.bodyW / 2.0 + routingClearance
+    let hh = p.bodyH / 2.0 + routingClearance
+    result.obstacles.add Obstacle(x1: p.x - hw, y1: p.y - hh,
+                                  x2: p.x + hw, y2: p.y + hh)
+    result.owners.add "port " & p.name
+  for w in s.wires:
+    for k in 0 ..< w.points.high:
+      addOcc(result.occ, w.points[k], w.points[k + 1], w.net)
+
+  for p in s.parts:
+    for pin in p.pins:
+      if pin.net.len == 0 or pin.net in result.railNets: continue
+      let pt = Point(x: pin.x, y: pin.y)
+      addOcc(result.seeds, pt, pt + escapeDir(p, pt) * routingClearance, pin.net)
+  for port in s.ports:
+    let onRight = abs(port.rotation) < 1e-9
+    let hw = port.bodyW / 2.0
+    let conn = Point(x: (if onRight: port.x - hw else: port.x + hw), y: port.y)
+    let inward = Point(x: (if onRight: -1.0 else: 1.0), y: 0.0)
+    addOcc(result.seeds, conn, conn + inward * routingClearance, port.net)
+
+  var escapeTerminals: seq[Point]
+  for seed in result.seeds: escapeTerminals.add seed.b
+  result.free = buildFreeGrid(result.obstacles, escapeTerminals)
+
+proc endpointsFor(s: Schematic, net: string):
+    tuple[pins: seq[RoutePin], part: seq[string], pinName: seq[string]] =
+  ## The route endpoints for `net` in `s`, in the same order `layout` would
+  ## have visited them: part pins in part/pin order, then port connection
+  ## points. `part`/`pinName` parallel the endpoints for failure reporting
+  ## (both "" for a port).
+  for pi, p in s.parts:
+    for pin in p.pins:
+      if pin.net == net:
+        result.pins.add (pt: Point(x: pin.x, y: pin.y), partIdx: pi,
+                         esc: Point(), pinName: pin.name)
+        result.part.add p.designator
+        result.pinName.add pin.name
+  for port in s.ports:
+    if port.net != net: continue
+    let onRight = abs(port.rotation) < 1e-9
+    let hw = port.bodyW / 2.0
+    let conn = Point(x: (if onRight: port.x - hw else: port.x + hw), y: port.y)
+    let inward = Point(x: (if onRight: -1.0 else: 1.0), y: 0.0)
+    result.pins.add (pt: conn, partIdx: 0, esc: inward, pinName: "")
+    result.part.add ""
+    result.pinName.add ""
+
+proc blockReason(pin: RoutePin, parts: seq[SchematicPart],
+                 escapeNodes: seq[Point], failIdx: int,
+                 obstacles: seq[Obstacle], owners: seq[string],
+                 free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
+                 occ, seeds: seq[OccSeg], netName: string):
+    tuple[kind: RerouteBlockKind, detail: string] =
+  ## A first-order explanation of why the failed pin's escape point is
+  ## unreachable. Honest about its depth: it inspects the pin's own escape
+  ## point and its first-hop edges only -- a failure that lives deeper in the
+  ## grid is reported as occupancy without guessing a specific occupant.
+  let d =
+    if pin.esc.x != 0.0 or pin.esc.y != 0.0: pin.esc
+    else: escapeDir(parts[pin.partIdx], pin.pt)
+  let e = pin.pt + d * routingClearance
+
+  const eps = 1e-9
+  for i, o in obstacles:
+    if e.x > o.x1 + eps and e.x < o.x2 - eps and
+       e.y > o.y1 + eps and e.y < o.y2 - eps:
+      return (rbObstacle,
+        "escape point lies inside the inflated body of " & owners[i])
+
+  var obstacleCount = 0
+  var occupancyCount = 0
+  var seedCount = 0
+  var occupancyNet = ""
+  var seedNet = ""
+  var allowed = 0
+
+  proc consider(n: Point) =
+    if sameCoord(e.x, n.x) and sameCoord(e.y, n.y): return
+    if not (sameCoord(e.x, n.x) or sameCoord(e.y, n.y)): return
+    if segBlocked(e, n, obstacles):
+      inc obstacleCount
+      return
+    if not edgeAllowed(e, n, netName, occ, seeds):
+      let blk = classifyBlock(e, n, netName, occ, seeds)
+      if blk.kind == rbOccupancy:
+        inc occupancyCount
+        if occupancyNet.len == 0: occupancyNet = blk.net
+      elif blk.kind == rbEscapeSeed:
+        inc seedCount
+        if seedNet.len == 0: seedNet = blk.net
+      return
+    inc allowed
+
+  for j, node in escapeNodes:
+    if j != failIdx: consider(node)
+  for node in free.nodes: consider(node)
+
+  if allowed > 0:
+    return (rbOccupancy,
+      "no route in the free grid under the final occupancy rules " &
+      "(the escape point itself can leave)")
+  if occupancyCount > 0 or seedCount > 0:
+    if occupancyCount > 0 and seedCount == 0:
+      return (rbOccupancy,
+        "every escape edge is blocked by the final occupancy" &
+        (if occupancyNet.len > 0: " (nearest offender: net \"" & occupancyNet & "\")" else: ""))
+    if seedCount > 0 and occupancyCount == 0:
+      return (rbEscapeSeed,
+        "every escape edge threads a foreign escape seed" &
+        (if seedNet.len > 0: " (net \"" & seedNet & "\")" else: ""))
+    return (rbOccupancy,
+      "every escape edge is blocked by occupancy or a foreign escape seed")
+  return (rbObstacle,
+    "every escape edge is blocked by an inflated body " &
+    "(placement left no routing channel out of this pin)")
+
+proc diagnoseFallbackNet*(s: Schematic, net: string): FallbackReroute =
+  ## Re-routes one fallback net against `s`'s final geometry and reports
+  ## whether it would route and, if not, which endpoint is blocked and by
+  ## what. This is the final-scene diagnostic described at the top of this
+  ## section -- not a replay of the original layout's routing order.
+  let ep = endpointsFor(s, net)
+  result.net = net
+  result.pins = ep.pins.len
+  result.failPin = -1
+
+  if ep.pins.len < 2:
+    result.routed = true
+    if ep.pins.len == 0:
+      result.blockDetail = "no endpoints in this scene"
+    else:
+      result.blockDetail = "single dangling pin; not a routing failure"
+    return
+
+  let ctx = sceneRouterInputs(s)
+  var escapeNodes: seq[Point]
+  for p in ep.pins:
+    let d =
+      if p.esc.x != 0.0 or p.esc.y != 0.0: p.esc
+      else: escapeDir(s.parts[p.partIdx], p.pt)
+    escapeNodes.add p.pt + d * routingClearance
+
+  var occ = ctx.occ
+  let ro = routeNet(ep.pins, s.parts, ctx.obstacles, ctx.free, occ, net,
+                    ctx.seeds)
+  result.routed = ro.ok
+  result.polys = ro.polys
+  if ro.ok: return
+
+  result.failPin = ro.failPin
+  if ro.failPin >= 0 and ro.failPin < ep.pins.len:
+    let fi = ro.failPin
+    result.failPart = ep.part[fi]
+    result.failPinName = ep.pinName[fi]
+    result.failX = ep.pins[fi].pt.x
+    result.failY = ep.pins[fi].pt.y
+    (result.blockKind, result.blockDetail) =
+      blockReason(ep.pins[fi], s.parts, escapeNodes, fi, ctx.obstacles,
+                  ctx.owners, ctx.free, ctx.occ, ctx.seeds, net)
+
+proc diagnoseFallbackNets*(s: Schematic, nets: seq[string]): seq[FallbackReroute] =
+  ## `diagnoseFallbackNet` over each net, in the given order.
+  for net in nets: result.add diagnoseFallbackNet(s, net)
+
+proc diagnoseAllFallbacks*(s: Schematic): seq[FallbackReroute] =
+  ## Diagnoses every distinct fallback net in `s`, in first-appearance order.
+  var seen = initHashSet[string]()
+  var nets: seq[string]
+  for f in s.fallbacks:
+    if f.net notin seen:
+      seen.incl f.net
+      nets.add f.net
+  diagnoseFallbackNets(s, nets)

@@ -648,17 +648,25 @@ proc safeSheetName(s: string): string =
     if ch in {'A'..'Z', 'a'..'z', '0'..'9', '.', '_', '-'}: result.add ch
     else: result.add '_'
 
+proc writeScenePair(s: Schematic, base: string) =
+  ## Writes one routed scene to the archive as both SVG and JSON, sharing the
+  ## single layout so the two files can never disagree about geometry.
+  writeSvgFile(s, base & ".svg")
+  writeSceneJsonFile(s, base & ".json")
+
 proc keepFullSchematic(nl: Netlist) =
-  ## Renders the authored design as `runFULL.svg` in a run archive, plus one
-  ## `runFULL.<subckt>.svg` per distinct subcircuit it instantiates, when an
-  ## archive is being kept and before any derived fragment is simulated.
+  ## Renders the authored design as `runFULL.svg`/`runFULL.json` in a run
+  ## archive, plus one `runFULL.<subckt>.svg`/`.json` per distinct subcircuit
+  ## it instantiates, when an archive is being kept and before any derived
+  ## fragment is simulated.
   ##
-  ## The per-run `runNNN.svg` files are the *derived* fragments -- isolated,
-  ## flattened, model-substituted -- so none of them is the circuit the
-  ## author wrote. These are: the full `Design.netlist` and each block it
-  ## builds on, drawn with interface ports, once and overwritten every run,
-  ## so the archive carries both the design as stated and the fragments as
-  ## simulated. They are deliberately **not** index rows: the index names one
+  ## The per-run `runNNN.svg`/`runNNN.json` files are the *derived* fragments
+  ## -- isolated, flattened, model-substituted -- so none of them is the
+  ## circuit the author wrote. These are: the full `Design.netlist` and each
+  ## block it builds on, drawn with interface ports, once and overwritten
+  ## every run, so the archive carries both the design as stated and the
+  ## fragments as simulated. Each SVG and its JSON come from the same routed
+  ## scene. They are deliberately **not** index rows: the index names one
   ## analysis run per row, and none of these pictures is a run.
   ##
   ## A subcircuit instantiated twice (two channels of a stereo stage, say) is
@@ -672,13 +680,14 @@ proc keepFullSchematic(nl: Netlist) =
   if dir.len == 0: return
   try:
     createDir(dir)
-    writeSvgFile(nl, dir / "runFULL.svg")
+    writeScenePair(layout(nl), dir / "runFULL")
     var seen: seq[string]
     proc walk(n: Netlist) =
       for _, child in n.children:
         if child.name.len > 0 and child.name notin seen:
           seen.add child.name
-          writeSvgFile(child, dir / ("runFULL." & safeSheetName(child.name) & ".svg"))
+          writeScenePair(layout(child),
+                         dir / ("runFULL." & safeSheetName(child.name)))
         walk(child)
     walk(nl)
   except CatchableError:
@@ -701,8 +710,9 @@ type
     allowed*: set[Capability]
     verbose*, strict*: bool
     keepRuns*: string
-      ## Where to archive each simulation (deck, rawfile, ngspice log and an
-      ## index). Empty means keep nothing, which is the default.
+      ## Where to archive each simulation (deck, rawfile, ngspice log, an
+      ## SVG schematic and its JSON scene, and an index). Empty means keep
+      ## nothing, which is the default.
     saveCurrents*: bool
       ## Ask ngspice for device terminal currents as well as the node
       ## voltages it saves anyway. Only meaningful alongside `keepRuns`.

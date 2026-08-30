@@ -8,7 +8,7 @@
 ## deterministic pin placement; and the archive's SVG is a pure function of
 ## the netlist, so drawing it cannot change what was simulated.
 
-import std/[json, math, os, streams, strutils, tables, tempfiles, unittest]
+import std/[json, math, os, sets, streams, strutils, tables, tempfiles, unittest]
 
 import nimcir/netlist
 import nimcir/netlist/formats/spice
@@ -287,6 +287,58 @@ proc fallbacksClearOfWires(s: Schematic): bool =
           let d = w.points[m + 1]
           if collinearTouchT(a, b, c, d): return false
           if parallelTooCloseT(a, b, c, d): return false
+  true
+
+proc escapeDirT(p: SchematicPart, pt: Point): Point =
+  ## The outward unit direction of a placed pin, by the same body-half-extent
+  ## test `layout.escapeDir` uses: a pin on a body edge leaves along that
+  ## edge's outward normal.
+  let dx = pt.x - p.x
+  let dy = pt.y - p.y
+  let hw = p.bodyW / 2.0
+  let hh = p.bodyH / 2.0
+  if abs(abs(dx) - hw) < abs(abs(dy) - hh):
+    Point(x: (if dx >= 0.0: 1.0 else: -1.0), y: 0.0)
+  else:
+    Point(x: 0.0, y: (if dy >= 0.0: 1.0 else: -1.0))
+
+proc escapeSeedsT(s: Schematic): seq[tuple[net: string, a, b: Point]] =
+  ## The fixed escape stubs `layout` protects: one per signal pin leaving the
+  ## body, and one per interface port leaving its connection point inward.
+  ## Rail and ground nets have no seed (they draw their own stubs instead).
+  const clear = 12.0
+  var railNets = initHashSet[string]()
+  for w in s.wires:
+    if w.kind in {wkGround, wkSupply}: railNets.incl w.net
+  for p in s.parts:
+    for pin in p.pins:
+      if pin.net.len == 0 or pin.net in railNets: continue
+      let pt = Point(x: pin.x, y: pin.y)
+      let d = escapeDirT(p, pt)
+      result.add (pin.net, pt, pt + d * clear)
+  for port in s.ports:
+    let inward = if abs(port.rotation) < 1e-9: Point(x: -1.0, y: 0.0)
+                 else: Point(x: 1.0, y: 0.0)
+    let conn = if abs(port.rotation) < 1e-9:
+                 Point(x: port.x - port.bodyW / 2.0, y: port.y)
+               else:
+                 Point(x: port.x + port.bodyW / 2.0, y: port.y)
+    result.add (port.net, conn, conn + inward * clear)
+
+proc signalWiresRespectForeignSeeds(s: Schematic): bool =
+  ## A signal wire may touch a foreign-net escape seed at an endpoint and may
+  ## cross it perpendicularly, but never runs along any positive-length part
+  ## of it. Same-net seeds are excluded: a wire's own stub *is* that seed.
+  let seeds = escapeSeedsT(s)
+  for w in s.wires:
+    if w.kind != wkSignal: continue
+    for k in 0 ..< w.points.high:
+      let a = w.points[k]
+      let b = w.points[k + 1]
+      if abs(a.x - b.x) < 1e-9 and abs(a.y - b.y) < 1e-9: continue
+      for sd in seeds:
+        if sd.net == w.net: continue
+        if collinearOverlapT(a, b, sd.a, sd.b): return false
   true
 
 proc labelBoxT(lb: SchematicLabel): tuple[x1, y1, x2, y2: float] =
@@ -709,9 +761,9 @@ test "a tall box pin escapes through its own edge, not the dominant axis":
       wire = w.points
   check wire.len >= 2
   check abs(wire[0].x - p0.x) < 1e-6 and abs(wire[0].y - p0.y) < 1e-6
-  # the first hop is horizontally out through the left edge
-  check wire[1].x < wire[0].x
-  check abs(wire[1].y - wire[0].y) < 1e-6
+  # the first hop is horizontally out through the left edge, exactly to the
+  # terminal escape coordinate that is now also an axis of the Hanan grid.
+  check wire[1] == Point(x: p0.x - 12.0, y: p0.y)
 
 test "layout rotates an eligible two-terminal part and rotates its pin slots":
   # A T-junction: R1 and R2 run vertically into the shared node b, R3
@@ -927,6 +979,109 @@ test "the public json api round-trips the scene":
   check node["parts"][0].hasKey("pins")
   check node["parts"][0]["pins"][0].hasKey("net")
 
+test "the public json writer emits schemaVersion 1 with complete scene fields":
+  let node = parseJson(sceneToJsonString(divider()))
+  check node["schemaVersion"].getInt == sceneSchemaVersion
+  # A part carries both the pin-span body extents and the drawn-ink extents;
+  # a fallback carries its escape direction. These are the fields a reader
+  # needs to rebuild the exact scene object.
+  check node["parts"][0].hasKey("bodyW")
+  check node["parts"][0].hasKey("bodyH")
+  check node["parts"][0].hasKey("inkW")
+  check node["parts"][0].hasKey("inkH")
+  let withFb = parseJson(sceneToJsonString(layout(fullRiaaTop())))
+  check withFb["fallbacks"].len == 4
+  check withFb["fallbacks"][0].hasKey("ex")
+  check withFb["fallbacks"][0].hasKey("ey")
+
+test "the strict json reader is the exact inverse of the writer":
+  for nl in [divider(), riaaChannel(), fullRiaaTop(), resistorChain(37)]:
+    let s = layout(nl)
+    check jsonToScene(sceneToJsonString(s)) == s
+
+test "the strict json reader rejects unknown versions and malformed fields":
+  let good = parseJson(sceneToJsonString(divider()))
+  var badVersion = good
+  badVersion["schemaVersion"] = %2
+  expect SceneJsonError:
+    discard jsonToScene(badVersion)
+  var fractionalVersion = good
+  fractionalVersion["schemaVersion"] = %1.0
+  expect SceneJsonError:
+    discard jsonToScene(fractionalVersion)
+  var missing = good
+  missing.delete("parts")
+  expect SceneJsonError:
+    discard jsonToScene(missing)
+  var wrongType = good
+  wrongType["title"] = %42
+  expect SceneJsonError:
+    discard jsonToScene(wrongType)
+  var badEnum = good
+  badEnum["wires"][0]["kind"] = %"not-a-wire-kind"
+  expect SceneJsonError:
+    discard jsonToScene(badEnum)
+
+test "the reader accepts legacy unversioned archives and rebuilds fallback escapes":
+  # The pre-schemaVersion writer stored no `schemaVersion` and no fallback
+  # `ex`/`ey`; both are reconstructible from the scene's own part/port
+  # geometry, never invented.
+  let s = layout(fullRiaaTop())
+  var node = parseJson(sceneToJsonString(s))
+  node.delete("schemaVersion")
+  for f in node["fallbacks"]:
+    f.delete("ex")
+    f.delete("ey")
+  let back = jsonToScene(node)
+  check back.parts == s.parts
+  check back.wires == s.wires
+  check back.ports == s.ports
+  check back.fallbacks.len == s.fallbacks.len
+  for i in 0 ..< back.fallbacks.len:
+    check back.fallbacks[i].ex == s.fallbacks[i].ex
+    check back.fallbacks[i].ey == s.fallbacks[i].ey
+  # An unowned legacy fallback must retain its geometry while reporting no
+  # fabricated escape direction.
+  var unknown = node["fallbacks"][0]
+  unknown["part"] = %"missing"
+  unknown["pin"] = %"missing"
+  node["fallbacks"].add unknown
+  let withUnknown = jsonToScene(node)
+  check withUnknown.fallbacks[^1].ex == 0.0
+  check withUnknown.fallbacks[^1].ey == 0.0
+
+test "fallbackEscapeDir rebuilds an escape from part or port geometry":
+  var s = Schematic(title: "esc")
+  var p = SchematicPart(designator: "R1", kind: "resistor", name: "",
+                        value: "", symbol: "resistor", isBox: false,
+                        bodyW: 80.0, bodyH: 80.0, inkW: 80.0, inkH: 20.0,
+                        x: 0.0, y: 0.0, rotation: 0.0)
+  p.pins.add SchematicPin(name: "1", x: -40.0, y: 0.0, net: "a")
+  p.pins.add SchematicPin(name: "2", x: 40.0, y: 0.0, net: "b")
+  s.parts.add p
+  s.ports.add SchematicPort(name: "OUT", net: "b", dir: pdOutput,
+                            x: 140.0, y: 40.0, bodyW: 60.0, bodyH: 24.0,
+                            rotation: 0.0)
+  s.ports.add SchematicPort(name: "IN", net: "a", dir: pdInput,
+                            x: -140.0, y: 40.0, bodyW: 60.0, bodyH: 24.0,
+                            rotation: 180.0)
+  # A part pin leaves along its body-edge outward normal.
+  check fallbackEscapeDir(s.parts, s.ports,
+    SchematicFallback(net: "a", part: "R1", pin: "1", x: -40.0, y: 0.0)) ==
+    Point(x: -1.0, y: 0.0)
+  # A rotation-0 port sits to the right of its connection point -> inward -x.
+  check fallbackEscapeDir(s.parts, s.ports,
+    SchematicFallback(net: "b", part: "", pin: "", x: 110.0, y: 40.0)) ==
+    Point(x: -1.0, y: 0.0)
+  # A rotation-180 port sits to the left -> inward +x.
+  check fallbackEscapeDir(s.parts, s.ports,
+    SchematicFallback(net: "a", part: "", pin: "", x: -110.0, y: 40.0)) ==
+    Point(x: 1.0, y: 0.0)
+  # An owner the scene cannot identify yields the honest (0, 0).
+  check fallbackEscapeDir(s.parts, s.ports,
+    SchematicFallback(net: "b", part: "R9", pin: "9", x: 0.0, y: 0.0)) ==
+    Point(x: 0.0, y: 0.0)
+
 test "an empty netlist still renders a valid document":
   let text = renderSvg(newNetlist("empty"))
   check "<svg" in text
@@ -947,6 +1102,25 @@ test "different nets never touch collinearly nor crowd in parallel":
     let s = layout(nl)
     check distinctWiresNeverShareCollinearRuns(s)
     check differentNetsRespectSeparation(s)
+
+test "a signal wire never threads a foreign-net escape seed":
+  # Every signal pin and every interface port owns a short escape stub to the
+  # routing grid. A signal route may touch a foreign-net stub at an endpoint
+  # and may cross it perpendicularly, but may not run along any
+  # positive-length part of it -- the seed's open interior stays clear for
+  # the net that owns it. The real RIAA channel exercises both seed kinds:
+  # its component-pin stubs plus its IN/OUT interface-port stubs.
+  for nl in [divider(), riaaChannel()]:
+    let s = layout(nl)
+    check signalWiresRespectForeignSeeds(s)
+  let riaa = layout(riaaChannel())
+  let seeds = escapeSeedsT(riaa)
+  check riaa.ports.len == 2
+  for port in riaa.ports:
+    var seeded = false
+    for sd in seeds:
+      if sd.net == port.net: seeded = true
+    check seeded
 
 test "the real RIAA channel routes through the placement-routing feedback":
   # `designs/lib/riaa.nim`'s `RIAA_CHANNEL` is the case the feedback loop
@@ -1036,6 +1210,77 @@ test "an impossible route falls back to dashed markers, never an assertion":
     check f.pin.len > 0
     check f.points.len == 2
     check f.points[0] == Point(x: f.x, y: f.y)
+
+test "fallback diagnostics route through exact terminal Hanan axes":
+  # Both pins escape left through off-centre box-edge positions. Their escape
+  # y coordinates are not obstacle-boundary axes, so the one-bend route needs
+  # terminal-aware Hanan axes rather than a detour along a body boundary.
+  var s = Schematic(title: "terminal_axes")
+  var a = SchematicPart(designator: "A", kind: "box", name: "", value: "",
+                        symbol: "box", isBox: true,
+                        bodyW: 100.0, bodyH: 100.0, inkW: 60.0, inkH: 60.0,
+                        x: 0.0, y: 0.0, rotation: 0.0)
+  a.pins.add SchematicPin(name: "P", x: -50.0, y: 20.0, net: "sig")
+  var b = SchematicPart(designator: "B", kind: "box", name: "", value: "",
+                        symbol: "box", isBox: true,
+                        bodyW: 100.0, bodyH: 100.0, inkW: 60.0, inkH: 60.0,
+                        x: 240.0, y: 160.0, rotation: 0.0)
+  b.pins.add SchematicPin(name: "P", x: 190.0, y: 140.0, net: "sig")
+  s.parts = @[a, b]
+  let d = diagnoseFallbackNet(s, "sig")
+  check d.routed
+  check d.polys.len == 1
+  check d.polys[0][0] == Point(x: -50.0, y: 20.0)
+  check d.polys[0][1] == Point(x: -62.0, y: 20.0) # leftward escape
+  check d.polys[0][^2] == Point(x: 178.0, y: 140.0)
+  check d.polys[0][^1] == Point(x: 190.0, y: 140.0)
+  check routeBends(d.polys[0]) == 1
+
+  # The JSON public layout preserves the same terminal-aware diagnostic.
+  check diagnoseFallbackNet(jsonToScene(sceneToJsonString(s)), "sig") == d
+
+test "the fallback reroute diagnostic reads a finished scene, not the netlist":
+  # `diagnoseAllFallbacks` re-runs the router against the scene's own final
+  # geometry (parts, wires, ports), so it works on an archived scene with no
+  # netlist in hand -- the point of the run-archive JSON reader.
+  let s = layout(fullRiaaTop())
+  let original = s
+  let diags = diagnoseAllFallbacks(s)
+  let archivedDiags = diagnoseAllFallbacks(jsonToScene(sceneToJsonString(s)))
+  check diags == archivedDiags
+  check s == original                 # diagnostics never mutate the scene
+  check diags.len == 4
+  for d in diags:
+    check d.pins == 1
+    check d.routed
+    check d.blockDetail == "single dangling pin; not a routing failure"
+
+  # Fallback names are deduplicated in first-appearance order, and a caller
+  # can explicitly ask about a net absent from the scene.
+  var duplicated = s
+  duplicated.fallbacks.add duplicated.fallbacks[0]
+  let ordered = diagnoseAllFallbacks(duplicated)
+  check ordered.len == 4
+  for i, net in ["inL", "outL", "inR", "outR"]:
+    check ordered[i].net == net
+  let absent = diagnoseFallbackNet(s, "absent")
+  check absent.routed and absent.pins == 0
+  check absent.blockDetail == "no endpoints in this scene"
+
+test "terminal axes let the crowded chain diagnose only dangling endpoints":
+  let s = layout(resistorChain(37))
+  check s.fallbacks.len > 0
+  var byNet = initTable[string, FallbackReroute]()
+  for d in diagnoseAllFallbacks(s): byNet[d.net] = d
+  # The terminal-aware grid gives former interior fallback n28 a direct Hanan
+  # turn; only the two genuine one-pin endpoints remain fallback markers.
+  check byNet.len == 2
+  check byNet.hasKey("n0") and byNet["n0"].pins == 1 and byNet["n0"].routed
+  check byNet.hasKey("n37") and byNet["n37"].pins == 1 and byNet["n37"].routed
+  check not byNet.hasKey("n28")
+
+test "a scene that already routes has nothing to diagnose":
+  check diagnoseAllFallbacks(layout(riaaChannel())).len == 0
 
 test "a single dangling pin is a dashed stub with its exact net name":
   var nl = newNetlist("dangling")
@@ -1215,10 +1460,9 @@ proc transistorAndBox(): Netlist =
   discard connect(u1, "GND", gnd, ptGround)
 
 test "bend-aware routing prefers the equal-length pin with the fewest bends":
-  # On the tee's net b, R2's and R3's escape points are both 96 world units
-  # from R1's, so a length-only tie-break (lowest pin index) attaches R2
-  # first and draws a two-bend staircase. The lexicographic (length, then
-  # bends) cost attaches R3 first: one clean L.
+  # Terminal axes remove the former obstacle-boundary staircase. The first
+  # branch remains a shortest, one-routed-bend connection regardless of which
+  # equal-cost terminal the deterministic tree chooses first.
   let s = layout(bendTee())
   check partOf(s, "R1").rotation == 90.0
   check partOf(s, "R3").rotation == 0.0
@@ -1227,11 +1471,10 @@ test "bend-aware routing prefers the equal-length pin with the fewest bends":
     if w.net == "b" and w.kind == wkSignal:
       first = w.points
       break
-  check first.len == 5
-  if first.len == 5:
-    check first[0] == pinPoints(s, "R1", "b")[0]
-    check first[^1] == pinPoints(s, "R3", "b")[0]
-    check routeBends(first) == 1
+  check first.len >= 4
+  check first[0] == pinPoints(s, "R1", "b")[0]
+  check first[^1] in [pinPoints(s, "R2", "b")[0], pinPoints(s, "R3", "b")[0]]
+  check routeBends(first) == 1
 
 test "pin escape stubs are free, not charged as route bends":
   let s = layout(transistorAndBox())
@@ -1246,10 +1489,10 @@ test "pin escape stubs are free, not charged as route bends":
     let uPin = pinPoints(s, "U1", "sig")[0]
     check (wire[0] == qPin and wire[^1] == uPin) or
           (wire[0] == uPin and wire[^1] == qPin)
-    # The first and last segments are the 12-unit outward stubs; the routed
-    # path between the two escape points is a single-bend L, so the whole wire
-    # has three visual corners but only one routed bend.
-    check visualBends(wire) == 3
+    # The first and last segments are the 12-unit outward stubs. Terminal
+    # axes may align either stub with the routed L, removing visual corners,
+    # but that cannot turn a stub into a charged routing bend.
+    check visualBends(wire) <= 3
     check routeBends(wire) == 1
 
 test "the overlap helper allows crossings and shared vertices, not collinear runs":
@@ -1437,7 +1680,7 @@ suite "run archive svg":
   if not haveNgspice:
     echo "  [skipped: ngspice not found on PATH]"
   else:
-    test "an svg lands beside the deck, rawfile and log":
+    test "an svg and its json scene land beside the deck, rawfile and log":
       let dir = createTempDir("nimcir_svgtests_", "")
       defer: removeDir(dir)
       withEnv("NIMCIR_KEEP_RUNS", dir):
@@ -1450,7 +1693,12 @@ suite "run archive svg":
       check ">C1</text>" in svg
       check ">V1</text>" in svg
 
-    test "a failed run still keeps its svg, like its deck and log":
+      # The JSON is the same routed scene the SVG was drawn from: byte-for-byte
+      # the public JSON of a fresh layout of that fragment.
+      check fileExists(dir / "run000.json")
+      check readFile(dir / "run000.json") == sceneToJsonString(plainDivider())
+
+    test "a failed run still keeps its svg and json, like its deck and log":
       # `keepSchematic` renders before ngspice runs, so a convergence failure
       # leaves the picture of the fragment that failed -- the one worth reading.
       let dir = createTempDir("nimcir_svgtests_", "")
@@ -1460,4 +1708,5 @@ suite "run archive svg":
           discard run(divider(), ".op")
 
       check fileExists(dir / "run000.svg")
+      check fileExists(dir / "run000.json")
       check ">U1</text>" in readFile(dir / "run000.svg")

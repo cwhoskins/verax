@@ -64,9 +64,10 @@ three-corner staircase where one clean bend would do. The
 
 Two causes compound here:
 
-- **Off-grid vertices.** `buildFreeGrid` builds a Hanan grid from *obstacle
-  boundaries* — `centre ± (bodyHalf + routingClearance)` = `centre ± 52` for a
-  two-terminal part. Part centres are on the 40-grid; routing vertices are at
+- **Off-grid vertices.** `buildFreeGrid` builds a Hanan grid from *inflated
+  obstacle boundaries* plus signal-terminal escape coordinates —
+  `centre ± (bodyHalf + routingClearance)` = `centre ± 52` for a two-terminal
+  part. Part centres are on the 40-grid; routing vertices are at
   `40k ± 52`, e.g. `x = 308, 312, 488`. Two wires that should run in one lane
   end up 4 units apart, and `dropCollinear` cannot remove the resulting corners
   because they are real.
@@ -251,10 +252,12 @@ being two algorithms and becomes one.
 
 ### R4 — route on the 40-grid
 
-**Current state.** `buildFreeGrid` builds a **Hanan grid from obstacle
-boundaries**: collect every `x1,x2` and `y1,y2` of every inflated obstacle
-(values like `40k + 52`), take the full cross product, drop interior points,
-join every co-linear mutually-visible pair (O(V²) adjacency). Escape points are
+**Current state.** `buildFreeGrid` builds a **Hanan grid from inflated obstacle
+boundaries and signal-terminal escape coordinates**: collect every `x1,x2` and
+`y1,y2` of every obstacle plus every escape-point axis (values like
+`40k + 52`), take the full cross product, and drop interior points. Adjacent
+visible nodes on each axis are linked; additional collinear links would have
+the same Manhattan cost and bend count. Escape points are
 `pin ± routingClearance`. **Nothing is on the 40-grid** — typical vertex
 x-coords are `308, 312, 488`. Two wires that should share a lane land 4 units
 apart, and every route picks up sub-grid jogs `dropCollinear` cannot remove

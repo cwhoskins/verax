@@ -10,6 +10,7 @@
 import std/[math, os, sequtils, strutils, tables, tempfiles, unittest]
 
 import nimcir/netlist
+import nimcir/schematic
 import nimcir/spice/ngspice
 
 let haveNgspice = findExe("ngspice").len > 0
@@ -125,7 +126,13 @@ suite "run archive":
       check fileExists(dir / "run000.cir")
       check fileExists(dir / "run000.raw")
       check fileExists(dir / "run000.log")
+      check fileExists(dir / "run000.svg")
+      check fileExists(dir / "run000.json")
       check fileExists(dir / "index.txt")
+
+      # The JSON is the public scene for the very fragment that ran, byte-for-
+      # byte the scene a fresh layout of that netlist produces.
+      check readFile(dir / "run000.json") == sceneToJsonString(dividerNetlist())
 
       # The rawfile is ngspice's own ASCII format, loadable straight back in.
       let raw = readFile(dir / "run000.raw")
@@ -173,6 +180,10 @@ suite "run archive":
 
       check fileExists(dir / "run000.cir")
       check fileExists(dir / "run000.log")
+      # The fragment picture and scene are written before ngspice runs, so a
+      # failed run keeps them like its deck and log.
+      check fileExists(dir / "run000.svg")
+      check fileExists(dir / "run000.json")
       let rows = readFile(dir / "index.txt").strip.splitLines
       check rows.len == 2
       check rows[1].split('\t')[1] == "failed"

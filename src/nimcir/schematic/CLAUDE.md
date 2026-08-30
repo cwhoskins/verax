@@ -86,7 +86,8 @@ implements.
   net: a tree grows
   from the first pin, each next pin attaching to the closest already-wired
   point through a Hanan free-space grid built from the inflated obstacle
-  boundaries so no segment enters an inflated body; a wire
+  boundaries and signal-terminal escape coordinates, so an off-centre pin can
+  turn directly after its outward stub while no segment enters an inflated body; a wire
   reaches each pin directly through a short outward stub. The path search is
   **bend-aware**: state is `(node, incoming axis)` and cost is the
   lexicographic pair (Manhattan length, then bend count), so among all
@@ -114,10 +115,19 @@ implements.
   overlap.** Different nets may still cross perpendicularly. Signal routes and
   rail stubs are emitted in a deterministic order and later geometry is
   steered or shortened so it only touches what is already there — this
-  includes each **signal pin's escape stub**: those fixed short outward
-  segments are seeded into the shortening test before any ground/supply stub
-  is drawn, so a rail stub cannot end up running along one (a case tighter
-  placement makes reachable). If no bend-aware path can be found under those
+  includes each **escape stub**, the fixed short segment a signal pin (or an
+  interface port's connection point) takes out to the routing grid. Those
+  stubs are seeded, tagged with their own net, before any ground/supply stub
+  is drawn, and are handed to both consumers that must respect them: the
+  rail/ground stub shortening test, and the signal route's occupancy check.
+  Against a seeded stub a signal route may touch at an endpoint and may cross
+  perpendicularly, but may never run along a positive-length part of it — a
+  foreign net cannot thread another pin's escape corridor. The seed is
+  deliberately *not* held to the stronger cross-net wire rule (which forbids
+  even an end-to-end touch): that rule is for emitted wires, and the real
+  RIAA operating-point fragment showed the stronger reading turning a route
+  that merely ends at a neighbouring seed into a needless fallback. If no
+  bend-aware path can be found under those
   rules, `routeNet` returns a recoverable `RouteOutcome` (`ok = false` with
   the first unconnected `failPin`) instead of raising — ordinary
   unreachability is a placement problem, not a bug. `layout` then runs a
@@ -210,6 +220,25 @@ implements.
   passes already leave (`2·placementPad` between bodies) is cheaper and
   reversible. If crowding proves it insufficient, folding label extents into
   `ohw`/`ohh` is the follow-up.
+  Finally a **scene-based fallback reroute diagnostic** lives here as
+  `diagnoseFallbackNet`/`diagnoseFallbackNets`/`diagnoseAllFallbacks` (and
+  the `FallbackReroute`/`RerouteBlockKind` result types). It is a
+  *final-scene* diagnostic, deliberately not a historical replay: it takes a
+  finished `Schematic` (the one archived beside its SVG), rebuilds the
+  router's inputs from the scene alone — obstacles from part/port bodies,
+  occupancy from the emitted wires, escape seeds from part pins and ports,
+  rail/ground identity from wire kind (a scene no longer carries `Net.kind`)
+  — and re-runs `routeNet` for one fallback net against that final geometry.
+  The answer is "could this net route as a real tree in the scene that was
+  actually drawn", and when it cannot it reports the first unreachable
+  endpoint plus a first-order blocker classification (`rbObstacle` /
+  `rbOccupancy` / `rbEscapeSeed`) with the offending net or body named. It
+  inspects the failed pin's own escape point and its first-hop edges only — a
+  failure deeper in the grid is honestly reported as occupancy without
+  guessing a specific occupant — and it never attempts a placement feedback
+  move. The scene-with-no-netlist input is why it pairs with the JSON reader:
+  a run-archive `runNNN.json` is enough to ask why a dashed fallback marker
+  is there.
 - **`svg.nim`** — `renderSvg`/`writeSvgFile`. Self-contained SVG: every colour
   a literal, every style inlined, a graph-paper grid, wires as polylines,
   junction circles, ground/power symbols (each bar drawn perpendicular to the
@@ -251,15 +280,30 @@ implements.
   computed directly rather than in a `rotate()` group so the text stays upright
   without the outside-the-group dance a part needs.
 - **`json.nim`** — the public JSON API (`sceneToJson`, `sceneToJsonString`,
-  `writeSceneJsonFile`), for a future interactive frontend that consumes the
-  scene without re-parsing the SVG. Each part carries its `rotation` as an
-  additive numeric field; ports are a `ports` array with `dir` as a string
-  (`portDirName`); fallbacks are a `fallbacks` array carrying the exact
-  `net`/`part`/`pin`, the pin `x`/`y`, and the dashed stub `points` (empty
-  for a zero-space fallback). The run archive itself stays SVG-only.
+  `writeSceneJsonFile` **and** the strict reader `jsonToScene` /
+  `readSceneJsonFile`), for a future interactive frontend that consumes the
+  scene without re-parsing the SVG, and for scene-based diagnostics that read
+  a scene back from a run archive. The writer emits `schemaVersion` 1 with
+  every `Schematic` field present — each part carries its `rotation` as an
+  additive numeric field **and its `bodyW`/`bodyH` pin-span extents** (a
+  reader must rebuild the part object exactly, not just enough of it to draw);
+  ports are a `ports` array with `dir` as a string (`portDirName`); fallbacks
+  are a `fallbacks` array carrying the exact `net`/`part`/`pin`, the pin
+  `x`/`y`, the escape `ex`/`ey` and the dashed stub `points` (empty for a
+  zero-space fallback). The reader is strict for version 1 — a missing or
+  mistyped field, or a `schemaVersion` it does not know, raises
+  `SceneJsonError` naming the field — and also reads the legacy **unversioned**
+  archive format honestly: that format predates both `schemaVersion` and the
+  fallback `ex`/`ey`, so the reader rebuilds the escape direction from the
+  scene's own part/port geometry via `layout.fallbackEscapeDir` (`(0, 0)`
+  when the scene cannot identify the owner, never an invented direction).
+  The run archive writes the JSON beside its SVG: `spice/ngspice` for each
+  derived `runNNN`, and `verify` for `runFULL` and each child sheet — always
+  from the one routed scene, never a second layout.
 
 **Dependency direction stays intact**: `schematic` imports only `netlist`, and
-`spice/ngspice` imports `schematic` to archive a per-run SVG while `verify`
-imports it to archive the authored design as `runFULL.svg` plus one
-`runFULL.<subckt>.svg` per distinct instantiated subcircuit — both consumers sit
-above it on the existing spine, never across or up it.
+`spice/ngspice` imports `schematic` to archive each per-run scene as
+`runNNN.svg`/`runNNN.json` while `verify` imports it to archive the authored
+design as `runFULL.svg`/`runFULL.json` plus one `runFULL.<subckt>` pair per
+distinct instantiated subcircuit — both consumers sit above it on the existing
+spine, never across or up it.

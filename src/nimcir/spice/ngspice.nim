@@ -123,16 +123,20 @@ proc parseRawfile(path: string): SimResult =
     inc pointIdx
 
 proc keepSchematic(nl: Netlist, dir, slot: string) =
-  ## Renders the derived netlist as a self-contained SVG and writes it beside
-  ## the deck, rawfile and log in a run archive, when one is being kept.
+  ## Renders the derived netlist once and writes it as a self-contained SVG
+  ## and its schematic-scene JSON beside the deck, rawfile and log in a run
+  ## archive, when one is being kept.
   ##
-  ## The SVG is a pure function of the netlist that is already in hand, so
-  ## drawing it cannot change what is simulated -- the same rule the archive
-  ## itself obeys. Best effort, like `keepDeck`: a rendering failure must
-  ## never be able to fail a run.
+  ## Both files come from the one routed scene, and that scene is a pure
+  ## function of the netlist that is already in hand, so drawing it cannot
+  ## change what is simulated -- the same rule the archive itself obeys. Best
+  ## effort, like `keepDeck`: a rendering failure must never be able to fail
+  ## a run.
   if dir.len == 0: return
   try:
-    writeSvgFile(nl, dir / (slot & ".svg"))
+    let scene = layout(nl)
+    writeSvgFile(scene, dir / (slot & ".svg"))
+    writeSceneJsonFile(scene, dir / (slot & ".json"))
   except CatchableError:
     discard
 

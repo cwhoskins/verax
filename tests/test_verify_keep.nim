@@ -1,20 +1,25 @@
-## The verify-level run archive: `runFULL.svg` of the *authored* design.
+## The verify-level run archive: `runFULL` pictures and JSON scenes of the
+## *authored* design.
 ##
-## `spice/ngspice.run` already writes a per-run `runNNN.svg` of the derived
-## fragment it simulated; `tests/test_spice_keep.nim` and
+## `spice/ngspice.run` already writes per-run `runNNN.svg`/`runNNN.json` of
+## the derived fragment it simulated; `tests/test_spice_keep.nim` and
 ## `tests/test_schematic.nim` pin those. The one picture those never contain
 ## is the circuit the author actually wrote, so `verify` writes `runFULL.svg`
-## once, overwritten every check, *before* `readiness` runs any fragment.
+## and its `runFULL.json` scene once, overwritten every check, *before*
+## `readiness` runs any fragment -- each pair from the same routed scene.
 ##
-## The properties worth pinning here are: the file exists even when no
-## simulation runs (so it is gated on the archive, not on a run); it is
-## overwritten rather than slotted; and it takes no `index.txt` row -- the
-## index names one analysis run per row, and this picture is not a run.
+## The properties worth pinning here are: the files exist even when no
+## simulation runs (so they are gated on the archive, not on a run); they are
+## overwritten rather than slotted; and they take no `index.txt` row -- the
+## index names one analysis run per row, and these pictures are not runs.
 
-import std/[os, strutils, tempfiles, unittest]
+import std/[json, os, strutils, tempfiles, unittest]
 
 import nimcir/contract/dsl
+import nimcir/schematic
 import nimcir/verify
+
+import designs/lib/riaa
 
 let haveNgspice = findExe("ngspice").len > 0
 
@@ -86,32 +91,105 @@ proc twoChannelBoard(): Design =
     instance XL, gainBlock(), [inL, outL]
     instance XR, gainBlock(), [inR, outR]
 
-test "runFULL.svg is written before readiness, even with no simulation":
+proc riaaBoard(): Design =
+  ## The real stereo RIAA design (`designs/riaa_preamp.nim`) rebuilt here so a
+  ## test can drive `verify` in-process: the same two `riaaChannel()`
+  ## instances, supplies and claims. Its first simulation run is the
+  ## `run000.svg` operating-point fragment the foreign escape-seed protection
+  ## must not change into new fallback markers.
+  design("riaa_preamp"):
+    net gnd, kind = ntGround, name = "0", global = true
+    net vp, kind = ntPower:
+      spec:
+        voltage = 15.0.V
+    net vn, kind = ntPower:
+      spec:
+        voltage = -15.0.V
+
+    net inL,  kind = ntSignal
+    net outL, kind = ntSignal
+    net inR,  kind = ntSignal
+    net outR, kind = ntSignal
+
+    component V1, kind = "voltage_source", value = "DC 15":
+      pin "+", vp, kind = ptPower
+      pin "-", gnd, kind = ptGround
+      spec:
+        voltage = 15.0.V
+    component V2, kind = "voltage_source", value = "DC -15":
+      pin "+", vn, kind = ptPower
+      pin "-", gnd, kind = ptGround
+      spec:
+        voltage = -15.0.V
+
+    component C1, kind = "capacitor", value = "220u":
+      pin "1", vp, kind = ptPassive
+      pin "2", gnd, kind = ptPassive
+      spec:
+        package = "electrolytic"
+        esr = 150.mohm
+        esl = 6.nH
+    component C2, kind = "capacitor", value = "220u":
+      pin "1", vn, kind = ptPassive
+      pin "2", gnd, kind = ptPassive
+      spec:
+        package = "electrolytic"
+        esr = 150.mohm
+        esl = 6.nH
+
+    instance XL, riaaChannel(), [inL, outL, vp, vn, gnd]
+    instance XR, riaaChannel(), [inR, outR, vp, vn, gnd]
+
+    role "power_rail", pos, rail = vp, voltage = 15.0.V, band = 5.pct,
+         targetZ = 500.mohm, targetFrom = 100.kHz, targetTo = 10.MHz
+    role "power_rail", neg, rail = vn, voltage = -15.0.V, band = 5.pct
+
+    role "gain_stage", left, opamp = XL.innerComponent("U1"),
+         input = inL, output = outL,
+         atF = 1.kHz, minGain = 39.0.dB, maxGain = 40.5.dB
+    role "gain_stage", right, opamp = XR.innerComponent("U1"),
+         input = inR, output = outR,
+         atF = 1.kHz, minGain = 39.0.dB, maxGain = 40.5.dB
+
+    role "channel_match", stereo, a = roleRef("left"), b = roleRef("right"),
+         fFrom = 20.Hz, fTo = 20.kHz, maxGainDelta = 0.5.dB
+
+test "runFULL.svg and its json scene are written before readiness, even with no simulation":
   let dir = createTempDir("nimcir_verifykeeptest_", "")
   defer: removeDir(dir)
   withEnv("NIMCIR_KEEP_RUNS", dir):
     discard verify(bareBoard(), offlineCapabilities)
 
   check fileExists(dir / "runFULL.svg")
+  check fileExists(dir / "runFULL.json")
   # No fragment ran, so no slot was taken and no index row was written.
   check not fileExists(dir / "run000.svg")
+  check not fileExists(dir / "run000.json")
   check not fileExists(dir / "index.txt")
 
   let svg = readFile(dir / "runFULL.svg")
   check svg.startsWith("<?xml")
   check ">R1</text>" in svg
 
-test "a subcircuit gets its own runFULL.<name>.svg sheet, deduped by name":
+  # The JSON is the public scene of the very netlist `verify` laid out, not a
+  # second layout: byte-for-byte what `sceneToJsonString` produces for it.
+  check readFile(dir / "runFULL.json") == sceneToJsonString(bareBoard().netlist)
+
+test "a subcircuit gets its own runFULL.<name> svg+json sheet, deduped by name":
   let dir = createTempDir("nimcir_verifykeeptest_", "")
   defer: removeDir(dir)
   withEnv("NIMCIR_KEEP_RUNS", dir):
     discard verify(twoChannelBoard(), offlineCapabilities)
 
   check fileExists(dir / "runFULL.svg")
+  check fileExists(dir / "runFULL.json")
   # GAIN_BLOCK is instantiated twice but drawn once.
   check fileExists(dir / "runFULL.GAIN_BLOCK.svg")
+  check fileExists(dir / "runFULL.GAIN_BLOCK.json")
   check not fileExists(dir / "runFULL.XL.svg")
+  check not fileExists(dir / "runFULL.XL.json")
   check not fileExists(dir / "runFULL.XR.svg")
+  check not fileExists(dir / "runFULL.XR.json")
 
   # The child sheet shows the block's own interface as ports.
   let child = readFile(dir / "runFULL.GAIN_BLOCK.svg")
@@ -119,40 +197,56 @@ test "a subcircuit gets its own runFULL.<name>.svg sheet, deduped by name":
   check ">IN</text>" in child
   check ">OUT</text>" in child
 
+  # Its JSON scene carries the same two ports.
+  let childScene = parseJson(readFile(dir / "runFULL.GAIN_BLOCK.json"))
+  check childScene["title"].getStr == "GAIN_BLOCK"
+  check childScene["ports"].len == 2
+
   # No index row for any of the pictures.
   check not fileExists(dir / "index.txt")
 
-test "a flat design writes only runFULL.svg":
+test "a flat design writes only runFULL.svg and runFULL.json":
   let dir = createTempDir("nimcir_verifykeeptest_", "")
   defer: removeDir(dir)
   withEnv("NIMCIR_KEEP_RUNS", dir):
     discard verify(bareBoard(), offlineCapabilities)
   check fileExists(dir / "runFULL.svg")
+  check fileExists(dir / "runFULL.json")
   for f in walkFiles(dir / "runFULL.*.svg"):
     check false  # no runFULL.<name>.svg for a design with no subcircuits
+  for f in walkFiles(dir / "runFULL.*.json"):
+    check false  # no runFULL.<name>.json either
 
 test "a child sheet is overwritten, not slotted":
   let dir = createTempDir("nimcir_verifykeeptest_", "")
   defer: removeDir(dir)
   createDir(dir)
   writeFile(dir / "runFULL.GAIN_BLOCK.svg", "sentinel")
+  writeFile(dir / "runFULL.GAIN_BLOCK.json", "sentinel")
   withEnv("NIMCIR_KEEP_RUNS", dir):
     discard verify(twoChannelBoard(), offlineCapabilities)
   let child = readFile(dir / "runFULL.GAIN_BLOCK.svg")
   check child.startsWith("<?xml")
   check "sentinel" notin child
+  let childScene = readFile(dir / "runFULL.GAIN_BLOCK.json")
+  check "sentinel" notin childScene
+  check parseJson(childScene).hasKey("parts")
 
-test "runFULL.svg is overwritten, not appended or slotted":
+test "runFULL.svg and runFULL.json are overwritten, not appended or slotted":
   let dir = createTempDir("nimcir_verifykeeptest_", "")
   defer: removeDir(dir)
   createDir(dir)
   writeFile(dir / "runFULL.svg", "sentinel")
+  writeFile(dir / "runFULL.json", "sentinel")
   withEnv("NIMCIR_KEEP_RUNS", dir):
     discard verify(bareBoard(), offlineCapabilities)
 
   let svg = readFile(dir / "runFULL.svg")
   check svg.startsWith("<?xml")
   check "sentinel" notin svg
+  let scene = readFile(dir / "runFULL.json")
+  check "sentinel" notin scene
+  check parseJson(scene).hasKey("parts")
 
 suite "runFULL.svg beside the derived runNNN.svg":
   if not haveNgspice:
@@ -165,7 +259,9 @@ suite "runFULL.svg beside the derived runNNN.svg":
         discard verify(dividerBoard(), allCapabilities)
 
       check fileExists(dir / "runFULL.svg")
+      check fileExists(dir / "runFULL.json")
       check fileExists(dir / "run000.svg")
+      check fileExists(dir / "run000.json")
       check fileExists(dir / "run000.cir")
       check fileExists(dir / "run000.raw")
       check fileExists(dir / "index.txt")
@@ -193,3 +289,46 @@ suite "runFULL.svg beside the derived runNNN.svg":
       check rows[1].split('\t')[0] == "run000"
       for row in rows:
         check "runFULL" notin row
+
+    test "the real RIAA archive records fully routed derived and child sheets":
+      # The Hanan grid routes the first derived fragment's op-amp-substitution
+      # internal nets, so the archived SVG and JSON must describe real wires,
+      # not fallback markers. The authored child sheet must likewise retain
+      # its routed IN/OUT interface.
+      let dir = createTempDir("nimcir_riaaregress_", "")
+      defer: removeDir(dir)
+      withEnv("NIMCIR_KEEP_RUNS", dir):
+        discard verify(riaaBoard(), allCapabilities)
+
+      check fileExists(dir / "run000.svg")
+      check fileExists(dir / "run000.json")
+      check fileExists(dir / "runFULL.svg")
+      check fileExists(dir / "runFULL.json")
+      check fileExists(dir / "runFULL.RIAA_CHANNEL.svg")
+      check fileExists(dir / "runFULL.RIAA_CHANNEL.json")
+
+      # SVG is the rendered archive view: dashed strokes only represent
+      # fallback stubs, so their absence says every connection was routed.
+      let runSvg = readFile(dir / "run000.svg")
+      check runSvg.startsWith("<?xml")
+      check "stroke-dasharray=\"6 4\"" notin runSvg
+
+      # JSON is the same routed scene. Require actual wire geometry as well
+      # as no fallback records, rather than pinning an incidental wire count.
+      let runScene = parseJson(readFile(dir / "run000.json"))
+      check runScene["fallbacks"].len == 0
+      check runScene["wires"].len > 0
+      for wire in runScene["wires"]:
+        check wire["points"].len >= 2
+
+      # The authored child archive has the same clean routing and preserves
+      # its semantic IN/OUT interface ports.
+      let child = readFile(dir / "runFULL.RIAA_CHANNEL.svg")
+      check child.startsWith("<?xml")
+      check "stroke-dasharray=\"6 4\"" notin child
+      let childScene = parseJson(readFile(dir / "runFULL.RIAA_CHANNEL.json"))
+      check childScene["fallbacks"].len == 0
+      var portNames: seq[string]
+      for port in childScene["ports"]:
+        portNames.add port["name"].getStr
+      check portNames == @["IN", "OUT"]
