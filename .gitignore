@@ -1,3 +1,7 @@
+# Project-local agent debugging workspace: throwaway scripts/logs written by
+# .pi/extensions/debug-tools (the debugger agent's only writable location).
+/.tmp/
+
 # Compiled binaries. Nim names an executable after its source file with no
 # extension, so these are listed by path rather than by pattern -- there is
 # nothing about `examples/divider` that says "binary" except that
