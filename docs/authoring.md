@@ -432,10 +432,17 @@ library does not recognise is drawn as a labelled box -- so it is for eyeballing
 connectivity, not for publication. Library callers can explicitly select
 a `LayoutOptions` copied from `defaultLayoutOptions()` with `policy` set to
 `lpConstrainedLayered` for a bounded topology-layered alternative on ordinary
-sheets (tens of components):
-output-pin flow seeds left-to-right columns, the existing orthogonal router
-builds each net as an atomic trunk-and-tap tree, and its bounded repair falls
-back to per-pin markers if a complete tree cannot be made. The default
+sheets (tens of components): output-pin flow seeds left-to-right columns,
+while passive-heavy layers use at most three deterministic adjacent stages and
+parallel two-terminal parts sharing an unordered net pair are private,
+schema-preserving composites: their physical parts remain in the scene, while
+the router reserves their combined footprint and sees one endpoint for each
+of the composite's two terminals. Rail/ground terminals share one glyph with
+deterministic internal fanout. It does not infer a special rail-decoupler,
+PI, or RIAA relationship. The existing orthogonal router builds each net as
+an atomic trunk-and-tap tree, and its bounded repair falls back to markers for
+every physical pin covered by a failed composite endpoint if a complete tree
+cannot be made. The default
 `lpHistorical` policy remains byte-identical for existing archives. The
 `run002.json` beside it is the same
 routed scene through the public JSON API, for tools that would rather read

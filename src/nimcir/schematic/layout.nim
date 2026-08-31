@@ -38,6 +38,11 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
 
   var syms = newSeq[SymbolDef](n)
   for i, c in comps: syms[i] = symbolFor(c)
+  # The constrained plan is made before placement and remains the sole source
+  # of member offsets and external composite geometry for the whole pipeline.
+  let composites =
+    if options.policy == lpConstrainedLayered: compositePlan(comps, syms)
+    else: CompositePlan()
 
   # --- placement: golden-angle seed, then Fruchterman-Reingold ------------
   var pos = newSeq[Point](n)
@@ -54,6 +59,13 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   # the established serialized SVG/JSON output.
   if options.policy == lpConstrainedLayered and options.stageEnabled(lsSemanticSeed):
     constrainedSemanticSeed(comps, pos, idxOf)
+  if options.policy == lpConstrainedLayered:
+    restoreCompositeOffsets(composites, pos)
+  let semanticAnchors =
+    if options.policy == lpConstrainedLayered:
+      constrainedAnchors(comps, pos, idxOf)
+    else:
+      pos
 
   # Orientation is co-optimised with placement: the attraction force below acts
   # pin-to-pin, so it needs each part's rotation, and the rotation that
@@ -131,6 +143,20 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
     for i in 0 ..< n:
       disp[i].x -= pos[i].x * 0.08
       disp[i].y -= pos[i].y * 0.08
+      # Semantic layers are bounded soft anchors under the opt-in policy.
+      # They guide the search but never overwrite obstacle-driven placement.
+      if options.policy == lpConstrainedLayered:
+        disp[i].x += (semanticAnchors[i].x - pos[i].x) * 0.70
+        disp[i].y += (semanticAnchors[i].y - pos[i].y) * 0.08
+
+    # A constrained parallel motif is a composite during placement: retain its
+    # canonical internal offsets by applying the mean force as one translation.
+    if options.policy == lpConstrainedLayered:
+      for unit in composites.units:
+        var d = Point()
+        for i in unit.members: d += disp[i]
+        d = d * (1.0 / float(unit.members.len))
+        for i in unit.members: disp[i] = d
 
     for i in 0 ..< n:
       let d = sqrt(disp[i].x * disp[i].x + disp[i].y * disp[i].y)
@@ -138,12 +164,15 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
         let lim = min(d, temp)
         pos[i].x += disp[i].x / d * lim
         pos[i].y += disp[i].y / d * lim
+    if options.policy == lpConstrainedLayered:
+      restoreCompositeOffsets(composites, pos)
 
   # Reassert deterministic left-to-right layers before the existing
   # legalization pass. It is policy-gated so lpHistorical remains unchanged.
   if options.policy == lpConstrainedLayered and
      options.stageEnabled(lsConstrainedRefinement):
     constrainedRefine(comps, pos, idxOf)
+    restoreCompositeOffsets(composites, pos)
 
   # Snap centres to the grid, normalising -0.0 away so hashing stays exact.
   for i in 0 ..< n:
@@ -164,26 +193,74 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
     ohh[i] = syms[i].bodyH / 2.0 + placementPad
 
   let maxR = max(64, 4 * n)
-  var placed: seq[int]
-  for i in 0 ..< n:
-    let cx = pos[i].x
-    let cy = pos[i].y
-    var done = false
-    for r in 0 .. maxR:
-      for dy in -r .. r:
-        for dx in -r .. r:
-          if max(abs(dx), abs(dy)) != r: continue
-          let x = cx + float(dx) * grid
-          let y = cy + float(dy) * grid
-          if not overlapsAny(i, x, y, pos, ohw, ohh, placed):
-            pos[i] = Point(x: x, y: y)
-            done = true
-            break
+  if options.policy == lpConstrainedLayered:
+    # Legalize the early units, not their individual members.  The footprint
+    # carries placementPad externally while the canonical internal offsets are
+    # raw-body touching, so another part cannot occupy the composite gap.
+    var unitOf = newSeq[int](n)
+    for i in 0 ..< n: unitOf[i] = -1
+    for u, unit in composites.units:
+      for i in unit.members: unitOf[i] = u
+    var placed: seq[int]
+    proc rectFor(i: int): Obstacle =
+      if unitOf[i] >= 0:
+        compositeFootprint(composites, unitOf[i], syms, pos, placementPad)
+      else:
+        Obstacle(x1: pos[i].x - ohw[i], y1: pos[i].y - ohh[i],
+                 x2: pos[i].x + ohw[i], y2: pos[i].y + ohh[i])
+    for i in 0 ..< n:
+      if unitOf[i] >= 0 and composites.units[unitOf[i]].members[0] != i: continue
+      let members = if unitOf[i] >= 0: composites.units[unitOf[i]].members else: @[i]
+      var origin = Point()
+      for at, m in members: origin += pos[m] -
+        (if unitOf[i] >= 0: composites.units[unitOf[i]].offsets[at] else: Point())
+      origin = origin * (1.0 / float(members.len))
+      var done = false
+      for r in 0 .. maxR:
+        for dy in -r .. r:
+          for dx in -r .. r:
+            if max(abs(dx), abs(dy)) != r: continue
+            let delta = Point(x: float(dx) * grid, y: float(dy) * grid)
+            for at, m in members:
+              pos[m] = origin + delta +
+                (if unitOf[i] >= 0: composites.units[unitOf[i]].offsets[at] else: Point())
+            let here = rectFor(i)
+            var clear = true
+            for j in placed:
+              let other = rectFor(j)
+              if here.x1 < other.x2 - 1e-9 and here.x2 > other.x1 + 1e-9 and
+                 here.y1 < other.y2 - 1e-9 and here.y2 > other.y1 + 1e-9:
+                clear = false
+                break
+            if clear:
+              done = true
+              break
+          if done: break
         if done: break
-      if done: break
-    doAssert done,
-      "schematic placement could not separate component " & comps[i].designator
-    placed.add i
+      doAssert done,
+        "schematic placement could not separate component " & comps[i].designator
+      placed.add i
+  else:
+    var placed: seq[int]
+    for i in 0 ..< n:
+      let cx = pos[i].x
+      let cy = pos[i].y
+      var done = false
+      for r in 0 .. maxR:
+        for dy in -r .. r:
+          for dx in -r .. r:
+            if max(abs(dx), abs(dy)) != r: continue
+            let x = cx + float(dx) * grid
+            let y = cy + float(dy) * grid
+            if not overlapsAny(i, x, y, pos, ohw, ohh, placed):
+              pos[i] = Point(x: x, y: y)
+              done = true
+              break
+          if done: break
+        if done: break
+      doAssert done,
+        "schematic placement could not separate component " & comps[i].designator
+      placed.add i
 
   # --- packing: blocks that share no signal net are pulled back together --
   # The force layout's only long-range counter-force is a weak gravity, so
@@ -195,13 +272,20 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
     let group = groupsOf(nl, comps, pos, idxOf)
     packGroups(pos, ohw, ohh, group)
 
+  if options.policy == lpConstrainedLayered:
+    restoreCompositeOffsets(composites, pos)
+
   # --- orientation: the definitive assignment once the centres are final ---
   # Separation and packing have moved parts since the loop froze rotation, so
   # re-pick every one from the settled centres. One pass, snapshot-read and
   # fresh-write like the loop, and with no hysteresis -- this is the answer,
   # not an increment toward it.
   if options.stageEnabled(lsOrient):
-    rots = recomputeRotations(comps, syms, pos, rots)
+    rots =
+      if options.policy == lpConstrainedLayered:
+        constrainedRecomputeRotations(nl, comps, syms, pos, rots, semanticAnchors)
+      else:
+        recomputeRotations(comps, syms, pos, rots)
 
   # --- leaf cleanup: a one-signal-net part snapped beside its net-mate ----
   # A part with a single non-ground / non-rail net still sits and points
@@ -210,13 +294,22 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   # rather than a long detour. Last, so it owns both the position and the
   # orientation of the leaves it touches.
   if options.stageEnabled(lsLeafSnap):
-    leafSnap(comps, syms, pos, rots, ohw, ohh, idxOf)
+    leafSnap(comps, syms, pos, rots, ohw, ohh, idxOf,
+             locked = (if options.policy == lpConstrainedLayered:
+                         compositeMembers(composites, n) else: @[]))
 
   # Reserve complete, unshortened rail/ground glyphs before routing. This
   # bounded pass moves the smallest implicated symbols first; routing still
   # owns the defensive shortening/blocking path for irreducible crowding.
   if options.stageEnabled(lsTerminalRepair):
-    repairTerminalClearance(comps, syms, pos, rots, ohw, ohh)
+    repairTerminalClearance(comps, syms, pos, rots, ohw, ohh,
+      locked = (if options.policy == lpConstrainedLayered:
+                  compositeMembers(composites, n) else: @[]))
+  # Terminal repair and leaf cleanup are allowed to move a member; restore the
+  # parallel placement unit before routing/recovery sees the final geometry.
+  if options.policy == lpConstrainedLayered:
+    restoreCompositeOffsets(composites, pos)
+    rots = constrainedRecomputeRotations(nl, comps, syms, pos, rots, semanticAnchors)
 
   # `recoverRouting` is the bounded routing-aware repair: candidates are
   # accepted only when they route strictly further. Its dedicated stage is an
@@ -227,12 +320,13 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
      options.stageEnabled(lsRoutingAwareRepair))
   let scene =
     if useRecovery:
-      recoverRouting(nl, comps, syms, pos, rots, idxOf, options)
+      recoverRouting(nl, comps, syms, pos, rots, idxOf, options, composites)
     else:
       # A disabled recovery policy still produces the ordinary typed fallback
       # scene for an unrouteable net rather than raising.
       routeScene(nl, comps, syms, pos, rots, idxOf, withFallbacks = true,
-                 constrained = options.policy == lpConstrainedLayered)
+                 constrained = options.policy == lpConstrainedLayered,
+                 composites = composites)
 
   result.parts = scene.parts
   result.ports = scene.ports

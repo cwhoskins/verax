@@ -23,7 +23,8 @@ type
 proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                 pos: seq[Point], rots: seq[float],
                 idxOf: Table[string, int],
-                withFallbacks = false, constrained = false): RouteScene =
+                withFallbacks = false, constrained = false,
+                composites = CompositePlan()): RouteScene =
   ## Build the routed scene for the given centres/rotations. Pure and
   ## deterministic. `ok` is false only when `routeNet` reports an unreachable
   ## pin and `withFallbacks` is false -- the one recoverable routing failure,
@@ -59,6 +60,13 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     partIdxByDesig[c.designator] = result.parts.len
     result.parts.add sp
 
+  # Constrained parallel groups are private composites.  They preserve the
+  # public scene schema (all physical parts still appear above) while giving
+  # routing one endpoint per shared terminal and a combined footprint.
+  let composites =
+    if constrained: positionedCompositePlan(composites, result.parts, routingClearance)
+    else: CompositePlan()
+
   # A shared global net (SPICE node "0") accumulates pins from every sibling
   # clone that wired into it, and sibling clones reuse designators, so a pin
   # belongs to this sheet only when its component's owning netlist *is* this
@@ -92,8 +100,14 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       let key = pinKey(p.component, p.name)
       if not (pinPos.hasKey(key) and
               partIdxByDesig.hasKey(p.component.designator)): continue
+      let partIdx = partIdxByDesig[p.component.designator]
+      # Only the composite port is an external escape corridor.  Covered pins
+      # belong to the deterministic private fanout and must not become extra
+      # router endpoints or foreign-net blockers.
+      let cp = compositePort(composites, partIdx, p.name)
+      if constrained and cp.found and not cp.representative: continue
       let pt = pinPos[key]
-      let part = result.parts[partIdxByDesig[p.component.designator]]
+      let part = result.parts[partIdx]
       addOcc(escapeSeeds, pt, pt + escapeDir(part, pt) * routingClearance,
              net.name)
 
@@ -184,7 +198,20 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       # pin's escape stub above.
       addOcc(escapeSeeds, conn, conn + inward * routingClearance, pl.net)
 
-  var obstacles = obstaclesFor(result.parts)
+  var obstacles: seq[Obstacle]
+  if constrained:
+    var covered = newSeq[bool](result.parts.len)
+    for unit in composites.units:
+      for i in unit.members: covered[i] = true
+    for i, part in result.parts:
+      if not covered[i]:
+        let hw = part.bodyW / 2.0 + routingClearance
+        let hh = part.bodyH / 2.0 + routingClearance
+        obstacles.add Obstacle(x1: part.x - hw, y1: part.y - hh,
+                               x2: part.x + hw, y2: part.y + hh)
+    for unit in composites.units: obstacles.add unit.footprint
+  else:
+    obstacles = obstaclesFor(result.parts)
   for p in result.ports:
     let hw = p.bodyW / 2.0 + routingClearance
     let hh = p.bodyH / 2.0 + routingClearance
@@ -212,6 +239,20 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
           pins.add (pt: pinPos[key],
                     partIdx: partIdxByDesig[p.component.designator])
     if pins.len == 0: continue
+    if constrained:
+      var routePins: seq[tuple[pt: Point, partIdx: int]]
+      for pin in pins:
+        # Rail/ground glyphs are shared at the canonical composite terminal;
+        # the remaining physical terminals are fed by internal taps below.
+        var representative = true
+        for unit in composites.units:
+          for port in unit.ports:
+            if port.net != net.name: continue
+            for covered in port.covered:
+              if covered.partIdx == pin.partIdx:
+                representative = covered == port.representative
+        if representative: routePins.add pin
+      pins = routePins
 
     if isGroundHere(net):
       for pin in pins:
@@ -231,6 +272,9 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         addOcc(occ, pin.pt, e, net.name)
         if net.name.len > 0:
           railLabelReqs.add (text: net.name, at: e, dir: dir)
+    if constrained and (isGroundHere(net) or isRailHere(net)):
+      # Append the physical composite fanout after its shared glyph.
+      result.wires.add compositeInternalRoutes(composites, result.parts, net.name)
 
   # A rail/ground terminal is more than its wire stem: SVG caps it with one
   # supply bar or three ground bars. Signals may cross ordinary wires, but not
@@ -260,6 +304,9 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     if portConn.hasKey(net.name):
       let pc = portConn[net.name]
       pins.add (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: "")
+    let physicalPins = pins
+    if constrained:
+      pins = compositeExternalPins(pins, composites)
     if pins.len < 2:
       # A net with a single pin is a dangling connection: a dashed stub +
       # marker + label instead of disappearing. The stub is finalised after
@@ -267,7 +314,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       # routing failure -- `ok` stays true -- so it is recorded in every
       # route, not only the fallback route.
       if pins.len == 1:
-        pendingFallbacks.add (pin: pins[0], netName: net.name)
+        for pin in physicalPins:
+          pendingFallbacks.add (pin: pin, netName: net.name)
       inc sigOrd
       continue
     var adj = initTable[Point, HashSet[Point]]()
@@ -286,7 +334,9 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         # before the next net routes. The whole net is then drawn as
         # fallbacks -- a marker at each pin, never a real wire.
         occ = occBefore
-        for pin in pins:
+        # A failed external composite endpoint represents every physical pin,
+        # not just its canonical terminal. Ports remain one fallback endpoint.
+        for pin in physicalPins:
           pendingFallbacks.add (pin: pin, netName: net.name)
         inc sigOrd
         continue
@@ -301,6 +351,10 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       result.wires.add SchematicWire(net: net.name, kind: wkSignal,
                                      points: poly)
       addSegments(adj, poly)
+    if constrained:
+      # Append fanout only after the external tree succeeds, preserving the
+      # net's atomic fallback behavior.
+      result.wires.add compositeInternalRoutes(composites, result.parts, net.name)
     for p, nbrs in adj:
       if nbrs.len >= 3:
         result.junctions.add SchematicJunction(net: net.name, x: p.x, y: p.y)
@@ -351,7 +405,8 @@ const
 
 proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                     pos: seq[Point], rots: seq[float],
-                    idxOf: Table[string, int], options: LayoutOptions): RouteScene =
+                    idxOf: Table[string, int], options: LayoutOptions,
+                    composites: CompositePlan): RouteScene =
   ## The placement-routing feedback loop. When `routeScene` cannot route a
   ## signal net it tries deterministic single-part moves and keeps any move
   ## that routes strictly further than the best layout so far, up to
@@ -369,12 +424,13 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   ## pin instead of an assertion.
   let constrained = options.policy == lpConstrainedLayered
   var best = routeScene(nl, comps, syms, pos, rots, idxOf,
-                        constrained = constrained)
+                        constrained = constrained, composites = composites)
   if best.ok: return best
 
   if comps.len > options.feedbackMaxParts:
     return routeScene(nl, comps, syms, pos, rots, idxOf,
-                      withFallbacks = true, constrained = constrained)
+                      withFallbacks = true, constrained = constrained,
+                      composites = composites)
 
   var bestPos = pos
   var bestRots = rots
@@ -388,26 +444,55 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     rawW[i] = syms[i].bodyW / 2.0
     rawH[i] = syms[i].bodyH / 2.0
 
-  let order = feedbackCandidateParts(comps)
+  var order = feedbackCandidateParts(comps)
+  var units: seq[seq[int]]
+  if constrained:
+    # Recovery moves a composite as one rigid body.  Singleton candidates keep
+    # the historical search order; a parallel unit is represented once at its
+    # first member.
+    var grouped = newSeq[bool](comps.len)
+    for unit in composites.units:
+      for i in unit.members: grouped[i] = true
+      if unit.members[0] in order: units.add unit.members
+    for i in order:
+      if not grouped[i]: units.add @[i]
+  else:
+    for i in order: units.add @[i]
 
   while accepted < options.feedbackAcceptedBudget and
         attempts < options.feedbackAttemptBudget and not best.ok:
     var improved = false
-    for partIdx in order:
+    for unit in units:
       for r in 1 .. feedbackMaxRadius:
         for dy in -r .. r:
           for dx in -r .. r:
             if max(abs(dx), abs(dy)) != r: continue
             if attempts >= options.feedbackAttemptBudget: break
             inc attempts
-            let x = bestPos[partIdx].x + float(dx) * grid
-            let y = bestPos[partIdx].y + float(dy) * grid
-            if overlapsAny(partIdx, x, y, bestPos, rawW, rawH, allParts): continue
+            var inUnit = newSeq[bool](comps.len)
+            for i in unit: inUnit[i] = true
+            var clear = true
+            for i in unit:
+              let nx = bestPos[i].x + float(dx) * grid
+              let ny = bestPos[i].y + float(dy) * grid
+              for j in allParts:
+                if inUnit[j]: continue
+                if abs(nx - bestPos[j].x) < rawW[i] + rawW[j] - 1e-9 and
+                   abs(ny - bestPos[j].y) < rawH[i] + rawH[j] - 1e-9:
+                  clear = false
+            if not clear: continue
             var candPos = bestPos
-            candPos[partIdx] = Point(x: x, y: y)
-            let candRots = recomputeRotations(comps, syms, candPos, bestRots)
+            for i in unit:
+              candPos[i] = Point(x: bestPos[i].x + float(dx) * grid,
+                                 y: bestPos[i].y + float(dy) * grid)
+            let candRots =
+              if constrained:
+                constrainedRecomputeRotations(nl, comps, syms, candPos, bestRots,
+                  constrainedAnchors(comps, bestPos, idxOf))
+              else:
+                recomputeRotations(comps, syms, candPos, bestRots)
             let cand = routeScene(nl, comps, syms, candPos, candRots, idxOf,
-                                  constrained = constrained)
+                                  constrained = constrained, composites = composites)
             if cand.ok or cand.failOrd > best.failOrd:
               best = cand
               bestPos = candPos
@@ -422,6 +507,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
 
   if not best.ok:
     return routeScene(nl, comps, syms, bestPos, bestRots, idxOf,
-                      withFallbacks = true, constrained = constrained)
+                      withFallbacks = true, constrained = constrained,
+                      composites = composites)
   best
 

@@ -299,6 +299,31 @@ every coordinate-exact test in `tests/test_schematic.nim`.
 
 ---
 
+## Constrained-layered policy (implemented)
+
+`lpConstrainedLayered` is the opt-in general placement policy for these
+problems; it does not recognise a particular circuit.  Its semantic layers are
+bounded **soft anchors**, not a template: output and declared input-port paths
+seed columns, then force placement, legalization and routing remain free to
+avoid obstacles.  It ranks deterministic group candidates lexicographically by
+power direction, estimated obstacle-aware rectilinear route quality (blocked
+L choices, bends, Manhattan length), then seed drift.  Declared ports are
+included as candidate endpoints, so input/output interfaces break an otherwise
+symmetric passive layout before port bodies are rendered.
+
+Parallel flat two-terminal components are placement/orientation units keyed by
+an unordered net pair.  An early composite plan gives every member a canonical,
+grid-rounded raw-body-touching offset (the current 80 × 80 passives are 80
+units centre-to-centre): `placementPad` is applied only around the unified
+external footprint, never between private members. The plan is authoritative
+through seed, force, constrained legalization, packing, cleanup, recovery and
+routing, so a foreign part cannot split the compact unit and recovery moves it
+rigidly. Routing reuses its canonical terminals and unified padded footprint.
+Endpoint declaration order is canonicalised by net name and a reversed member
+is flipped when necessary, making same-net pins adjacent rather than facing
+across the pair. This remains deliberately policy-gated: `lpHistorical`
+retains its existing output exactly.
+
 ## 4. Recommended sequence
 
 By value-to-risk:

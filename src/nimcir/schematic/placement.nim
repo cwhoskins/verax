@@ -178,7 +178,7 @@ proc axisUnit(p: Point): Point {.inline.} =
 
 proc leafSnap(comps: seq[Component], syms: seq[SymbolDef], pos: var seq[Point],
               rots: var seq[float], ohw, ohh: seq[float],
-              idxOf: Table[string, int]) =
+              idxOf: Table[string, int], locked: seq[bool] = @[]) =
   ## A square two-terminal part with exactly one non-ground / non-rail net has a
   ## single attraction spring: the force layout fixes its distance from that one
   ## net-mate but neither the direction nor the alignment, so it drifts off with
@@ -201,7 +201,7 @@ proc leafSnap(comps: seq[Component], syms: seq[SymbolDef], pos: var seq[Point],
   var against = newSeq[int](n)
   for i in 0 ..< n: against[i] = i
   for i in 0 ..< n:
-    if not rotatable(syms[i]): continue
+    if (locked.len == n and locked[i]) or not rotatable(syms[i]): continue
     var theNet: Net = nil
     var myPin = ""
     var myOrd = 0
@@ -385,7 +385,7 @@ const
 
 proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
                              pos: var seq[Point], rots: seq[float],
-                             ohw, ohh: seq[float]) =
+                             ohw, ohh: seq[float], locked: seq[bool] = @[]) =
   ## Deterministic, bounded post-placement repair. It only keeps a grid move
   ## that strictly reduces full-glyph conflicts, preserving the ordinary
   ## placement separation invariant and leaving routing as the final safeguard.
@@ -404,10 +404,11 @@ proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
     var order: seq[int]
     var haveUnprotected = false
     for i in 0 ..< comps.len:
-      if state.involved[i] and not protectedLeaf(comps[i], syms[i]):
+      if state.involved[i] and (locked.len != comps.len or not locked[i]) and
+         not protectedLeaf(comps[i], syms[i]):
         haveUnprotected = true
     for i in 0 ..< comps.len:
-      if state.involved[i] and
+      if state.involved[i] and (locked.len != comps.len or not locked[i]) and
          (haveUnprotected == false or not protectedLeaf(comps[i], syms[i])):
         order.add i
     order.sort(proc(a, b: int): int =

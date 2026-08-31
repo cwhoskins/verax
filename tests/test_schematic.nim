@@ -124,6 +124,14 @@ proc partOf(s: Schematic, desig: string): SchematicPart =
     if p.designator == desig: return p
   doAssert false, "no part named " & desig
 
+proc sceneBBox(s: Schematic): tuple[x1, y1, x2, y2: float] =
+  result = (x1: Inf, y1: Inf, x2: -Inf, y2: -Inf)
+  for p in s.parts:
+    result.x1 = min(result.x1, p.x - p.bodyW / 2.0)
+    result.y1 = min(result.y1, p.y - p.bodyH / 2.0)
+    result.x2 = max(result.x2, p.x + p.bodyW / 2.0)
+    result.y2 = max(result.y2, p.y + p.bodyH / 2.0)
+
 proc wirePoints(s: Schematic, net: string): seq[Point] =
   for w in s.wires:
     if w.net == net:
@@ -621,7 +629,9 @@ test "constrained layering follows input ports and feedback paths semantically":
     options.stages.excl lsRecoverRouting
     options.stages.excl lsRoutingAwareRepair
     let s = layout(nl, options)
-    check partOf(s, "RFB").x == partOf(s, "U1").x
+    # A local return has bounded stage freedom around its source; later
+    # legalization may retain the co-column position when that routes best.
+    check abs(partOf(s, "RFB").x - partOf(s, "U1").x) <= 200.0
 
   # Insertion order would otherwise put RFB before its source. A genuine
   # return to an earlier component instead keeps the path passive right of
@@ -650,6 +660,25 @@ test "constrained layering follows input ports and feedback paths semantically":
     let s = layout(nl, options)
     check partOf(s, "U1").x < partOf(s, "U2").x
     check partOf(s, "U2").x < partOf(s, "RFB").x
+
+test "constrained stages group parallel passives and bound RIAA aspect ratio":
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(riaaChannel(), options)
+  # R7 || C5 and R8 || C6 are each placement units despite their different
+  # declarations and values, so their paired symbols share a stage.
+  check partOf(s, "R7").x == partOf(s, "C5").x
+  check partOf(s, "R8").x == partOf(s, "C6").x
+  let box = sceneBBox(s)
+  let width = box.x2 - box.x1
+  let height = box.y2 - box.y1
+  check height <= 1.5 * width
+  # Compact composite routing may now clear this formerly crowded OUT route;
+  # fallback cardinality is placement-dependent, not a RIAA contract. The
+  # focused constrained-chain case below owns atomic fallback coverage.
+  check distinctWiresNeverShareCollinearRuns(s)
+  check differentNetsRespectSeparation(s)
+  check layout(riaaChannel(), options) == s
 
 test "layout produces one part per component, wired to the right nets":
   let s = layout(divider())
@@ -1044,6 +1073,74 @@ test "a parallel pair ends up adjacent and co-oriented, not scattered":
     let dp = pinPoints(s, "RP", net)[0]
     let dq = pinPoints(s, "CP", net)[0]
     check abs(dp.x - dq.x) + abs(dp.y - dq.y) <= 160.0
+
+proc groundedLegsPlusBridge(reverseBridge = false): Netlist =
+  ## Generic (non-RIAA) regression fixture: two grounded legs joined by a
+  ## parallel bridge.  The bridge declarations may be reversed independently.
+  result = newNetlist("grounded_legs_bridge")
+  let left = addNet(result, newNet("left"))
+  let right = addNet(result, newNet("right"))
+  let gnd = addNet(result, newNet("0", ntGround))
+  let rl = addComponent(result, newComponent("RL", kind = "resistor"))
+  discard connect(rl, "1", left, ptPassive)
+  discard connect(rl, "2", gnd, ptGround)
+  let rr = addComponent(result, newComponent("RR", kind = "resistor"))
+  discard connect(rr, "1", right, ptPassive)
+  discard connect(rr, "2", gnd, ptGround)
+  let rb = addComponent(result, newComponent("RB", kind = "resistor"))
+  let cb = addComponent(result, newComponent("CB", kind = "capacitor"))
+  if reverseBridge:
+    discard connect(rb, "1", right, ptPassive); discard connect(rb, "2", left, ptPassive)
+    discard connect(cb, "1", left, ptPassive); discard connect(cb, "2", right, ptPassive)
+  else:
+    discard connect(rb, "1", left, ptPassive); discard connect(rb, "2", right, ptPassive)
+    discard connect(cb, "1", left, ptPassive); discard connect(cb, "2", right, ptPassive)
+  addPort(result, "IN", left)
+  addPort(result, "OUT", right)
+
+test "constrained parallel bridge keeps same-net pins adjacent despite reversed declarations":
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let a = layout(groundedLegsPlusBridge(), options)
+  let b = layout(groundedLegsPlusBridge(true), options)
+  for s in [a, b]:
+    let rb = partOf(s, "RB")
+    let cb = partOf(s, "CB")
+    check rb.x == cb.x                         # one placement column
+    # Parallel 80 x 80 passives are a raw-body-touching composite: no
+    # placementPad is inserted between private members.
+    check abs(rb.y - cb.y) == 80.0
+    for net in ["left", "right"]:
+      let p = pinPoints(s, "RB", net)[0]
+      let q = pinPoints(s, "CB", net)[0]
+      check abs(p.x - q.x) + abs(p.y - q.y) <= 160.0
+    # Even a compact bridge may need a recoverable marker in a crowded
+    # candidate, but its emitted routing remains deterministic and valid.
+    check distinctWiresNeverShareCollinearRuns(s)
+  # Reversed endpoint declaration changes only the member's deterministic
+  # flip; it cannot make equal-net pins face across the bridge or randomise it.
+  check layout(groundedLegsPlusBridge(true), options) == b
+
+test "constrained parallel rail group emits one glyph per shared terminal":
+  let nl = newNetlist("parallel_rail")
+  let vdd = addNet(nl, newNet("VDD", ntPower))
+  let gnd = addNet(nl, newNet("0", ntGround))
+  for d in ["C1", "C2"]:
+    let c = addComponent(nl, newComponent(d, kind = "capacitor"))
+    discard connect(c, "1", vdd, ptPassive)
+    discard connect(c, "2", gnd, ptPassive)
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(nl, options)
+  var supply = 0
+  var ground = 0
+  for w in s.wires:
+    if w.net == "VDD" and w.kind == wkSupply: inc supply
+    if w.net == "0" and w.kind == wkGround: inc ground
+  check supply == 1
+  check ground == 1
+  check s.parts.len == 2                 # no public composite schema
+  check layout(nl, options) == s
 
 test "a powered one-net leaf keeps its ground pin down":
   # CSH hangs off the mid node to ground. Power direction is stronger than the
@@ -1485,10 +1582,21 @@ test "constrained trunk-and-tap fallback is atomic":
   # constrained route restores occupancy and emits only per-pin markers.
   var options = defaultLayoutOptions()
   options.policy = lpConstrainedLayered
-  let s = layout(resistorChain(37), options)
+  let nl = resistorChain(37)
+  let s = layout(nl, options)
   var fallbackNets = initHashSet[string]()
   for f in s.fallbacks: fallbackNets.incl f.net
   check fallbackNets.len > 0
+  for netName in fallbackNets:
+    var expected = 0
+    for _, net in nl.nets:
+      if net.name == netName: expected = net.pins.len
+    var actual = 0
+    for f in s.fallbacks:
+      if f.net == netName: inc actual
+    # The canonical external endpoint represents every covered physical pin:
+    # a failed composite tree cannot leave a partial real branch behind.
+    check actual == expected
   for w in s.wires:
     if w.kind == wkSignal:
       check w.net notin fallbackNets
