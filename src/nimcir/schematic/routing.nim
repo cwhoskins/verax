@@ -1,30 +1,8 @@
-type
-  RouteScene = object
-    ## Everything between placement and label placement, produced from a
-    ## candidate set of centres and rotations: the placed parts and ports, the
-    ## routed wires and junctions, and the maps the label pass still needs.
-    ## `ok` is false when a signal net could not be routed; `failOrd` is that
-    ## net's ordinal among signal nets (a later failure is further progress).
-    ok: bool
-    failOrd: int
-    failNet: string
-    failPin: int
-    failPt: Point
-    parts: seq[SchematicPart]
-    ports: seq[SchematicPort]
-    wires: seq[SchematicWire]
-    junctions: seq[SchematicJunction]
-    fallbacks: seq[SchematicFallback]
-    pinPos: Table[string, Point]
-    partIdxByDesig: Table[string, int]
-    portedNets: HashSet[string]
-    railLabelReqs: seq[tuple[text: string, at, dir: Point]]
-
 proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                 pos: seq[Point], rots: seq[float],
                 idxOf: Table[string, int],
                 withFallbacks = false, constrained = false,
-                composites = CompositePlan()): RouteScene =
+                composites = CompositePlan()): RoutingState =
   ## Build the routed scene for the given centres/rotations. Pure and
   ## deterministic. `ok` is false only when `routeNet` reports an unreachable
   ## pin and `withFallbacks` is false -- the one recoverable routing failure,
@@ -406,7 +384,7 @@ const
 proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                     pos: seq[Point], rots: seq[float],
                     idxOf: Table[string, int], options: LayoutOptions,
-                    composites: CompositePlan): RouteScene =
+                    composites: CompositePlan): RoutingState =
   ## The placement-routing feedback loop. When `routeScene` cannot route a
   ## signal net it tries deterministic single-part moves and keeps any move
   ## that routes strictly further than the best layout so far, up to
@@ -510,4 +488,17 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                       withFallbacks = true, constrained = constrained,
                       composites = composites)
   best
+
+proc recomputeRotations(state: LayoutState): seq[float] =
+  recomputeRotations(state.comps, state.syms, state.pos, state.rots)
+
+proc routeScene(state: LayoutState, withFallbacks = false): RoutingState =
+  routeScene(state.nl, state.comps, state.syms, state.pos, state.rots,
+    state.idxOf, withFallbacks = withFallbacks,
+    constrained = state.options.policy == lpConstrainedLayered,
+    composites = state.composites)
+
+proc recoverRouting(state: LayoutState): RoutingState =
+  recoverRouting(state.nl, state.comps, state.syms, state.pos, state.rots,
+    state.idxOf, state.options, state.composites)
 
