@@ -324,6 +324,23 @@ is flipped when necessary, making same-net pins adjacent rather than facing
 across the pair. This remains deliberately policy-gated: `lpHistorical`
 retains its existing output exactly.
 
+Plain-text pipeline for `lpConstrainedLayered`:
+
+```text
+[prepare: symbols + early parallel composites]
+  -> [semantic seed: output/input-port layers]
+  -> [force placement: bounded soft anchors; composites move rigidly]
+  -> [constrained refinement: compatibility hook, no hard snap]
+  -> [grid snap -> separation on composite footprints -> pack]
+  -> [group-aware orientation]
+  -> [leafSnap: skipped]
+  -> [terminal-clearance repair -> restore composites + reorient]
+  -> [prepare routing -> route]
+  -> [bounded routing-aware recovery (if enabled)]
+  -> [unrouteable nets: dashed per-pin fallbacks]
+  -> [labels -> bounds]
+```
+
 ## 4. Recommended sequence
 
 By value-to-risk:

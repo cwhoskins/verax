@@ -288,12 +288,10 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
         recomputeRotations(comps, syms, pos, rots)
 
   # --- leaf cleanup: a one-signal-net part snapped beside its net-mate ----
-  # A part with a single non-ground / non-rail net still sits and points
-  # wherever its one spring left it. Pull each up against the pin it connects
-  # to and turn it to face there, so the router draws a short straight stub
-  # rather than a long detour. Last, so it owns both the position and the
-  # orientation of the leaves it touches.
-  if options.stageEnabled(lsLeafSnap):
+  # Historical layout pulls each leaf up against the pin it connects to and
+  # turns it to face there, so the router draws a short straight stub rather
+  # than a long detour. Constrained layered layout always skips this heuristic.
+  if options.policy != lpConstrainedLayered and options.stageEnabled(lsLeafSnap):
     leafSnap(comps, syms, pos, rots, ohw, ohh, idxOf,
              locked = (if options.policy == lpConstrainedLayered:
                          compositeMembers(composites, n) else: @[]))

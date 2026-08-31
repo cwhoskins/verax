@@ -44,6 +44,7 @@ const canonicalStages*: array[StageId, StageSpec] = [
   StageSpec(id: lsSeparate, enabled: true),
   StageSpec(id: lsPack, enabled: true),
   StageSpec(id: lsOrient, enabled: true),
+  # Leaf snap is historical-only; constrained layered layout always skips it.
   StageSpec(id: lsLeafSnap, enabled: true),
   StageSpec(id: lsTerminalRepair, enabled: true),
   StageSpec(id: lsPrepareRouting, enabled: true),
