@@ -319,10 +319,14 @@ external footprint, never between private members. The plan is authoritative
 through seed, force, constrained legalization, packing, cleanup, recovery and
 routing, so a foreign part cannot split the compact unit and recovery moves it
 rigidly. Routing reuses its canonical terminals and unified padded footprint.
-Endpoint declaration order is canonicalised by net name and a reversed member
-is flipped when necessary, making same-net pins adjacent rather than facing
-across the pair. This remains deliberately policy-gated: `lpHistorical`
-retains its existing output exactly.
+Endpoint net names are canonicalised, then each member's **own native terminal
+slot** is rotated onto that canonical net-side direction. Thus a
+native-horizontal passive and a native-vertical voltage source can share one
+composite; every member is validated to have the two nets on opposite
+horizontal sides, not merely the reference member. Multi-member internal
+fanout is normalized to one trunk with disjoint taps, so same-net private wires
+never overlap collinearly. This remains deliberately policy-gated:
+`lpHistorical` retains its existing output exactly.
 
 Plain-text pipeline for `lpConstrainedLayered`:
 

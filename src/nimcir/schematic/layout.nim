@@ -85,9 +85,10 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   if options.policy != lpConstrainedLayered and options.stageEnabled(lsLeafSnap):
     leafSnap(ctx)
 
-  # Reserve complete, unshortened rail/ground glyphs before routing. This
-  # bounded pass moves the smallest implicated symbols first; routing still
-  # owns the defensive shortening/blocking path for irreducible crowding.
+  # Reserve complete, unshortened rail/ground glyphs before routing, and
+  # repair exact distinct-net terminal-pin coincidences as a hard condition.
+  # This bounded pass moves the smallest implicated symbols first; routing
+  # still owns the defensive shortening/blocking path for irreducible crowding.
   if options.stageEnabled(lsTerminalRepair):
     repairTerminalClearance(ctx)
   # Terminal repair and leaf cleanup are allowed to move a member; restore the

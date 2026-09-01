@@ -392,10 +392,10 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   ## candidates. Movable parts are `feedbackCandidateParts` (two or more
   ## signal nets), in insertion order; each is tried on the rings of grid
   ## cells around its current centre, nearest first, up to
-  ## `feedbackMaxRadius`. A candidate cell is rejected only when it would
-  ## overlap another part's *raw* body -- the placement separation clearance
-  ## is allowed to relax during recovery, but symbols never overlap. After a
-  ## move the eligible rotations are recomputed (`recomputeRotations`);
+  ## `feedbackMaxRadius`. A candidate cell is rejected when it would overlap
+  ## another part's *raw* body, or when its final recomputed rotations leave
+  ## exact terminal pins on distinct nets coincident. The placement separation
+  ## clearance is allowed to relax during recovery, but symbols never overlap.
   ## `leafSnap` is not rerun. When no move fixes the sheet -- or the sheet is
   ## too large for the loop to be attempted -- the best positions are re-routed
   ## with fallbacks enabled: an unrouteable net becomes a dashed marker per
@@ -469,6 +469,8 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                   constrainedAnchors(comps, bestPos, idxOf))
               else:
                 recomputeRotations(comps, syms, candPos, bestRots)
+            if terminalClearance(comps, syms, candPos, candRots).coincidences > 0:
+              continue
             let cand = routeScene(nl, comps, syms, candPos, candRots, idxOf,
                                   constrained = constrained, composites = composites)
             if cand.ok or cand.failOrd > best.failOrd:

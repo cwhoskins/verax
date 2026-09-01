@@ -58,6 +58,42 @@ proc polyAt(pts: seq[Point]): string =
   "<polyline fill=\"none\" stroke=\"#333333\" stroke-width=\"2\" points=\"" &
     pointsAttr(pts) & "\"/>"
 
+proc isJunction(junctions: seq[SchematicJunction], net: string, p: Point): bool =
+  for j in junctions:
+    if j.net == net and abs(j.x - p.x) < 1e-9 and abs(j.y - p.y) < 1e-9:
+      return true
+
+proc chamferedWirePoints(wire: SchematicWire,
+                        junctions: seq[SchematicJunction]): seq[Point] =
+  ## Renderer-only corner cuts. Scene geometry remains the routed orthogonal
+  ## polyline so JSON, routing, and junction semantics remain unchanged.
+  if wire.points.len < 3:
+    return wire.points
+
+  result.add wire.points[0]
+  for i in 1 ..< wire.points.high:
+    let a = wire.points[i - 1]
+    let b = wire.points[i]
+    let c = wire.points[i + 1]
+    let dx1 = b.x - a.x
+    let dy1 = b.y - a.y
+    let dx2 = c.x - b.x
+    let dy2 = c.y - b.y
+    let len1 = abs(dx1) + abs(dy1)
+    let len2 = abs(dx2) + abs(dy2)
+    let orthogonal = (abs(dx1) < 1e-9 and abs(dy2) < 1e-9) or
+                     (abs(dy1) < 1e-9 and abs(dx2) < 1e-9)
+    if len1 > 1e-9 and len2 > 1e-9 and orthogonal and
+        not isJunction(junctions, wire.net, b):
+      let cut = min(4.0, min(len1 / 2.0, len2 / 2.0))
+      result.add Point(x: b.x - dx1 / len1 * cut,
+                       y: b.y - dy1 / len1 * cut)
+      result.add Point(x: b.x + dx2 / len2 * cut,
+                       y: b.y + dy2 / len2 * cut)
+    else:
+      result.add b
+  result.add wire.points[^1]
+
 proc zigzag(cx, cy, hw: float, peaks: int): seq[Point] =
   result.add Point(x: cx - hw, y: cy)
   let dx = 2.0 * hw / float(peaks)
@@ -296,16 +332,16 @@ proc renderSvg*(s: Schematic): string =
       lineAt(c.x - q.x * hw, c.y - q.y * hw, c.x + q.x * hw, c.y + q.y * hw)
     case wire.kind
     of wkSignal:
-      L.add "  " & polyAt(wire.points)
+      L.add "  " & polyAt(chamferedWirePoints(wire, s.junctions))
     of wkGround:
-      L.add "  " & polyAt(wire.points)
+      L.add "  " & polyAt(chamferedWirePoints(wire, s.junctions))
       let p = wire.points[^1]
       let (o, q) = stubDirs(wire.points, Point(x: 0.0, y: 1.0))
       L.add "  " & bar(p, q, 10.0)
       L.add "  " & bar(p + o * 4.0, q, 6.0)
       L.add "  " & bar(p + o * 8.0, q, 2.0)
     of wkSupply:
-      L.add "  " & polyAt(wire.points)
+      L.add "  " & polyAt(chamferedWirePoints(wire, s.junctions))
       let p = wire.points[^1]
       let (_, q) = stubDirs(wire.points, Point(x: 0.0, y: -1.0))
       L.add "  " & bar(p, q, 10.0)

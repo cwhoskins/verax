@@ -852,6 +852,95 @@ test "the source4 symbol renders as a labelled rectangle, not a diamond":
   check ">OUT-</text>" in text
   check "<polygon" notin text
 
+test "signal corners shared by independent wires are each chamfered":
+  var s = Schematic(title: "shared corners")
+  s.wires.add SchematicWire(net: "a", kind: wkSignal, points: @[
+    Point(x: 0.0, y: 0.0), Point(x: 40.0, y: 0.0), Point(x: 40.0, y: 40.0)])
+  s.wires.add SchematicWire(net: "b", kind: wkSignal, points: @[
+    Point(x: 40.0, y: -4.0), Point(x: 40.0, y: 0.0), Point(x: 80.0, y: 0.0)])
+  let text = renderSvg(s)
+  check "points=\"0,0 36,0 40,4 40,40\"" in text
+  # The shared coordinate is not a semantic junction, and each wire caps its
+  # own cut from its adjacent segment lengths.
+  check "points=\"40,-4 40,-2 42,0 80,0\"" in text
+
+test "an isolated signal bend has a four-unit 45-degree chamfer":
+  var s = Schematic(title: "isolated corner")
+  s.wires.add SchematicWire(net: "sig", kind: wkSignal, points: @[
+    Point(x: 0.0, y: 0.0), Point(x: 40.0, y: 0.0), Point(x: 40.0, y: 40.0)])
+  let text = renderSvg(s)
+  check "points=\"0,0 36,0 40,4 40,40\"" in text
+  check "points=\"0,0 40,0 40,40\"" notin text
+
+test "a same-net junction retains its square signal bend":
+  var s = Schematic(title: "junction corner")
+  s.wires.add SchematicWire(net: "sig", kind: wkSignal, points: @[
+    Point(x: 0.0, y: 0.0), Point(x: 40.0, y: 0.0), Point(x: 40.0, y: 40.0)])
+  s.junctions.add SchematicJunction(net: "sig", x: 40.0, y: 0.0)
+  let text = renderSvg(s)
+  check "points=\"0,0 40,0 40,40\"" in text
+  check "points=\"0,0 36,0 40,4 40,40\"" notin text
+
+test "straight and two-point wires remain unchanged":
+  var s = Schematic(title: "unchanged wires")
+  s.wires.add SchematicWire(net: "straight", kind: wkSignal, points: @[
+    Point(x: 0.0, y: 0.0), Point(x: 20.0, y: 0.0), Point(x: 40.0, y: 0.0)])
+  s.wires.add SchematicWire(net: "two", kind: wkSupply, points: @[
+    Point(x: 0.0, y: 10.0), Point(x: 40.0, y: 10.0)])
+  let text = renderSvg(s)
+  check "points=\"0,0 20,0 40,0\"" in text
+  check "points=\"0,10 40,10\"" in text
+
+test "supply and ground bends are chamfered without changing glyph direction":
+  var s = Schematic(title: "terminal corners")
+  s.wires.add SchematicWire(net: "VCC", kind: wkSupply, points: @[
+    Point(x: 0.0, y: 0.0), Point(x: 40.0, y: 0.0), Point(x: 40.0, y: 40.0)])
+  s.wires.add SchematicWire(net: "0", kind: wkGround, points: @[
+    Point(x: 0.0, y: 80.0), Point(x: 40.0, y: 80.0), Point(x: 40.0, y: 120.0)])
+  let text = renderSvg(s)
+  check "points=\"0,0 36,0 40,4 40,40\"" in text
+  check "points=\"0,80 36,80 40,84 40,120\"" in text
+  # Glyphs still derive their orientation and ground-bar offsets from the
+  # original terminal stubs, not the renderer-only chamfered polylines.
+  check "<line x1=\"50\" y1=\"40\" x2=\"30\" y2=\"40\"" in text
+  check "<line x1=\"50\" y1=\"120\" x2=\"30\" y2=\"120\"" in text
+  check "<line x1=\"46\" y1=\"124\" x2=\"34\" y2=\"124\"" in text
+  check "<line x1=\"42\" y1=\"128\" x2=\"38\" y2=\"128\"" in text
+
+test "same-net junctions retain square supply and ground bends":
+  var s = Schematic(title: "terminal junction corners")
+  s.wires.add SchematicWire(net: "VCC", kind: wkSupply, points: @[
+    Point(x: 0.0, y: 0.0), Point(x: 40.0, y: 0.0), Point(x: 40.0, y: 40.0)])
+  s.wires.add SchematicWire(net: "0", kind: wkGround, points: @[
+    Point(x: 0.0, y: 80.0), Point(x: 40.0, y: 80.0), Point(x: 40.0, y: 120.0)])
+  s.junctions.add SchematicJunction(net: "VCC", x: 40.0, y: 0.0)
+  s.junctions.add SchematicJunction(net: "0", x: 40.0, y: 80.0)
+  let text = renderSvg(s)
+  check "points=\"0,0 40,0 40,40\"" in text
+  check "points=\"0,80 40,80 40,120\"" in text
+  check "points=\"0,0 36,0 40,4 40,40\"" notin text
+  check "points=\"0,80 36,80 40,84 40,120\"" notin text
+
+test "short signal segments cap the corner cut at half their length":
+  var s = Schematic(title: "short corner")
+  s.wires.add SchematicWire(net: "sig", kind: wkSignal, points: @[
+    Point(x: 0.0, y: 0.0), Point(x: 2.0, y: 0.0), Point(x: 2.0, y: 2.0)])
+  let text = renderSvg(s)
+  check "points=\"0,0 1,0 2,1 2,2\"" in text
+
+test "wire corner rendering does not mutate the scene or JSON":
+  var s = Schematic(title: "pure renderer")
+  for (net, kind, y) in [("sig", wkSignal, 0.0), ("VCC", wkSupply, 80.0),
+                         ("0", wkGround, 160.0)]:
+    s.wires.add SchematicWire(net: net, kind: kind, points: @[
+      Point(x: 0.0, y: y), Point(x: 40.0, y: y), Point(x: 40.0, y: y + 40.0)])
+  let before = sceneToJsonString(s)
+  discard renderSvg(s)
+  check sceneToJsonString(s) == before
+  for i, y in [0.0, 80.0, 160.0]:
+    check s.wires[i].points == @[
+      Point(x: 0.0, y: y), Point(x: 40.0, y: y), Point(x: 40.0, y: y + 40.0)]
+
 test "junction dots are painted under part symbols":
   # Painter order: a junction dot sits on top of the wires it joins but under
   # any symbol fill, so it never paints over a body.
@@ -1120,6 +1209,52 @@ test "constrained parallel bridge keeps same-net pins adjacent despite reversed 
   # Reversed endpoint declaration changes only the member's deterministic
   # flip; it cannot make equal-net pins face across the bridge or randomise it.
   check layout(groundedLegsPlusBridge(true), options) == b
+
+proc mixedNativeBridge(): Netlist =
+  ## Three parallel members deliberately mix horizontal passive slots with the
+  ## voltage source's native vertical slots. The constrained composite must
+  ## map terminal *slots*, not copy one member's numeric rotation.
+  result = newNetlist("mixed_native_bridge")
+  let left = addNet(result, newNet("left"))
+  let right = addNet(result, newNet("right"))
+  let gnd = addNet(result, newNet("0", ntGround))
+  for (designator, compKind) in [("RB", "resistor"), ("VB", "voltage_source"),
+                                  ("CB", "capacitor")]:
+    let c = addComponent(result, newComponent(designator, kind = compKind))
+    let first = if compKind == "voltage_source": "+" else: "1"
+    let second = if compKind == "voltage_source": "-" else: "2"
+    discard connect(c, first, left, ptPassive)
+    discard connect(c, second, right, ptPassive)
+  let rl = addComponent(result, newComponent("RL", kind = "resistor"))
+  discard connect(rl, "1", left, ptPassive); discard connect(rl, "2", gnd, ptGround)
+  let rr = addComponent(result, newComponent("RR", kind = "resistor"))
+  discard connect(rr, "1", right, ptPassive); discard connect(rr, "2", gnd, ptGround)
+  addPort(result, "IN", left)
+  addPort(result, "OUT", right)
+
+test "constrained composite maps mixed native terminal axes and normalizes fanout":
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(mixedNativeBridge(), options)
+  let rb = partOf(s, "RB")
+  let vb = partOf(s, "VB")
+  let cb = partOf(s, "CB")
+  # The mixed-axis members remain the one locked, raw-body-touching unit.
+  check rb.x == vb.x and vb.x == cb.x
+  check abs(rb.y - vb.y) == 80.0 and abs(vb.y - cb.y) == 80.0
+  check vb.rotation in [90.0, 270.0] # voltage sources are native-vertical
+  for part in [rb, vb, cb]:
+    # Every member, not just the reference passive, has a horizontal pin axis.
+    check abs(part.pins[0].y - part.pins[1].y) < 1e-6
+    check abs(abs(part.pins[0].x - part.pins[1].x) - 80.0) < 1e-6
+  for net in ["left", "right"]:
+    let points = @[pinPoints(s, "RB", net)[0], pinPoints(s, "VB", net)[0],
+                   pinPoints(s, "CB", net)[0]]
+    check points[0].x == points[1].x and points[1].x == points[2].x
+  # Three members exercise the one-trunk fanout; no pair of emitted wires may
+  # retain the old overlapping collinear root runs.
+  check distinctWiresNeverShareCollinearRuns(s)
+  check layout(mixedNativeBridge(), options) == s
 
 test "constrained parallel rail group emits one glyph per shared terminal":
   let nl = newNetlist("parallel_rail")

@@ -437,8 +437,10 @@ while passive-heavy layers use at most three deterministic adjacent stages and
 parallel two-terminal parts sharing an unordered net pair are private,
 schema-preserving composites: their physical parts remain in the scene, while
 the router reserves their combined footprint and sees one endpoint for each
-of the composite's two terminals. Rail/ground terminals share one glyph with
-deterministic internal fanout. It does not infer a special rail-decoupler,
+of the composite's two terminals. Each member maps its own native terminal
+slot to the canonical net side (so mixed horizontal/vertical symbols remain
+aligned); rail/ground terminals share one glyph with deterministic normalized
+trunk-and-tap internal fanout. It does not infer a special rail-decoupler,
 PI, or RIAA relationship. The existing orthogonal router builds each net as
 an atomic trunk-and-tap tree, and its bounded repair falls back to markers for
 every physical pin covered by a failed composite endpoint if a complete tree

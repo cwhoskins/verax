@@ -296,19 +296,25 @@ type
     owner: int
     net: string
     a, b: Point
+  TerminalPin = object
+    owner: int
+    net: string
+    pt: Point
 
 proc terminalClearance(comps: seq[Component], syms: seq[SymbolDef],
                        pos: seq[Point], rots: seq[float]):
-    tuple[violations: int, involved: seq[bool]] =
-  ## Count prospective *full-length* power/ground terminal glyph collisions.
-  ## This is deliberately a placement predicate, before routing has shortened
-  ## a terminal stem: a 40-unit glyph must clear foreign signal escapes,
-  ## routing-inflated foreign bodies, and a differently-named terminal glyph.
-  ## The router retains its shortening/blocking checks for arrangements this
-  ## bounded repair cannot improve.
+    tuple[coincidences, violations: int, involved: seq[bool]] =
+  ## Count exact distinct-net terminal-pin coincidences and prospective
+  ## *full-length* power/ground terminal glyph collisions. Coincidences are a
+  ## hard placement condition; the glyph checks remain a soft safeguard before
+  ## routing has shortened a terminal stem. A 40-unit glyph must clear foreign
+  ## signal escapes, routing-inflated foreign bodies, and a differently-named
+  ## terminal glyph. The router retains its shortening/blocking checks for
+  ## arrangements this bounded repair cannot improve.
   let n = comps.len
   result.involved = newSeq[bool](n)
   var terminals: seq[TerminalPlan]
+  var pins: seq[TerminalPin]
   var escapes: seq[SignalEscape]
   for i, c in comps:
     var ord = 0
@@ -316,6 +322,8 @@ proc terminalClearance(comps: seq[Component], syms: seq[SymbolDef],
       let slot = rotatedSlot(slotOf(syms[i], pinName, ord), rots[i])
       let pt = pos[i] + slot
       let dir = slotEscape(slot, syms[i].bodyW, syms[i].bodyH)
+      if p.net != nil:
+        pins.add TerminalPin(owner: i, net: p.net.name, pt: pt)
       if p.net != nil and (isGroundForOrientation(p.net) or
                             isRailForOrientation(p.net)):
         let kind = if isGroundForOrientation(p.net): wkGround else: wkSupply
@@ -326,6 +334,14 @@ proc terminalClearance(comps: seq[Component], syms: seq[SymbolDef],
         escapes.add SignalEscape(owner: i, net: p.net.name, a: pt,
                                  b: pt + dir * routingClearance)
       inc ord
+
+  for i in 0 ..< pins.len:
+    for j in i + 1 ..< pins.len:
+      if pins[i].owner != pins[j].owner and pins[i].net != pins[j].net and
+         pins[i].pt == pins[j].pt:
+        inc result.coincidences
+        result.involved[pins[i].owner] = true
+        result.involved[pins[j].owner] = true
 
   for ti, t in terminals:
     var bad = false
@@ -386,20 +402,24 @@ const
 proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
                              pos: var seq[Point], rots: seq[float],
                              ohw, ohh: seq[float], locked: seq[bool] = @[]) =
-  ## Deterministic, bounded post-placement repair. It only keeps a grid move
-  ## that strictly reduces full-glyph conflicts, preserving the ordinary
-  ## placement separation invariant and leaving routing as the final safeguard.
+  ## Deterministic, bounded post-placement repair. Exact distinct-net pin
+  ## coincidences are reduced first as a hard condition; otherwise it keeps a
+  ## grid move that strictly reduces full-glyph conflicts, preserving the
+  ## ordinary placement separation invariant and leaving routing as the final
+  ## safeguard. The small-sheet glyph shortcut never bypasses a coincidence.
   # A two-part sheet is the canonical powered-leaf presentation: leafSnap has
   # already selected its one useful alignment, while no third part can release
   # a corridor. Keep that established minimal layout and let stem shortening
-  # handle its terminal overlap.
-  if comps.len < 3: return
-  var state = terminalClearance(comps, syms, pos, rots)
+  # handle its glyph overlap, but not a distinct-net terminal coincidence.
+  let initial = terminalClearance(comps, syms, pos, rots)
+  if comps.len < 3 and initial.coincidences == 0: return
+  var state = initial
   var accepted = 0
   var attempts = 0
   var all = newSeq[int](comps.len)
   for i in 0 ..< comps.len: all[i] = i
-  while state.violations > 0 and accepted < terminalRepairAcceptedBudget and
+  while (state.coincidences > 0 or state.violations > 0) and
+        accepted < terminalRepairAcceptedBudget and
         attempts < terminalRepairAttemptBudget:
     var order: seq[int]
     var haveUnprotected = false
@@ -432,7 +452,9 @@ proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
             var candidate = pos
             candidate[i] = Point(x: x, y: y)
             let next = terminalClearance(comps, syms, candidate, rots)
-            if next.violations < state.violations:
+            if next.coincidences < state.coincidences or
+               (next.coincidences == state.coincidences and
+                next.violations < state.violations):
               pos = candidate
               state = next
               inc accepted

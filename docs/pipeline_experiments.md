@@ -62,10 +62,13 @@ Early components are not fixed during the main placement optimization.
 
  repairTerminalClearance may move implicated components one at a time:
 
+ - Exact coincident connected pins on distinct nets are a hard condition;
+   same-net coincidences are preserved.
  - Prefers small passive symbols.
  - Candidate ordering is component class, body area, then insertion index.
  - Candidate cells are searched by increasing grid radius and deterministic dy/dx order.
- - A move is kept only if it strictly reduces glyph conflicts.
+ - A move first reduces distinct-net pin coincidences, then strictly reduces
+   glyph conflicts; the two-part glyph shortcut does not bypass a coincidence.
  - Maximum: 8 accepted moves, 160 attempts, radius 6.
  - Rotation is not recomputed after these moves.
 
@@ -80,6 +83,8 @@ Early components are not fixed during the main placement optimization.
  - Maximum: 4 accepted moves, 65 total attempts.
  - A candidate is accepted if routing succeeds or reaches a later failure point.
  - Rotations are recomputed after each accepted candidate; leafSnap is not rerun.
+ - A candidate is rejected if those final rotations leave exact connected pins
+   on distinct nets coincident.
  - Components never overlap raw bodies, but the original placement clearance may be relaxed.
  - Sheets larger than 24 components skip this feedback and use fallbacks if needed.
 

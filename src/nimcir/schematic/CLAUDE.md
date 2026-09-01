@@ -93,10 +93,13 @@ implements.
   centres, so it can only help and stays deterministic. A bounded deterministic
   **terminal-clearance repair** then reserves each prospective full 40-unit
   ground/supply glyph against foreign signal escape corridors,
-  routing-inflated foreign bodies and different-net terminal glyphs. It tries
-  implicated small passive parts first and keeps only grid moves that strictly
-  reduce conflicts; protected powered leaves retain their `leafSnap` placement
-  when another part can move. Routing-time glyph blockers and stem shortening
+  routing-inflated foreign bodies and different-net terminal glyphs. Exact
+  connected terminal-pin coincidences on distinct nets are a hard condition
+  (same-net coincidences remain valid): it reduces those before ordinary glyph
+  conflicts, and the small-sheet glyph shortcut cannot bypass them. It tries
+  implicated small passive parts first; protected powered leaves retain their
+  `leafSnap` placement when another part can move. Routing-time glyph blockers
+  and stem shortening
   remain the safeguard for irreducible crowding. Routing is per signal net: a tree grows
   from the first pin, each next pin attaching to the closest already-wired
   point through a Hanan free-space grid built from the inflated obstacle
@@ -152,10 +155,11 @@ implements.
   (65) total attempts. Movable parts are those with at least two
   non-ground / non-rail nets (`feedbackCandidateParts`, insertion order);
   each is tried on rings of grid cells around its current centre up to
-  `feedbackMaxRadius` (4), and a candidate cell is rejected only when it
-  would overlap another part's *raw* body — the placement separation
-  clearance may relax during recovery, but symbols never overlap. After each
-  move the eligible rotations are recomputed (`recomputeRotations`, the same
+  `feedbackMaxRadius` (4), and a candidate cell is rejected when it would
+  overlap another part's *raw* body or its final recomputed rotations leave
+  exact connected terminal pins on distinct nets coincident — the placement
+  separation clearance may relax during recovery, but symbols never overlap.
+  After each move the eligible rotations are recomputed (`recomputeRotations`, the same
   definitive pass used after separation); `leafSnap` is deliberately not
   rerun. Attempt-zero layouts are untouched: a netlist that already routes
   takes exactly the path it took before the loop existed. If recovery still
@@ -257,9 +261,16 @@ implements.
   a literal, every style inlined, a graph-paper grid, wires as polylines,
   junction circles, ground/power symbols (each bar drawn perpendicular to the
   stub it caps, so a sideways or downward rail stub still gets an upright
-  glyph) and a small symbol library (resistor
-  zigzag, capacitor plates, inductor arcs, diode triangle+bar, source circles,
-  controlled-source rectangle, transistor body). Each symbol's stroked extent
+  glyph) and a small symbol library (resistor zigzag, capacitor plates,
+  inductor arcs, diode triangle+bar, source circles, controlled-source
+  rectangle, transistor body). Wire corner treatment is renderer-only:
+  every orthogonal non-junction turn is shown with a 4-unit 45-degree chamfer,
+  capped at half of either adjacent segment. A same-net `SchematicJunction`
+  retains its square bend; scenes, routing and JSON retain the original
+  orthogonal points. The same renderer-only treatment applies to signal,
+  ground and supply wires; ground/supply terminal glyph direction continues
+  to use the original scene points, and fallback rendering is unchanged.
+  Each symbol's stroked extent
   must match the `inkExtent` table in `layout.nim` — the two files are the
   only ones that know drawn geometry, and the label pass reads that table, so
   a change to a symbol's drawing here needs the matching entry updated there.

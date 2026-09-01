@@ -291,16 +291,40 @@ proc constrainedRefine(comps: seq[Component], pos: var seq[Point],
   ## by the bounded soft-anchor force and group search, never by a hard snap.
   discard
 
-proc groupAngle(sd: SymbolDef, c: Component, sortedNets: seq[string],
-                angle: float): float =
-  ## Map each member's declaration order onto the group's canonical unordered
-  ## endpoint order.  A reversed declaration is flipped deterministically;
-  ## consequently pins on the same net occupy the same side of the group.
-  if c.pins.len != 2: return angle
-  var names: seq[string]
-  for _, p in c.pins: names.add p.net.name
-  if names == sortedNets: angle
-  else: (angle + 180.0) mod 360.0
+proc slotForNet(sd: SymbolDef, c: Component, netName: string):
+    tuple[found: bool, slot: Point] =
+  ## The declaration order is not a terminal direction: voltage sources, for
+  ## example, are native-vertical while passives are native-horizontal. Find
+  ## this member's actual native slot for the canonical endpoint instead.
+  var ordinal = 0
+  for pinName, pin in c.pins:
+    if pin.net != nil and pin.net.name == netName:
+      return (true, slotOf(sd, pinName, ordinal))
+    inc ordinal
+
+proc angleForCanonicalSide(sd: SymbolDef, c: Component, netName: string,
+                           side: Point): tuple[ok: bool, angle: float] =
+  ## Rotate a member's own native slot onto `side`, rather than applying the
+  ## reference member's numeric angle to every member. This is what lets a
+  ## horizontal resistor and a native-vertical source share one composite.
+  let native = slotForNet(sd, c, netName)
+  if not native.found: return
+  for angle in rotationChoices:
+    if axisUnit(rotatedSlot(native.slot, angle)) == side:
+      return (true, angle)
+
+proc validCompositeAxes(sd: SymbolDef, c: Component, sortedNets: seq[string],
+                        angle: float, canonicalSide: Point): bool =
+  ## Every member must put the two canonical nets on opposite horizontal
+  ## sides. Never accept an orientation merely because the first member fit.
+  if sortedNets.len != 2 or sortedNets[0] == sortedNets[1]: return false
+  let first = slotForNet(sd, c, sortedNets[0])
+  let second = slotForNet(sd, c, sortedNets[1])
+  if not first.found or not second.found: return false
+  let a = axisUnit(rotatedSlot(first.slot, angle))
+  let b = axisUnit(rotatedSlot(second.slot, angle))
+  a == canonicalSide and b == Point(x: -canonicalSide.x, y: -canonicalSide.y) and
+    a.y == 0.0 and b.y == 0.0
 
 proc portTarget(nl: Netlist, comps: seq[Component], net: Net, pos: seq[Point], syms: seq[SymbolDef]):
     tuple[has: bool, p: Point] =
@@ -496,7 +520,9 @@ proc compositeInternalRoutes(plan: CompositePlan, parts: seq[SchematicPart],
                              netName: string): seq[SchematicWire] =
   ## Deterministic trunk-and-tap fanout.  It is emitted after external routing:
   ## these are internal composite conductors, not additional external router
-  ## endpoints or occupancy obstacles.
+  ## endpoints or occupancy obstacles. For three or more members, use one
+  ## trunk plus disjoint taps: independent tap-to-root Ls would overlap along
+  ## the shared same-net trunk.
   for unit in plan.units:
     for port in unit.ports:
       if port.net != netName: continue
@@ -505,17 +531,37 @@ proc compositeInternalRoutes(plan: CompositePlan, parts: seq[SchematicPart],
       for pin in rep.pins:
         if pin.name == port.representative.pinName:
           root = Point(x: pin.x, y: pin.y)
+      var taps: seq[Point]
       for covered in port.covered:
         if covered == port.representative: continue
         let member = parts[covered.partIdx]
-        var tap: Point
         for pin in member.pins:
-          if pin.name == covered.pinName: tap = Point(x: pin.x, y: pin.y)
-        var points = @[tap]
-        if tap.x != root.x and tap.y != root.y:
-          points.add Point(x: root.x, y: tap.y)
-        points.add root
-        result.add SchematicWire(net: netName, kind: wkSignal, points: points)
+          if pin.name == covered.pinName:
+            taps.add Point(x: pin.x, y: pin.y)
+      if taps.len <= 1:
+        for tap in taps:
+          var points = @[tap]
+          if tap.x != root.x and tap.y != root.y:
+            points.add Point(x: root.x, y: tap.y)
+          points.add root
+          result.add SchematicWire(net: netName, kind: wkSignal, points: points)
+        continue
+      # Composite members are vertically stacked. The canonical-side mapping
+      # makes each same-net terminal share an x coordinate; retaining the
+      # horizontal taps also keeps this total for future unequal pin spans.
+      var trunk = @[root]
+      for tap in taps: trunk.add Point(x: root.x, y: tap.y)
+      trunk.sort(proc(a, b: Point): int = cmp(a.y, b.y))
+      var unique: seq[Point]
+      for point in trunk:
+        if unique.len == 0 or point != unique[^1]: unique.add point
+      for tap in taps:
+        let join = Point(x: root.x, y: tap.y)
+        if tap != join:
+          result.add SchematicWire(net: netName, kind: wkSignal,
+                                   points: @[tap, join])
+      if unique.len >= 2:
+        result.add SchematicWire(net: netName, kind: wkSignal, points: unique)
 
 proc constrainedRecomputeRotations(nl: Netlist, comps: seq[Component],
                                    syms: seq[SymbolDef], pos: seq[Point], rots: seq[float],
@@ -538,24 +584,27 @@ proc constrainedRecomputeRotations(nl: Netlist, comps: seq[Component],
     var bestRank: array[4, int]
     var bestScore: tuple[hits, bends: int, length, drift: float]
     var first = true
-    var firstPin = ""
-    for pinName, _ in comps[members[0]].pins:
-      firstPin = pinName
-      break
+    let reference = slotForNet(syms[members[0]], comps[members[0]], nets[0])
+    if not reference.found: continue
     for angle in rotationChoices:
-      let firstAngle = groupAngle(syms[members[0]], comps[members[0]], nets, angle)
-      # Members are vertically raw-body-touching. Keep their terminals on
-      # the exposed left/right sides: a top/bottom pin axis would put two
-      # different nets at the shared body boundary with no legal channel.
-      if axisUnit(rotatedSlot(slotOf(syms[members[0]], firstPin, 0), firstAngle)).y != 0.0:
-        continue
+      # `angle` only defines the canonical side through the reference member.
+      # Every other member derives its own rotation from its native terminal.
+      let canonicalSide = axisUnit(rotatedSlot(reference.slot, angle))
+      if canonicalSide.y != 0.0: continue
       var cand = result
       var rank: array[4, int]
+      var valid = true
       for i in members:
-        let a = groupAngle(syms[i], comps[i], nets, angle)
+        let mapped = angleForCanonicalSide(syms[i], comps[i], nets[0], canonicalSide)
+        if not mapped.ok or not validCompositeAxes(syms[i], comps[i], nets,
+                                                   mapped.angle, canonicalSide):
+          valid = false
+          break
+        let a = mapped.angle
         cand[i] = a
         let r = powerRank(syms[i], comps[i], a)
         for k in 0 ..< rank.len: rank[k] += r[k]
+      if not valid: continue
       let score = constrainedRouteScore(nl, comps, syms, pos, cand, anchors)
       var better = first or rankLess(rank, bestRank)
       if not better and rankEqual(rank, bestRank):
