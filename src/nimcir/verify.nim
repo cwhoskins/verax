@@ -687,12 +687,15 @@ proc keepFullSchematic(nl: Netlist) =
       for _, child in n.children:
         if child.name.len > 0 and child.name notin seen:
           seen.add child.name
+          echo child.name
           writeScenePair(layout(child, options),
                          dir / ("runFULL." & safeSheetName(child.name)))
+          echo "Done"
         walk(child)
     walk(nl)
   except CatchableError:
     discard
+  quit(0)
 
 proc verify*(d: Design, allowed = allCapabilities, verbose = false,
              strict = false): int =

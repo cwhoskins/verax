@@ -4,7 +4,7 @@
 ## private geometry and routing types remain internal to this module while the
 ## established public API remains unchanged.
 
-import std/[algorithm, math, sets, strutils, tables]
+import std/[algorithm, math, sets, strutils, tables, sequtils]
 import ../netlist/types
 import ../netlist/kinds
 import ../netlist/annotations
@@ -20,6 +20,7 @@ include ./constrained
 include ./state
 include ./routing
 include ./finish
+include ./refinement
 
 proc layout*(nl: Netlist, options: LayoutOptions): Schematic
 
@@ -119,5 +120,6 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   result.fallbacks = ctx.routing.fallbacks
   finishLabels(ctx, result)
   finishBounds(result, ctx.options.stageEnabled(lsBounds))
+  refineRouting(ctx)
 
 include ./diagnostics
