@@ -547,6 +547,14 @@ template withEnv(key, value: string, body: untyped) =
 
 # --- the scene, which needs no simulator --------------------------------
 
+# `layout()` is superlinear and its placement-routing feedback loop is not
+# cheap: a 37-resistor chain costs ~16s and the real RIAA channel ~2s. Every
+# test that only *reads* one of these scenes shares a single module-level
+# layout; the determinism tests below still re-run `layout` on purpose.
+let chain37 = layout(resistorChain(37))
+let riaaChannelScene = layout(riaaChannel())
+let riaaTopScene = layout(fullRiaaTop())
+
 test "layout is deterministic":
   let nl = divider()
   let a = renderSvg(nl)
@@ -554,11 +562,14 @@ test "layout is deterministic":
   check a == b
   check sceneToJsonString(nl) == sceneToJsonString(nl)
 
-test "constrained layered policy is opt-in and keeps historical output unchanged":
+test "constrained layered policy keeps the hard invariants":
+  # That the *default* policy still equals a bare `layout(nl)` is pinned by
+  # "the default pipeline and its reserved no-op stages are byte-stable";
+  # here the point is that opting in to `lpConstrainedLayered` produces a
+  # scene that still upholds the collinear-run and cross-net separation rules.
   let nl = divider()
   let historical = layout(nl)
   var defaulted = defaultLayoutOptions()
-  check layout(nl, defaulted) == historical
   defaulted.policy = lpConstrainedLayered
   let constrained = layout(nl, defaulted)
   check constrained.parts.len == historical.parts.len
@@ -1387,24 +1398,11 @@ test "a three-terminal transistor never rotates":
   let s = layout(nl)
   check partOf(s, "Q1").rotation == 0.0
 
-test "rotation is deterministic":
-  let a = layout(divider())
-  let b = layout(divider())
-  check a.parts.len == b.parts.len
-  for i in 0 ..< a.parts.len:
-    check a.parts[i].rotation == b.parts[i].rotation
-
-test "the public json api exposes rotation additively":
-  let node = parseJson(sceneToJsonString(divider()))
-  var rotOf = initTable[string, float]()
-  for part in node["parts"]:
-    check part.hasKey("rotation")
-    let rot = part["rotation"].getFloat
-    check rot in [0.0, 90.0, 180.0, 270.0]
-    rotOf[part["designator"].getStr] = rot
-  check rotOf["R1"] == 90.0      # unannotated rail pin points up
-  check rotOf["R2"] == 90.0      # ground pin points down
-  check rotOf["U1"] == 0.0       # a fallback box never rotates
+# "rotation is deterministic" and "the public json api exposes rotation
+# additively" folded away: `layout is deterministic` already compares
+# `renderSvg` output (which encodes rotation) across two layouts, and the
+# rotation values + JSON key now live in "the public json writer emits
+# schemaVersion 1 with complete scene fields".
 
 test "a rotated part draws its body in a rotate group, its labels kept outside it":
   var s = Schematic(title: "rot")
@@ -1463,14 +1461,26 @@ test "the public json writer emits schemaVersion 1 with complete scene fields":
   check node["parts"][0].hasKey("bodyH")
   check node["parts"][0].hasKey("inkW")
   check node["parts"][0].hasKey("inkH")
-  let withFb = parseJson(sceneToJsonString(layout(fullRiaaTop())))
+  let withFb = parseJson(sceneToJsonString(riaaTopScene))
   check withFb["fallbacks"].len == 4
   check withFb["fallbacks"][0].hasKey("ex")
   check withFb["fallbacks"][0].hasKey("ey")
 
+  # Rotation is exposed additively, as one of {0,90,180,270}, and carries the
+  # value layout assigned: divider R1/R2 turn 90 for their rail/ground pins,
+  # the U1 fallback box never turns.
+  var rotOf = initTable[string, float]()
+  for part in node["parts"]:
+    check part.hasKey("rotation")
+    let rot = part["rotation"].getFloat
+    check rot in [0.0, 90.0, 180.0, 270.0]
+    rotOf[part["designator"].getStr] = rot
+  check rotOf["R1"] == 90.0
+  check rotOf["R2"] == 90.0
+  check rotOf["U1"] == 0.0
+
 test "the strict json reader is the exact inverse of the writer":
-  for nl in [divider(), riaaChannel(), fullRiaaTop(), resistorChain(37)]:
-    let s = layout(nl)
+  for s in [layout(divider()), riaaChannelScene, riaaTopScene, chain37]:
     check jsonToScene(sceneToJsonString(s)) == s
 
 test "the strict json reader rejects unknown versions and malformed fields":
@@ -1500,7 +1510,7 @@ test "the reader accepts legacy unversioned archives and rebuilds fallback escap
   # The pre-schemaVersion writer stored no `schemaVersion` and no fallback
   # `ex`/`ey`; both are reconstructible from the scene's own part/port
   # geometry, never invented.
-  let s = layout(fullRiaaTop())
+  let s = riaaTopScene
   var node = parseJson(sceneToJsonString(s))
   node.delete("schemaVersion")
   for f in node["fallbacks"]:
@@ -1585,8 +1595,8 @@ test "signal wires clear complete ground and supply terminal glyphs":
 
   # The real RIAA channel and its hierarchical top sheet exercise dense
   # positive/negative rails, ground terminals, fallback markers and boxes.
-  check signalWiresClearTerminalGlyphs(layout(riaaChannel()))
-  check signalWiresClearTerminalGlyphs(layout(fullRiaaTop()))
+  check signalWiresClearTerminalGlyphs(riaaChannelScene)
+  check signalWiresClearTerminalGlyphs(riaaTopScene)
 
   # Sheet-wide compatibility: existing ordinary signal-to-signal crossings
   # remain governed by the separation helper (perpendicular crossings allowed)
@@ -1595,14 +1605,12 @@ test "signal wires clear complete ground and supply terminal glyphs":
     check differentNetsRespectSeparation(layout(nl))
 
 test "placement reserves full terminal glyphs before routing":
-  # The compact divider is the minimal mixed signal/terminal case; RIAA adds
-  # dense rails, boxes and interface corridors. A second RIAA layout pins the
-  # repair's deterministic candidate ordering without changing public scene
-  # schema or routing safeguards.
+  # The compact divider is the minimal mixed signal/terminal case; the real
+  # RIAA channel adds dense rails, boxes and interface corridors. Layout
+  # determinism itself is pinned by "the placement-routing feedback is
+  # deterministic" below.
   check fullTerminalGlyphsClearPlacementReservations(layout(divider()))
-  check fullTerminalGlyphsClearPlacementReservations(layout(riaaChannel()))
-  check sceneToJsonString(layout(riaaChannel())) ==
-        sceneToJsonString(layout(riaaChannel()))
+  check fullTerminalGlyphsClearPlacementReservations(riaaChannelScene)
 
 test "a signal wire never threads a foreign-net escape seed":
   # Every signal pin and every interface port owns a short escape stub to the
@@ -1611,10 +1619,9 @@ test "a signal wire never threads a foreign-net escape seed":
   # positive-length part of it -- the seed's open interior stays clear for
   # the net that owns it. The real RIAA channel exercises both seed kinds:
   # its component-pin stubs plus its IN/OUT interface-port stubs.
-  for nl in [divider(), riaaChannel()]:
-    let s = layout(nl)
+  for s in [layout(divider()), riaaChannelScene]:
     check signalWiresRespectForeignSeeds(s)
-  let riaa = layout(riaaChannel())
+  let riaa = riaaChannelScene
   let seeds = escapeSeedsT(riaa)
   check riaa.ports.len == 2
   for port in riaa.ports:
@@ -1630,7 +1637,7 @@ test "the real RIAA channel routes through the placement-routing feedback":
   # still uphold the hard routing invariants, and the feedback move must not
   # leave raw symbol bodies overlapping (placement separation may relax, but
   # symbols never overlap).
-  let s = layout(riaaChannel())
+  let s = riaaChannelScene
   check s.parts.len == 12
   check distinctWiresNeverShareCollinearRuns(s)
   check differentNetsRespectSeparation(s)
@@ -1644,7 +1651,7 @@ test "the real RIAA channel routes through the placement-routing feedback":
             dy >= (a.bodyH + b.bodyH) / 2.0 - 1e-6
 
 test "the placement-routing feedback is deterministic":
-  let a = layout(riaaChannel())
+  let a = riaaChannelScene           # the shared scene must equal a fresh one
   let b = layout(riaaChannel())
   check a.parts.len == b.parts.len
   for i in 0 ..< a.parts.len:
@@ -1665,7 +1672,7 @@ test "the RIAA top sheet's dangling channel ports become fallback markers":
   # `outL`, `inR`, `outR`) each carry exactly one pin on the top sheet, so
   # each must be drawn as a dashed fallback stub rather than vanishing, and
   # the child channel sheet itself must still route with no fallbacks.
-  let s = layout(fullRiaaTop())
+  let s = riaaTopScene
   check s.fallbacks.len == 4
   for f in s.fallbacks:
     check f.net in ["inL", "inR", "outL", "outR"]
@@ -1676,7 +1683,7 @@ test "the RIAA top sheet's dangling channel ports become fallback markers":
   check distinctWiresNeverShareCollinearRuns(s)
   check differentNetsRespectSeparation(s)
 
-  let child = layout(riaaChannel())
+  let child = riaaChannelScene
   check child.fallbacks.len == 0
 
   # The archive renders the same scene through `renderSvg`; the top sheet's
@@ -1700,7 +1707,7 @@ test "an impossible route falls back to dashed markers, never an assertion":
   # other nets, and the old AssertionDefect made the archive unrenderable. The
   # real wires that remain still uphold the hard invariants, and the fallbacks
   # never join them as connectivity.
-  let s = layout(resistorChain(37))
+  let s = chain37
   check s.fallbacks.len > 0
   check distinctWiresNeverShareCollinearRuns(s)
   check differentNetsRespectSeparation(s)
@@ -1769,7 +1776,7 @@ test "the fallback reroute diagnostic reads a finished scene, not the netlist":
   # `diagnoseAllFallbacks` re-runs the router against the scene's own final
   # geometry (parts, wires, ports), so it works on an archived scene with no
   # netlist in hand -- the point of the run-archive JSON reader.
-  let s = layout(fullRiaaTop())
+  let s = riaaTopScene
   let original = s
   let diags = diagnoseAllFallbacks(s)
   let archivedDiags = diagnoseAllFallbacks(jsonToScene(sceneToJsonString(s)))
@@ -1794,7 +1801,7 @@ test "the fallback reroute diagnostic reads a finished scene, not the netlist":
   check absent.blockDetail == "no endpoints in this scene"
 
 test "terminal axes let the crowded chain diagnose only dangling endpoints":
-  let s = layout(resistorChain(37))
+  let s = chain37
   check s.fallbacks.len > 0
   var byNet = initTable[string, FallbackReroute]()
   for d in diagnoseAllFallbacks(s): byNet[d.net] = d
@@ -1806,7 +1813,7 @@ test "terminal axes let the crowded chain diagnose only dangling endpoints":
   check not byNet.hasKey("n28")
 
 test "a scene that already routes has nothing to diagnose":
-  check diagnoseAllFallbacks(layout(riaaChannel())).len == 0
+  check diagnoseAllFallbacks(riaaChannelScene).len == 0
 
 test "a single dangling pin is a dashed stub with its exact net name":
   var nl = newNetlist("dangling")
@@ -2168,23 +2175,19 @@ test "the bounding box contains every port body":
     check pt.y - pt.bodyH / 2.0 >= s.minY - 1e-9
     check pt.y + pt.bodyH / 2.0 <= s.maxY + 1e-9
 
-test "port layout is deterministic":
-  check sceneToJsonString(portedSubckt()) == sceneToJsonString(portedSubckt())
+# "port layout is deterministic" folded away: layout determinism is already
+# pinned on divider and the RIAA channel.
 
-test "the public json api exposes ports additively":
+test "the public json api exposes ports additively, each with its direction":
   let node = parseJson(sceneToJsonString(portedSubckt()))
-  check node.hasKey("ports")
+  # None of the pre-existing top-level keys are disturbed by adding ports.
+  for key in ["parts", "wires", "labels", "ports"]:
+    check node.hasKey(key)
   check node["ports"].len == 4
-  # existing keys untouched
-  check node.hasKey("parts")
-  check node.hasKey("wires")
-  check node.hasKey("labels")
   var dirs: seq[string]
   for p in node["ports"]: dirs.add p["dir"].getStr
-  check "input" in dirs
-  check "output" in dirs
-  check "bidir" in dirs
-  check "unspecified" in dirs
+  for d in ["input", "output", "bidir", "unspecified"]:
+    check d in dirs
 
 test "renderSvg draws one polygon per port, each named":
   let text = renderSvg(portedSubckt())
@@ -2200,18 +2203,20 @@ test "renderSvg draws one polygon per port, each named":
   check ">OUT</text>" in text
   check ">BUS</text>" in text
 
-test "layout options preserve the default pipeline":
-  let nl = divider()
-  check sceneToJsonString(layout(nl)) ==
-        sceneToJsonString(layout(nl, defaultLayoutOptions()))
-  check allLayoutStages == {lsPrepare..lsBounds}
-  check defaultLayoutOptions().stageSpecs.len == ord(StageId.high) + 1
-
-test "reserved no-op pipeline stages preserve byte-identical output":
+test "the default pipeline and its reserved no-op stages are byte-stable":
   let nl = divider()
   let baseline = layout(nl)
   let baselineJson = sceneToJsonString(baseline)
   let baselineSvg = renderSvg(baseline)
+
+  # An explicit default LayoutOptions is the same as none at all.
+  check sceneToJsonString(layout(nl, defaultLayoutOptions())) == baselineJson
+  check allLayoutStages == {lsPrepare..lsBounds}
+  check defaultLayoutOptions().stageSpecs.len == ord(StageId.high) + 1
+
+  # The reserved stages are still no-ops: dropping any one changes nothing.
+  # `lsConstrainedRefinement` in particular is unfinished, so this is the
+  # guard that it stays inert until it is done.
   for stage in [lsSemanticSeed, lsConstrainedRefinement, lsRoutingAwareRepair]:
     var options = defaultLayoutOptions()
     options.stages.excl stage

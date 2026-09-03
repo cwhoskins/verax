@@ -6,7 +6,7 @@
 ## registered thing is *reachable* and that nothing a third party registers
 ## can make a listing raise.
 
-import std/[options, os, osproc, strutils, tables, unittest]
+import std/[options, strutils, tables, unittest]
 
 import nimcir/verify
 
@@ -81,28 +81,11 @@ suite "quantity and annotation discovery":
   test "a name nothing resembles suggests nothing":
     check didYouMean("xyzzy_quantity_that_is_nothing").len == 0
 
-suite "templates":
-  # The highest-value test here: it proves the files we hand an author
-  # actually build and pass. Offline, so it needs no simulator.
-  let root = currentSourcePath().parentDir.parentDir
-  let nim = findExe("nim")
-
-  test "every template compiles and checks clean":
-    if nim.len == 0:
-      skip()
-    else:
-      for path in walkFiles(root / "templates" / "*.nim"):
-        let cache = getTempDir() / "nimcir-tmpl" / path.splitFile.name
-        let bin = cache / "t".addFileExt(ExeExt)
-        createDir(cache)
-        let (outp, rc) = execCmdEx(quoteShellCommand([nim, "c", "--hints:off",
-          "--path:" & root / "src", "--nimcache:" & cache / "nc",
-          "--out:" & bin, path]))
-        checkpoint path & "\n" & outp
-        check rc == 0
-        let (report, code) = execCmdEx(quoteShellCommand([bin, "--offline"]))
-        checkpoint path & "\n" & report
-        check code == exitClean
+# Template health -- that every file we hand an author builds and checks
+# clean -- is `nimble verify`'s job: it runs `bin/nimcir check templates/*.nim`,
+# which compiles and runs each one. It lived here too, as a per-template
+# `nim c` sweep, but that cost ~42s of every `nimble test` for coverage the
+# verify task already gives with the simulator available rather than `--offline`.
 
 # --- reachability, which is what the quantities listing is for ----------
 

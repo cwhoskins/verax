@@ -446,6 +446,42 @@ a regulator is asked and not a thing to bind separately.)
 
 ---
 
+## The schematic layout engine
+
+Both turned up while measuring why `nimble test` takes ~7 minutes (see the
+`tests/` cull that split `test_verify_keep`'s ~140s assertion behind
+`-d:slowTests` and shared the expensive `layout()` fixtures in
+`test_schematic.nim`). Both are findings, not proposals: the tool misbehaves.
+
+27. **`schematic/refinement.nim` is half-written and prints to stdout** (§68).
+    The straightening pass around `refinement.nim:43-68` has a dead
+    `for p in a.pins: discard` loop, a comment that trails off mid-sentence,
+    and — the visible part — two bare `echo` statements (lines 67-68) that dump
+    every net's bend count and its full wire object on **every** `layout()`
+    call. That means every `nimble test` run, every `nimcir check`, and every
+    archived SVG emits this debug noise to stdout. It is reached: the dump
+    appears whenever a non-trivial netlist is laid out. That the pass is
+    otherwise inert is what `test_schematic.nim`'s "the default pipeline and
+    its reserved no-op stages are byte-stable" asserts (it exercises
+    `lsConstrainedRefinement`), which is why that assertion was kept when its
+    test was folded. The fix is to finish the pass or delete its body and the
+    echoes; the stage stays reserved either way.
+
+28. **`layout()` is superlinear in part count** (§69). Measured on a plain
+    series resistor chain, default policy: n=16 → 0.43s, n=24 → 3.2s, n=30 →
+    5.7s, n=34 → 11.1s, n=37 → **16.7s**. The real RIAA channel
+    (`designs/lib/riaa.nim`, ~12 parts with a routing-feedback retry) costs
+    ~1.9s a layout. A stage split at n=30 puts roughly half the time in
+    `lsForcePlacement` (5.7s → 2.3s with it disabled) and the rest in
+    `lsRoute`, which cannot be disabled. This is the actual reason the test
+    sweep is slow — not test count — and it caps how large a sheet the archive
+    can picture before a `nimcir check` visibly stalls. Fixing it would also
+    let `test_verify_keep`'s derived-fragment archive assertion come back off
+    `-d:slowTests` (~140s of its ~144s was one `layout()` of the
+    op-substituted fragment, not the simulation).
+
+---
+
 ## If the order is up for grabs
 
 **Cheapest real value:** §48 then §49. No circuit knowledge, no new analysis,

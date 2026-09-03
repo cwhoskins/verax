@@ -12,6 +12,13 @@
 ## simulation runs (so they are gated on the archive, not on a run); they are
 ## overwritten rather than slotted; and they take no `index.txt` row -- the
 ## index names one analysis run per row, and these pictures are not runs.
+##
+## One property -- that a *derived* simulation fragment's `run000` archive
+## routes cleanly rather than degrading to dashed fallback markers -- lives
+## behind `-d:slowTests`: it costs ~140s, almost all of it one `layout()` of
+## the op-substituted fragment (`schematic.layout()` is superlinear), not the
+## simulation. Run it with
+##   nim c -r --path:./src -d:slowTests tests/test_verify_keep.nim
 
 import std/[json, os, strutils, tempfiles, unittest]
 
@@ -339,45 +346,58 @@ suite "runFULL.svg beside the derived runNNN.svg":
       for row in rows:
         check "runFULL" notin row
 
-    test "the real RIAA archive records fully routed derived and child sheets":
-      # The Hanan grid routes the first derived fragment's op-amp-substitution
-      # internal nets, so the archived SVG and JSON must describe real wires,
-      # not fallback markers. The authored child sheet must likewise retain
-      # its routed IN/OUT interface.
-      let dir = createTempDir("nimcir_riaaregress_", "")
-      defer: removeDir(dir)
-      withEnv("NIMCIR_KEEP_RUNS", dir):
-        discard verify(riaaBoard(), allCapabilities)
+    when defined(slowTests):
+      test "the real RIAA archive records a fully routed derived sheet":
+        # The Hanan grid routes the first derived fragment's op-amp-substitution
+        # internal nets, so the archived SVG and JSON must describe real wires,
+        # not fallback markers. ~140s, almost all of it one `layout()` of the
+        # derived fragment -- hence `-d:slowTests`. The authored-side half of
+        # this property is pinned cheaply below, off `{capStatic}`.
+        let dir = createTempDir("nimcir_riaaregress_", "")
+        defer: removeDir(dir)
+        withEnv("NIMCIR_KEEP_RUNS", dir):
+          discard verify(riaaBoard(), allCapabilities)
 
-      check fileExists(dir / "run000.svg")
-      check fileExists(dir / "run000.json")
-      check fileExists(dir / "runFULL.svg")
-      check fileExists(dir / "runFULL.json")
-      check fileExists(dir / "runFULL.RIAA_CHANNEL.svg")
-      check fileExists(dir / "runFULL.RIAA_CHANNEL.json")
+        check fileExists(dir / "run000.svg")
+        check fileExists(dir / "run000.json")
 
-      # SVG is the rendered archive view: dashed strokes only represent
-      # fallback stubs, so their absence says every connection was routed.
-      let runSvg = readFile(dir / "run000.svg")
-      check runSvg.startsWith("<?xml")
-      check "stroke-dasharray=\"6 4\"" notin runSvg
+        # SVG is the rendered archive view: dashed strokes only represent
+        # fallback stubs, so their absence says every connection was routed.
+        let runSvg = readFile(dir / "run000.svg")
+        check runSvg.startsWith("<?xml")
+        check "stroke-dasharray=\"6 4\"" notin runSvg
 
-      # JSON is the same routed scene. Require actual wire geometry as well
-      # as no fallback records, rather than pinning an incidental wire count.
-      let runScene = parseJson(readFile(dir / "run000.json"))
-      check runScene["fallbacks"].len == 0
-      check runScene["wires"].len > 0
-      for wire in runScene["wires"]:
-        check wire["points"].len >= 2
+        # JSON is the same routed scene. Require actual wire geometry as well
+        # as no fallback records, rather than pinning an incidental wire count.
+        let runScene = parseJson(readFile(dir / "run000.json"))
+        check runScene["fallbacks"].len == 0
+        check runScene["wires"].len > 0
+        for wire in runScene["wires"]:
+          check wire["points"].len >= 2
 
-      # The authored child archive has the same clean routing and preserves
-      # its semantic IN/OUT interface ports.
-      let child = readFile(dir / "runFULL.RIAA_CHANNEL.svg")
-      check child.startsWith("<?xml")
-      check "stroke-dasharray=\"6 4\"" notin child
-      let childScene = parseJson(readFile(dir / "runFULL.RIAA_CHANNEL.json"))
-      check childScene["fallbacks"].len == 0
-      var portNames: seq[string]
-      for port in childScene["ports"]:
-        portNames.add port["name"].getStr
-      check portNames == @["IN", "OUT"]
+test "the RIAA archive keeps a routed authored design and child sheet":
+  # The authored-side half of the routed-archive property, off `{capStatic}`
+  # so no derived fragment is simulated (~2s rather than ~140s). The full
+  # top sheet and the `RIAA_CHANNEL` child sheet both come from the design as
+  # written, so they are written even with no run.
+  let dir = createTempDir("nimcir_riaaauthored_", "")
+  defer: removeDir(dir)
+  withEnv("NIMCIR_KEEP_RUNS", dir):
+    discard verify(riaaBoard(), {capStatic})
+
+  check fileExists(dir / "runFULL.svg")
+  check fileExists(dir / "runFULL.json")
+  check fileExists(dir / "runFULL.RIAA_CHANNEL.svg")
+  check fileExists(dir / "runFULL.RIAA_CHANNEL.json")
+
+  # The authored child archive routes cleanly and preserves its semantic
+  # IN/OUT interface ports.
+  let child = readFile(dir / "runFULL.RIAA_CHANNEL.svg")
+  check child.startsWith("<?xml")
+  check "stroke-dasharray=\"6 4\"" notin child
+  let childScene = parseJson(readFile(dir / "runFULL.RIAA_CHANNEL.json"))
+  check childScene["fallbacks"].len == 0
+  var portNames: seq[string]
+  for port in childScene["ports"]:
+    portNames.add port["name"].getStr
+  check portNames == @["IN", "OUT"]
