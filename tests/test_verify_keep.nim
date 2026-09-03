@@ -205,6 +205,41 @@ test "a subcircuit gets its own runFULL.<name> svg+json sheet, deduped by name":
   # No index row for any of the pictures.
   check not fileExists(dir / "index.txt")
 
+test "runFULL.html is a self-contained hierarchy browser linking blocks to sheets":
+  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  defer: removeDir(dir)
+  withEnv("NIMCIR_KEEP_RUNS", dir):
+    discard verify(twoChannelBoard(), offlineCapabilities)
+
+  check fileExists(dir / "runFULL.html")
+  let html = readFile(dir / "runFULL.html")
+  # Self-contained: no external stylesheet, script or image reference.
+  check "<script>" in html
+  check "src=" notin html
+  check "<link" notin html
+
+  # The embedded model carries both sheets and wires each instance of the
+  # block to the one deduplicated child sheet.
+  let modelStart = html.find("const MODEL = ") + "const MODEL = ".len
+  let modelEnd = html.find(";\n", modelStart)
+  let model = parseJson(html[modelStart ..< modelEnd])
+  check model["root"].getStr == "@root"
+  check model["sheets"].hasKey("@root")
+  check model["sheets"].hasKey("GAIN_BLOCK")
+
+  var linked: seq[string]
+  for p in model["sheets"]["@root"]["parts"]:
+    if p["child"].kind != JNull:
+      linked.add p["child"].getStr
+  check linked == @["GAIN_BLOCK", "GAIN_BLOCK"]   # XL and XR both descend
+
+  # The child sheet's parts have no further hierarchy to descend into.
+  for p in model["sheets"]["GAIN_BLOCK"]["parts"]:
+    check p["child"].kind == JNull
+
+  # Each sheet inlines its SVG with the XML prolog stripped (invalid mid-HTML).
+  check model["sheets"]["@root"]["svg"].getStr.startsWith("<svg")
+
 test "the archive uses the constrained layout selected through the environment":
   let dir = createTempDir("nimcir_verifykeeptest_", "")
   defer: removeDir(dir)
