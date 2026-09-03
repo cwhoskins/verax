@@ -57,10 +57,18 @@ back-edges: nothing below ever learns about anything above it.
                         \          spice/  --> spice/xspice/
                          \          /
                           netlist/    schematic/    parts/     pcb/
-                             |   \________|___________|________/
-                             |
+                             |   \________|___________|________/ | \
+                             |                          ibis/ <-/   \-> fem/
+                             |                            (over pcb + netlist)
                     units.nim   eng.nim       (below everything)
 ```
+
+`ibis/` (reads a vendor `.ibs` buffer model) and `fem/` (interface to an
+external finite-element field solver, EM + thermal) are the two newest
+submodules. Both sit above `pcb/`: `fem/` meshes board geometry, `ibis/`
+binds a parsed buffer model to a `Placement`. Neither is imported by anything
+above them, and both are opt-in per import like every other hub. `fem/` has
+no backend yet (MFEM is intended); `ibis/` is a no-op past its parser.
 
 Three rules produce that picture.
 
@@ -98,6 +106,8 @@ drag in `osproc` and the whole analysis tree.
 | `contract/` | what the circuit must do, and comparing a number against it | how any number is produced |
 | `pcb/` | the physical board: layers, copper, holes, placements, BoM | anything electrical beyond a forward reference into a `Netlist` |
 | `parts/` | choosing a real part for a computed value | the circuit it lands in |
+| `ibis/` | reading what a vendor says a buffer does (`.ibs`: I/V curves, edge rates, package RLC) | how that behaviour gets simulated, or whether a design meets it |
+| `fem/` | stating a field problem over a board and running it through an external solver | what question the field answers |
 | `verify.nim` | joining the last two, and rendering | — |
 
 Two of those are worth stating plainly because it is easy to assume otherwise:

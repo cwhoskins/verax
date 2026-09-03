@@ -1,8 +1,8 @@
 # Package-root modules
 
-`src/nimcir.nim` is the top-level package module; it is intentionally *not* a re-export hub — submodules (`submodule.nim`, `netlist.nim`, `schematic.nim`, `spice.nim`, `analysis.nim`, `pcb.nim`, `contract.nim`, `parts.nim`) are imported directly by their own path (e.g. `import nimcir/netlist`), not through `nimcir.nim`.
+`src/nimcir.nim` is the top-level package module; it is intentionally *not* a re-export hub — submodules (`submodule.nim`, `netlist.nim`, `schematic.nim`, `spice.nim`, `analysis.nim`, `pcb.nim`, `contract.nim`, `parts.nim`, `ibis.nim`, `fem.nim`) are imported directly by their own path (e.g. `import nimcir/netlist`), not through `nimcir.nim`.
 
-Each submodule directory carries its own `CLAUDE.md`: `netlist/`, `schematic/`, `spice/` (and `spice/xspice/`), `analysis/`, `contract/`, `pcb/`, `parts/`.
+Each submodule directory carries its own `CLAUDE.md`: `netlist/`, `schematic/`, `spice/` (and `spice/xspice/`), `analysis/`, `contract/`, `pcb/`, `parts/`, `ibis/`, `fem/`.
 
 Three package-root modules sit outside any submodule because the dependency order (`netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`) gives them nowhere else to live — but for two different reasons. `units.nim` and `eng.nim` sit *below* every submodule: more than one needs them and none may own them. `verify.nim` sits *above* every submodule: it needs `contract` and `analysis` at once and neither may depend on it.
 
