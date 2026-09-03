@@ -134,9 +134,7 @@ proc keepSchematic(nl: Netlist, dir, slot: string) =
   ## a run.
   if dir.len == 0: return
   try:
-    let scene = layout(nl, archiveLayoutOptions())
-    writeSvgFile(scene, dir / (slot & ".svg"))
-    writeSceneJsonFile(scene, dir / (slot & ".json"))
+    writeScenePair(layout(nl, archiveLayoutOptions()), dir / slot)
   except CatchableError:
     discard
 

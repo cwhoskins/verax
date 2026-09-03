@@ -323,12 +323,40 @@ implements.
   scene's own part/port geometry via `layout.fallbackEscapeDir` (`(0, 0)`
   when the scene cannot identify the owner, never an invented direction).
   The run archive writes the JSON beside its SVG: `spice/ngspice` for each
-  derived `runNNN`, and `verify` for `runFULL` and each child sheet — always
-  from the one routed scene, never a second layout.
+  derived `runNNN`, and `render.nim` for `runFULL` and each child sheet —
+  always from the one routed scene, never a second layout.
+- **`render.nim`** — the composition layer above `svg`/`json`: it drives
+  `layout` over a whole design *and* its sub-circuits and writes the run
+  archive. `writeScenePair(scene, base)` writes `base.svg` and `base.json`
+  from one scene (both `spice/ngspice`'s `runNNN` and everything below use
+  it, so the two files can never disagree about geometry). `keepFullSchematic(nl)`
+  is the whole `$NIMCIR_KEEP_RUNS` job `verify` calls: `runFULL` for the root,
+  `runFULL.<safeSheetName>` per distinct child (`Netlist.name`-deduplicated),
+  and `runFULL.html`. `safeSheetName` maps anything outside `[A-Za-z0-9._-]`
+  to `_` so a `.SUBCKT` name is always a legal path fragment. Best-effort
+  (a `CatchableError` is swallowed) and a no-op when the variable is unset —
+  drawing a picture must never fail a check. It sits here rather than in
+  `verify` because it needs only `netlist`, and lives *outside* `svg`/`json`
+  because it is the one place that calls `layout` itself and walks hierarchy.
+  **`runFULL.html`** is a self-contained hierarchy browser — no external file,
+  opens straight from disk. `explorerSheet(n, scene, id)` folds one level into
+  an `ExplorerSheet` (id, title, the inline SVG with its XML prolog stripped
+  since `<?xml …?>` is invalid mid-document, and a JSON part list); a part
+  whose designator keys `n.children` carries that child's `safeSheetName` as
+  its `child`, every other part `null`. `renderExplorerHtml(sheets)` inlines
+  every sheet into one `const MODEL` blob in the `explorerTemplate` (the only
+  place `$TITLE$`/`$MODEL$` are substituted; `</` in the JSON is escaped so it
+  cannot close the `<script>`). The page overlays one transparent `<rect>` per
+  part, positioned from the scene's `bodyW`/`bodyH` in the SVG's own
+  world-unit `viewBox`: single-click opens a properties panel, double-click on
+  a `child`-bearing part pushes its sheet, an *Up* button pops the breadcrumb
+  history. The root sheet's id is the sentinel `@root`, which `safeSheetName`
+  can never produce, so it never collides with a subcircuit's.
 
 **Dependency direction stays intact**: `schematic` imports only `netlist`, and
 `spice/ngspice` imports `schematic` to archive each per-run scene as
-`runNNN.svg`/`runNNN.json` while `verify` imports it to archive the authored
-design as `runFULL.svg`/`runFULL.json` plus one `runFULL.<subckt>` pair per
-distinct instantiated subcircuit — both consumers sit above it on the existing
-spine, never across or up it.
+`runNNN.svg`/`runNNN.json` while `verify` imports it and calls
+`render.keepFullSchematic` to archive the authored design as
+`runFULL.svg`/`runFULL.json`, one `runFULL.<subckt>` pair per distinct
+instantiated subcircuit, and `runFULL.html` — both consumers sit above it on
+the existing spine, never across or up it.
