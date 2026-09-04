@@ -16,6 +16,8 @@ include ./symbols
 include ./router
 include ./labels
 include ./placement
+include ./composites/composite
+include ./composites/passive
 include ./constrained
 include ./state
 include ./routing

@@ -328,6 +328,16 @@ fanout is normalized to one trunk with disjoint taps, so same-net private wires
 never overlap collinearly. This remains deliberately policy-gated:
 `lpHistorical` retains its existing output exactly.
 
+The parallel-pair motif above is one registered `CompositeKind`
+(`composites/composite.nim`), not a hardcoded special case: recognition, internal
+layout, external-port reduction, representative pin choice, internal wiring
+and rotation search are each one hook on the kind, dispatched generically by
+`compositePlan`/`positionedCompositePlan`/`compositeInternalRoutes`/
+`constrainedRecomputeRotations` through a private arena of `PlaceableItem`s
+(leaves and composites, indexed uniformly) rather than a flat
+composite-only list. A second motif is a second registered kind; nothing
+above the registry needs to change.
+
 Plain-text pipeline for `lpConstrainedLayered`:
 
 ```text

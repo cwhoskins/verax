@@ -399,6 +399,23 @@ proc insideAny(p: Point, obstacles: seq[Obstacle]): bool =
       return true
   false
 
+proc obstaclesOverlap(a, b: Obstacle): bool {.inline.} =
+  ## Strict-interior overlap: touching edges are not a conflict, only a
+  ## positive-area intersection is. The same predicate `separate` legalizes
+  ## placement against.
+  a.x1 < b.x2 - 1e-9 and a.x2 > b.x1 + 1e-9 and
+  a.y1 < b.y2 - 1e-9 and a.y2 > b.y1 + 1e-9
+
+proc anyOverlap(a, b: seq[Obstacle]): bool =
+  ## Whether any rect of `a` has a strict-interior overlap with any rect of
+  ## `b` -- the multi-rect generalization of `obstaclesOverlap`, for a
+  ## composite unit's footprint (`seq[Obstacle]` since a future non-rectangular
+  ## reservation may need more than one rect).
+  for x in a:
+    for y in b:
+      if obstaclesOverlap(x, y): return true
+  false
+
 proc buildFreeGrid(obstacles: seq[Obstacle], terminals: openArray[Point]):
     tuple[nodes: seq[Point], adj: seq[seq[int]]] =
   ## The Hanan grid: every inflated-obstacle boundary and signal-terminal

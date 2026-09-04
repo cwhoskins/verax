@@ -179,15 +179,18 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   var obstacles: seq[Obstacle]
   if constrained:
     var covered = newSeq[bool](result.parts.len)
-    for unit in composites.units:
-      for i in unit.members: covered[i] = true
+    for idx in composites.topLevel:
+      if composites.items[idx].raw < 0:
+        for i in rawMembers(composites, idx): covered[i] = true
     for i, part in result.parts:
       if not covered[i]:
         let hw = part.bodyW / 2.0 + routingClearance
         let hh = part.bodyH / 2.0 + routingClearance
         obstacles.add Obstacle(x1: part.x - hw, y1: part.y - hh,
                                x2: part.x + hw, y2: part.y + hh)
-    for unit in composites.units: obstacles.add unit.footprint
+    for idx in composites.topLevel:
+      if composites.items[idx].raw < 0:
+        obstacles.add composites.items[idx].footprint
   else:
     obstacles = obstaclesFor(result.parts)
   for p in result.ports:
@@ -223,8 +226,9 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         # Rail/ground glyphs are shared at the canonical composite terminal;
         # the remaining physical terminals are fed by internal taps below.
         var representative = true
-        for unit in composites.units:
-          for port in unit.ports:
+        for idx in composites.topLevel:
+          if composites.items[idx].raw >= 0: continue
+          for port in composites.items[idx].ports:
             if port.net != net.name: continue
             for covered in port.covered:
               if covered.partIdx == pin.partIdx:
@@ -405,7 +409,24 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                         constrained = constrained, composites = composites)
   if best.ok: return best
 
-  if comps.len > options.feedbackMaxParts:
+  # Pool length, not raw count, is what should gate the recovery loop: its
+  # candidate-move search already iterates `units` built from the arena
+  # (composites moved as one rigid body, below), so the search *space* was
+  # already pool-sized before this change. What is not yet pool-sized is the
+  # *cost of evaluating* each candidate -- `constrainedRecomputeRotations`
+  # still rebuilds `pinWorldPositions` from every singleton raw component, and
+  # `constrainedRouteScore` inside it is still O(raw pins * raw comps) per
+  # candidate rotation -- so a sheet that pools down to a small `poolLen` but
+  # carries a very large raw part count would still pay that raw-sized cost on
+  # every attempt. The `4 * feedbackMaxParts` raw ceiling is the guard for
+  # exactly that: it is slack above the historical all-raw limit (four
+  # two-member parallel pairs collapse to one pool item), not a relaxation of
+  # it. Under `lpHistorical`, `poolLen` is `comps.len` and the raw ceiling
+  # cannot bind below it, so the branch fires on exactly the same sheets as
+  # before this change.
+  let poolLen = if constrained: composites.topLevel.len else: comps.len
+  if poolLen > options.feedbackMaxParts or
+     comps.len > 4 * options.feedbackMaxParts:
     return routeScene(nl, comps, syms, pos, rots, idxOf,
                       withFallbacks = true, constrained = constrained,
                       composites = composites)
@@ -429,9 +450,11 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     # the historical search order; a parallel unit is represented once at its
     # first member.
     var grouped = newSeq[bool](comps.len)
-    for unit in composites.units:
-      for i in unit.members: grouped[i] = true
-      if unit.members[0] in order: units.add unit.members
+    for idx in composites.topLevel:
+      if composites.items[idx].raw >= 0: continue
+      let members = rawMembers(composites, idx)
+      for i in members: grouped[i] = true
+      if members[0] in order: units.add members
     for i in order:
       if not grouped[i]: units.add @[i]
   else:
@@ -466,7 +489,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
             let candRots =
               if constrained:
                 constrainedRecomputeRotations(nl, comps, syms, candPos, bestRots,
-                  constrainedAnchors(comps, bestPos, idxOf))
+                  constrainedAnchors(comps, bestPos, idxOf, composites), composites)
               else:
                 recomputeRotations(comps, syms, candPos, bestRots)
             if terminalClearance(comps, syms, candPos, candRots).coincidences > 0:

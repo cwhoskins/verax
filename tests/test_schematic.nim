@@ -536,6 +536,34 @@ proc decoupledMcu(): Netlist =
   discard connect(r2, "1", mid, ptPassive)
   discard connect(r2, "2", dout, ptPassive)
 
+proc parallelPairChain(n: int): Netlist =
+  ## `n` parallel R||C pairs strung in series between successive nets, an
+  ## `mcu` output driving the first net and an `mcu` input reading the last.
+  ## Both members of pair `i` share the unordered net pair `(n(i-1), ni)`, so
+  ## `parallelRecognize` -- and therefore `compositePlan` -- collapses each pair
+  ## to one placement unit: `2n` raw parts plus the two driver/sink `mcu`s
+  ## (`2n + 2`), but only `n + 2` pool items. This is the shape Stage 2.3/2.5
+  ## exist for: at `n = 33` the sheet is 68 raw parts (over
+  ## `constrainedMaxParts` (64) on raw count alone) and 35 pool items (under
+  ## it), so it must still get the constrained treatment instead of falling
+  ## back to the ungrouped golden-spiral seed.
+  result = newNetlist("parallel_pair_chain")
+  let first = addNet(result, newNet("n0"))
+  let driver = addComponent(result, newComponent("U1", kind = "mcu"))
+  discard connect(driver, "OUT", first, ptOutput)
+  var prev = first
+  for i in 1 .. n:
+    let net = addNet(result, newNet("n" & $i))
+    let r = addComponent(result, newComponent("R" & $i, kind = "resistor"))
+    discard connect(r, "1", prev, ptPassive)
+    discard connect(r, "2", net, ptPassive)
+    let c = addComponent(result, newComponent("C" & $i, kind = "capacitor"))
+    discard connect(c, "1", prev, ptPassive)
+    discard connect(c, "2", net, ptPassive)
+    prev = net
+  let sink = addComponent(result, newComponent("U2", kind = "mcu"))
+  discard connect(sink, "IN", prev, ptInput)
+
 template withEnv(key, value: string, body: untyped) =
   let had = existsEnv(key)
   let old = getEnv(key)
@@ -690,6 +718,61 @@ test "constrained stages group parallel passives and bound RIAA aspect ratio":
   check distinctWiresNeverShareCollinearRuns(s)
   check differentNetsRespectSeparation(s)
   check layout(riaaChannel(), options) == s
+
+test "constrained layering admits a raw-over-gate sheet whose pool clears it":
+  # The capability the whole Stage 2.3-2.5 effort was for: 33 R||C pairs is
+  # 68 raw parts -- over `constrainedMaxParts` (64) by raw count alone -- but
+  # only 35 pool items once each pair collapses to one composite, so the
+  # semantic layering must still run instead of falling back to the
+  # ungrouped golden-spiral seed. `lsRecoverRouting`/`lsRoutingAwareRepair`
+  # are excluded so this measures placement, not the feedback loop.
+  # Measured (this machine, debug build): ~1.9s for `layout()` -- felt, but
+  # nowhere near the ~16s `resistorChain(37)` already costs elsewhere in this
+  # file under the historical policy, so it does not move the needle on
+  # `nimble test`'s wall time.
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  options.stages.excl lsRecoverRouting
+  options.stages.excl lsRoutingAwareRepair
+  let nl = parallelPairChain(33)
+  let s = layout(nl, options)
+  check s.parts.len == 68
+  check partOf(s, "U1").x < partOf(s, "U2").x
+  for i in 1 .. 33:
+    check partOf(s, "R" & $i).x == partOf(s, "C" & $i).x
+  let box = sceneBBox(s)
+  # The layered treatment produces a wide, short sheet; the ungrouped
+  # golden-spiral seed (what a raw-count-only gate would have fallen back to)
+  # does not.
+  check box.x2 - box.x1 > box.y2 - box.y1
+  check distinctWiresNeverShareCollinearRuns(s)
+  check differentNetsRespectSeparation(s)
+  check layout(nl, options) == s
+
+test "constrained layering falls back cleanly once the pool itself exceeds the gate":
+  # 63 pairs pools to 65 -- one over `constrainedMaxParts` even after
+  # collapsing every composite, so `constrainedEligible` must refuse the
+  # semantic treatment and `layout` must still produce a complete, valid
+  # scene from the plain force/separate/route pipeline instead of raising or
+  # leaving a partial result. No placement/column assertions here: the point
+  # is that the over-pool path degrades to "still lays out", not that it
+  # looks like the eligible case above.
+  # Measured (this machine, debug build): ~10.3s with force placement,
+  # packing, terminal repair and leaf-snap also excluded (irrelevant to what
+  # this test checks and expensive at this raw part count); ~19s with them
+  # included. Kept minimal on purpose -- this is a gate smoke test, not a
+  # placement-quality test.
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  options.stages.excl lsRecoverRouting
+  options.stages.excl lsRoutingAwareRepair
+  options.stages.excl lsForcePlacement
+  options.stages.excl lsPack
+  options.stages.excl lsTerminalRepair
+  options.stages.excl lsLeafSnap
+  let nl = parallelPairChain(63)
+  let s = layout(nl, options)
+  check s.parts.len == 128
 
 test "layout produces one part per component, wired to the right nets":
   let s = layout(divider())

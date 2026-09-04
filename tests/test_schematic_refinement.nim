@@ -11,11 +11,59 @@
 ## meaning if either constant is ever retuned.
 
 import std/unittest
+import nimcir/netlist
 include nimcir/schematic/layout
 
 proc part(designator: string, x, y: float, w = 80.0, h = 80.0): SchematicPart =
   SchematicPart(designator: designator, kind: "resistor", symbol: "resistor",
     bodyW: w, bodyH: h, inkW: w, inkH: 20.0, x: x, y: y)
+
+proc parallelPairNetlist(): Netlist =
+  ## RL/RR are grounded legs (singleton placement units); RB/CB form a
+  ## parallel two-member composite across `left`/`right` between them --
+  ## declared leg, pair, leg so the composite lands *between* two singletons,
+  ## exercising the arena's ascending-first-member `topLevel` interleave
+  ## directly rather than only the trivial all-singletons-then-composite case.
+  result = newNetlist("parallel_pair")
+  let left = addNet(result, newNet("left"))
+  let right = addNet(result, newNet("right"))
+  let gnd = addNet(result, newNet("0", ntGround))
+  let rl = addComponent(result, newComponent("RL", kind = "resistor"))
+  discard connect(rl, "1", left, ptPassive)
+  discard connect(rl, "2", gnd, ptGround)
+  let rb = addComponent(result, newComponent("RB", kind = "resistor"))
+  discard connect(rb, "1", left, ptPassive)
+  discard connect(rb, "2", right, ptPassive)
+  let cb = addComponent(result, newComponent("CB", kind = "capacitor"))
+  discard connect(cb, "1", left, ptPassive)
+  discard connect(cb, "2", right, ptPassive)
+  let rr = addComponent(result, newComponent("RR", kind = "resistor"))
+  discard connect(rr, "1", right, ptPassive)
+  discard connect(rr, "2", gnd, ptGround)
+
+proc constrainedState(nl: Netlist): LayoutState =
+  ## `prepare` alone is enough to populate `state.composites` (`planComposites`
+  ## runs there) for a guard check, but not enough for `routeScene` to run
+  ## without crashing (`state.rots` stays unset). Mirrors `layout(nl,
+  ## options)`'s own constrained-policy sequence (`layout.nim`) so a caller
+  ## that goes on to route sees the same state a real `layout` call would.
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  result = LayoutState(nl: nl, options: options)
+  prepare(result)
+  forcePlace(result)
+  constrainedRefine(result)
+  restoreCompositeOffsets(result)
+  snapToGrid(result)
+  separate(result)
+  let group = groupsOf(result)
+  packGroups(result, group)
+  restoreCompositeOffsets(result)
+  result.rots = constrainedRecomputeRotations(result)
+  repairTerminalClearance(result)
+  restoreCompositeOffsets(result)
+  result.rots = constrainedRecomputeRotations(result)
+  result.routing = recoverRouting(result)
 
 test "verifyPartPlacement allows a move that clears every other part":
   var st: LayoutState
@@ -108,3 +156,45 @@ test "verifyWireRouting rejects a path through a ground stub's terminal glyph":
   let throughBars = SchematicWire(net: "n1", kind: wkSignal,
     points: @[Point(x: -20.0, y: 40.0), Point(x: 20.0, y: 40.0)])
   check not verifyWireRouting(throughBars, st)
+
+test "translateRoutedComponent refuses to move a composite member":
+  var state = constrainedState(parallelPairNetlist())
+  let idx = state.idxOf["RB"]
+  # Sanity: RB really is recognised as a composite member here, not a leaf --
+  # otherwise this test would pass for the wrong reason.
+  check state.composites.ownerOf[idx] != idx
+  let savedPos = state.pos
+  let savedRouting = state.routing
+  check not translateRoutedComponent(state, "RB", 40.0, 0.0)
+  check state.pos == savedPos
+  check state.routing == savedRouting
+
+test "translateRoutedComponent still allows a non-composite (leaf) part":
+  var state = constrainedState(parallelPairNetlist())
+  check state.routing.ok
+  let idx = state.idxOf["RL"]
+  check state.composites.ownerOf[idx] == idx
+  # A zero-distance move changes nothing, so it must succeed identically --
+  # this is specifically checking RL is not refused by the composite-member
+  # guard (which does not apply, `ownerOf[idx] == idx`), not that arbitrary
+  # moves succeed.
+  check translateRoutedComponent(state, "RL", 0.0, 0.0)
+
+test "the composite arena stays depth-1 with topLevel in ascending first-member order":
+  let state = constrainedState(parallelPairNetlist())
+  var lastFirst = -1
+  var sawComposite = false
+  for idx in state.composites.topLevel:
+    let it = state.composites.items[idx]
+    if it.raw < 0:
+      sawComposite = true
+      # Depth 1: every child of a top-level composite is itself a leaf, never
+      # another composite -- Stage 1 registers one kind and never nests.
+      for c in it.children:
+        check state.composites.items[c].raw >= 0
+    let first = rawMembers(state.composites, idx)[0]
+    check first > lastFirst
+    lastFirst = first
+  # RL, [RB+CB], RR: the composite must actually have been recognised, or the
+  # ordering check above only exercised leaves.
+  check sawComposite

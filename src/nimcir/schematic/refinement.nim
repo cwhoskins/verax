@@ -60,12 +60,6 @@ proc refineRouting(state: var LayoutState) =
     echo n, ": ", w.countbends()
     echo w
 
-proc obstaclesOverlap(a, b: Obstacle): bool {.inline.} =
-  ## Same strict-interior overlap test `separate` uses to legalize placement:
-  ## touching edges are not a conflict, only a positive-area intersection is.
-  a.x1 < b.x2 - 1e-9 and a.x2 > b.x1 + 1e-9 and
-  a.y1 < b.y2 - 1e-9 and a.y2 > b.y1 + 1e-9
-
 proc portObstacle(p: SchematicPort): Obstacle =
   let hw = p.bodyW / 2.0 + routingClearance
   let hh = p.bodyH / 2.0 + routingClearance
@@ -150,10 +144,15 @@ proc translateRoutedComponent(state: var LayoutState, designator: string,
   ## "rejected" apart from "applied, then undone".
   ##
   ## Moves one part at a time: a member of a constrained-layout composite unit
-  ## moved alone leaves its partner behind rather than translating as one
-  ## rigid body, which is outside this proc's scope.
+  ## moved alone would leave its partner behind rather than translating as one
+  ## rigid body, so a composite member is refused outright rather than
+  ## silently breaking `restoreCompositeOffsets`' canonical-offset invariant.
+  ## Moving a whole composite is outside this proc's scope.
   if designator notin state.idxOf: return false
   let idx = state.idxOf[designator]
+  if state.options.policy == lpConstrainedLayered and
+     state.composites.ownerOf[idx] != idx:
+    return false
   let savedPos = state.pos[idx]
   let savedRouting = state.routing
 

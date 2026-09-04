@@ -5,9 +5,27 @@
 ## signal paths to their input endpoints, assigns monotonically increasing
 ## stage blocks, and orders each block from the deterministic seed. The existing
 ## separator remains the authority for non-overlap.
+##
+## The composite arena this file pools over -- `CompositeKind`, `PlaceableItem`,
+## `CompositePlan`, the `compositeKinds` registry, and the registered motifs --
+## lives under `./composites/` (`composite.nim` for the kind-agnostic
+## scaffolding, `passive.nim` for the parallel-stack motif), included just
+## before this file.
 
 const
   constrainedMaxParts = 64
+  # A raw sheet is admitted once its composite-collapsed *pool* clears
+  # `constrainedMaxParts`, so the pool gate alone no longer bounds the raw
+  # part count at all -- pooling looking favorable on paper must not admit an
+  # unboundedly large raw sheet into an O(pool * arcs) topology relaxation
+  # whose per-arc discovery (`pathsFrom`, the output-pin scan) is still
+  # raw-sized, nor into `recoverRouting`'s per-candidate O(raw pins * raw
+  # comps) `constrainedRouteScore`. 4x is slack above the pre-2.5 all-raw
+  # ceiling (`constrainedMaxParts` itself, when every part was its own pool
+  # item): four two-member parallel pairs collapse to one pool item, so a
+  # sheet that is *all* parallel pairs can go up to 4x its former raw limit
+  # and still be a 1x pool problem.
+  constrainedMaxRawParts = 4 * constrainedMaxParts
   constrainedLayerPitch = 200.0
   # A semantic column can hold a fallback box as well as a two-terminal
   # symbol; leave enough vertical room that legalization need not spill it
@@ -17,7 +35,6 @@ const
   # passive-heavy layer from becoming an unbounded vertical list while keeping
   # the topology hint deliberately local.
   constrainedMaxStages = 3
-  constrainedParallelPitch = 120.0
 
 type
   TraversedPath = object
@@ -28,39 +45,14 @@ type
     layers: seq[int]
     sameColumn: seq[tuple[src, part: int]]
 
-  # Private, schema-preserving layout composites.  The scene still contains
-  # the original parts and pins; this plan only makes their shared external
-  # terminals and reserved routing footprint explicit inside the pipeline.
-  # Future motif recognisers add another CompositeUnit producer, not scene/API
-  # fields or special cases in the router.
-  CompositePort = object
-    net: string
-    representative: tuple[partIdx: int, pinName: string]
-    covered: seq[tuple[partIdx: int, pinName: string]]
-
-  CompositeUnit = object
-    members: seq[int]
-    ## Grid-rounded centres relative to the unit origin.  These are canonical
-    ## throughout constrained placement; members are never independently
-    ## legalized or repaired.
-    offsets: seq[Point]
-    ports: seq[CompositePort]
-    footprint: Obstacle
-
-  CompositePlan = object
-    units: seq[CompositeUnit]
-
-proc isTraversable(c: Component, nl: Netlist): bool =
-  ## Semantic path walking is intentionally topology-only. All flat,
-  ## two-terminal devices qualify, regardless of their electrical kind.
-  if c == nil or c.netlist != nl or c.subNetlist != nil:
-    return false
-  var connected = 0
-  for _, pin in c.pins:
-    if pin.net != nil:
-      if pin.net.netlist != nl: return false
-      inc connected
-  connected == 2
+proc constrainedEligible(comps: seq[Component], plan: CompositePlan): bool =
+  ## Pool count, not raw count, is what bounds the topology relaxation and the
+  ## per-candidate route score after pool-indexing `constrainedTargets`. The
+  ## raw ceiling is the guard the loosened pool gate needs: pooling looking
+  ## favorable on paper must not admit an unboundedly large raw sheet into an
+  ## O(pool * arcs) relaxation whose per-arc work is still raw-sized.
+  comps.len > 0 and plan.topLevel.len <= constrainedMaxParts and
+    comps.len <= constrainedMaxRawParts
 
 proc inputPort(nl: Netlist, net: Net): bool =
   ## Keep port semantics exactly aligned with routing, including its
@@ -71,10 +63,21 @@ proc inputPort(nl: Netlist, net: Net): bool =
   false
 
 proc pathsFrom(nl: Netlist, start: Net, skip: int,
-               idxOf: Table[string, int]): seq[TraversedPath] =
-  ## Follow a signal net through eligible two-terminal devices. A component is
-  ## not revisited within one walk, making feedback loops bounded and stable.
+               idxOf: Table[string, int], plan: CompositePlan): seq[TraversedPath] =
+  ## Follow a signal net through eligible two-terminal devices. A *pool item*
+  ## is not revisited within one walk, making feedback loops bounded and
+  ## stable -- not a raw component: a net shared by both members of a
+  ## recognized parallel pair used to offer two distinct next-hop candidates
+  ## (R and C both lead to the same next net), so a chain of N such pairs
+  ## walked as 2^N raw-index paths, every one of them duplicate once the pair
+  ## is one placement unit. Tracking `seen`/`skip` by pool position instead of
+  ## raw index, and taking only the first raw candidate per pool position at
+  ## each net (`visitedHere`), collapses that back to the one path the
+  ## topology actually has. `TraversedPath` itself still carries raw indices
+  ## -- `constrainedTopology` is where the mapping through `plan.poolOf`
+  ## happens, once, for every arc kind at once.
   var found: seq[TraversedPath]
+  let skipPool = if skip < 0: -1 else: plan.poolOf[skip]
   proc walk(net: Net, path: seq[int], seen: HashSet[int]) =
     if net == nil or net.netlist != nl or isGround(net) or isRail(net): return
     var ends: seq[int]
@@ -88,11 +91,14 @@ proc pathsFrom(nl: Netlist, start: Net, skip: int,
       # An input is a semantic endpoint. Continuing through its component
       # would turn an ordinary forward receiver into a spurious self-return.
       return
+    var visitedHere: HashSet[int]
     for pin in net.pins:
       let c = pin.component
       if not isTraversable(c, nl) or not idxOf.hasKey(c.designator): continue
       let i = idxOf[c.designator]
-      if i == skip or i in seen: continue
+      let pi = plan.poolOf[i]
+      if pi == skipPool or pi in seen or pi in visitedHere: continue
+      visitedHere.incl pi
       var other: Net
       for _, mate in c.pins:
         if mate.net != net:
@@ -100,30 +106,45 @@ proc pathsFrom(nl: Netlist, start: Net, skip: int,
           break
       if other == nil: continue
       var nextSeen = seen
-      nextSeen.incl i
+      nextSeen.incl pi
       var nextPath = path
       nextPath.add i
       walk(other, nextPath, nextSeen)
   walk(start, @[], initHashSet[int]())
   result = found
 
-proc constrainedTopology(comps: seq[Component],
-                         idxOf: Table[string, int]): ConstrainedTopology =
-  ## Longest-path relaxation on semantic output arcs. Insertion order breaks
+proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
+                         plan: CompositePlan): ConstrainedTopology =
+  ## Longest-path relaxation on semantic output arcs, run over the
+  ## composite-collapsed *pool* -- `layers` and `sameColumn` are indexed by
+  ## pool position (0 ..< `plan.topLevel.len`), not raw component index, so a
+  ## composite shares one layer by construction instead of the post-hoc `max`
+  ## `constrainedTargets` used before pooling existed. Insertion order breaks
   ## ordinary reverse arcs. A path returning to its own source stays in the
   ## source layer and may use an adjacent stage; a path returning to an earlier
   ## component is feedback, whose passive path remains to the right of the
   ## output that drives it.
-  result.layers = newSeq[int](comps.len)
-  var arcs: seq[tuple[src, dst: int]]
+  ##
+  ## Arc *discovery* below still walks raw indices -- `pathsFrom` and the
+  ## direct output-pin scan need real pins and real nets -- and only the
+  ## discovered arcs are mapped through `plan.poolOf` afterward, once, for
+  ## every arc kind (ordinary, feedback, same-column) alike. Contracting a DAG
+  ## can reintroduce a cycle (two raw arcs between different members of the
+  ## same two composites can point opposite ways once both ends collapse to
+  ## one pool position each), so the pool-level `src < dst` check is the same
+  ## deterministic cycle break one level up, not a restatement of the raw one.
+  let poolLen = plan.topLevel.len
+  result.layers = newSeq[int](poolLen)
+  var rawArcs: seq[tuple[src, dst: int]]
   var feedback: seq[tuple[src, part: int]]
+  var sameColumnRaw: seq[tuple[src, part: int]]
 
   proc addPathArcs(src: int, path: seq[int], dst: int) =
     var previous = src
     for part in path:
-      if previous < part: arcs.add (previous, part)
+      if previous < part: rawArcs.add (previous, part)
       previous = part
-    if previous < dst: arcs.add (previous, dst)
+    if previous < dst: rawArcs.add (previous, dst)
 
   for i, c in comps:
     for _, pin in c.pins:
@@ -137,11 +158,11 @@ proc constrainedTopology(comps: seq[Component],
            mate.component.designator == c.designator or
            not idxOf.hasKey(mate.component.designator): continue
         let dst = idxOf[mate.component.designator]
-        if i < dst: arcs.add (i, dst)
-      for path in pathsFrom(c.netlist, pin.net, i, idxOf):
+        if i < dst: rawArcs.add (i, dst)
+      for path in pathsFrom(c.netlist, pin.net, i, idxOf, plan):
         for dst in path.inputs:
           if dst == i:
-            for part in path.parts: result.sameColumn.add (i, part)
+            for part in path.parts: sameColumnRaw.add (i, part)
           elif i < dst:
             addPathArcs(i, path.parts, dst)
           else:
@@ -155,18 +176,31 @@ proc constrainedTopology(comps: seq[Component],
   # no-driver fallback have exactly the same meaning here.
   for _, net in comps[0].netlist.ports:
     if not inputPort(comps[0].netlist, net): continue
-    for path in pathsFrom(comps[0].netlist, net, -1, idxOf):
+    for path in pathsFrom(comps[0].netlist, net, -1, idxOf, plan):
       for dst in path.inputs:
         if path.parts.len > 0:
           var previous = path.parts[0]
           for at in 1 ..< path.parts.len:
-            if previous < path.parts[at]: arcs.add (previous, path.parts[at])
+            if previous < path.parts[at]: rawArcs.add (previous, path.parts[at])
             previous = path.parts[at]
-          if previous < dst: arcs.add (previous, dst)
+          if previous < dst: rawArcs.add (previous, dst)
 
-  # The insertion-order cycle break makes these arcs a DAG, so n-1 longest-
-  # path passes are a strict bound.
-  for _ in 1 ..< comps.len:
+  # Map every arc through `poolOf`; a HashSet used for membership only (never
+  # iterated, per this submodule's determinism rule) dedups arcs that two
+  # different raw pairs contracted onto, keeping first-seen order in `arcs`.
+  var arcs: seq[tuple[src, dst: int]]
+  var arcSeen: HashSet[tuple[src, dst: int]]
+  for a in rawArcs:
+    let src = plan.poolOf[a.src]
+    let dst = plan.poolOf[a.dst]
+    if src >= dst: continue
+    if (src, dst) in arcSeen: continue
+    arcSeen.incl (src, dst)
+    arcs.add (src, dst)
+
+  # The insertion-order cycle break makes these arcs a DAG, so poolLen-1
+  # longest-path passes are a strict bound.
+  for _ in 1 ..< poolLen:
     var next = result.layers
     for a in arcs:
       if result.layers[a.src] + 1 > next[a.dst]:
@@ -175,79 +209,87 @@ proc constrainedTopology(comps: seq[Component],
     result.layers = next
 
   for f in feedback:
-    result.layers[f.part] = max(result.layers[f.part], result.layers[f.src] + 1)
-  for s in result.sameColumn:
-    result.layers[s.part] = result.layers[s.src]
-
-proc parallelGroups(comps: seq[Component]): seq[seq[int]] =
-  ## Parallel flat two-terminal parts are one placement unit.  Their endpoint
-  ## key is unordered, so declaration and pin order cannot split the group.
-  var groupOf = initTable[string, int]()
-  for i, c in comps:
-    if not isTraversable(c, c.netlist):
-      result.add @[i]
-      continue
-    var nets: seq[string]
-    for _, pin in c.pins: nets.add pin.net.name
-    nets.sort()
-    let key = nets[0] & "\x1f" & nets[1]
-    if groupOf.hasKey(key):
-      result[groupOf[key]].add i
-    else:
-      groupOf[key] = result.len
-      result.add @[i]
+    let src = plan.poolOf[f.src]
+    let part = plan.poolOf[f.part]
+    if src == part: continue # both ends already share a layer by construction
+    result.layers[part] = max(result.layers[part], result.layers[src] + 1)
+  for s in sameColumnRaw:
+    let src = plan.poolOf[s.src]
+    let part = plan.poolOf[s.part]
+    if src == part: continue
+    result.layers[part] = result.layers[src]
+    result.sameColumn.add (src, part)
 
 proc constrainedTargets(comps: seq[Component], pos: seq[Point],
-                        idxOf: Table[string, int]): seq[Point] =
-  ## Stable, bounded stage placement. Parallel two-terminal parts share a
-  ## unit; units fill at most three adjacent stages before adding another row.
-  ## The incoming seed resolves all ties, preserving deterministic ordering.
-  if comps.len > constrainedMaxParts: return pos
-  var topology = constrainedTopology(comps, idxOf)
-  let groups = parallelGroups(comps)
-  var groupLayers = newSeq[int](groups.len)
-  var groupOfPart = newSeq[int](comps.len)
-  for g, members in groups:
-    for i in members:
-      groupOfPart[i] = g
-      groupLayers[g] = max(groupLayers[g], topology.layers[i])
+                        idxOf: Table[string, int],
+                        plan: CompositePlan): seq[Point] =
+  ## Stable, bounded stage placement over the composite-collapsed pool. A pool
+  ## item -- a raw singleton or a whole recognized composite -- is one
+  ## placement unit; units fill at most three adjacent stages before adding
+  ## another row. The incoming seed resolves all ties, preserving
+  ## deterministic ordering.
+  ##
+  ## A composite is placed as one packed body: its origin goes at the stage
+  ## slot and each member sits at `origin + rawOffsets(plan, idx)[at]` --
+  ## the same canonical raw-body-touching offsets `restoreCompositeOffsets`
+  ## re-rigidifies around afterward. Before pooling this stacked members
+  ## `constrainedParallelPitch` (120) apart here and let the later
+  ## re-rigidify pass collapse that to the real 80-unit body-touching gap
+  ## around the mean of the *implied* origins -- two correct but different
+  ## numbers computed in sequence. Placing the canonical offsets directly
+  ## is the same final geometry by one step instead of two, and it is why a
+  ## composite-bearing sheet's semantic seed (and therefore the force
+  ## placement it feeds) moves under this change even though every downstream
+  ## invariant (`restoreCompositeOffsets`'s own idempotent offsets, the shared
+  ## column, the routing rules) is unaffected: a different starting point for
+  ## the same iterative force solve settles at a different, still-valid,
+  ## equilibrium. A composite-free sheet has every offset at `Point()`, so
+  ## this reduces to the pre-pooling stacking exactly, one unit apart -- the
+  ## identity case that is provably unchanged.
+  if not constrainedEligible(comps, plan): return pos
+  var topology = constrainedTopology(comps, idxOf, plan)
+  let poolLen = plan.topLevel.len
   # A local return is allowed one semantic stage either side of its source;
   # reserve a second stage even for the minimal source-plus-feedback case.
-  var localReturn = newSeq[bool](comps.len)
-  var returnSource = newSeq[int](groups.len)
+  var localReturn = newSeq[bool](poolLen)
+  var returnSource = newSeq[int](poolLen)
   for g in 0 ..< returnSource.len: returnSource[g] = -1
   for s in topology.sameColumn:
     localReturn[topology.layers[s.src]] = true
-    returnSource[groupOfPart[s.part]] = groupOfPart[s.src]
+    returnSource[s.part] = s.src
 
   result = newSeq[Point](comps.len)
   var xStage = 0
+  var minY = 0.0
   var maxY = 0.0
-  for layer in 0 ..< comps.len:
+  for layer in 0 ..< poolLen:
     var units: seq[int]
-    for g in 0 ..< groups.len:
-      if groupLayers[g] == layer: units.add g
+    for g in 0 ..< poolLen:
+      if topology.layers[g] == layer: units.add g
     if units.len == 0: continue
     units.sort(proc(a, b: int): int =
-      let ay = min(pos[groups[a][0]].y, pos[groups[a][^1]].y)
-      let by = min(pos[groups[b][0]].y, pos[groups[b][^1]].y)
+      let membersA = rawMembers(plan, plan.topLevel[a])
+      let membersB = rawMembers(plan, plan.topLevel[b])
+      let ay = min(pos[membersA[0]].y, pos[membersA[^1]].y)
+      let by = min(pos[membersB[0]].y, pos[membersB[^1]].y)
       result = cmp(ay, by)
-      if result == 0: result = cmp(groups[a][0], groups[b][0]))
+      if result == 0: result = cmp(membersA[0], membersB[0]))
     var stages = min(constrainedMaxStages, (units.len + 2) div 3)
     if localReturn[layer]: stages = max(stages, min(2, constrainedMaxStages))
     # For the minimal local loop, put the return beside its source. The
     # deterministic seed chooses which side, so this is not output-side-only.
     if units.len >= 2 and units.len <= stages:
       for returnGroup, sourceGroup in returnSource:
-        if sourceGroup < 0 or groupLayers[returnGroup] != layer: continue
+        if sourceGroup < 0 or topology.layers[returnGroup] != layer: continue
         var returnAt = -1
         var sourceAt = -1
         for at, g in units:
           if g == returnGroup: returnAt = at
           if g == sourceGroup: sourceAt = at
         if returnAt < 0 or sourceAt < 0: continue
-        let returnLeft = pos[groups[returnGroup][0]].x <=
-          pos[groups[sourceGroup][0]].x
+        let returnFirst = rawMembers(plan, plan.topLevel[returnGroup])[0]
+        let sourceFirst = rawMembers(plan, plan.topLevel[sourceGroup])[0]
+        let returnLeft = pos[returnFirst].x <= pos[sourceFirst].x
         let desiredReturn = if returnLeft: 0 else: 1
         let desiredSource = 1 - desiredReturn
         swap(units[returnAt], units[desiredReturn])
@@ -256,32 +298,39 @@ proc constrainedTargets(comps: seq[Component], pos: seq[Point],
     for slot, g in units:
       let stage = slot mod stages
       let row = slot div stages
-      for member, i in groups[g]:
-        let y = float(row) * constrainedRowPitch +
-          float(member) * constrainedParallelPitch
-        result[i] = Point(x: float(xStage + stage) * constrainedLayerPitch,
-                          y: y)
-        maxY = max(maxY, y)
+      let idx = plan.topLevel[g]
+      let members = rawMembers(plan, idx)
+      let offsets = rawOffsets(plan, idx)
+      let origin = Point(x: float(xStage + stage) * constrainedLayerPitch,
+                         y: float(row) * constrainedRowPitch)
+      for at, i in members:
+        result[i] = origin + offsets[at]
+        minY = min(minY, result[i].y)
+        maxY = max(maxY, result[i].y)
     xStage += stages
   # Centre the sheet about the origin, retaining exact grid coordinates.
+  # `minY` matters once member offsets are signed (a composite's members sit
+  # on both sides of its origin); for an all-singleton sheet every offset is
+  # zero, so `minY` is exactly 0 and this is the historical `maxY / 2` shift.
   let xShift = float(xStage - 1) * constrainedLayerPitch / 2.0
-  let yShift = maxY / 2.0
+  let yShift = (minY + maxY) / 2.0
   for p in mitems(result):
     p.x -= xShift
     p.y -= yShift
 
 proc constrainedSemanticSeed(comps: seq[Component], pos: var seq[Point],
-                             idxOf: Table[string, int]) =
-  if comps.len <= constrainedMaxParts and comps.len > 0:
-    pos = constrainedTargets(comps, pos, idxOf)
+                             idxOf: Table[string, int], plan: CompositePlan) =
+  if constrainedEligible(comps, plan):
+    pos = constrainedTargets(comps, pos, idxOf, plan)
 
 proc constrainedAnchors(comps: seq[Component], seed: seq[Point],
-                        idxOf: Table[string, int]): seq[Point] =
+                        idxOf: Table[string, int],
+                        plan: CompositePlan): seq[Point] =
   ## Semantic columns are deliberately *soft* anchors.  The constrained policy
   ## must retain the topology hint without overwriting the force solution (and
   ## without turning a feedback sheet into a rigid template).
-  if comps.len <= constrainedMaxParts and comps.len > 0:
-    constrainedTargets(comps, seed, idxOf)
+  if constrainedEligible(comps, plan):
+    constrainedTargets(comps, seed, idxOf, plan)
   else:
     seed
 
@@ -290,41 +339,6 @@ proc constrainedRefine(comps: seq[Component], pos: var seq[Point],
   ## Kept as the stage hook for archive compatibility.  Refinement is now done
   ## by the bounded soft-anchor force and group search, never by a hard snap.
   discard
-
-proc slotForNet(sd: SymbolDef, c: Component, netName: string):
-    tuple[found: bool, slot: Point] =
-  ## The declaration order is not a terminal direction: voltage sources, for
-  ## example, are native-vertical while passives are native-horizontal. Find
-  ## this member's actual native slot for the canonical endpoint instead.
-  var ordinal = 0
-  for pinName, pin in c.pins:
-    if pin.net != nil and pin.net.name == netName:
-      return (true, slotOf(sd, pinName, ordinal))
-    inc ordinal
-
-proc angleForCanonicalSide(sd: SymbolDef, c: Component, netName: string,
-                           side: Point): tuple[ok: bool, angle: float] =
-  ## Rotate a member's own native slot onto `side`, rather than applying the
-  ## reference member's numeric angle to every member. This is what lets a
-  ## horizontal resistor and a native-vertical source share one composite.
-  let native = slotForNet(sd, c, netName)
-  if not native.found: return
-  for angle in rotationChoices:
-    if axisUnit(rotatedSlot(native.slot, angle)) == side:
-      return (true, angle)
-
-proc validCompositeAxes(sd: SymbolDef, c: Component, sortedNets: seq[string],
-                        angle: float, canonicalSide: Point): bool =
-  ## Every member must put the two canonical nets on opposite horizontal
-  ## sides. Never accept an orientation merely because the first member fit.
-  if sortedNets.len != 2 or sortedNets[0] == sortedNets[1]: return false
-  let first = slotForNet(sd, c, sortedNets[0])
-  let second = slotForNet(sd, c, sortedNets[1])
-  if not first.found or not second.found: return false
-  let a = axisUnit(rotatedSlot(first.slot, angle))
-  let b = axisUnit(rotatedSlot(second.slot, angle))
-  a == canonicalSide and b == Point(x: -canonicalSide.x, y: -canonicalSide.y) and
-    a.y == 0.0 and b.y == 0.0
 
 proc portTarget(nl: Netlist, comps: seq[Component], net: Net, pos: seq[Point], syms: seq[SymbolDef]):
     tuple[has: bool, p: Point] =
@@ -399,212 +413,40 @@ proc constrainedRouteScore(nl: Netlist, comps: seq[Component],
       if not clearHV and not clearVH: inc result.hits
   for i in 0 ..< pos.len: result.drift += manhattan(pos[i], anchors[i])
 
-proc compositePlan(comps: seq[Component], syms: seq[SymbolDef]): CompositePlan =
-  ## Build the constrained placement units before the first seed. Members are
-  ## stacked at raw-body-touching, grid-rounded centres: an 80 x 80 passive
-  ## pair is exactly 80 units apart. External clearance belongs to the one
-  ## unified footprint, never between private members.
-  for members in parallelGroups(comps):
-    if members.len < 2: continue
-    var unit = CompositeUnit(members: members)
-    var totalH = 0.0
-    for i in members: totalH += syms[i].bodyH
-    var y = -totalH / 2.0
-    for i in members:
-      y += syms[i].bodyH / 2.0
-      unit.offsets.add Point(x: 0.0, y: round(y / grid) * grid)
-      y += syms[i].bodyH / 2.0
-    var names: seq[string]
-    for _, pin in comps[members[0]].pins: names.add pin.net.name
-    names.sort()
-    for netName in names:
-      var port = CompositePort(net: netName)
-      for i in members:
-        for pinName, pin in comps[i].pins:
-          if pin.net != nil and pin.net.name == netName:
-            port.covered.add (i, pinName)
-      # The first member/pin is the deterministic shared external endpoint.
-      port.representative = port.covered[0]
-      unit.ports.add port
-    result.units.add unit
-
-proc compositeMembers(plan: CompositePlan, n: int): seq[bool] =
-  result = newSeq[bool](n)
-  for unit in plan.units:
-    for i in unit.members: result[i] = true
-
-proc restoreCompositeOffsets(plan: CompositePlan, pos: var seq[Point]) =
-  ## Reapply the canonical member offsets after every stage that can translate
-  ## a unit. The origin is the mean of the current implied origins, so a force
-  ## or pack translation is retained while any attempted member split vanishes.
-  for unit in plan.units:
-    var origin: Point
-    for at, i in unit.members: origin += pos[i] - unit.offsets[at]
-    origin = origin * (1.0 / float(unit.members.len))
-    origin.x = round(origin.x / grid) * grid
-    origin.y = round(origin.y / grid) * grid
-    for at, i in unit.members: pos[i] = origin + unit.offsets[at]
-
-proc compositeFootprint(plan: CompositePlan, unitIndex: int,
-                        syms: seq[SymbolDef], pos: seq[Point],
-                        padding: float): Obstacle =
-  var first = true
-  for i in plan.units[unitIndex].members:
-    let x1 = pos[i].x - syms[i].bodyW / 2.0 - padding
-    let y1 = pos[i].y - syms[i].bodyH / 2.0 - padding
-    let x2 = pos[i].x + syms[i].bodyW / 2.0 + padding
-    let y2 = pos[i].y + syms[i].bodyH / 2.0 + padding
-    if first:
-      result = Obstacle(x1: x1, y1: y1, x2: x2, y2: y2)
-      first = false
-    else:
-      result.x1 = min(result.x1, x1); result.y1 = min(result.y1, y1)
-      result.x2 = max(result.x2, x2); result.y2 = max(result.y2, y2)
-
-proc positionedCompositePlan(plan: CompositePlan, parts: seq[SchematicPart],
-                             padding: float): CompositePlan =
-  ## The same early plan, with its one external footprint materialised for the
-  ## current centres. Routing and legalization choose their own padding.
-  result = plan
-  for u in 0 ..< result.units.len:
-    var first = true
-    for i in result.units[u].members:
-      let p = parts[i]
-      let x1 = p.x - p.bodyW / 2.0 - padding
-      let y1 = p.y - p.bodyH / 2.0 - padding
-      let x2 = p.x + p.bodyW / 2.0 + padding
-      let y2 = p.y + p.bodyH / 2.0 + padding
-      if first:
-        result.units[u].footprint = Obstacle(x1: x1, y1: y1, x2: x2, y2: y2)
-        first = false
-      else:
-        result.units[u].footprint.x1 = min(result.units[u].footprint.x1, x1)
-        result.units[u].footprint.y1 = min(result.units[u].footprint.y1, y1)
-        result.units[u].footprint.x2 = max(result.units[u].footprint.x2, x2)
-        result.units[u].footprint.y2 = max(result.units[u].footprint.y2, y2)
-    # Pick a physical pin whose normal escape leaves the full composite
-    # footprint.  The canonical first member can be an interior tap when the
-    # group is vertically stacked; using an exposed member keeps the one
-    # external endpoint routable while all ordering remains deterministic.
-    for p in 0 ..< result.units[u].ports.len:
-      for candidate in result.units[u].ports[p].covered:
-        let part = parts[candidate.partIdx]
-        var at: Point
-        for pin in part.pins:
-          if pin.name == candidate.pinName: at = Point(x: pin.x, y: pin.y)
-        let exitPt = at + escapeDir(part, at) * routingClearance
-        if not (exitPt.x > result.units[u].footprint.x1 + 1e-9 and exitPt.x < result.units[u].footprint.x2 - 1e-9 and
-                exitPt.y > result.units[u].footprint.y1 + 1e-9 and exitPt.y < result.units[u].footprint.y2 - 1e-9):
-          result.units[u].ports[p].representative = candidate
-          break
-
-proc compositePort(plan: CompositePlan, partIdx: int, pinName: string):
-    tuple[found, representative: bool, unit, port: int] =
-  for u, unit in plan.units:
-    for p, port in unit.ports:
-      for covered in port.covered:
-        if covered.partIdx == partIdx and covered.pinName == pinName:
-          return (true, covered == port.representative, u, p)
-
-proc compositeExternalPins(pins: seq[RoutePin], plan: CompositePlan): seq[RoutePin] =
-  ## External routing sees one endpoint per composite port.  Non-composite
-  ## pins (including interface ports) remain in their original order.
-  for pin in pins:
-    if pin.pinName.len == 0:
-      result.add pin
-      continue
-    let cp = compositePort(plan, pin.partIdx, pin.pinName)
-    if not cp.found or cp.representative: result.add pin
-
-proc compositeInternalRoutes(plan: CompositePlan, parts: seq[SchematicPart],
-                             netName: string): seq[SchematicWire] =
-  ## Deterministic trunk-and-tap fanout.  It is emitted after external routing:
-  ## these are internal composite conductors, not additional external router
-  ## endpoints or occupancy obstacles. For three or more members, use one
-  ## trunk plus disjoint taps: independent tap-to-root Ls would overlap along
-  ## the shared same-net trunk.
-  for unit in plan.units:
-    for port in unit.ports:
-      if port.net != netName: continue
-      let rep = parts[port.representative.partIdx]
-      var root: Point
-      for pin in rep.pins:
-        if pin.name == port.representative.pinName:
-          root = Point(x: pin.x, y: pin.y)
-      var taps: seq[Point]
-      for covered in port.covered:
-        if covered == port.representative: continue
-        let member = parts[covered.partIdx]
-        for pin in member.pins:
-          if pin.name == covered.pinName:
-            taps.add Point(x: pin.x, y: pin.y)
-      if taps.len <= 1:
-        for tap in taps:
-          var points = @[tap]
-          if tap.x != root.x and tap.y != root.y:
-            points.add Point(x: root.x, y: tap.y)
-          points.add root
-          result.add SchematicWire(net: netName, kind: wkSignal, points: points)
-        continue
-      # Composite members are vertically stacked. The canonical-side mapping
-      # makes each same-net terminal share an x coordinate; retaining the
-      # horizontal taps also keeps this total for future unequal pin spans.
-      var trunk = @[root]
-      for tap in taps: trunk.add Point(x: root.x, y: tap.y)
-      trunk.sort(proc(a, b: Point): int = cmp(a.y, b.y))
-      var unique: seq[Point]
-      for point in trunk:
-        if unique.len == 0 or point != unique[^1]: unique.add point
-      for tap in taps:
-        let join = Point(x: root.x, y: tap.y)
-        if tap != join:
-          result.add SchematicWire(net: netName, kind: wkSignal,
-                                   points: @[tap, join])
-      if unique.len >= 2:
-        result.add SchematicWire(net: netName, kind: wkSignal, points: unique)
-
 proc constrainedRecomputeRotations(nl: Netlist, comps: seq[Component],
                                    syms: seq[SymbolDef], pos: seq[Point], rots: seq[float],
-                                   anchors: seq[Point]): seq[float] =
+                                   anchors: seq[Point],
+                                   plan: CompositePlan): seq[float] =
   ## Deterministic group-aware four-way search.  Its ordering is deliberately
   ## lexicographic: existing power direction, estimated routing quality, then
   ## semantic/seed drift.  Parallel members are evaluated as one candidate.
+  ##
+  ## Visits `plan.topLevel` -- the exact interleave of singletons and
+  ## composites `parallelRecognize` produced when `plan` was built -- rather
+  ## than recomputing groups here: a singleton's rotation search reads
+  ## `pinWorldPositions` off the *partially updated* `result` of every group
+  ## already visited, so the order is observable, not cosmetic, and a second
+  ## registered kind's own recognition must land in that same one sequence.
   result = rots
-  let groups = parallelGroups(comps)
-  for members in groups:
-    if members.len == 1:
-      let i = members[0]
+  for idx in plan.topLevel:
+    let it = plan.items[idx]
+    if it.raw >= 0:
+      let i = it.raw
       let pw = pinWorldPositions(comps, syms, pos, result)
       result[i] = bestRotation(syms[i], comps[i], pos[i], result[i], pw, 0.0)
       continue
-    var nets: seq[string]
-    for _, p in comps[members[0]].pins: nets.add p.net.name
-    nets.sort()
+    let members = rawMembers(plan, idx)
+    let candidates =
+      compositeKinds[it.kind].rotationCandidates(nl, comps, syms, pos, result, members)
     var best = result
     var bestRank: array[4, int]
     var bestScore: tuple[hits, bends: int, length, drift: float]
     var first = true
-    let reference = slotForNet(syms[members[0]], comps[members[0]], nets[0])
-    if not reference.found: continue
-    for angle in rotationChoices:
-      # `angle` only defines the canonical side through the reference member.
-      # Every other member derives its own rotation from its native terminal.
-      let canonicalSide = axisUnit(rotatedSlot(reference.slot, angle))
-      if canonicalSide.y != 0.0: continue
-      var cand = result
+    for cand in candidates:
       var rank: array[4, int]
-      var valid = true
       for i in members:
-        let mapped = angleForCanonicalSide(syms[i], comps[i], nets[0], canonicalSide)
-        if not mapped.ok or not validCompositeAxes(syms[i], comps[i], nets,
-                                                   mapped.angle, canonicalSide):
-          valid = false
-          break
-        let a = mapped.angle
-        cand[i] = a
-        let r = powerRank(syms[i], comps[i], a)
+        let r = powerRank(syms[i], comps[i], cand[i])
         for k in 0 ..< rank.len: rank[k] += r[k]
-      if not valid: continue
       let score = constrainedRouteScore(nl, comps, syms, pos, cand, anchors)
       var better = first or rankLess(rank, bestRank)
       if not better and rankEqual(rank, bestRank):

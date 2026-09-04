@@ -33,7 +33,21 @@ implements.
   **zero-space** fallback — no wire, only the marker and label at the pin.
   Fallbacks are stored in `Schematic.fallbacks`, *not* in `wires`, so they
   never reach the occupancy set or the junction pass.
-- **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, `finish.nim`, and `diagnostics.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary. Private included `state.nim` holds `LayoutState`/`RoutingState`: component-symbol-position state and label-only routing metadata must never be added to public `Schematic`. `state.nim` also carries the placement-stage bodies (`prepare`, `forcePlace`, `snapToGrid`, `separate`) and the thin `*(state: var LayoutState)` forwarders, so `layout` itself is just the ordered stage list — the historical policy's serialized output stays byte-identical, so those bodies are a verbatim move, not a rewrite, and its include must stay between `constrained.nim` (uses its procs) and `routing.nim` (defines `RoutingState`). `finish.nim` consumes the completed scene plus that state while preserving label order and bounds behavior. `LayoutOptions.policy` defaults to `lpHistorical`, whose output must remain byte-identical. `parseLayoutPolicy` and `archiveLayoutOptions` centralize the CLI/environment spelling used only by archive writers; ordinary `layout(nl)` remains historical. The opt-in `lpConstrainedLayered` policy gives `lsSemanticSeed` (after the deterministic golden-angle seed) and `lsConstrainedRefinement` (after force placement and before existing legalization) their bounded deterministic topology/layer meaning; it uses the existing bounded routing recovery as `lsRoutingAwareRepair`. It is for ordinary sheets (at most 64 components), not a general graph-drawing solver: output-pin arcs seed left-to-right columns, while bounded deterministic stage placement folds each semantic layer across at most three adjacent columns (grouping parallel flat two-terminal parts by the same unordered net pair) rather than making a passive-heavy layer arbitrarily vertical; a same-component return has the adjacent-stage freedom on either side of its source, not an output-side-only rule. A bounded semantic walk follows every flat device with exactly two connected terminals (regardless of kind) until an input endpoint, stopping at rails, ground, hierarchy and inputs. It uses the existing `portDirection(net) == pdInput` result, including its no-driver fallback, for input interfaces. A same-component return keeps its traversed parts in the source column; a genuine return to an earlier component keeps its path passives right of the driving output. Insertion order otherwise breaks feedback arcs, and existing legalization remains authoritative for non-overlap. Its signal trees are atomic trunk-and-tap attempts: a failed net restores occupancy and becomes marker-only fallbacks. Do not attach heuristics, reorder existing passes, or reinterpret terminal/recovery safeguards.
+- **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, `finish.nim`, `diagnostics.nim`, and (see below) `composites/composite.nim`, `composites/passive.nim` and `constrained.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary. The include order is load-bearing: `composites/composite` and `composites/passive` sit after `placement.nim` (they use `rotationChoices`/`slotOf`/`rotatedSlot`/`axisUnit`/`pinWorldPositions`) and before `constrained.nim` (which pools placement over the arena they define), and `state.nim`'s include must stay between `constrained.nim` (uses its procs) and `routing.nim` (defines `RoutingState`). Private included `state.nim` holds `LayoutState`/`RoutingState`: component-symbol-position state and label-only routing metadata must never be added to public `Schematic`. `state.nim` also carries the placement-stage bodies (`prepare`, `forcePlace`, `snapToGrid`, `separate`) and the thin `*(state: var LayoutState)` forwarders, so `layout` itself is just the ordered stage list — the historical policy's serialized output stays byte-identical, so those bodies are a verbatim move, not a rewrite. `finish.nim` consumes the completed scene plus that state while preserving label order and bounds behavior. `LayoutOptions.policy` defaults to `lpHistorical`, whose output must remain byte-identical. `parseLayoutPolicy` and `archiveLayoutOptions` centralize the CLI/environment spelling used only by archive writers; ordinary `layout(nl)` remains historical. The opt-in `lpConstrainedLayered` policy gives `lsSemanticSeed` (after the deterministic golden-angle seed) and `lsConstrainedRefinement` (after force placement and before existing legalization) their bounded deterministic topology/layer meaning; it uses the existing bounded routing recovery as `lsRoutingAwareRepair`. It is for ordinary sheets (at most 64 *placement units*, and at most 256 raw parts), not a general graph-drawing solver: output-pin arcs seed left-to-right columns, while bounded deterministic stage placement folds each semantic layer across at most three adjacent columns (grouping parallel flat two-terminal parts by the same unordered net pair) rather than making a passive-heavy layer arbitrarily vertical; a same-component return has the adjacent-stage freedom on either side of its source, not an output-side-only rule. A bounded semantic walk follows every flat device with exactly two connected terminals (regardless of kind) until an input endpoint, stopping at rails, ground, hierarchy and inputs. It uses the existing `portDirection(net) == pdInput` result, including its no-driver fallback, for input interfaces. A same-component return keeps its traversed parts in the source column; a genuine return to an earlier component keeps its path passives right of the driving output. Insertion order otherwise breaks feedback arcs, and existing legalization remains authoritative for non-overlap. Its signal trees are atomic trunk-and-tap attempts: a failed net restores occupancy and becomes marker-only fallbacks. Do not attach heuristics, reorder existing passes, or reinterpret terminal/recovery safeguards.
+  A placement unit is a raw singleton or a whole recognized composite
+  (`constrainedEligible`, `constrained.nim`): the semantic layering
+  (`constrainedTopology`/`constrainedTargets`) and the per-candidate route
+  score `recoverRouting` calls per attempted move both cost against the
+  *pool* -- singletons plus one entry per composite, not one entry per raw
+  component -- so a sheet whose raw part count exceeds 64 but whose
+  composite-collapsed pool does not still gets the constrained treatment
+  instead of falling back to the ungrouped golden-spiral seed. The 256 raw
+  ceiling exists because arc *discovery* (`pathsFrom`, the direct output-pin
+  scan) and `constrainedRouteScore` are still raw-sized even after pooling:
+  pooling looking favorable on paper must not admit an unboundedly large raw
+  sheet into an O(pool · arcs) relaxation whose per-arc work is still
+  O(raw). A composite-free sheet has pool == raw, so this is a strict
+  loosening, never a tightening, of the pre-pooling all-raw gate.
   Eligible two-terminal parts take one of four orientations (0/90/180/270,
   `rotationChoices`): `bestRotation` first applies a **strong lexicographic
   power-direction rank** — ground pins down; rails annotated at <=0 V down;
@@ -167,8 +181,10 @@ implements.
   rerun. Attempt-zero layouts are untouched: a netlist that already routes
   takes exactly the path it took before the loop existed. If recovery still
   cannot route — or the sheet has more than `feedbackMaxParts` (24)
-  components, where re-routing per candidate is too expensive — `layout`
-  re-routes the best positions with fallbacks enabled instead of raising:
+  *placement units* (composites pooled, so a composite counts once, not once
+  per raw member) or more than `4 * feedbackMaxParts` (96) raw parts
+  regardless of pooling, where re-routing per candidate is too expensive —
+  `layout` re-routes the best positions with fallbacks enabled instead of raising:
   the unrouteable net contributes no real wires, and every one of its pins
   becomes a `SchematicFallback` (a short dashed amber/orange stub sized
   against the complete occupancy set, so it never touches a real wire
@@ -260,6 +276,37 @@ implements.
   move. The scene-with-no-netlist input is why it pairs with the JSON reader:
   a run-archive `runNNN.json` is enough to ask why a dashed fallback marker
   is there.
+- **`composites/composite.nim`** and **`composites/passive.nim`** — the
+  composite arena `constrained.nim` pools placement over, and the one motif
+  registered into it. `composite.nim` is kind-agnostic: `CompositePort`,
+  `PlaceableItem`, `CompositePlan` (the arena: `items`, the leaf/composite
+  entries; `topLevel`, the arena indices placement actually sees, singletons
+  and top-level composites interleaved in ascending first-raw-member order;
+  `ownerOf`/`poolOf`, raw index to owning arena index / pool position), and
+  the `CompositeKind` contract — six `{.nimcall.}` hooks
+  (`recognize`/`internalLayout`/`externalPins`/`pickRepresentative`/
+  `internalRoute`/`rotationCandidates`) a motif implements over the arrays
+  `LayoutState` already threads, so a recognizer needs no access to
+  placement/routing internals. `compositeKinds`, the registry, is a `let`, not
+  a `var`: nothing outside this included module can register a kind, and
+  **registration order is recognition precedence is output**. Adding a motif
+  means adding a file beside `passive.nim` and one entry in `compositeKinds`
+  — never a special case in the router, placement, or
+  `constrainedRecomputeRotations`. `compositePlan`
+  currently asserts `compositeKinds.len == 1`; folding a second kind's
+  recognition over the pool an earlier kind's `topLevel` already leaves
+  behind (so a later, more general kind may consume an earlier kind's
+  composite as one of its own members) is deliberately not built until there
+  is a second kind to prove it against — see `docs/composite_placement_stage2.md`
+  §2.6. `passive.nim` holds `parallelStackKind`, the one registered kind
+  today: parallel flat two-terminal parts sharing an unordered net pair
+  become one placement unit, keyed by that unordered net pair so declaration
+  and pin order cannot split the group (`parallelRecognize`). Because
+  `composite.nim` is included before `passive.nim` but must still name
+  `parallelStackKind` in the registry, `composite.nim` forward-declares
+  `proc parallelStackKind(): CompositeKind` immediately above `compositeKinds`
+  — `include` is a textual splice into one module, so this is an ordinary
+  forward declaration, resolved once `passive.nim`'s body is spliced in below.
 - **`svg.nim`** — `renderSvg`/`writeSvgFile`. Self-contained SVG: every colour
   a literal, every style inlined, a graph-paper grid, wires as polylines,
   junction circles, ground/power symbols (each bar drawn perpendicular to the
