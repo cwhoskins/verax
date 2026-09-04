@@ -23,13 +23,6 @@ type
 proc countbends(x: seq[SchematicWire]): int =
   return foldl(x,a+b.points.len()-2,0) + x.len()-1
 
-proc translateRoutedComponent(state: var LayoutState) =
-  discard
-
-proc verifyLayout(state: LayoutState): LayoutError =
-  return LayoutError.NO_ERROR
-  
-
 proc refineRouting(state: var LayoutState) =
   var wires = state.routing.wires.filterIt(it.kind == wkSignal)
   var netwires = initOrderedTable[string,seq[SchematicWire]]()
@@ -66,4 +59,120 @@ proc refineRouting(state: var LayoutState) =
   for n, w in netwires:
     echo n, ": ", w.countbends()
     echo w
+
+proc obstaclesOverlap(a, b: Obstacle): bool {.inline.} =
+  ## Same strict-interior overlap test `separate` uses to legalize placement:
+  ## touching edges are not a conflict, only a positive-area intersection is.
+  a.x1 < b.x2 - 1e-9 and a.x2 > b.x1 + 1e-9 and
+  a.y1 < b.y2 - 1e-9 and a.y2 > b.y1 + 1e-9
+
+proc portObstacle(p: SchematicPort): Obstacle =
+  let hw = p.bodyW / 2.0 + routingClearance
+  let hh = p.bodyH / 2.0 + routingClearance
+  Obstacle(x1: p.x - hw, y1: p.y - hh, x2: p.x + hw, y2: p.y + hh)
+
+proc verifyPartPlacement(part: SchematicPart, state: LayoutState): bool =
+  ## True when `part`'s `routingClearance`-inflated body -- the same
+  ## inflation `separate` legalizes placement against and the router builds
+  ## its obstacle set from -- does not overlap any other part or port already
+  ## in `state.routing`. A part sharing `part`'s own designator is excluded
+  ## from the comparison, so passing back the part's own (moved) copy checks
+  ## it against everything *else* on the sheet. Intended to be called after a
+  ## manual part move, to confirm the new position is still legal before it
+  ## is accepted.
+  let hw = part.bodyW / 2.0 + routingClearance
+  let hh = part.bodyH / 2.0 + routingClearance
+  let here = Obstacle(x1: part.x - hw, y1: part.y - hh,
+                      x2: part.x + hw, y2: part.y + hh)
+  var others: seq[SchematicPart]
+  for p in state.routing.parts:
+    if p.designator != part.designator: others.add p
+  for other in obstaclesFor(others):
+    if obstaclesOverlap(here, other): return false
+  for p in state.routing.ports:
+    if obstaclesOverlap(here, portObstacle(p)): return false
+  true
+
+proc verifyWireRouting(wire: SchematicWire, state: LayoutState): bool =
+  ## True when `wire` -- a candidate manually re-routed net polyline, in
+  ## scene coordinates -- conflicts with no other visual component in
+  ## `state.routing`: none of its segments enters the interior of any part's
+  ## or port's inflated body, threads a rail/ground terminal's drawn glyph
+  ## ink, or touches another net's wire under the router's hard cross-net
+  ## rule (no collinear touch, not even end-to-end, and at least
+  ## `wireMinSeparation` of centreline separation wherever a parallel run's
+  ## projections overlap). Other wires of `wire.net` are excluded: they are
+  ## `wire`'s own branches, not another visual component, and the within-net
+  ## no-positive-overlap invariant is the router's own concern when it grows
+  ## a net's tree, not this check's. Intended to be called after a wire is
+  ## manually re-routed, to confirm the new path is still legal before it is
+  ## accepted.
+  var obstacles = obstaclesFor(state.routing.parts)
+  for p in state.routing.ports: obstacles.add portObstacle(p)
+  var glyphs: seq[OccSeg]
+  for w in state.routing.wires:
+    for g in terminalGlyphSegments(w):
+      glyphs.add g
+  for k in 0 ..< wire.points.high:
+    let a = wire.points[k]
+    let b = wire.points[k + 1]
+    if segBlocked(a, b, obstacles): return false
+    for g in glyphs:
+      if segmentsTouch(a, b, g.a, g.b): return false
+    for other in state.routing.wires:
+      if other.net == wire.net: continue
+      for j in 0 ..< other.points.high:
+        if collinearClosed(a, b, other.points[j], other.points[j + 1]): return false
+        if parallelTooClose(a, b, other.points[j], other.points[j + 1]): return false
+  true
+
+proc translateRoutedComponent(state: var LayoutState, designator: string,
+                              dx, dy: float): bool =
+  ## Moves the already-placed-and-routed part `designator` by (`dx`, `dy`)
+  ## and rebuilds the sheet's routing against the new position: every signal
+  ## wire, every rail/ground stub ("power port"), and every fallback
+  ## marker -- the anchor `finishLabels` later hangs a net-name label off of,
+  ## since `LayoutState` itself carries no realized `SchematicLabel`s to move.
+  ## `state.pos` is what `routeScene` reads for a part's centre;
+  ## `state.routing.parts[i].x`/`y` is only a routed *snapshot* of it, so
+  ## this writes the move there rather than into the routed copy directly.
+  ##
+  ## The move commits only when the fresh routing both completes in full
+  ## (`RoutingState.ok`) and the moved part's new, `routingClearance`-inflated
+  ## body clears every other part and port (`verifyPartPlacement`). A
+  ## complete route does not by itself rule that out -- routing legality is
+  ## about wires, never about a body sitting on top of another one -- so it is
+  ## checked separately; `verifyWireRouting` is not, since a wire the router
+  ## just emitted has already satisfied it by construction (the router's own
+  ## obstacle/occupancy rules are the same primitives that proc checks). On
+  ## either failure `state.pos` and `state.routing` are restored to exactly
+  ## what they were and the move is refused, so a caller never has to tell
+  ## "rejected" apart from "applied, then undone".
+  ##
+  ## Moves one part at a time: a member of a constrained-layout composite unit
+  ## moved alone leaves its partner behind rather than translating as one
+  ## rigid body, which is outside this proc's scope.
+  if designator notin state.idxOf: return false
+  let idx = state.idxOf[designator]
+  let savedPos = state.pos[idx]
+  let savedRouting = state.routing
+
+  state.pos[idx] = Point(x: savedPos.x + dx, y: savedPos.y + dy)
+  let rerouted = routeScene(state, withFallbacks = true)
+  state.routing = rerouted
+
+  var moved: SchematicPart
+  var found = false
+  for p in rerouted.parts:
+    if p.designator == designator:
+      moved = p
+      found = true
+      break
+
+  if rerouted.ok and found and verifyPartPlacement(moved, state):
+    return true
+
+  state.pos[idx] = savedPos
+  state.routing = savedRouting
+  false
 
