@@ -665,6 +665,10 @@ type
     schematicLayout*: string
       ## Normalized archive-layout spelling, or empty when the environment's
       ## selection (if any) should remain in effect.
+    schematicOnly*: bool
+      ## Draw the `runFULL*` archive and stop -- no `readiness`, so no
+      ## simulation runs. Needs `--keep-runs=<dir>`; nothing to draw into is
+      ## a usage error, not a silent no-op.
 
 proc parseCapabilities*(text: string): set[Capability] =
   ## `--caps=op,ac` and friends. `capStatic` is always included: withholding
@@ -703,6 +707,7 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
     elif a.startsWith("--schematic-layout="):
       result.schematicLayout = layoutPolicyName(parseLayoutPolicy(
         a["--schematic-layout=".len .. ^1]))
+    elif a == "--schematic-only": result.schematicOnly = true
 
 # --- the catalog: what may be claimed ------------------------------------
 #
@@ -912,4 +917,12 @@ proc verifyMain*(d: Design, args = commandLineParams()): int =
   if o.saveCurrents: putEnv("NIMCIR_SAVE_CURRENTS", "1")
   if o.schematicLayout.len > 0:
     putEnv("NIMCIR_SCHEMATIC_LAYOUT", o.schematicLayout)
+  if o.schematicOnly:
+    if o.keepRuns.len == 0:
+      stderr.writeLine "nimcir: --schematic-only needs --keep-runs=<dir> " &
+        "to draw into"
+      return exitCompile
+    keepFullSchematic(d.netlist)
+    echo "wrote runFULL.* to ", o.keepRuns
+    return exitClean
   verify(d, o.allowed, o.verbose, o.strict)

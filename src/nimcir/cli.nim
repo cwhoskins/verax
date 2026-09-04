@@ -223,6 +223,8 @@ check flags (forwarded to the design file):
   --schematic-layout=historical|constrained-layered
                      choose the layout of archived SVG and JSON schematics
                      (historical is the default)
+  --schematic-only   with --keep-runs, draw the runFULL.* archive and stop --
+                     no simulation runs
   --path:<dir>       where nimcir's sources live (usually found automatically)
 
 exit codes:
