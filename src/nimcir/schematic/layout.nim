@@ -4,7 +4,7 @@
 ## private geometry and routing types remain internal to this module while the
 ## established public API remains unchanged.
 
-import std/[algorithm, math, sets, strutils, tables, sequtils]
+import std/[algorithm, math, sets, strutils, tables, sequtils, heapqueue]
 import ../netlist/types
 import ../netlist/kinds
 import ../netlist/annotations

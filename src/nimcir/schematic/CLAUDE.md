@@ -152,7 +152,10 @@ implements.
   deterministic single-part moves and keeps any move that routes strictly
   further than the best layout so far, up to a private budget of
   `feedbackAcceptedBudget` (4) accepted moves and `feedbackAttemptBudget`
-  (65) total attempts. Movable parts are those with at least two
+  (30 — lowered from 65 once profiling `xbar_switch` showed every accepted
+  move across its two recovering sheets landed by attempt 22, and the
+  remaining 43 attempts of the old budget never once improved on the best
+  layout found) total attempts. Movable parts are those with at least two
   non-ground / non-rail nets (`feedbackCandidateParts`, insertion order);
   each is tried on rings of grid cells around its current centre up to
   `feedbackMaxRadius` (4), and a candidate cell is rejected when it would

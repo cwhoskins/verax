@@ -257,6 +257,71 @@ proc addOcc(occ: var seq[OccSeg], a, b: Point, net: string) {.inline.} =
   if sameCoord(a.x, b.x) and sameCoord(a.y, b.y): return
   occ.add OccSeg(a: a, b: b, net: net)
 
+type
+  OccIndex = object
+    ## `occ` bucketed by axis and fixed coordinate, for the one hot caller --
+    ## `dijkstraFromSources`, which calls `edgeAllowed` once per candidate
+    ## graph edge and, unlike `seeds`/`glyphs`, sees `occ` grow by one segment
+    ## per already-routed net. A linear scan of `occ` there made routing a
+    ## sheet's Nth net cost O(N) more than its first, and the whole net list
+    ## O(nets^2) net-to-net.
+    ##
+    ## Only `occ` is indexed: `seeds` and `glyphs` are rebuilt once per
+    ## `routeScene` call from the sheet's pins and already-drawn rail glyphs,
+    ## so neither grows with the net being routed and a flat scan of either
+    ## stays cheap. `glyphs` also needs `segmentsTouch`'s perpendicular-cross
+    ## case (a horizontal glyph can block a vertical query edge that shares
+    ## none of its coordinates), which this bucketing -- keyed on the query
+    ## edge's own axis -- does not cover; leaving it unindexed keeps that
+    ## case correct without needing a second, differently-shaped index.
+    byX: Table[int, seq[OccSeg]]
+      ## Vertical segments (`sameCoord(a.x, b.x)`), bucketed on `bucketOf(x)`.
+    byY: Table[int, seq[OccSeg]]
+      ## Horizontal segments, bucketed on `bucketOf(y)`.
+
+proc bucketOf(v: float): int {.inline.} =
+  floor(v / wireMinSeparation).int
+
+proc addToIndex(idx: var OccIndex, s: OccSeg) =
+  if sameCoord(s.a.x, s.b.x):
+    idx.byX.mgetOrPut(bucketOf(s.a.x), @[]).add s
+  else:
+    idx.byY.mgetOrPut(bucketOf(s.a.y), @[]).add s
+
+proc buildOccIndex(occ: seq[OccSeg]): OccIndex =
+  for s in occ: addToIndex(result, s)
+
+proc edgeAllowedFast(a, b: Point, netName: string, occIdx: OccIndex,
+                     seeds, glyphs: seq[OccSeg]): bool =
+  ## Same test as `edgeAllowed`, `occ` read from `occIdx` instead of a flat
+  ## seq. Every check below (`collinearOverlap`, `collinearClosed`,
+  ## `parallelTooClose`) requires the two segments to share an axis, and
+  ## either an exact fixed coordinate or one within `wireMinSeparation` of
+  ## it -- so a candidate can only ever be a same-net, same-bucket entry two
+  ## buckets away in either direction: any pair of coordinates closer than a
+  ## bucket's width lands at most one bucket apart (a one-line pigeonhole
+  ## argument on `bucketOf`), and a `sameCoord` pair that straddles a bucket
+  ## boundary is the same case. Checking `bucket-1 .. bucket+1` is therefore
+  ## exactly as complete as scanning every entry, at a fraction of the cost
+  ## once `occ` is long.
+  let vert = sameCoord(a.x, b.x)
+  let coord = if vert: a.x else: a.y
+  let tbl = if vert: occIdx.byX else: occIdx.byY
+  let b0 = bucketOf(coord)
+  for bk in b0 - 1 .. b0 + 1:
+    let bucket = tbl.getOrDefault(bk)
+    for s in bucket:
+      if s.net == netName:
+        if collinearOverlap(a, b, s.a, s.b): return false
+      else:
+        if collinearClosed(a, b, s.a, s.b): return false
+        if parallelTooClose(a, b, s.a, s.b): return false
+  for s in seeds:
+    if collinearOverlap(a, b, s.a, s.b): return false
+  for g in glyphs:
+    if segmentsTouch(a, b, g.a, g.b): return false
+  true
+
 proc shortenedStubEnd(p, dir: Point, span: float, netName: string,
                       occ: seq[OccSeg]): Point =
   ## The end of a rail/ground stub leaving `p` along axis unit vector `dir`

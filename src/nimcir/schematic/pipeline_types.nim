@@ -63,7 +63,7 @@ proc stageSpecs*(options: LayoutOptions): seq[StageSpec] =
 proc defaultLayoutOptions*(): LayoutOptions =
   ## The historical layout policy and budgets.
   LayoutOptions(policy: lpHistorical, stages: allLayoutStages,
-                feedbackAcceptedBudget: 4, feedbackAttemptBudget: 65,
+                feedbackAcceptedBudget: 4, feedbackAttemptBudget: 30,
                 feedbackMaxParts: 24)
 
 proc layoutPolicyName*(policy: LayoutPolicy): string =

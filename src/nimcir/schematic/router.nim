@@ -35,6 +35,20 @@ proc lexBefore(l1: float, b1: int, l2: float, b2: int): bool {.inline.} =
   ## better only when it is shorter, or exactly as short with fewer bends.
   l1 < l2 - 1e-9 or (abs(l1 - l2) <= 1e-9 and b1 < b2)
 
+type
+  DijkstraEntry = tuple[len: float, bends: int, state: int]
+    ## One `dijkstraFromSources` heap entry. Ordered by exact `<` rather than
+    ## `lexBefore`'s epsilon: every `len` here is a sum of manhattan deltas
+    ## between grid-quantized points, so two routes that are truly the same
+    ## length land on the same float, and the epsilon in `lexBefore` (which
+    ## still gates every relaxation, unchanged) never needed to be restated
+    ## here. `state` as the final field breaks a genuine tie by the lowest
+    ## state id, matching `lexBefore`'s old scan exactly.
+
+proc `<`(a, b: DijkstraEntry): bool {.inline.} =
+  a.len < b.len or (a.len == b.len and
+    (a.bends < b.bends or (a.bends == b.bends and a.state < b.state)))
+
 proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
                          sources: seq[int], occ, seeds, glyphs: seq[OccSeg],
                          netName: string): RouteResult =
@@ -52,6 +66,19 @@ proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
   ## lowest node index, then the horizontal state; and a relaxation that is
   ## not strictly better never replaces a predecessor, so the first
   ## (lowest-id) predecessor wins.
+  ##
+  ## The frontier is a binary heap keyed on `(distLen, distBends, state)` --
+  ## exactly `lexBefore`'s ordering with the state id as the final
+  ## tie-breaker, so the heap pops states in the same order the previous
+  ## linear scan of all `sv` states would have chosen one at a time. A state
+  ## may be pushed more than once (once per relaxation that strictly
+  ## improves it, by `lexBefore`); the first pop of a state is always its
+  ## best-ever entry, because the heap could not have produced a better one
+  ## first, so a later pop of the same state is stale and `used` skips it --
+  ## the standard lazy-deletion reading of Dijkstra with a heap. This turns
+  ## the previous O(sv) "scan every state for the minimum" into O(log sv) per
+  ## pop, which is what made routing a large sheet's nets quadratic in the
+  ## free-grid size.
   let v = nodes.len
   let sv = 2 * v
   result.distLen = newSeq[float](sv)
@@ -61,22 +88,26 @@ proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
   for s in 0 ..< sv:
     result.distLen[s] = Inf
     result.prev[s] = -1
+
+  # `occ` is the one of the three occupancy lists that grows with the net
+  # being routed (one segment per already-emitted branch, across every net
+  # already routed onto this sheet), so it is the one worth bucketing before
+  # the edge loop below calls into it up to `sv` times; `seeds`/`glyphs` stay
+  # sheet-sized regardless of which net this is and are scanned flat exactly
+  # as `edgeAllowed` always did (see `edgeAllowedFast`).
+  let occIdx = buildOccIndex(occ)
+
+  var frontier = initHeapQueue[DijkstraEntry]()
   for s in sources:
     if s >= 0 and s < v:
       result.distLen[2 * s] = 0.0
       result.distLen[2 * s + 1] = 0.0
+      frontier.push (len: 0.0, bends: 0, state: 2 * s)
+      frontier.push (len: 0.0, bends: 0, state: 2 * s + 1)
 
-  for _ in 0 ..< sv:
-    var u = -1
-    for s in 0 ..< sv:
-      if used[s] or result.distLen[s] == Inf: continue
-      if u < 0 or
-         lexBefore(result.distLen[s], result.distBends[s],
-                   result.distLen[u], result.distBends[u]) or
-         (abs(result.distLen[s] - result.distLen[u]) <= 1e-9 and
-          result.distBends[s] == result.distBends[u] and s < u):
-        u = s
-    if u < 0: break
+  while frontier.len > 0:
+    let u = frontier.pop().state
+    if used[u]: continue
     used[u] = true
     let i = u div 2
     let inAxis = if u mod 2 == 0: raHoriz else: raVert
@@ -88,13 +119,14 @@ proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
         if sameCoord(nodes[i].x, nodes[j].x): raVert else: raHoriz
       let t = 2 * j + ord(edgeAxis)
       if used[t]: continue
-      if not edgeAllowed(nodes[i], nodes[j], netName, occ, seeds, glyphs): continue
+      if not edgeAllowedFast(nodes[i], nodes[j], netName, occIdx, seeds, glyphs): continue
       let ndLen = result.distLen[u] + manhattan(nodes[i], nodes[j])
       let ndBends = result.distBends[u] + (if inAxis == edgeAxis: 0 else: 1)
       if lexBefore(ndLen, ndBends, result.distLen[t], result.distBends[t]):
         result.distLen[t] = ndLen
         result.distBends[t] = ndBends
         result.prev[t] = u
+        frontier.push (len: ndLen, bends: ndBends, state: t)
 
 proc pathToState(prev: seq[int], dstState: int): seq[int] =
   ## The node-index path from a Dijkstra source state to `dstState`, source
