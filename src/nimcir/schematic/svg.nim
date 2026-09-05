@@ -190,9 +190,9 @@ proc drawPart(p: SchematicPart): seq[string] =
   of "diode":
     result.add lineAt(cx - hw, cy, cx - 8.0, cy)
     result.add lineAt(cx + 8.0, cy, cx + hw, cy)
-    result.add "<polygon points=\"" & num(cx - 8.0) & "," & num(cy) & " " &
-      num(cx + 4.0) & "," & num(cy - 10.0) & " " &
-      num(cx + 4.0) & "," & num(cy + 10.0) &
+    result.add "<polygon points=\"" & num(cx - 8.0) & "," & num(cy - 10.0) & " " &
+      num(cx - 8.0) & "," & num(cy + 10.0) & " " &
+      num(cx + 8.0) & "," & num(cy) &
       "\" fill=\"none\" stroke=\"#333333\" stroke-width=\"2\"/>"
     result.add lineAt(cx + 8.0, cy - 10.0, cx + 8.0, cy + 10.0)
 
