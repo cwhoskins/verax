@@ -48,6 +48,18 @@ Add `name = "0"` to give the net a different SPICE name from its identifier.
 `capacitor`, `inductor`, `diode`, `bjt`, `mosfet`, `voltage_source`,
 `current_source` are understood; anything else is carried through untouched.
 
+### Interfaces
+
+Import `nimcir/netlist/interfaces/std` for the standard I2C, SPI and UART
+catalogue. `iface spi, spiInterface(2)` creates scalar SCLK, MOSI and MISO
+nets plus a two-member chip-select bus. A `port spi, controller` or `port spi,
+peripheral` connects every member with its declared direction; map wide members
+individually (`"cs_0": "NSS0"`) when package pin names differ. SPI MISO is a
+declared shared tri-state signal, so several peripherals may release it on one
+bus without creating an ERC conflict or an undriven warning. `findInterface`
+recovers parameterized widths from graph metadata after cloning or hierarchy.
+`designs/spi_memories.nim` is the structural-only worked example.
+
 **`spec:`** — typed annotations, checked **at compile time**. A misspelled key
 or one used on the wrong kind of entity fails the build rather than being
 silently ignored. Run `nimcir annotations` for the live list. Values take unit

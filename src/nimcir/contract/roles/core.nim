@@ -84,6 +84,8 @@ type
   RoleDef* = object
     name*: string
     doc*: string
+    expects*: string
+      ## Optional interface definition this role is written against.
     parts*: seq[RolePart]
     params*: seq[AnnDef]
       ## Reuses the annotation registry's vocabulary type rather than

@@ -47,6 +47,7 @@ proc registerBuiltinRoles*() =
 
   registerRole(RoleDef(
     name: "i2c",
+    expects: "i2c",
     doc: "A two-wire open-drain bus at a stated clock frequency.",
     parts: @[
       RolePart(name: "sda", kind: skNet, doc: "data line"),

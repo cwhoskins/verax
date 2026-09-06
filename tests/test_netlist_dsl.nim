@@ -87,6 +87,42 @@ test "subckt template is not registered into any parent, and instance clones ind
   check top.components["X1"].subNetlist.parent == top
   check top.components["X1"].subNetlist.instanceOf == top.components["X1"]
 
+test "named instance groups can be explicitly opened":
+  let linkDef = interfaceDef("dsl_open_link"):
+    signal valid
+    signal data, width = 2
+    modport target:
+      valid = ptInput
+      data = ptInput
+  let peripheral = subckt("PERIPHERAL", [sense, link.target]):
+    net sense, kind = ntSignal
+    iface link, linkDef
+    component U1, kind = "ic":
+      pin "SENSE", sense, kind = ptInput
+      port link, target
+
+  let top = netlist("top"):
+    net wired, kind = ntSignal
+    instance XOPEN, peripheral, {"sense": open, "link": open}
+    # A named scalar connection remains ordinary wiring while another group
+    # is explicitly open.
+    instance XWIRED, peripheral, {"sense": wired, "link": open}
+
+  let opened = top.components["XOPEN"]
+  check opened.pins["sense"].net.name == "nc_XOPEN_sense"
+  check opened.pins["link_valid"].net.name == "nc_XOPEN_link_valid"
+  check opened.pins["link_data_0"].net.name == "nc_XOPEN_link_data_0"
+  check opened.pins["link_data_1"].net.name == "nc_XOPEN_link_data_1"
+  for pinName in ["sense", "link_valid", "link_data_0", "link_data_1"]:
+    check opened.pins[pinName].net.attrs["iface.nc"] == "1"
+  check opened.pins["sense"].net != opened.pins["link_valid"].net
+  check opened.pins["link_data_0"].net != opened.pins["link_data_1"].net
+  check top.components["XWIRED"].pins["sense"].net == top.nets["wired"]
+
+  expect NetlistError:
+    discard netlist("bad"):
+      instance XBAD, peripheral, {"absent": open}
+
 test "a model statement registers a card that reaches the deck verbatim":
   let nl = netlist("d"):
     net a, kind = ntSignal

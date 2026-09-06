@@ -17,7 +17,9 @@
 
 import std/[math, sets, strutils, tables]
 import ../../netlist/types
+import ../../netlist/graph
 import ../../netlist/kinds
+import ../../netlist/interfaces
 import ../../netlist/annotations
 import ../../netlist/formats/spice as spiceFormat
 import ../evaluate
@@ -303,7 +305,21 @@ proc runControllerCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionR
         if part == "controller" and subj.kind == skComponent:
           controllers.incl subj.name
 
-    if not touchingRole:
+    # Declared interface metadata is an equally authoritative source.  Keep
+    # the role path for legacy netlists and user-defined roles.
+    let live = findNet(d.netlist, netName)
+    if live != nil:
+      let defName = live.attrs.getOrDefault("iface.def")
+      if defName.len > 0:
+        try:
+          let idef = interfaceDefOf(defName)
+          for p in live.pins:
+            let mpName = p.attrs.getOrDefault("iface.modport")
+            if idef.modports.hasKey(mpName) and idef.modports[mpName].controller:
+              controllers.incl p.component.designator
+        except NetlistError:
+          discard
+    if not touchingRole and controllers.len == 0:
       result.add notEvaluable(a, "static.controller_count",
         "no role binds net '" & netName & "', and nothing in a netlist " &
         "distinguishes a bus controller from a target -- every device on " &

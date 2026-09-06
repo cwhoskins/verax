@@ -53,6 +53,7 @@ import ./netlist/types
 import ./netlist/annotations
 import ./netlist/environment
 import ./netlist/packages
+import ./netlist/interfaces
 import ./schematic
 import ./analysis/io_check
 import ./analysis/evaluators/contract_eval
@@ -247,6 +248,7 @@ proc readiness*(d: Design, allowed = allCapabilities): Readiness =
   for i in analyzeIO(d.netlist): result.structural.add i
   for i in validateEnvironment(d.netlist): result.structural.add i
   for i in validatePackages(d.netlist): result.structural.add i
+  for i in validateInterfaces(d.netlist): result.structural.add i
 
   result.environment = environmentOf(d.netlist)
   result.hottest = describeHottest(d.netlist, result.environment)
@@ -718,12 +720,30 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
 # returns them. An author working outside this repository has no other way
 # to find out what vocabulary exists.
 
+proc describeInterfaces*(): string =
+  var lines = @["interfaces -- declared wire bundles and their modports", ""]
+  for name in registeredInterfaceDefs():
+    let def = interfaceDefOf(name)
+    lines.add $def
+    if def.implies.len > 0:
+      var roles: seq[string]
+      for claim in def.implies: roles.add claim.role
+      lines.add "    implies: " & roles.join(", ")
+  lines.join("\n")
+
+proc describeInterface*(name: string): string =
+  try:
+    describeInterfaceDef(interfaceDefOf(name))
+  except NetlistError:
+    raise newException(ValueError, "no interface named '" & name & "'; `nimcir interfaces` lists them")
+
 proc describeRoles*(): string =
   var L = @["roles -- each is a bundle of claims you get by naming it", ""]
   for name in registeredRoles():
     let def = roleDef(name)
     L.add name
     L.add "    " & def.doc
+    if def.expects.len > 0: L.add "    interface: " & def.expects
     var parts: seq[string]
     for p in def.parts:
       parts.add p.name & (if p.optional: " (optional)" else: "")

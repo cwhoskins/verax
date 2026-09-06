@@ -18,6 +18,7 @@ import std/[strutils, tables]
 import ../netlist/types
 import ../netlist/graph
 import ../netlist/annotations
+import ../netlist/interfaces
 import ./types as ctypes
 import ./roles/built_in as roles
 
@@ -248,6 +249,48 @@ proc addRole*(d: Design, roleName, instanceName: string,
     def.apply(inst, d.netlist)
   d.roles[instanceName] = inst
   inst
+
+proc addRoleFromInterface*(d: Design, roleName, instanceName: string,
+                           iface: Interface,
+                           bindings: openArray[(string, Subject)] = [],
+                           params: openArray[(string, string)] = []): RoleInstance =
+  ## Binds matching net parts from a declared interface. Explicit bindings
+  ## win; the one controller component is recovered from its modport pin.
+  let def = roleDef(roleName)
+  if def.expects.len > 0 and def.expects != iface.def.name:
+    raise newException(NetlistError, "role '" & roleName & "' expects interface '" &
+      def.expects & "', got '" & iface.def.name & "'")
+  var merged: seq[(string, Subject)] = @bindings
+  for part in def.parts:
+    var present = false
+    for pair in merged:
+      if pair[0] == part.name: present = true
+    if present: continue
+    if part.kind == skNet and iface.signals.hasKey(part.name):
+      let b = iface.bus(part.name)
+      if b.len != 1:
+        raise newException(NetlistError, "interface signal '" & part.name &
+          "' is wide and cannot bind scalar role part '" & part.name & "'")
+      merged.add (part.name, Subject(kind: skNet, name: b[0].name))
+    elif part.kind == skComponent and part.name == "controller":
+      var controller: Component = nil
+      for signal in iface.def.signals:
+        for p in iface.bus(signal.name).nets[0].pins:
+          let mp = p.attrs.getOrDefault("iface.modport")
+          if iface.def.modports.hasKey(mp) and iface.def.modports[mp].controller:
+            if controller != nil and controller != p.component:
+              raise newException(NetlistError, "interface '" & iface.name & "' has multiple controllers")
+            controller = p.component
+      if controller != nil: merged.add (part.name, Subject(kind: skComponent, name: controller.designator))
+  addRole(d, roleName, instanceName, merged, params)
+
+proc addImpliedRoles*(d: Design) =
+  for iface in interfacesOf(d.netlist):
+    for claim in iface.def.implies:
+      if d.roles.hasKey(iface.name): continue
+      var params: seq[(string, string)]
+      for key, value in claim.params: params.add (key, value)
+      discard addRoleFromInterface(d, claim.role, iface.name, iface, [], params)
 
 proc expandInstance*(inst: RoleInstance): seq[Assertion] =
   ## One role instance's claims, minus the ones it declined. Everything that

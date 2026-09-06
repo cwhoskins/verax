@@ -13,6 +13,8 @@
 import std/[hashes, os, osproc, strutils]
 
 import ./verify
+import ./netlist/interfaces
+import ./netlist/interfaces/std
 
 const
   version = "0.1.0"
@@ -146,6 +148,14 @@ proc cmdCheck(file: string, pathFlag: string, forward: seq[string]): int =
 
 # --- discovery ------------------------------------------------------------
 
+proc cmdInterfaces(): int =
+  echo describeInterfaces()
+  exitClean
+
+proc cmdInterface(name: string): int =
+  echo describeInterface(name)
+  exitClean
+
 proc cmdRoles(): int =
   echo describeRoles()
   exitClean
@@ -171,6 +181,7 @@ proc cmdEnv(): int =
   echo "library     ", (if lib.len > 0: lib else: "(none needed)"), "  -- ", how
   echo "capabilities", "  ", capList(availableCapabilities(sim))
   echo "roles       ", registeredRoles().len, " registered"
+  echo "interfaces  ", registeredInterfaceDefs().len, " registered"
   echo "quantities  ", evaluableQuantities().len, " measurable"
   exitClean
 
@@ -201,6 +212,8 @@ usage:
   nimcir check <file.nim> [flags]   compile and check a design file
   nimcir new <template> [path]      write a starter design ("-" for stdout)
   nimcir roles                      the bundles of claims available
+  nimcir interfaces                 declared interface definitions
+  nimcir interface <name>           one interface and its modports
   nimcir role <name>                one role, and the claims it makes
   nimcir quantities                 everything a `require` can name
   nimcir annotations                the keys a `spec:` block accepts
@@ -266,6 +279,11 @@ proc main(): int =
       raise newException(ValueError, "new needs a template name; try `blank`")
     cmdNew(rest[0], if rest.len > 1: rest[1] else: "-")
   of "roles": cmdRoles()
+  of "interfaces": cmdInterfaces()
+  of "interface":
+    if rest.len == 0:
+      raise newException(ValueError, "interface needs a name; `nimcir interfaces` lists them")
+    cmdInterface(rest[0])
   of "role":
     if rest.len == 0:
       raise newException(ValueError, "role needs a name; `nimcir roles` lists them")

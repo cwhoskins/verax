@@ -593,3 +593,13 @@ The end-to-end check that the feature did what it claims: `NIMCIR_KEEP_RUNS=1 ./
 designs/i2c_eeprom.nim`, then confirm the emitted deck names `i2c0_sda`/`i2c0_scl` where it named
 `sda`/`scl`, that the topology is otherwise byte-identical, and that the readiness report's STRUCTURE
 section has lost the two `output_conflict` warnings and gained a `controller_count` verdict.
+
+## Implementation notes
+
+Interfaces are authored with `interfaceDef`, realised with `iface`, and wired
+through `port`. Interface definitions lower to scalar nets and pins. A role can
+bind matching interface signals with ``role "i2c", bus, `from` = i2c``;
+backticks are required because `from` is a Nim keyword. Import
+`nimcir/netlist/interfaces/std` for the standard I2C, SPI, and UART definitions.
+Use `nimcir interfaces` and `nimcir interface <name>` to inspect the live
+catalogue.

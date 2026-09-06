@@ -142,6 +142,11 @@ proc predicateAssertion*(deps: seq[PredicateDep], pred: PredicateProc,
 
 # --- statement expansion -----------------------------------------------
 
+proc fieldName(node: NimNode): string =
+  if node.kind == nnkIdent: node.strVal
+  elif node.kind == nnkAccQuoted and node.len == 1: node[0].strVal
+  else: error("expected an identifier", node)
+
 proc labelOf(node: NimNode): string =
   case node.kind
   of nnkIdent: node.strVal
@@ -159,6 +164,7 @@ proc handleRole(dSym: NimNode, stmt: NimNode): NimNode =
 
   let bindsSym = genSym(nskVar, "binds")
   let paramsSym = genSym(nskVar, "params")
+  var fromNode: NimNode = nil
   result = newStmtList()
   # Explicitly typed: the `when` branches below may add to neither, so there
   # is nothing for Nim to infer an element type from.
@@ -172,7 +178,11 @@ proc handleRole(dSym: NimNode, stmt: NimNode): NimNode =
   for a in args[2 ..^ 1]:
     if a.kind != nnkExprEqExpr:
       error("expected `part = net` or `param = value` in a `role` statement", a)
-    let key = newLit(a[0].strVal)
+    if fieldName(a[0]) == "from":
+      if fromNode != nil: error("`role` accepts only one `from =`", a)
+      fromNode = a[1]
+      continue
+    let key = newLit(fieldName(a[0]))
     let val = a[1]
     # Type-directed: an entity is a binding, anything else is a parameter.
     let branch = newTree(nnkWhenStmt,
@@ -187,8 +197,12 @@ proc handleRole(dSym: NimNode, stmt: NimNode): NimNode =
     branch.copyLineInfo(a)
     result.add branch
 
-  result.add newTree(nnkDiscardStmt,
-    newCall(ident"addRole", dSym, roleNameNode, newLit(instName), bindsSym, paramsSym))
+  let attach = if fromNode == nil:
+    newCall(ident"addRole", dSym, roleNameNode, newLit(instName), bindsSym, paramsSym)
+  else:
+    newCall(ident"addRoleFromInterface", dSym, roleNameNode, newLit(instName),
+            fromNode, bindsSym, paramsSym)
+  result.add newTree(nnkDiscardStmt, attach)
   result = newBlockStmt(result)
   result.copyLineInfo(stmt)
 
@@ -439,6 +453,7 @@ proc buildDesignBody(dSym, nlSym, globalsSym: NimNode, body: NimNode): NimNode =
   result.add netlistDsl.buildNetlistBody(nlSym, globalsSym, netlistStmts)
   result.add newLetStmt(dSym, newCall(ident"newDesign", nlSym))
   result.add trailing
+  result.add newCall(ident"addImpliedRoles", dSym)
 
 macro design*(name: untyped, body: untyped): untyped =
   ## Builds a `Design`: a `Netlist` plus the roles and requirements attached

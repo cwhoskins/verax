@@ -67,6 +67,33 @@ suite "flattening hierarchy for simulation":
     check "XA.C1" in onB
     check "XB.R1" in onB
 
+  test "opened bus ports stay distinct after flattening":
+    let openBus = subckt("OPEN_BUS", [S, DQ]):
+      net S, kind = ntSignal
+      bus DQ, width = 2
+      component U1, kind = "ic":
+        pin "S", S, kind = ptInput
+        pin "D0", DQ[0], kind = ptInput
+        pin "D1", DQ[1], kind = ptInput
+    let nl = netlist("top"):
+      instance XA, openBus, {"S": open, "DQ": open}
+
+    # An opened group creates one marked scalar net per exposed port, not a
+    # shared dangling net for the whole group.
+    check nl.nets["nc_XA_S"].attrs["iface.nc"] == "1"
+    check nl.nets["nc_XA_DQ_0"].attrs["iface.nc"] == "1"
+    check nl.nets["nc_XA_DQ_1"].attrs["iface.nc"] == "1"
+    check nl.nets["nc_XA_S"] != nl.nets["nc_XA_DQ_0"]
+    check nl.nets["nc_XA_DQ_0"] != nl.nets["nc_XA_DQ_1"]
+
+    discard flatten(nl)
+    let u = nl.components["XA.U1"]
+    check u.pins["S"].net == nl.nets["nc_XA_S"]
+    check u.pins["D0"].net == nl.nets["nc_XA_DQ_0"]
+    check u.pins["D1"].net == nl.nets["nc_XA_DQ_1"]
+    check u.pins["S"].net != u.pins["D0"].net
+    check u.pins["D0"].net != u.pins["D1"].net
+
   test "ground stays one net rather than becoming XA.0":
     let nl = board()
     discard flatten(nl)

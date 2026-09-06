@@ -78,6 +78,7 @@
 import nimcir/contract/dsl
 import nimcir/verify
 import nimcir/spice/boundary
+import nimcir/netlist/interfaces/std
 
 import ./lib/i2c_parts
 
@@ -98,8 +99,7 @@ let d = design("i2c_eeprom"):
   net vdd, kind = ntPower:
     spec:
       voltage = 3.3.V
-  net sda, kind = ntSignal
-  net scl, kind = ntSignal
+  iface i2c, i2cInterface()
   net xact_done, kind = ntSignal
   net xact_pass, kind = ntSignal
 
@@ -125,12 +125,12 @@ let d = design("i2c_eeprom"):
   # Both values are load-bearing and neither is a default.
   component R1, kind = "resistor", value = "1.5k":
     pin "1", vdd, kind = ptPassive
-    pin "2", sda, kind = ptPassive
+    pin "2", i2c["sda"], kind = ptPassive
     spec:
       tolerance = 1.pct
   component R2, kind = "resistor", value = "1.5k":
     pin "1", vdd, kind = ptPassive
-    pin "2", scl, kind = ptPassive
+    pin "2", i2c["scl"], kind = ptPassive
     spec:
       tolerance = 1.pct
 
@@ -141,14 +141,14 @@ let d = design("i2c_eeprom"):
   # would be derated against its DC bias by `spice/models` and would move the
   # very number this part exists to state.
   component C1, kind = "capacitor", value = "47p":
-    pin "1", sda, kind = ptPassive
+    pin "1", i2c["sda"], kind = ptPassive
     pin "2", gnd, kind = ptGround
     spec:
       package = "0402"
       dielectric = "C0G"
       voltage_rating = 50.0.V
   component C2, kind = "capacitor", value = "47p":
-    pin "1", scl, kind = ptPassive
+    pin "1", i2c["scl"], kind = ptPassive
     pin "2", gnd, kind = ptGround
     spec:
       package = "0402"
@@ -159,16 +159,14 @@ let d = design("i2c_eeprom"):
   component U1, kind = "mcu", partNumber = "dummy-i2c-controller":
     pin "VDD", vdd, kind = ptPower
     pin "VSS", gnd, kind = ptGround
-    pin "SDA", sda, kind = ptInOut
-    pin "SCL", scl, kind = ptInOut
+    port i2c, controller, pins = {"sda": "SDA", "scl": "SCL"}
     pin "DONE", xact_done, kind = ptOutput
     pin "PASS", xact_pass, kind = ptOutput
 
   component U2, kind = "eeprom", partNumber = "M24C64-U":
     pin "VCC", vdd, kind = ptPower
     pin "VSS", gnd, kind = ptGround
-    pin "SDA", sda, kind = ptInOut
-    pin "SCL", scl, kind = ptInOut
+    port i2c, target, pins = {"sda": "SDA", "scl": "SCL"}
     # Tied low: this board uses device select 000 and never write-protects.
     # Declared even though the model ignores WC, because the netlist should
     # describe the part that gets soldered.
@@ -196,8 +194,7 @@ let d = design("i2c_eeprom"):
   # `controller` is what tells the check which part drives the bus: every
   # device on I2C has an inout data pin and nothing in a netlist
   # distinguishes the controller from a target.
-  role "i2c", bus, sda = sda, scl = scl, pullupRail = vdd,
-       controller = U1, frequency = 100.kHz
+  role "i2c", i2c, `from` = i2c, pullupRail = vdd, frequency = 100.kHz
 
   # The window opens at 9 ms because the exchange finishes at about 8.26 --
   # roughly 2 ms of protocol at 100 kHz either side of the 5 ms the part
@@ -212,7 +209,7 @@ let d = design("i2c_eeprom"):
 # `bidi_bridge` rather than being driven as a digital node. Said about the
 # *nets* rather than passed to either device, because it is a property of the
 # bus and both devices on it have to agree.
-markAnalogBus(d, "sda", "scl")
+markAnalogBus(d, "i2c_sda", "i2c_scl")
 
 useM24C64(d, "U2", uid = partUid)
 useDummyMcu(d, "U1", uid = partUid)

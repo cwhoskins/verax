@@ -68,11 +68,21 @@ proc checkOutputConflicts*(nl: Netlist, recursive = true): seq[Issue] =
         $outputs.len & " output pins drive net '" & net.name & "': " & pinListLabel(drivers),
         net = net, pins = drivers)
     elif drivers.len >= 2:
-      result.add newIssue("output_conflict", sevWarning,
+      # A declared shared interface signal is the one case PinType alone
+      # cannot distinguish: all sides are open-drain/tri-stated inouts.
+      var declaredShared = outputs.len == 0 and inouts.len == drivers.len and drivers.len > 0
+      let instance = net.attrs.getOrDefault("iface.instance")
+      declaredShared = declaredShared and instance.len > 0 and
+        net.attrs.getOrDefault("iface.shared") == "1"
+      for p in drivers:
+        declaredShared = declaredShared and
+          p.attrs.getOrDefault("iface.instance") == instance
+      if not declaredShared:
+        result.add newIssue("output_conflict", sevWarning,
         "multiple driver-capable pins share net '" & net.name &
         "' (" & $inouts.len & " ptInOut pin(s) among them; may be an intentional " &
         "shared/tri-stated bus): " & pinListLabel(drivers),
-        net = net, pins = drivers)
+          net = net, pins = drivers)
   if recursive:
     for _, child in nl.children:
       result.add checkOutputConflicts(child, recursive = true)

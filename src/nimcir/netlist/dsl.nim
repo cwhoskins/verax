@@ -74,8 +74,9 @@ import ./types
 import ./graph
 import ./annotations
 import ./packages
+import ./interfaces
 
-export types, graph, annotations, packages
+export types, graph, annotations, packages, interfaces
 
 const
   netKnownFields = ["kind"]
@@ -208,6 +209,116 @@ proc handleNet(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
       else:
         error("only `spec` statements are allowed inside a `net` block", inner)
   result.copyLineInfo(stmt)
+
+macro interfaceDef*(name: untyped, body: untyped): untyped =
+  ## Defines and registers an interface vocabulary.  Definitions are ordinary
+  ## runtime values so parameterised definitions remain ordinary Nim procs.
+  name.expectKind(nnkStrLit)
+  let defSym = genSym(nskVar, "interfaceDef")
+  result = newStmtList()
+  result.add newTree(nnkVarSection, newIdentDefs(defSym, ident"InterfaceDef"))
+  result.add newAssignment(newDotExpr(defSym, ident"name"), name)
+  for stmt in body:
+    if stmt.kind == nnkCommentStmt: continue
+    if stmt.kind notin {nnkCommand, nnkCall} or stmt.len == 0:
+      error("expected `signal`, `modport`, or `implies` in `interfaceDef`", stmt)
+    if stmt[0].eqIdent("signal"):
+      if stmt.len < 2 or stmt[1].kind != nnkIdent:
+        error("`signal` requires an identifier", stmt)
+      var width: NimNode = newLit(1)
+      var shared: NimNode = newLit(false)
+      var doc: NimNode = newLit("")
+      for i in 2 ..< stmt.len:
+        stmt[i].expectKind(nnkExprEqExpr)
+        case stmt[i][0].strVal
+        of "width": width = stmt[i][1]
+        of "shared": shared = stmt[i][1]
+        of "doc": doc = stmt[i][1]
+        else: error("unknown `signal` option", stmt[i])
+      result.add newCall(newDotExpr(newDotExpr(defSym, ident"signals"), ident"add"),
+        newTree(nnkObjConstr, ident"SignalDef",
+          newTree(nnkExprColonExpr, ident"name", newLit(stmt[1].strVal)),
+          newTree(nnkExprColonExpr, ident"width", width),
+          newTree(nnkExprColonExpr, ident"shared", shared),
+          newTree(nnkExprColonExpr, ident"doc", doc)))
+    elif stmt[0].eqIdent("modport"):
+      let args = stmt[1 ..< stmt.len]
+      let (rest, blk) = stripTrailingBlock(args)
+      if rest.len < 1 or rest[0].kind != nnkIdent or blk == nil:
+        error("`modport` requires an identifier and a block", stmt)
+      let mpSym = genSym(nskVar, "modport")
+      result.add newTree(nnkVarSection, newIdentDefs(mpSym, ident"Modport"))
+      result.add newAssignment(newDotExpr(mpSym, ident"name"), newLit(rest[0].strVal))
+      for i in 1 ..< rest.len:
+        rest[i].expectKind(nnkExprEqExpr)
+        if rest[i][0].strVal == "controller":
+          result.add newAssignment(newDotExpr(mpSym, ident"controller"), rest[i][1])
+        else: error("unknown `modport` option", rest[i])
+      for pair in blk:
+        if pair.kind == nnkCommentStmt: continue
+        if pair.kind notin {nnkAsgn, nnkExprEqExpr} or pair[0].kind != nnkIdent:
+          error("expected `signal = ptInput` in `modport`", pair)
+        result.add newAssignment(newTree(nnkBracketExpr, newDotExpr(mpSym, ident"dirs"),
+          newLit(pair[0].strVal)), pair[1])
+      result.add newAssignment(newTree(nnkBracketExpr, newDotExpr(defSym, ident"modports"),
+        newLit(rest[0].strVal)), mpSym)
+    elif stmt[0].eqIdent("implies"):
+      if stmt.len != 2: error("`implies` takes one role name", stmt)
+      result.add newCall(newDotExpr(newDotExpr(defSym, ident"implies"), ident"add"),
+        newTree(nnkObjConstr, ident"RoleClaim",
+          newTree(nnkExprColonExpr, ident"role", stmt[1])))
+    else: error("unknown `interfaceDef` statement: " & stmt[0].repr, stmt)
+  result.add newCall(ident"registerInterfaceDef", defSym)
+  result.add defSym
+  result = newBlockStmt(result)
+
+proc handleBus(nlSym: NimNode, stmt: NimNode): NimNode =
+  var args: seq[NimNode]
+  for i in 1 ..< stmt.len: args.add stmt[i]
+  let (rest, blk) = stripTrailingBlock(args)
+  if blk != nil or rest.len < 2 or rest[0].kind != nnkIdent:
+    error("`bus` requires an identifier and `width =` or `nets =`", stmt)
+  var value: NimNode = nil
+  for a in rest[1 .. ^1]:
+    a.expectKind(nnkExprEqExpr)
+    if a[0].strVal == "width": value = newCall(ident"addBus", nlSym, newLit(rest[0].strVal), a[1])
+    elif a[0].strVal == "nets": value = newCall(ident"busOf", nlSym, newLit(rest[0].strVal), a[1])
+  if value == nil: error("`bus` requires `width =` or `nets =`", stmt)
+  newLetStmt(rest[0], value)
+
+proc handleIface(nlSym: NimNode, stmt: NimNode): NimNode =
+  if stmt.len < 3 or stmt[1].kind != nnkIdent:
+    error("`iface` requires an identifier and an InterfaceDef", stmt)
+  var count: NimNode = nil
+  for i in 3 ..< stmt.len:
+    stmt[i].expectKind(nnkExprEqExpr)
+    if stmt[i][0].strVal == "count": count = stmt[i][1]
+    else: error("unknown `iface` option", stmt[i])
+  if count == nil:
+    newLetStmt(stmt[1], newCall(ident"addInterface", nlSym, newLit(stmt[1].strVal), stmt[2]))
+  else:
+    newLetStmt(stmt[1], newCall(ident"addInterfaceArray", nlSym, newLit(stmt[1].strVal), stmt[2], count))
+
+proc handlePort(compVar: NimNode, stmt: NimNode): NimNode =
+  if stmt.len < 2: error("`port` requires a bus or an interface and modport", stmt)
+  var prefix: NimNode = newLit("")
+  var mapping = newTree(nnkBracket)
+  var modport: NimNode = nil
+  var firstOption = 2
+  if stmt.len >= 3 and stmt[2].kind == nnkIdent:
+    modport = stmt[2]; firstOption = 3
+  for i in firstOption ..< stmt.len:
+    stmt[i].expectKind(nnkExprEqExpr)
+    case stmt[i][0].strVal
+    of "prefix": prefix = stmt[i][1]
+    of "pins":
+      if stmt[i][1].kind != nnkTableConstr: error("`pins` must be a table", stmt[i])
+      for pair in stmt[i][1]:
+        pair.expectKind(nnkExprColonExpr)
+        mapping.add newTree(nnkTupleConstr, pair[0], pair[1])
+    else: error("unknown `port` option", stmt[i])
+  let target = if modport == nil: stmt[1] else: newCall(ident"view", stmt[1], newLit(modport.strVal))
+  newCall(ident"connectPort", compVar, target, mapping, prefix)
 
 proc handlePin(compVar: NimNode, stmt: NimNode): NimNode =
   var args: seq[NimNode]
@@ -376,7 +487,9 @@ proc handleComponent(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
       if inner.kind == nnkCommentStmt: continue
       if inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("pin"):
         result.add handlePin(compVar, inner)
-      elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("simReplace"):
+      elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("port"):
+        result.add handlePort(compVar, inner)
+      elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("simReplace"): 
         result.add handleSimReplace(compVar, inner)
       elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("spec"):
         result.add handleSpec(compVar, asComponent, inner)
@@ -406,16 +519,36 @@ proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
   let portsNode = rest[2]
   var byName = false
   var portsSeq: NimNode
+  var openGroupsSeq: NimNode = nil
   case portsNode.kind
   of nnkBracket:
-    portsSeq = newTree(nnkPrefix, ident"@", portsNode)
+    let parts = genSym(nskVar, "ports")
+    let init = newCall(newTree(nnkBracketExpr, ident"newSeq", ident"Net"), newLit(0))
+    var blk = newStmtList(newVarStmt(parts, init))
+    for entry in portsNode:
+      blk.add newCall(newDotExpr(parts, ident"add"), newCall(ident"netsOf", entry))
+    blk.add parts
+    portsSeq = newBlockStmt(blk)
   of nnkTableConstr:
     byName = true
-    let pairs = newTree(nnkBracket)
+    let pairs = genSym(nskVar, "wiring")
+    let openGroups = genSym(nskVar, "openGroups")
+    var wiringBlk = newStmtList(newVarStmt(pairs,
+      newCall(newTree(nnkBracketExpr, ident"newSeq",
+                       newTree(nnkTupleConstr, ident"string", ident"Net")), newLit(0))))
+    var openBlk = newStmtList(newVarStmt(openGroups,
+      newCall(newTree(nnkBracketExpr, ident"newSeq", ident"string"), newLit(0))))
     for entry in portsNode:
       entry.expectKind(nnkExprColonExpr)
-      pairs.add newTree(nnkTupleConstr, entry[0], entry[1])
-    portsSeq = newTree(nnkPrefix, ident"@", pairs)
+      if entry[1].kind == nnkIdent and entry[1].eqIdent("open"):
+        openBlk.add newCall(newDotExpr(openGroups, ident"add"), entry[0])
+      else:
+        wiringBlk.add newCall(newDotExpr(pairs, ident"add"),
+          newCall(ident"wiringOf", entry[0], entry[1]))
+    wiringBlk.add pairs
+    openBlk.add openGroups
+    portsSeq = newBlockStmt(wiringBlk)
+    openGroupsSeq = newBlockStmt(openBlk)
   else:
     error("`instance` ports must be a bracket of nets in port order, or a " &
           "`{\"port\": net}` table naming them", portsNode)
@@ -434,10 +567,15 @@ proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
   let instVar = if identSym != nil: identSym else: genSym(nskLet, "inst")
   result = newStmtList()
   result.add newLetStmt(instVar,
-    newCall(ident(if byName: "instantiateByPort" else: "instantiate"),
-            nlSym, designatorStrNode, templNode, portsSeq, globalsSym, kindNode))
+    if byName:
+      newCall(ident"instantiateByPortOpen", nlSym, designatorStrNode,
+              templNode, portsSeq, openGroupsSeq, globalsSym, kindNode)
+    else:
+      newCall(ident"instantiate", nlSym, designatorStrNode, templNode,
+              portsSeq, globalsSym, kindNode))
   for p in fieldPairs:
     result.add dispatchField(instVar, componentKnownFields, p)
+  result.add newCall(ident"promotePortDirections", instVar)
 
   # `with = <proc(Netlist)>` runs against **this instance's own clone**,
   # immediately after `instantiate` and before anything else sees it.
@@ -549,6 +687,10 @@ proc buildNetlistBody*(nlSym, globalsSym: NimNode, body: NimNode): NimNode =
     let head = stmt[0]
     if head.eqIdent("net"):
       result.add handleNet(nlSym, globalsSym, stmt)
+    elif head.eqIdent("bus"):
+      result.add handleBus(nlSym, stmt)
+    elif head.eqIdent("iface"):
+      result.add handleIface(nlSym, stmt)
     elif head.eqIdent("component"):
       result.add handleComponent(nlSym, globalsSym, stmt)
     elif head.eqIdent("instance"):
@@ -604,8 +746,12 @@ macro subckt*(name: untyped, ports: untyped, body: untyped): untyped =
   result.add newGlobalsVarSection(globalsSym)
   result.add buildNetlistBody(nlSym, globalsSym, body)
   for portIdent in ports:
-    portIdent.expectKind(nnkIdent)
-    result.add newCall(ident"addPort", nlSym, newLit(portIdent.strVal), portIdent)
+    if portIdent.kind == nnkIdent:
+      result.add newCall(ident"addPorts", nlSym, newLit(portIdent.strVal), portIdent)
+    elif portIdent.kind == nnkDotExpr:
+      result.add newCall(ident"addPorts", nlSym, newLit(portIdent[0].strVal), newCall(ident"view", portIdent[0], newLit(portIdent[1].strVal)))
+    else:
+      error("a subckt port must be a net, bus, or interface modport", portIdent)
   result.add nlSym
   result = newBlockStmt(result)
   result.copyLineInfo(body)

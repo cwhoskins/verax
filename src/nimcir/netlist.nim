@@ -6,5 +6,6 @@
 
 import nimcir/netlist/types
 import nimcir/netlist/graph
+import nimcir/netlist/interfaces
 
-export types, graph
+export types, graph, interfaces
