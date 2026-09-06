@@ -79,7 +79,8 @@ proc pathsFrom(nl: Netlist, start: Net, skip: int,
   var found: seq[TraversedPath]
   let skipPool = if skip < 0: -1 else: plan.poolOf[skip]
   proc walk(net: Net, path: seq[int], seen: HashSet[int]) =
-    if net == nil or net.netlist != nl or isGround(net) or isRail(net): return
+    if net == nil or not onThisSheet(nl, net) or isGround(net) or isRail(net):
+      return
     var ends: seq[int]
     for pin in net.pins:
       let c = pin.component

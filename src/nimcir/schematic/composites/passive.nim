@@ -148,4 +148,5 @@ proc parallelStackKind(): CompositeKind =
     externalPins: parallelExternalPins,
     pickRepresentative: parallelPickRepresentative,
     internalRoute: parallelInternalRoute,
-    rotationCandidates: parallelRotationCandidates)
+    rotationCandidates: parallelRotationCandidates,
+    footprint: boundingBoxFootprint)

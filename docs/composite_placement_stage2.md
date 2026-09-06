@@ -293,13 +293,36 @@ the same one.
 
 ### 2.6 — a second `CompositeKind`
 
-Registering a second composite type (the original motivating example was an
-op-amp inverting-amplifier composite consuming an earlier-recognized
-parallel-passive feedback-network composite as one of its own members) is
-explicitly out of scope until 2.1–2.5 are settled. It is its own PR with its
-own baseline capture: recognition, the six hooks, and — since it would be the
-first real nesting — proof that `rawMembers`/`rawOffsets`'s recursion (written
-in Stage 1 but never exercised past depth 1) actually holds up.
+**Partly done.** `piKind` and `teeKind` (`schematic/composites/pi.nim`,
+`tee.nim`) are now registered after `parallelStackKind` — the two passive
+filter sections from `docs/composites.md` (ideas 3, and 1+2). `compositePlan`
+gained a **non-nesting fold**: it keeps each kind's multi-member groups in
+registration order, drops any whose members an earlier kind already claimed,
+then lays the survivors plus unclaimed singletons into `topLevel` in ascending
+first-raw-member order. A seventh hook, `footprint`, was added so the pi (whose
+series pins are interior to the members' bounding box) can reserve the member
+bodies individually while the parallel stack and tee keep the bounding box.
+`routing.fullyInternalComposite` lets a signal net every pin of which is
+covered by one composite port (the tee's private mid) skip external routing
+and be drawn by `compositeInternalRoutes` alone. `isTraversable` and
+`pathsFrom` gained `onThisSheet`: a **global** net (`"0"`, a `global = true`
+rail) keeps `.netlist` pointing at the root even in a cloned child sheet, and
+the old bare `net.netlist == nl` test rejected the child sheet's own
+ground-connected passives — so the pi section in `RIAA_CHANNEL` (`RL`/`CIN`/
+`RB`) was not recognized when `keepFullSchematic` drew the instance's clone,
+and its parts scattered. `onThisSheet` accepts a net owned by `nl` or the
+identical object in `nl.nets` (which a sibling's private net never is).
+Verified against the full
+`nimble test` + `nimble verify` corpus (default historical policy unaffected
+— it never builds the plan; constrained-layered tests unchanged — no design
+carries a pi/tee shape) plus dedicated `tests/test_schematic.nim` cases.
+
+**Still out of scope:** a *nesting* kind — one that consumes an earlier
+composite as one of its own members (the original op-amp inverting-amplifier /
+parallel-passive-feedback example). That needs the arena-index fold over the
+pool an earlier kind's `topLevel` leaves behind, and it would be the first
+real exercise of `rawMembers`/`rawOffsets`'s recursion past depth 1. pi/tee
+did not need it (their members are always raw flat two-terminal singletons).
 
 ## Verification method, for whoever continues this
 

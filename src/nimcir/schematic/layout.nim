@@ -18,6 +18,8 @@ include ./labels
 include ./placement
 include ./composites/composite
 include ./composites/passive
+include ./composites/pi
+include ./composites/tee
 include ./constrained
 include ./state
 include ./routing

@@ -227,7 +227,15 @@ implements.
   cloned child** directly (what `verify`'s per-subckt sheets do) means its
   shared global net `"0"` carries pins from every sibling clone, and siblings
   reuse designators — so pins are filtered by owning-`Netlist` identity, not by
-  name, everywhere `layout` walks `net.pins`.
+  name, everywhere `layout` walks `net.pins`. The dual of that filter is
+  `onThisSheet` (`composites/composite.nim`): a **global** net (`"0"`, any
+  `global = true` rail) stays a single object whose `.netlist` is the root, so
+  a bare `net.netlist == nl` test wrongly rejects this sheet's own
+  ground-connected two-terminal parts — `isTraversable` and `pathsFrom` accept
+  a net that is either owned by `nl` *or* the identical object `nl.nets` holds
+  under that name, which a sibling's private net never is. Without it the pi
+  section in `RIAA_CHANNEL` (`RL`–`CIN`–`RB`) is not recognized on the child
+  sheet and its parts scatter.
   Finally a **label pass** places every free-standing `SchematicLabel` — each
   non-box part's designator+value as one stacked block, each signal net's name
   near its leftmost-then-topmost pin, each supply rail's name at its stub, and
@@ -276,37 +284,68 @@ implements.
   move. The scene-with-no-netlist input is why it pairs with the JSON reader:
   a run-archive `runNNN.json` is enough to ask why a dashed fallback marker
   is there.
-- **`composites/composite.nim`** and **`composites/passive.nim`** — the
-  composite arena `constrained.nim` pools placement over, and the one motif
-  registered into it. `composite.nim` is kind-agnostic: `CompositePort`,
+- **`composites/composite.nim`**, **`composites/passive.nim`**,
+  **`composites/pi.nim`** and **`composites/tee.nim`** — the composite arena
+  `constrained.nim` pools placement over, and the three motifs registered into
+  it. `composite.nim` is kind-agnostic: `CompositePort`,
   `PlaceableItem`, `CompositePlan` (the arena: `items`, the leaf/composite
   entries; `topLevel`, the arena indices placement actually sees, singletons
   and top-level composites interleaved in ascending first-raw-member order;
   `ownerOf`/`poolOf`, raw index to owning arena index / pool position), and
-  the `CompositeKind` contract — six `{.nimcall.}` hooks
+  the `CompositeKind` contract — seven `{.nimcall.}` hooks
   (`recognize`/`internalLayout`/`externalPins`/`pickRepresentative`/
-  `internalRoute`/`rotationCandidates`) a motif implements over the arrays
-  `LayoutState` already threads, so a recognizer needs no access to
-  placement/routing internals. `compositeKinds`, the registry, is a `let`, not
+  `internalRoute`/`rotationCandidates`/`footprint`) a motif implements over
+  the arrays `LayoutState` already threads, so a recognizer needs no access to
+  placement/routing internals. `footprint` is routing-only: `boundingBoxFootprint`
+  (one padded box over every member) is the default and what the parallel
+  stack and the tee use — their external terminals sit on that box's edge — while
+  the pi returns `memberBodiesFootprint` (each member body padded on its own),
+  because its series part's pins are boxed in by the wider flanking shunts and
+  a route must thread the channels between the bodies to reach them. Placement
+  legalization keeps its own bounding-box `compositeFootprint` regardless.
+  `compositeKinds`, the registry, is a `let`, not
   a `var`: nothing outside this included module can register a kind, and
   **registration order is recognition precedence is output**. Adding a motif
   means adding a file beside `passive.nim` and one entry in `compositeKinds`
   — never a special case in the router, placement, or
-  `constrainedRecomputeRotations`. `compositePlan`
-  currently asserts `compositeKinds.len == 1`; folding a second kind's
-  recognition over the pool an earlier kind's `topLevel` already leaves
-  behind (so a later, more general kind may consume an earlier kind's
-  composite as one of its own members) is deliberately not built until there
-  is a second kind to prove it against — see `docs/composite_placement_stage2.md`
-  §2.6. `passive.nim` holds `parallelStackKind`, the one registered kind
-  today: parallel flat two-terminal parts sharing an unordered net pair
-  become one placement unit, keyed by that unordered net pair so declaration
-  and pin order cannot split the group (`parallelRecognize`). Because
-  `composite.nim` is included before `passive.nim` but must still name
-  `parallelStackKind` in the registry, `composite.nim` forward-declares
-  `proc parallelStackKind(): CompositeKind` immediately above `compositeKinds`
-  — `include` is a textual splice into one module, so this is an ordinary
-  forward declaration, resolved once `passive.nim`'s body is spliced in below.
+  `constrainedRecomputeRotations`. `compositePlan` folds the kinds in
+  registration order: it keeps each kind's multi-member groups, dropping any
+  whose members an earlier kind already claimed, then lays the survivors plus
+  the unclaimed singletons into `topLevel` in ascending first-raw-member
+  order. This is the **non-nesting** subset of `docs/composite_placement_stage2.md`
+  §2.6 — enough for pi/tee, whose members are always raw flat two-terminal
+  singletons; a later kind that must genuinely *consume* an earlier composite
+  as one of its own members (the op-amp inverting-amp example) still needs the
+  arena-index fold this does not do.
+  `passive.nim` holds `parallelStackKind`: parallel flat two-terminal parts
+  sharing an unordered net pair become one placement unit, keyed by that
+  unordered net pair so declaration and pin order cannot split the group
+  (`parallelRecognize`). `pi.nim` and `tee.nim` hold the two passive
+  filter-section motifs from `docs/composites.md` (ideas 3, and 1+2):
+  * **pi** — a flat two-terminal series part with a flat two-terminal
+    shunt-to-ground part at *each* end. Recognition is topology-only
+    (`isGround` on the shunt legs, `isRail`/`isGround` rejected on the series
+    nets) plus the rule that both series nets must reach beyond the composite
+    (`>2` pins or a declared port) — a private two-pin end is the tee's mid
+    node, and without that rule `[L1]--mid--[L2]` with a shunt at `mid`
+    misreads as a pi around `L2`. Canonical drawing: series horizontal,
+    a shunt one grid pitch below each pin, ground pins down.
+  * **tee** — two flat two-terminal series parts meeting at a *private* mid
+    net (exactly three pins, all flat two-terminal, not a port, not
+    ground/rail) that also carries one shunt-to-ground part and nothing else.
+    The mid net is wholly internal: `teeInternalRoute` draws its T-junction
+    and `routing.fullyInternalComposite` makes the signal loop skip external
+    routing for it (a net every pin of which is covered by one composite
+    port). Canonical drawing: the two series parts in one horizontal row, the
+    shunt on the midline one grid pitch below.
+  Both exclude a source as a member (`isPassiveElement`, keyed on the symbol
+  family, not `Component.kind` spelling): a source on a filter node is a leg
+  to ground topologically but not a shunt element. Because `composite.nim` is
+  included before `passive.nim`/`pi.nim`/`tee.nim` but must still name their
+  `*Kind()` ctors in the registry, it forward-declares all three immediately
+  above `compositeKinds` — `include` is a textual splice into one module, so
+  these are ordinary forward declarations, resolved once each file's body is
+  spliced in below.
 - **`svg.nim`** — `renderSvg`/`writeSvgFile`. Self-contained SVG: every colour
   a literal, every style inlined, a graph-paper grid, wires as polylines,
   junction circles, ground/power symbols (each bar drawn perpendicular to the

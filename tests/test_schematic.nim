@@ -708,6 +708,17 @@ test "constrained stages group parallel passives and bound RIAA aspect ratio":
   # declarations and values, so their paired symbols share a stage.
   check partOf(s, "R7").x == partOf(s, "C5").x
   check partOf(s, "R8").x == partOf(s, "C6").x
+  # RL (shunt on IN) -- CIN (series) -- RB (shunt on amp) is a pi section:
+  # one packed, canonical unit, series horizontal with a shunt one grid pitch
+  # below each of its pins.
+  block:
+    let cin = partOf(s, "CIN")
+    let rl = partOf(s, "RL")
+    let rb = partOf(s, "RB")
+    check abs(cin.pins[0].y - cin.pins[1].y) < 1e-6
+    check abs(rl.x - cin.x) == 40.0 and rl.y - cin.y == 80.0
+    check abs(rb.x - cin.x) == 40.0 and rb.y - cin.y == 80.0
+    check rl.x != rb.x
   let box = sceneBBox(s)
   let width = box.x2 - box.x1
   let height = box.y2 - box.y1
@@ -718,6 +729,35 @@ test "constrained stages group parallel passives and bound RIAA aspect ratio":
   check distinctWiresNeverShareCollinearRuns(s)
   check differentNetsRespectSeparation(s)
   check layout(riaaChannel(), options) == s
+
+test "a composite whose leg lands on a global net still packs on a child sheet":
+  # `render.keepFullSchematic` draws each subcircuit instance's *cloned child*,
+  # where ground "0" stays a single shared object owned by the root. A
+  # recognizer that rejected any pin whose `net.netlist` is not this sheet
+  # would drop the pi's grounded shunts and leave RL/CIN/RB scattered --
+  # `onThisSheet` accepts the shared global, so the child sheet packs it too.
+  var top = newNetlist("riaa_top_pack")
+  let gnd = addNet(top, newNet("0", ntGround))
+  let vp = addNet(top, newNet("vp", ntPower))
+  let vn = addNet(top, newNet("vn", ntPower))
+  let inL = addNet(top, newNet("inL"))
+  let outL = addNet(top, newNet("outL"))
+  var globals = initOrderedTable[string, Net]()
+  globals["0"] = gnd
+  let xl = instantiate(top, "XL", riaaChannel(), @[inL, outL, vp, vn, gnd],
+                       globals)
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(xl.subNetlist, options)
+  let cin = partOf(s, "CIN")
+  let rl = partOf(s, "RL")
+  let rb = partOf(s, "RB")
+  check abs(cin.pins[0].y - cin.pins[1].y) < 1e-6      # series horizontal
+  check abs(rl.x - cin.x) == 40.0 and rl.y - cin.y == 80.0
+  check abs(rb.x - cin.x) == 40.0 and rb.y - cin.y == 80.0
+  check rl.x != rb.x
+  check s.fallbacks.len == 0
+  check layout(xl.subNetlist, options) == s
 
 test "constrained layering admits a raw-over-gate sheet whose pool clears it":
   # The capability the whole Stage 2.3-2.5 effort was for: 33 R||C pairs is
@@ -1370,6 +1410,108 @@ test "constrained parallel rail group emits one glyph per shared terminal":
   check ground == 1
   check s.parts.len == 2                 # no public composite schema
   check layout(nl, options) == s
+
+proc piFilter(): Netlist =
+  ## A pi section: L1 series between `fin` and `mid`, a shunt cap to ground at
+  ## each end, driven through a source resistor and loaded by a divider so
+  ## both external nets reach beyond the composite.
+  result = newNetlist("pi_filter")
+  let src = addNet(result, newNet("src"))
+  let fin = addNet(result, newNet("fin"))
+  let mid = addNet(result, newNet("mid"))
+  let fout = addNet(result, newNet("fout"))
+  let gnd = addNet(result, newNet("0", ntGround))
+  let v1 = addComponent(result, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", src); discard connect(v1, "-", gnd)
+  let rs = addComponent(result, newComponent("RS", kind = "resistor"))
+  discard connect(rs, "1", src, ptPassive); discard connect(rs, "2", fin, ptPassive)
+  let l1 = addComponent(result, newComponent("L1", kind = "inductor"))
+  discard connect(l1, "1", fin, ptPassive); discard connect(l1, "2", mid, ptPassive)
+  let c1 = addComponent(result, newComponent("C1", kind = "capacitor"))
+  discard connect(c1, "1", fin, ptPassive); discard connect(c1, "2", gnd, ptPassive)
+  let c2 = addComponent(result, newComponent("C2", kind = "capacitor"))
+  discard connect(c2, "1", mid, ptPassive); discard connect(c2, "2", gnd, ptPassive)
+  let rl = addComponent(result, newComponent("RL", kind = "resistor"))
+  discard connect(rl, "1", mid, ptPassive); discard connect(rl, "2", fout, ptPassive)
+  let rt = addComponent(result, newComponent("RT", kind = "resistor"))
+  discard connect(rt, "1", fout, ptPassive); discard connect(rt, "2", gnd, ptPassive)
+
+test "constrained pi composite: series flat, shunts flank it to ground, routed":
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(piFilter(), options)
+  let l1 = partOf(s, "L1")
+  let c1 = partOf(s, "C1")
+  let c2 = partOf(s, "C2")
+  # The three members are one locked, canonical unit: series horizontal, a
+  # shunt one grid pitch below each of its pins.
+  check abs(l1.pins[0].y - l1.pins[1].y) < 1e-6         # series horizontal
+  check c1.rotation in [90.0, 270.0]                     # shunts vertical
+  check c2.rotation in [90.0, 270.0]
+  check c1.y == c2.y and c1.y > l1.y                     # both shunts below
+  check abs((c1.x - l1.x) + (c2.x - l1.x)) < 1e-6        # symmetric about series
+  # ground pin of each shunt points down (larger y)
+  for sh in [c1, c2]:
+    check sh.pins[1].net == "0"
+    check sh.pins[1].y > sh.pins[0].y
+  check s.fallbacks.len == 0
+  check distinctWiresNeverShareCollinearRuns(s)
+  check differentNetsRespectSeparation(s)
+  check layout(piFilter(), options) == s
+
+proc teeFilter(): Netlist =
+  ## A tee section: L1 and L2 in series through a private `mid` node that also
+  ## carries a shunt cap to ground; nothing else touches `mid`.
+  result = newNetlist("tee_filter")
+  let src = addNet(result, newNet("src"))
+  let fin = addNet(result, newNet("fin"))
+  let mid = addNet(result, newNet("mid"))
+  let fout = addNet(result, newNet("fout"))
+  let gnd = addNet(result, newNet("0", ntGround))
+  let v1 = addComponent(result, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", src); discard connect(v1, "-", gnd)
+  let rs = addComponent(result, newComponent("RS", kind = "resistor"))
+  discard connect(rs, "1", src, ptPassive); discard connect(rs, "2", fin, ptPassive)
+  let l1 = addComponent(result, newComponent("L1", kind = "inductor"))
+  discard connect(l1, "1", fin, ptPassive); discard connect(l1, "2", mid, ptPassive)
+  let l2 = addComponent(result, newComponent("L2", kind = "inductor"))
+  discard connect(l2, "1", mid, ptPassive); discard connect(l2, "2", fout, ptPassive)
+  let c1 = addComponent(result, newComponent("C1", kind = "capacitor"))
+  discard connect(c1, "1", mid, ptPassive); discard connect(c1, "2", gnd, ptPassive)
+  let rl = addComponent(result, newComponent("RL", kind = "resistor"))
+  discard connect(rl, "1", fout, ptPassive); discard connect(rl, "2", gnd, ptPassive)
+
+test "constrained tee composite: two series parts, a grounded shunt at the private mid":
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(teeFilter(), options)
+  let l1 = partOf(s, "L1")
+  let l2 = partOf(s, "L2")
+  let c1 = partOf(s, "C1")
+  # Canonical T: the two series parts in one horizontal row, the shunt on the
+  # midline between them, one grid pitch below, ground pin down.
+  check l1.y == l2.y
+  check abs(l1.pins[0].y - l1.pins[1].y) < 1e-6
+  check abs(l2.pins[0].y - l2.pins[1].y) < 1e-6
+  check c1.rotation in [90.0, 270.0]
+  check abs(c1.x - (l1.x + l2.x) / 2.0) < 1e-6
+  check c1.y > l1.y
+  check c1.pins[1].net == "0" and c1.pins[1].y > c1.pins[0].y
+  # The mid net is wholly internal: it has real wires (its T-junction), not a
+  # fallback marker.
+  check s.fallbacks.len == 0
+  check wirePoints(s, "mid").len > 0
+  check distinctWiresNeverShareCollinearRuns(s)
+  check differentNetsRespectSeparation(s)
+  check layout(teeFilter(), options) == s
+
+test "a pi and a tee do not fire under the historical policy":
+  # Composites are a constrained-layered concern only; the default pipeline
+  # never builds the plan, so these render as ordinary scattered parts.
+  for nl in [piFilter(), teeFilter()]:
+    let s = layout(nl)
+    check s.parts.len == (if nl.name == "pi_filter": 7 else: 6)
+    check layout(nl) == s
 
 test "a powered one-net leaf keeps its ground pin down":
   # CSH hangs off the mid node to ground. Power direction is stronger than the

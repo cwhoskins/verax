@@ -66,6 +66,18 @@ type
       ## Every jointly valid rotation assignment for `members`, each a
       ## full-length copy of `current` with just these members' angles
       ## overwritten. An empty result leaves rotations at `current`.
+    footprint: proc(parts: seq[SchematicPart], members: seq[int],
+      padding: float): seq[Obstacle] {.nimcall.}
+      ## The routing obstacle(s) the composite reserves, once positions are
+      ## final. `boundingBoxFootprint` -- one padded box over every member --
+      ## is the default and what the parallel stack and the tee use: their
+      ## external terminals sit on that box's edge. A motif whose external
+      ## terminals are *interior* to the bounding box (the pi: its series
+      ## part's pins are boxed in by the wider flanking shunts) returns the
+      ## padded member bodies individually instead, so a route can thread the
+      ## channels between them. Placement legalization keeps its own
+      ## bounding-box `compositeFootprint` regardless -- this hook is
+      ## routing-only.
 
   CompositePlan = object
     items: seq[PlaceableItem]
@@ -90,6 +102,15 @@ type
       ## composite-free sheet provably unchanged by pool-indexing the
       ## semantic layer (`constrainedTopology`/`constrainedTargets` below).
 
+proc onThisSheet(nl: Netlist, net: Net): bool {.inline.} =
+  ## Whether `net` is one this sheet draws. Its own nets qualify; so does a
+  ## **global** net (SPICE node "0", any `global = true` rail) -- `clone`
+  ## leaves that a single shared object whose `.netlist` stays the root, but
+  ## registers it in every child's `nl.nets` under its name, so identity
+  ## against that entry is the test. A sibling instance's *private* net is
+  ## the thing this must still reject: it is not in this sheet's `nl.nets`.
+  net != nil and (net.netlist == nl or nl.nets.getOrDefault(net.name) == net)
+
 proc isTraversable(c: Component, nl: Netlist): bool =
   ## Semantic path walking is intentionally topology-only. All flat,
   ## two-terminal devices qualify, regardless of their electrical kind. Used
@@ -100,9 +121,49 @@ proc isTraversable(c: Component, nl: Netlist): bool =
   var connected = 0
   for _, pin in c.pins:
     if pin.net != nil:
-      if pin.net.netlist != nl: return false
+      if not onThisSheet(nl, pin.net): return false
       inc connected
   connected == 2
+
+proc twoTermOtherNet(c: Component, netName: string): Net =
+  ## The net on `c`'s *other* terminal, for a flat two-terminal part with one
+  ## pin on `netName`. `nil` if it has no such other pin. Topology-only, used
+  ## by the pi/tee recognizers.
+  for _, pin in c.pins:
+    if pin.net != nil and pin.net.name != netName: return pin.net
+
+proc twoTermPinOnNet(c: Component, netName: string): string =
+  ## The pin name of `c` sitting on `netName` ("" if none).
+  for pinName, pin in c.pins:
+    if pin.net != nil and pin.net.name == netName: return pinName
+
+proc isPassiveElement(sd: SymbolDef): bool {.inline.} =
+  ## A flat two-terminal part drawn as a passive filter element -- not a
+  ## source. The pi/tee motifs are *passive* sections: a source sitting on a
+  ## filter node is topologically a leg to ground but is not a shunt element,
+  ## and drawing it as one of a filter's flanking legs would misrepresent it.
+  ## Keyed on the symbol family `symbols.nim` already assigns (which folds
+  ## `battery`/`iswitch` in with their sources), never on `Component.kind`
+  ## spelling.
+  sd.name notin ["voltage_source", "current_source"]
+
+proc totalPartition(n: int, groups: seq[seq[int]]): seq[seq[int]] =
+  ## The `CompositeKind.recognize` contract is a *total* partition of `0 ..< n`.
+  ## A recognizer that only computes its multi-member groups gets the rest
+  ## filled in here: each group emitted at its lowest member's position, a
+  ## singleton everywhere else, so the result is in ascending first-member
+  ## order. `groups` must be disjoint and each a subset of `0 ..< n`.
+  var atMin = initTable[int, int]()
+  var inGroup = newSeq[bool](n)
+  for gi, g in groups:
+    var m = g[0]
+    for x in g:
+      m = min(m, x)
+      inGroup[x] = true
+    atMin[m] = gi
+  for i in 0 ..< n:
+    if atMin.hasKey(i): result.add groups[atMin[i]]
+    elif not inGroup[i]: result.add @[i]
 
 proc rawMembers(plan: CompositePlan, item: int): seq[int] =
   ## Every raw component under arena entry `item`, depth-first. A single
@@ -182,6 +243,29 @@ proc restoreCompositeOffsets(plan: CompositePlan, pos: var seq[Point]) =
     origin.y = round(origin.y / grid) * grid
     for at, i in members: pos[i] = origin + offsets[at]
 
+proc memberBox(p: SchematicPart, padding: float): Obstacle {.inline.} =
+  Obstacle(x1: p.x - p.bodyW / 2.0 - padding, y1: p.y - p.bodyH / 2.0 - padding,
+           x2: p.x + p.bodyW / 2.0 + padding, y2: p.y + p.bodyH / 2.0 + padding)
+
+proc boundingBoxFootprint(parts: seq[SchematicPart], members: seq[int],
+                          padding: float): seq[Obstacle] =
+  ## `CompositeKind.footprint` default: one padded box over every member.
+  var box: Obstacle
+  for at, i in members:
+    let b = memberBox(parts[i], padding)
+    if at == 0: box = b
+    else:
+      box.x1 = min(box.x1, b.x1); box.y1 = min(box.y1, b.y1)
+      box.x2 = max(box.x2, b.x2); box.y2 = max(box.y2, b.y2)
+  @[box]
+
+proc memberBodiesFootprint(parts: seq[SchematicPart], members: seq[int],
+                           padding: float): seq[Obstacle] =
+  ## `CompositeKind.footprint` for a motif with interior external terminals:
+  ## each member's padded body on its own, so a route can pass through the
+  ## channels the bounding box would have sealed.
+  for i in members: result.add memberBox(parts[i], padding)
+
 proc compositeFootprint(plan: CompositePlan, itemIdx: int,
                         syms: seq[SymbolDef], pos: seq[Point],
                         padding: float): seq[Obstacle] =
@@ -232,56 +316,85 @@ proc compositeExternalPins(pins: seq[RoutePin], plan: CompositePlan): seq[RouteP
 # the `let` initializer below runs in module-init code, after every proc body
 # -- from either file -- has been emitted.
 proc parallelStackKind(): CompositeKind
+proc piKind(): CompositeKind
+proc teeKind(): CompositeKind
 
-let compositeKinds: seq[CompositeKind] = @[parallelStackKind()]
+let compositeKinds: seq[CompositeKind] =
+  @[parallelStackKind(), piKind(), teeKind()]
   ## Registration order is recognition precedence is output (Trap A). `let`,
   ## not `var`: nothing outside this included module can register a kind, and
-  ## the order must never change silently at runtime.
+  ## the order must never change silently at runtime. The parallel stack goes
+  ## first so a shunt that is really a parallel bank stays a parallel stack and
+  ## the pi/tee that would have claimed it is declined (`compositePlan`'s
+  ## claim check).
 
 proc compositePlan(comps: seq[Component], syms: seq[SymbolDef]): CompositePlan =
   ## Build the constrained placement arena before the first seed, by asking
-  ## the one registered `CompositeKind` to partition `comps`, then delegating
-  ## each multi-member group's internal geometry and external ports to that
-  ## kind's own hooks. External clearance belongs to the one unified
-  ## footprint (filled in later by `positionedCompositePlan`), never between
-  ## private members.
+  ## each registered `CompositeKind` in turn to partition `comps`, then
+  ## delegating every accepted multi-member group's internal geometry and
+  ## external ports to that kind's own hooks. External clearance belongs to
+  ## the one unified footprint (filled in later by `positionedCompositePlan`),
+  ## never between private members.
   ##
-  ## `recognize` yields the *total* partition -- singletons and multi-member
-  ## groups interleaved in ascending first-member index -- and that
-  ## interleave is preserved in `topLevel` verbatim: it is what
-  ## `constrainedRecomputeRotations` visits group-by-group, and its per-group
-  ## rotation search reads the partially updated result of earlier groups, so
-  ## the visit order is observable, not cosmetic.
+  ## Each `recognize` yields a *total* partition; `compositePlan` keeps only
+  ## the multi-member groups, in registration order, dropping any whose
+  ## members an earlier kind already claimed. The surviving groups plus the
+  ## unclaimed singletons are then laid into `topLevel` in ascending
+  ## first-raw-member order -- the order `parallelRecognize` alone used to
+  ## yield and the order `constrainedRecomputeRotations` visits group by
+  ## group, its per-group rotation search reading the partially updated result
+  ## of earlier groups, so the visit order is observable, not cosmetic.
   result.items = newSeq[PlaceableItem](comps.len)
   for i in 0 ..< comps.len: result.items[i] = PlaceableItem(raw: i, kind: -1)
   result.ownerOf = newSeq[int](comps.len)
   result.poolOf = newSeq[int](comps.len)
 
-  # A second registered kind needs recognition to fold over the pool
-  # `topLevel` already leaves behind (so a later, more general kind may
-  # consume an earlier kind's composite as one of its own members) --
-  # deliberately not built until there is a second kind to prove it against
-  # (Stage 2.6).
-  doAssert compositeKinds.len == 1,
-    "compositePlan: only a single registered CompositeKind is supported so far"
-  let kind = compositeKinds[0]
-  for members in kind.recognize(comps, syms):
-    let poolPos = result.topLevel.len
-    if members.len < 2:
-      let i = members[0]
-      result.topLevel.add i
-      result.ownerOf[i] = i
-      result.poolOf[i] = poolPos
-      continue
-    var item = PlaceableItem(raw: -1, kind: 0, children: members,
-                             offsets: kind.internalLayout(comps, syms, members),
-                             ports: kind.externalPins(comps, members))
-    let idx = result.items.len
-    result.items.add item
-    result.topLevel.add idx
-    for i in members:
-      result.ownerOf[i] = idx
-      result.poolOf[i] = poolPos
+  # Each registered kind is asked to recognize, in registration order (==
+  # precedence). A kind's multi-member group is accepted only if none of its
+  # members were already claimed by an earlier kind -- the non-nesting subset
+  # of Stage 2.6's fold. It is enough for pi/tee, whose members are always raw
+  # flat two-terminal singletons, never another kind's composite; a later kind
+  # that genuinely needs to *consume* an earlier composite (the op-amp example
+  # in `composite_placement_stage2.md` §2.6) still needs the arena-index fold
+  # this does not do.
+  var claimed = newSeq[bool](comps.len)
+  var groups: seq[tuple[first, kind: int, members: seq[int]]]
+  for kindIdx, kind in compositeKinds:
+    for members in kind.recognize(comps, syms):
+      if members.len < 2: continue
+      var free = true
+      var first = members[0]
+      for m in members:
+        if claimed[m]: free = false
+        first = min(first, m)
+      if not free: continue
+      for m in members: claimed[m] = true
+      groups.add (first: first, kind: kindIdx, members: members)
+
+  # `topLevel` interleaves singletons and composites in ascending
+  # first-raw-member order -- the order `parallelRecognize` alone used to
+  # yield, and the order `constrainedRecomputeRotations` observes group by
+  # group. Each group's first member is distinct (the groups are disjoint), so
+  # a first-member -> group map drives one ascending pass.
+  var atFirst = initTable[int, int]()
+  for gi, g in groups: atFirst[g.first] = gi
+  for raw in 0 ..< comps.len:
+    if atFirst.hasKey(raw):
+      let g = groups[atFirst[raw]]
+      let poolPos = result.topLevel.len
+      let idx = result.items.len
+      result.items.add PlaceableItem(raw: -1, kind: g.kind, children: g.members,
+        offsets: compositeKinds[g.kind].internalLayout(comps, syms, g.members),
+        ports: compositeKinds[g.kind].externalPins(comps, g.members))
+      result.topLevel.add idx
+      for m in g.members:
+        result.ownerOf[m] = idx
+        result.poolOf[m] = poolPos
+    elif not claimed[raw]:
+      let poolPos = result.topLevel.len
+      result.topLevel.add raw
+      result.ownerOf[raw] = raw
+      result.poolOf[raw] = poolPos
 
 proc positionedCompositePlan(plan: CompositePlan, parts: seq[SchematicPart],
                              padding: float): CompositePlan =
@@ -295,21 +408,9 @@ proc positionedCompositePlan(plan: CompositePlan, parts: seq[SchematicPart],
   result = plan
   for idx in result.topLevel:
     if result.items[idx].raw >= 0: continue
-    var box: Obstacle
-    var first = true
-    for i in rawMembers(result, idx):
-      let p = parts[i]
-      let x1 = p.x - p.bodyW / 2.0 - padding
-      let y1 = p.y - p.bodyH / 2.0 - padding
-      let x2 = p.x + p.bodyW / 2.0 + padding
-      let y2 = p.y + p.bodyH / 2.0 + padding
-      if first:
-        box = Obstacle(x1: x1, y1: y1, x2: x2, y2: y2)
-        first = false
-      else:
-        box.x1 = min(box.x1, x1); box.y1 = min(box.y1, y1)
-        box.x2 = max(box.x2, x2); box.y2 = max(box.y2, y2)
-    result.items[idx].footprint = @[box]
+    result.items[idx].footprint =
+      compositeKinds[result.items[idx].kind].footprint(
+        parts, rawMembers(result, idx), padding)
     let hook = compositeKinds[result.items[idx].kind].pickRepresentative
     for p in 0 ..< result.items[idx].ports.len:
       result.items[idx].ports[p].representative =

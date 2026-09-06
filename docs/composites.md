@@ -1,14 +1,29 @@
 # Composite motif ideas beyond `parallel-stack`
 
-`compositeKinds` (`schematic/composites/composite.nim`) registers exactly one
-motif today: `parallelStackKind` (`schematic/composites/passive.nim`) — flat
-two-terminal parts sharing an unordered net pair, stacked and reduced to one
-external port per net. This file is a brainstorm of what else fits the same
+**Shipped since this brainstorm was written:** `compositeKinds`
+(`schematic/composites/composite.nim`) now registers three motifs —
+`parallelStackKind` (`passive.nim`), plus `piKind` (`pi.nim`) and `teeKind`
+(`tee.nim`), the two passive filter sections below. **pi** is idea 3 ("shunt
+pair flanking any part"): a flat two-terminal series part with a
+shunt-to-ground flat two-terminal part at each end, drawn series-horizontal
+with a shunt dropping to ground from each pin. **tee** is ideas 1+2 (series
+chain with the midpoint tapped), tapped to ground: two flat two-terminal
+series parts meeting at a *private* mid node that also carries one
+shunt-to-ground part, drawn as a horizontal row with the shunt on the midline.
+Both stay topology-only, both exclude a source as a member, and pi requires
+its two external nets to reach beyond the composite so a real tee is not
+misread as a pi around one of its series legs. `compositePlan` folds the kinds
+in registration order (parallel, then pi, then tee), dropping any group whose
+members an earlier kind claimed — the non-nesting subset of
+`composite_placement_stage2.md` §2.6.
+
+The rest of this file is the original brainstorm of what else fits the same
 `CompositeKind` contract (a pure-topology `recognize` over `comps`/`syms`, plus
 `internalLayout`/`externalPins`/`pickRepresentative`/`internalRoute`/
-`rotationCandidates`), roughly ordered by how much new machinery each would
-need. None of this is committed; see `composite_placement_stage2.md` §2.6 for
-why a second kind hasn't been added yet even in the pure-passive case.
+`rotationCandidates`/`footprint`), roughly ordered by how much new machinery
+each would need. The remaining ideas are uncommitted; a nesting kind (one that
+consumes an earlier composite as a member) still needs the arena-index fold
+`compositePlan` does not yet do — see `composite_placement_stage2.md` §2.6.
 
 **Ground rule carried through every idea below**: `recognize` must stay
 topology-only, the same discipline `isTraversable` already documents. For a

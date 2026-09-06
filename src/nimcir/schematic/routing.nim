@@ -1,3 +1,20 @@
+proc fullyInternalComposite(physicalPins: seq[RoutePin],
+                            composites: CompositePlan): bool =
+  ## True when every pin of a signal net is covered by one and the same
+  ## composite port -- the net has no endpoint outside the composite, so the
+  ## external router has nothing to do and `compositeInternalRoutes` owns its
+  ## wiring. An interface-port connection point (empty `pinName`) always
+  ## disqualifies it.
+  if physicalPins.len < 2: return false
+  var key = (-1, -1)
+  for p in physicalPins:
+    if p.pinName.len == 0: return false
+    let cp = compositePort(composites, p.partIdx, p.pinName)
+    if not cp.found: return false
+    if key[0] < 0: key = (cp.unit, cp.port)
+    elif key != (cp.unit, cp.port): return false
+  true
+
 proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                 pos: seq[Point], rots: seq[float],
                 idxOf: Table[string, int],
@@ -287,6 +304,15 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       let pc = portConn[net.name]
       pins.add (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: "")
     let physicalPins = pins
+    if constrained and fullyInternalComposite(physicalPins, composites):
+      # A signal net wholly inside one composite -- a tee filter's mid node,
+      # every pin covered by the same composite port and nothing external on
+      # it. There is no tree to route; its wiring is the composite's own
+      # deterministic fanout, appended like the post-external-route fanout
+      # below. Not a dangling pin, so no fallback marker.
+      result.wires.add compositeInternalRoutes(composites, result.parts, net.name)
+      inc sigOrd
+      continue
     if constrained:
       pins = compositeExternalPins(pins, composites)
     if pins.len < 2:
