@@ -64,20 +64,27 @@ proc inputPort(nl: Netlist, net: Net): bool =
 
 proc pathsFrom(nl: Netlist, start: Net, skip: int,
                idxOf: Table[string, int], plan: CompositePlan): seq[TraversedPath] =
-  ## Follow a signal net through eligible two-terminal devices. A *pool item*
-  ## is not revisited within one walk, making feedback loops bounded and
-  ## stable -- not a raw component: a net shared by both members of a
-  ## recognized parallel pair used to offer two distinct next-hop candidates
-  ## (R and C both lead to the same next net), so a chain of N such pairs
-  ## walked as 2^N raw-index paths, every one of them duplicate once the pair
-  ## is one placement unit. Tracking `seen`/`skip` by pool position instead of
-  ## raw index, and taking only the first raw candidate per pool position at
-  ## each net (`visitedHere`), collapses that back to the one path the
-  ## topology actually has. `TraversedPath` itself still carries raw indices
-  ## -- `constrainedTopology` is where the mapping through `plan.poolOf`
-  ## happens, once, for every arc kind at once.
+  ## Follow a signal net through eligible two-terminal devices. A traversal
+  ## step is `(pool item, exit net)`, not just `(pool item)`: a composite is
+  ## one *placement unit* but its members are still distinct edges in the
+  ## signal graph, and a step key that stopped at the pool item let a walk
+  ## enter a composite and never leave -- a pi's grounded shunt would consume
+  ## the pool position and its series member could never be traversed, so no
+  ## arc ordering the composite against the rest of the sheet was ever
+  ## discovered (`RIAA_CHANNEL`'s `RL`--`CIN`--`RB` pi landing right of the
+  ## op-amp it feeds).
+  ##
+  ## `visitedHere` keyed on `(poolOf[i], exit net)` still collapses the 2^N
+  ## blow-up the pooling was for: both members of a recognized parallel pair
+  ## share *both* their nets, so from either net they yield the identical
+  ## `(pool, exit)` step and dedup to one -- while a pi's shunt
+  ## (`exit == ground`) and its series part (`exit == signal`), and a tee's
+  ## two series legs, stay distinct. `seen`/`skip` are raw component indices:
+  ## one raw part per path bounds path length by `comps.len` exactly, and it
+  ## is not what was collapsing paths. `TraversedPath` carries raw indices --
+  ## `constrainedTopology` maps every arc through `plan.poolOf` once, for
+  ## every arc kind at once.
   var found: seq[TraversedPath]
-  let skipPool = if skip < 0: -1 else: plan.poolOf[skip]
   proc walk(net: Net, path: seq[int], seen: HashSet[int]) =
     if net == nil or not onThisSheet(nl, net) or isGround(net) or isRail(net):
       return
@@ -92,22 +99,23 @@ proc pathsFrom(nl: Netlist, start: Net, skip: int,
       # An input is a semantic endpoint. Continuing through its component
       # would turn an ordinary forward receiver into a spurious self-return.
       return
-    var visitedHere: HashSet[int]
+    var visitedHere: HashSet[tuple[pool: int; exit: string]]
     for pin in net.pins:
       let c = pin.component
       if not isTraversable(c, nl) or not idxOf.hasKey(c.designator): continue
       let i = idxOf[c.designator]
-      let pi = plan.poolOf[i]
-      if pi == skipPool or pi in seen or pi in visitedHere: continue
-      visitedHere.incl pi
+      if i == skip or i in seen: continue
       var other: Net
       for _, mate in c.pins:
         if mate.net != net:
           other = mate.net
           break
       if other == nil: continue
+      let step = (pool: plan.poolOf[i], exit: other.name)
+      if step in visitedHere: continue
+      visitedHere.incl step
       var nextSeen = seen
-      nextSeen.incl pi
+      nextSeen.incl i
       var nextPath = path
       nextPath.add i
       walk(other, nextPath, nextSeen)

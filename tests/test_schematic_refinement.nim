@@ -198,3 +198,38 @@ test "the composite arena stays depth-1 with topLevel in ascending first-member 
   # RL, [RB+CB], RR: the composite must actually have been recognised, or the
   # ordering check above only exercised leaves.
   check sawComposite
+
+proc piInputNetlist(): Netlist =
+  ## Port IN -> pi section (RL shunt, CIN series, RB shunt) -> mcu input, the
+  ## shape of `RIAA_CHANNEL`'s front end. The semantic walk from the input
+  ## port must reach UIN *through* the pi -- a step key that stopped at the
+  ## pi's pool item let the grounded shunt RL end the walk on the port net.
+  result = newNetlist("pi_input")
+  let inn = addNet(result, newNet("IN"))
+  let mid = addNet(result, newNet("mid"))
+  let gnd = addNet(result, newNet("0", ntGround))
+  let rl = addComponent(result, newComponent("RL", kind = "resistor"))
+  discard connect(rl, "1", inn, ptPassive)
+  discard connect(rl, "2", gnd, ptGround)
+  let cin = addComponent(result, newComponent("CIN", kind = "capacitor"))
+  discard connect(cin, "1", inn, ptPassive)
+  discard connect(cin, "2", mid, ptPassive)
+  let rb = addComponent(result, newComponent("RB", kind = "resistor"))
+  discard connect(rb, "1", mid, ptPassive)
+  discard connect(rb, "2", gnd, ptGround)
+  let u = addComponent(result, newComponent("UIN", kind = "mcu"))
+  discard connect(u, "IN", mid, ptInput)
+  discard connect(u, "OUT", addNet(result, newNet("out")), ptOutput)
+  addPort(result, "IN", inn)
+
+test "constrainedTopology walks through a pi composite to the sink it feeds":
+  let st = constrainedState(piInputNetlist())
+  let plan = st.composites
+  # All three pi members really are one pool item -- fail loudly if recognition
+  # (not traversal) is what regressed.
+  let pRL = plan.poolOf[st.idxOf["RL"]]
+  let pCIN = plan.poolOf[st.idxOf["CIN"]]
+  let pRB = plan.poolOf[st.idxOf["RB"]]
+  check pRL == pCIN and pCIN == pRB
+  let topo = constrainedTopology(st.comps, st.idxOf, plan)
+  check topo.layers[pCIN] < topo.layers[plan.poolOf[st.idxOf["UIN"]]]

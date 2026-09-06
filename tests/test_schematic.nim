@@ -650,6 +650,70 @@ test "constrained layering follows input ports and feedback paths semantically":
     let s = layout(nl, options)
     check partOf(s, "LINK").x < partOf(s, "UIN").x
 
+  # The walk must pass *through* a composite, not stop at its first member.
+  # A pi section between an input port and a sink: the grounded shunt on the
+  # port net used to consume the pi's pool position so the series member was
+  # never traversed and no arc ordered the pi against the sink -- the pi then
+  # landed in layer 0's seed order, on RIAA to the right of the op-amp it
+  # feeds. All three members share one pool item, so they move together.
+  block:
+    let nl = newNetlist("pi_input_layer")
+    let inn = addNet(nl, newNet("IN"))
+    let mid = addNet(nl, newNet("mid"))
+    let gnd = addNet(nl, newNet("0", ntGround))
+    let rl = addComponent(nl, newComponent("RL", kind = "resistor"))
+    discard connect(rl, "1", inn, ptPassive)
+    discard connect(rl, "2", gnd, ptGround)
+    let cin = addComponent(nl, newComponent("CIN", kind = "capacitor"))
+    discard connect(cin, "1", inn, ptPassive)
+    discard connect(cin, "2", mid, ptPassive)
+    let rb = addComponent(nl, newComponent("RB", kind = "resistor"))
+    discard connect(rb, "1", mid, ptPassive)
+    discard connect(rb, "2", gnd, ptGround)
+    let sink = addComponent(nl, newComponent("UIN", kind = "mcu"))
+    discard connect(sink, "IN", mid, ptInput)
+    discard connect(sink, "OUT", addNet(nl, newNet("out")), ptOutput)
+    addPort(nl, "IN", inn)
+    var options = defaultLayoutOptions()
+    options.policy = lpConstrainedLayered
+    options.stages.excl lsRecoverRouting
+    options.stages.excl lsRoutingAwareRepair
+    let s = layout(nl, options)
+    check partOf(s, "CIN").x < partOf(s, "UIN").x
+    check partOf(s, "RL").x < partOf(s, "UIN").x
+    check partOf(s, "RB").x < partOf(s, "UIN").x
+
+  # The same, one step further: a tee's two series legs are one pool item, so
+  # `seen` keyed on the pool used to stop the walk at the mid net. Both legs
+  # and the grounded shunt must land left of the sink they drive.
+  block:
+    let nl = newNetlist("tee_input_layer")
+    let inn = addNet(nl, newNet("IN"))
+    let mid = addNet(nl, newNet("mid"))
+    let outn = addNet(nl, newNet("sig"))
+    let gnd = addNet(nl, newNet("0", ntGround))
+    let l1 = addComponent(nl, newComponent("L1", kind = "inductor"))
+    discard connect(l1, "1", inn, ptPassive)
+    discard connect(l1, "2", mid, ptPassive)
+    let l2 = addComponent(nl, newComponent("L2", kind = "inductor"))
+    discard connect(l2, "1", mid, ptPassive)
+    discard connect(l2, "2", outn, ptPassive)
+    let cs = addComponent(nl, newComponent("CS", kind = "capacitor"))
+    discard connect(cs, "1", mid, ptPassive)
+    discard connect(cs, "2", gnd, ptGround)
+    let sink = addComponent(nl, newComponent("UIN", kind = "mcu"))
+    discard connect(sink, "IN", outn, ptInput)
+    discard connect(sink, "OUT", addNet(nl, newNet("out")), ptOutput)
+    addPort(nl, "IN", inn)
+    var options = defaultLayoutOptions()
+    options.policy = lpConstrainedLayered
+    options.stages.excl lsRecoverRouting
+    options.stages.excl lsRoutingAwareRepair
+    let s = layout(nl, options)
+    check partOf(s, "L1").x < partOf(s, "UIN").x
+    check partOf(s, "L2").x < partOf(s, "UIN").x
+    check partOf(s, "CS").x < partOf(s, "UIN").x
+
   # A feedback chain returning to the same component is a local loop, not an
   # earlier-layer feedback edge: the traversed device stays in the source's
   # semantic column.
