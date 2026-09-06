@@ -28,9 +28,18 @@ type
     raw: int              ## >= 0 for a leaf; -1 for a composite
     kind: int              ## index into compositeKinds; -1 until Stage 1.5
     children: seq[int]     ## arena indices, canonical order; empty for a leaf
-    offsets: seq[Point]     ## each child's centre relative to this item's origin
+    offsets: seq[Point]     ## each child's centre relative to this item's origin,
+                           ## in the motif's *canonical* frame -- `internalLayout`
+                           ## always authors this frame; `rawOffsets` applies
+                           ## `unitRot` on the way out
     ports: seq[CompositePort]
     footprint: seq[Obstacle]
+    unitRot: float          ## 0/90/180/270: a rigid quarter-turn of the whole
+                           ## unit chosen by `lsCompositeOrient` (and revisited
+                           ## in the definitive orient pass) for an `orientable`
+                           ## kind. 0 for a leaf and for a pinned kind, so the
+                           ## historical `unitRot == 0` geometry is exactly the
+                           ## default.
 
   CompositeKind = object
     ## The whole contract a composite type implements: six pure hooks over
@@ -40,6 +49,14 @@ type
     ## module-level state and registration order *is* recognition precedence
     ## *is* output (see `compositePlan`).
     name: string
+    orientable: bool
+      ## May `lsCompositeOrient` turn this whole unit through 0/90/180/270?
+      ## `true` for the parallel stack and the series chain -- their canonical
+      ## horizontal frame is arbitrary, and a rotated unit reads better when
+      ## its endpoints sit above and below rather than left and right. `false`
+      ## for the pi and the tee: their shunt legs run to ground and
+      ## ground-points-down is a real schematic convention, not a wirelength
+      ## trade. A pinned kind keeps `unitRot == 0` and its output is unchanged.
     recognize: proc(comps: seq[Component], syms: seq[SymbolDef]):
       seq[seq[int]] {.nimcall.}
       ## The *total* partition of `comps` into groups this kind recognises,
@@ -175,11 +192,11 @@ proc rawMembers(plan: CompositePlan, item: int): seq[int] =
   if it.raw >= 0: return @[it.raw]
   for c in it.children: result.add rawMembers(plan, c)
 
-proc rawOffsets(plan: CompositePlan, item: int): seq[Point] =
-  ## Parallel to `rawMembers(plan, item)`: each raw member's centre relative
-  ## to `item`'s own origin, composed down the tree. Identical to
-  ## `items[item].offsets` at depth 1, since every child is then a leaf and
-  ## contributes its own offset unchanged.
+proc canonicalOffsets(plan: CompositePlan, item: int): seq[Point] =
+  ## `rawOffsets` without the `unitRot` turn: each raw member's centre relative
+  ## to `item`'s own origin in the motif's canonical frame, composed down the
+  ## tree. Identical to `items[item].offsets` at depth 1. `lsCompositeOrient`
+  ## reads this to score a trial frame before committing `unitRot`.
   let it = plan.items[item]
   if it.raw >= 0: return @[Point()]
   for ci, c in it.children:
@@ -187,7 +204,18 @@ proc rawOffsets(plan: CompositePlan, item: int): seq[Point] =
     if plan.items[c].raw >= 0:
       result.add base
     else:
-      for off in rawOffsets(plan, c): result.add base + off
+      for off in canonicalOffsets(plan, c): result.add base + off
+
+proc rawOffsets(plan: CompositePlan, item: int): seq[Point] =
+  ## Parallel to `rawMembers(plan, item)`: each raw member's centre relative
+  ## to `item`'s own origin, in the *placed* frame -- the canonical offset
+  ## turned by this unit's `unitRot`. `rotatedSlot(off, 0.0)` is `off`, so a
+  ## leaf and a pinned/unrotated composite are exactly `canonicalOffsets`.
+  ## Depth-1 today; a genuine nesting kind would also need to turn each child
+  ## cluster by its parent's `unitRot`, not only the top offsets.
+  let it = plan.items[item]
+  for off in canonicalOffsets(plan, item):
+    result.add rotatedSlot(off, it.unitRot)
 
 proc slotForNet(sd: SymbolDef, c: Component, netName: string):
     tuple[found: bool, slot: Point] =

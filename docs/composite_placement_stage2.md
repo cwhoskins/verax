@@ -330,6 +330,83 @@ and the series chain did not need it (their members are always raw flat
 two-terminal singletons); a series-of-parallel-pairs is the same still-open
 case from the passive side.
 
+### 2.7 — unit orientation
+
+**Done.** A singleton square two-terminal part gets a genuine four-way
+rotation search (`bestRotation`: power direction, then pin-to-pin wirelength,
+then smaller angle). A recognized composite lost it — three of the four
+motifs' `rotationCandidates` returned exactly one canonical assignment, the
+fourth (parallel stack) only a 0/180 flip of a permanently horizontal axis —
+so a chain that reads naturally as a vertical column was forced into a
+horizontal row with long wires at both ends. The fix could not live in
+`rotationCandidates`: the spatial arrangement is in `internalLayout`, whose
+offsets are re-imposed by `restoreCompositeOffsets` after every stage, so
+emitting 90/270 member angles would turn each body in place while leaving the
+unit strung along the same axis.
+
+- `CompositeKind.orientable` (`bool`) and `PlaceableItem.unitRot` (`float`,
+  one of 0/90/180/270) are the only new state. `orientable` is `true` for the
+  parallel stack and the series chain, `false` for the pi and the tee — their
+  shunt legs run to ground and ground-points-down is a real convention, not a
+  wirelength trade. A pinned kind keeps `unitRot == 0` and its output is
+  byte-identical.
+- `internalLayout` still authors one canonical frame. `canonicalOffsets`
+  returns it untouched; `rawOffsets` returns it turned by `unitRot`
+  (`rotatedSlot`, which keeps grid-multiples on the grid). Every position
+  consumer already goes through `rawOffsets` or through `pos`, so the turn
+  composes for free. `constrainedRecomputeRotations` adds `unitRot` onto every
+  member angle each `rotationCandidates` hook returns.
+- **Two-stage decision.** `lsCompositeOrient` (new stage, between
+  `lsConstrainedRefinement` and `lsSeparate`) picks each orientable unit's
+  frame *before* `snapToGrid`/`separate`/`pack`. The trial pin-world turns the
+  whole unit, so a rigid rotation leaves every internal pin-pin distance fixed
+  and only the members' reach to their *external* net-mates moves the score.
+  What leads that score depends on `unitExternallyPurePower`: a unit whose
+  every external net is a rail or ground (a rail-to-rail divider, a decoupling
+  bank) is scored `powerRank` first, then `rotationScore`, then smaller angle
+  — it stands up to its planes ground-down for free. A unit with any external
+  signal net is scored on `rotationScore` alone, and turns off its canonical
+  frame only when the win clears `compositeFrameHysteresis` (`2 * grid`) —
+  never merely to point one ground leg down, and never for a marginal
+  wirelength gain (both misfires drag a settled sheet: the first put
+  `pi_filter`'s RL/RT load divider off its row, and small churn like it
+  displaces neighbours the separator then packs around — see
+  `docs/findings.md` #29). Because the stage runs before legalization,
+  separation packs whatever frame it picked and a turned unit can never
+  overlap; the flip side is that turning a unit reshapes it for the separator,
+  so the same hysteresis applies to `revisitCompositeFrames`' length term. The definitive orient pass
+  then calls `revisitCompositeFrames`: with centres settled, retry all four
+  frames scored by `constrainedRouteScore` (hits → bends → length; drift is
+  left out so pure anchor drift never churns a frame), rejecting any frame
+  whose turned member raw bodies overlap a foreign part — the same test
+  `recoverRouting` uses. On a dense sheet the incumbent frame stands; only
+  where there is room does the route score improve it. Both stages leave the
+  geometry untouched when the chosen frame equals the current one:
+  `restoreCompositeOffsets` recentres on the grid, so re-laying for no reason
+  nudges an already-legal unit. Both are also skipped entirely on a sheet
+  `constrainedEligible` declined — its O(pool · routeScore) cost is only
+  bounded under that gate, and a golden-spiral fallback sheet has no frame
+  worth refining. `powerRank` leading the pure-power path means a chain or
+  bank with a ground/rail member still lands ground-down with no motif rule.
+- **`recoverRouting` deliberately does not re-search the frame.** It calls
+  `constrainedRecomputeRotations` once per attempted candidate cell; a
+  four-frame re-search there multiplies an already-budgeted loop by four. It
+  passes the stored plan through, so a moved candidate still *respects* the
+  committed `unitRot` (angles compose), it just does not revisit it. A
+  per-attempt frame search inside the feedback loop is the open follow-up.
+- **Known asymmetry left in place.** `constrainedTargets` centres the sheet on
+  `(minY + maxY) / 2` but derives `xShift` from the column count with no
+  member-extent term. A turned unit's offsets are now signed in x too, so its
+  x-extent is uncentred — but this only feeds the *soft* anchor set (the
+  `drift` tie-break), and an `xShift` with a `minX`/`maxX` term would move
+  every composite-free constrained sheet. `constrainedTargets` also runs as
+  the seed, before `lsCompositeOrient`, where every `unitRot` is still 0, so
+  the seed is bit-for-bit unchanged.
+- `parallelInternalRoute` was the one motif body that hardcoded the stacking
+  axis (trunk sorted by y, taps horizontal); it now reads the axis from the
+  covered-pin spread. `seriesInternalRoute` already emitted an L that
+  degenerates correctly for a vertical row and needed no change.
+
 ## Verification method, for whoever continues this
 
 There are no golden/snapshot files anywhere in this repo (confirmed by

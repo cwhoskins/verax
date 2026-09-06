@@ -89,40 +89,49 @@ proc parallelInternalRoute(parts: seq[SchematicPart],
                           port: CompositePort): seq[SchematicWire] =
   ## Deterministic trunk-and-tap fanout. For three or more members, use one
   ## trunk plus disjoint taps: independent tap-to-root Ls would overlap along
-  ## the shared same-net trunk.
+  ## the shared same-net trunk. The stacking axis is read from the covered
+  ## pins rather than assumed vertical -- `lsCompositeOrient` may turn the
+  ## whole unit, and after a 90/270 turn the members stack in x with the
+  ## trunk running horizontal and the taps vertical.
   let rep = parts[port.representative.partIdx]
   var root: Point
   for pin in rep.pins:
     if pin.name == port.representative.pinName:
       root = Point(x: pin.x, y: pin.y)
   var taps: seq[Point]
+  var minX, minY = Inf
+  var maxX, maxY = -Inf
   for covered in port.covered:
-    if covered == port.representative: continue
     let member = parts[covered.partIdx]
     for pin in member.pins:
       if pin.name == covered.pinName:
-        taps.add Point(x: pin.x, y: pin.y)
+        minX = min(minX, pin.x); maxX = max(maxX, pin.x)
+        minY = min(minY, pin.y); maxY = max(maxY, pin.y)
+        if covered != port.representative:
+          taps.add Point(x: pin.x, y: pin.y)
+  # The canonical-side mapping makes same-net terminals share the cross-axis
+  # coordinate; the wider covered-pin spread is therefore the trunk axis.
+  let vertical = (maxY - minY) >= (maxX - minX)
+  proc joinPoint(p: Point): Point =
+    if vertical: Point(x: root.x, y: p.y) else: Point(x: p.x, y: root.y)
   if taps.len <= 1:
     for tap in taps:
       var points = @[tap]
-      if tap.x != root.x and tap.y != root.y:
-        points.add Point(x: root.x, y: tap.y)
+      if tap.x != root.x and tap.y != root.y: points.add joinPoint(tap)
       points.add root
       result.add SchematicWire(net: port.net, kind: wkSignal, points: points)
     return
-  # Composite members are vertically stacked. The canonical-side mapping
-  # makes each same-net terminal share an x coordinate; retaining the
-  # horizontal taps also keeps this total for future unequal pin spans.
   var trunk = @[root]
-  for tap in taps: trunk.add Point(x: root.x, y: tap.y)
-  trunk.sort(proc(a, b: Point): int = cmp(a.y, b.y))
+  for tap in taps: trunk.add joinPoint(tap)
+  trunk.sort(proc(a, b: Point): int =
+    (if vertical: cmp(a.y, b.y) else: cmp(a.x, b.x)))
   var unique: seq[Point]
   for point in trunk:
     if unique.len == 0 or point != unique[^1]: unique.add point
   for tap in taps:
-    let join = Point(x: root.x, y: tap.y)
-    if tap != join:
-      result.add SchematicWire(net: port.net, kind: wkSignal, points: @[tap, join])
+    let j = joinPoint(tap)
+    if tap != j:
+      result.add SchematicWire(net: port.net, kind: wkSignal, points: @[tap, j])
   if unique.len >= 2:
     result.add SchematicWire(net: port.net, kind: wkSignal, points: unique)
 
@@ -153,6 +162,7 @@ proc parallelRotationCandidates(nl: Netlist, comps: seq[Component],
 
 proc parallelStackKind(): CompositeKind =
   CompositeKind(name: "parallel-stack",
+    orientable: true,
     recognize: parallelRecognize,
     internalLayout: parallelInternalLayout,
     externalPins: parallelExternalPins,
@@ -344,6 +354,7 @@ proc seriesRotationCandidates(nl: Netlist, comps: seq[Component],
 
 proc seriesChainKind(): CompositeKind =
   CompositeKind(name: "series-chain",
+    orientable: true,
     recognize: seriesRecognize,
     internalLayout: seriesInternalLayout,
     externalPins: seriesExternalPins,

@@ -52,6 +52,14 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
     constrainedRefine(ctx)
     restoreCompositeOffsets(ctx)
 
+  # Pick each orientable composite's rigid quarter-turn while there is still
+  # room to move it, before separation legalizes whatever frame it lands in.
+  # Policy-gated and a no-op with no orientable composite, so lpHistorical is
+  # untouched.
+  if options.policy == lpConstrainedLayered and
+     options.stageEnabled(lsCompositeOrient):
+    chooseCompositeOrientation(ctx)
+
   # Snap centres to the grid, normalising -0.0 away so hashing stays exact.
   snapToGrid(ctx)
 
@@ -77,11 +85,10 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   # fresh-write like the loop, and with no hysteresis -- this is the answer,
   # not an increment toward it.
   if options.stageEnabled(lsOrient):
-    ctx.rots =
-      if options.policy == lpConstrainedLayered:
-        constrainedRecomputeRotations(ctx)
-      else:
-        recomputeRotations(ctx)
+    if options.policy == lpConstrainedLayered:
+      constrainedRecomputeRotations(ctx)
+    else:
+      ctx.rots = recomputeRotations(ctx)
 
   # --- leaf cleanup: a one-signal-net part snapped beside its net-mate ----
   # Historical layout pulls each leaf up against the pin it connects to and
@@ -100,7 +107,7 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   # parallel placement unit before routing/recovery sees the final geometry.
   if options.policy == lpConstrainedLayered:
     restoreCompositeOffsets(ctx)
-    ctx.rots = constrainedRecomputeRotations(ctx)
+    constrainedRecomputeRotations(ctx)
 
   # `recoverRouting` is the bounded routing-aware repair: candidates are
   # accepted only when they route strictly further. Its dedicated stage is an

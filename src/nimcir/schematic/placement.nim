@@ -38,6 +38,13 @@ proc rotatedSlot(s: Point, rot: float): Point =
 
 const rotationChoices = [0.0, 90.0, 180.0, 270.0]
 
+proc addRot(a, b: float): float {.inline.} =
+  ## Compose two quarter-turns, wrapped into `[0, 360)`. Both operands are
+  ## always a member of `rotationChoices`, so the sum is at most 540 and one
+  ## subtraction normalises it -- `rotatedSlot` only recognises 0/90/180/270.
+  result = a + b
+  if result >= 360.0: result -= 360.0
+
 proc rotatable(sd: SymbolDef): bool {.inline.} =
   ## A symbol is turned only when it is a square two-terminal non-box: a
   ## quarter turn then never changes `bodyW`/`bodyH`, so the separation and

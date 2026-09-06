@@ -35,6 +35,13 @@ const
   # passive-heavy layer from becoming an unbounded vertical list while keeping
   # the topology hint deliberately local.
   constrainedMaxStages = 3
+  # `lsCompositeOrient` turns a *signal-path* composite off its canonical
+  # frame only when doing so shortens its external wirelength by more than
+  # this. The estimate is a pre-separation one, and a turn reshapes the unit
+  # for the separator to pack around; a marginal win is not worth the churn
+  # (it displaced ts808_drive's C2 far enough from `vamp` to break the route).
+  # A pure rail-to-rail unit is exempt -- its `powerRank` win is unambiguous.
+  compositeFrameHysteresis = 2.0 * grid
 
 type
   TraversedPath = object
@@ -445,8 +452,14 @@ proc constrainedRecomputeRotations(nl: Netlist, comps: seq[Component],
       result[i] = bestRotation(syms[i], comps[i], pos[i], result[i], pw, 0.0)
       continue
     let members = rawMembers(plan, idx)
-    let candidates =
+    var candidates =
       compositeKinds[it.kind].rotationCandidates(nl, comps, syms, pos, result, members)
+    # The hook authors angles in the canonical frame; compose this unit's
+    # committed quarter-turn onto every member before ranking. `unitRot` is 0
+    # for a pinned kind, so those candidates are untouched.
+    if it.unitRot != 0.0:
+      for c in mitems(candidates):
+        for i in members: c[i] = addRot(c[i], it.unitRot)
     var best = result
     var bestRank: array[4, int]
     var bestScore: tuple[hits, bends: int, length, drift: float]
@@ -470,3 +483,222 @@ proc constrainedRecomputeRotations(nl: Netlist, comps: seq[Component],
       if better:
         first = false; best = cand; bestRank = rank; bestScore = score
     result = best
+
+proc compositeUnitOrigin(plan: CompositePlan, idx: int, pos: seq[Point],
+                         canon: seq[Point], members: seq[int]): Point =
+  ## The grid-snapped point an already-rigid composite's members sit around --
+  ## the mean of each member's implied origin, exactly `restoreCompositeOffsets`'
+  ## own computation but read out here so a trial frame can be scored without
+  ## committing it. `canon` is `canonicalOffsets(plan, idx)`; the members are
+  ## currently at `origin + rotatedSlot(canon[at], plan.items[idx].unitRot)`.
+  let rot = plan.items[idx].unitRot
+  for at, m in members: result += pos[m] - rotatedSlot(canon[at], rot)
+  result = result * (1.0 / float(members.len))
+  result.x = round(result.x / grid) * grid
+  result.y = round(result.y / grid) * grid
+
+proc unitExternallyPurePower(comps: seq[Component], members: seq[int]): bool =
+  ## Every net that links this unit to the rest of the sheet is a rail or
+  ## ground -- so it is a thing sitting *between power planes* (a rail-to-rail
+  ## divider, a decoupling bank) and `powerRank` should lead its frame choice.
+  ## If any external net is an ordinary signal, that connection leads instead,
+  ## via wirelength: forcing "ground down" on a part in the signal path just
+  ## drags its signal pin away from what it feeds.
+  var inUnit: HashSet[string]
+  for m in members: inUnit.incl comps[m].designator
+  let nl = comps[members[0]].netlist
+  for m in members:
+    for _, pin in comps[m].pins:
+      let net = pin.net
+      if net == nil or isGround(net) or isRail(net): continue
+      for other in net.pins:
+        if other.component != nil and other.component.netlist == nl and
+           other.component.designator notin inUnit:
+          return false
+  true
+
+proc chooseCompositeOrientation(nl: Netlist, comps: seq[Component],
+                                syms: seq[SymbolDef], pos: var seq[Point],
+                                rots: seq[float], plan: var CompositePlan) =
+  ## `lsCompositeOrient`: pick each orientable composite's rigid quarter-turn
+  ## before separation legalizes it. Scored like `bestRotation` scores a
+  ## singleton: for a unit whose every external net is a rail or ground
+  ## (`unitExternallyPurePower` -- a rail-to-rail divider, a decoupling bank)
+  ## the lexicographic `powerRank` leads, then `rotationScore`, then the
+  ## smaller angle, so it stands up to its planes ground-down for free. For a
+  ## unit with any external signal net, `rotationScore` (wirelength) alone
+  ## leads with the smaller angle breaking ties -- so it turns only when a real
+  ## signal connection is shortened by it, never merely to point one ground
+  ## leg down. The trial pin-world turns the *whole* unit, so a rigid rotation
+  ## leaves every internal pin-pin distance unchanged and only the members'
+  ## distance to their *external* net-mates moves the score; a self-contained
+  ## unit (a dangling-ended chain) ties on every frame and keeps angle 0.
+  ## Snapshot-read / fresh-write across composites, like `forcePlace`'s
+  ## in-loop sweep, so the result never depends on visit order. Skipped on a
+  ## sheet the semantic layering itself declined (`constrainedEligible`): it
+  ## fell back to the ungrouped golden spiral, where a per-composite frame
+  ## refinement is both moot and the point at which the O(pool * routeScore)
+  ## cost stops being bounded.
+  if not constrainedEligible(comps, plan): return
+  var hasOrientable = false
+  for idx in plan.topLevel:
+    let it = plan.items[idx]
+    if it.raw < 0 and compositeKinds[it.kind].orientable: hasOrientable = true
+  if not hasOrientable: return
+
+  var chosen = newSeq[float](plan.items.len)          # 0 for every non-target
+  for idx in plan.topLevel:
+    let it = plan.items[idx]
+    if it.raw >= 0 or not compositeKinds[it.kind].orientable: continue
+    let members = rawMembers(plan, idx)
+    let canon = canonicalOffsets(plan, idx)
+    let origin = compositeUnitOrigin(plan, idx, pos, canon, members)
+    let cands = compositeKinds[it.kind].rotationCandidates(
+      nl, comps, syms, pos, rots, members)
+    if cands.len == 0: continue
+    let usePower = unitExternallyPurePower(comps, members)
+    var bestTheta = 0.0
+    var bestRank: array[4, int]
+    var bestScore = Inf
+    var score0 = Inf                    # the canonical frame's own score
+    var first = true
+    for theta in rotationChoices:
+      # Best of the hook's canonical candidates (a parallel stack offers the
+      # 0/180 flip) at this frame.
+      var thRank: array[4, int]
+      var thScore = Inf
+      var thFirst = true
+      for cand in cands:
+        var tPos = pos
+        var tRots = rots
+        for at, m in members:
+          tPos[m] = origin + rotatedSlot(canon[at], theta)
+          tRots[m] = addRot(cand[m], theta)
+        let tpw = pinWorldPositions(comps, syms, tPos, tRots)
+        var rank: array[4, int]
+        var score = 0.0
+        for at, m in members:
+          if usePower:
+            let r = powerRank(syms[m], comps[m], tRots[m])
+            for k in 0 ..< 4: rank[k] += r[k]
+          score += rotationScore(syms[m], comps[m], tPos[m], tRots[m], tpw)
+        if thFirst or rankLess(rank, thRank) or
+           (rankEqual(rank, thRank) and score < thScore - 1e-9):
+          thFirst = false; thRank = rank; thScore = score
+      if theta == 0.0: score0 = thScore
+      if first or rankLess(thRank, bestRank) or
+         (rankEqual(thRank, bestRank) and thScore < bestScore - 1e-9):
+        first = false; bestRank = thRank; bestScore = thScore; bestTheta = theta
+    # A signal-path unit keeps its canonical frame unless a turn is a clear
+    # wirelength win; a pure rail-to-rail unit turns on its `powerRank` result.
+    if not usePower and bestTheta != 0.0 and bestScore > score0 - compositeFrameHysteresis:
+      bestTheta = 0.0
+    chosen[idx] = bestTheta
+
+  var changed = false
+  for idx in plan.topLevel:
+    if plan.items[idx].raw < 0 and chosen[idx] != plan.items[idx].unitRot:
+      plan.items[idx].unitRot = chosen[idx]
+      changed = true
+  # Only re-rigidify when a frame actually moved: `restoreCompositeOffsets`
+  # recentres on the grid, and running it for no reason can nudge an
+  # already-legal unit off the spot the seed put it.
+  if changed: restoreCompositeOffsets(plan, pos)
+
+proc frameRouteScore(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
+                     pos: seq[Point], rots: seq[float], anchors: seq[Point],
+                     plan: CompositePlan, idx: int, members: seq[int],
+                     canon: seq[Point], origin: Point,
+                     theta: float): tuple[hits, bends: int, length, drift: float] =
+  ## Score composite `idx` sitting in frame `theta`: turn only its members
+  ## (positions and angles -- the `powerRank`-best canonical candidate composed
+  ## with `theta`) and hand the sheet to `constrainedRouteScore`, everything
+  ## else left as it is. This is the same granularity `bestRotation` scores a
+  ## singleton at; the full multi-part re-assignment is left to the
+  ## `constrainedRecomputeRotations` call that follows the frame choice.
+  var trialPos = pos
+  var trialRots = rots
+  let cands = compositeKinds[plan.items[idx].kind].rotationCandidates(
+    nl, comps, syms, pos, rots, members)
+  var best = if cands.len > 0: cands[0] else: rots
+  if cands.len > 1:
+    var bestRank: array[4, int]
+    var firstC = true
+    for cand in cands:
+      var rank: array[4, int]
+      for m in members:
+        let pr = powerRank(syms[m], comps[m], addRot(cand[m], theta))
+        for k in 0 ..< 4: rank[k] += pr[k]
+      if firstC or rankLess(rank, bestRank):
+        firstC = false; bestRank = rank; best = cand
+  for at, m in members:
+    trialPos[m] = origin + rotatedSlot(canon[at], theta)
+    trialRots[m] = addRot(best[m], theta)
+  constrainedRouteScore(nl, comps, syms, trialPos, trialRots, anchors)
+
+proc revisitCompositeFrames(nl: Netlist, comps: seq[Component],
+                            syms: seq[SymbolDef], pos: var seq[Point],
+                            rots: seq[float], anchors: seq[Point],
+                            plan: var CompositePlan) =
+  ## The definitive-pass counterpart of `chooseCompositeOrientation`: with
+  ## centres settled, retry all four frames for each orientable composite,
+  ## now scored by `constrainedRouteScore` (hits -> bends -> length; drift is
+  ## left out of the switch so pure anchor drift never churns a frame). A
+  ## frame is rejected outright when a turned member's raw body would overlap
+  ## a foreign part's raw body -- the same test `recoverRouting` uses -- so on
+  ## a dense sheet the incumbent frame stands and only where there is room can
+  ## the route score improve it. Sequential / partial-update in `topLevel`
+  ## order, matching `constrainedRecomputeRotations`. Skipped (like
+  ## `chooseCompositeOrientation`) on a sheet `constrainedEligible` declined.
+  if not constrainedEligible(comps, plan): return
+  var hasOrientable = false
+  for idx in plan.topLevel:
+    let it = plan.items[idx]
+    if it.raw < 0 and compositeKinds[it.kind].orientable: hasOrientable = true
+  if not hasOrientable: return
+
+  var half = newSeq[Point](comps.len)
+  for i in 0 ..< comps.len:
+    half[i] = Point(x: syms[i].bodyW / 2.0, y: syms[i].bodyH / 2.0)
+
+  for idx in plan.topLevel:
+    let it = plan.items[idx]
+    if it.raw >= 0 or not compositeKinds[it.kind].orientable: continue
+    let members = rawMembers(plan, idx)
+    let canon = canonicalOffsets(plan, idx)
+    let origin = compositeUnitOrigin(plan, idx, pos, canon, members)
+    let current = it.unitRot
+    var inUnit = newSeq[bool](comps.len)
+    for m in members: inUnit[m] = true
+
+    # Incumbent frame first: it is already legalized, so it always scores.
+    var bestScore = frameRouteScore(nl, comps, syms, pos, rots, anchors, plan,
+                                    idx, members, canon, origin, current)
+    var bestTheta = current
+    for theta in rotationChoices:
+      if theta == current: continue
+      var overlap = false
+      for at, m in members:
+        let c = origin + rotatedSlot(canon[at], theta)
+        for j in 0 ..< comps.len:
+          if inUnit[j]: continue
+          if abs(c.x - pos[j].x) < half[m].x + half[j].x - 1e-9 and
+             abs(c.y - pos[j].y) < half[m].y + half[j].y - 1e-9:
+            overlap = true
+      if overlap: continue
+      let sc = frameRouteScore(nl, comps, syms, pos, rots, anchors, plan,
+                               idx, members, canon, origin, theta)
+      # Fewer obstacle hits or bends is a real routing win and taken as-is;
+      # a shorter estimate alone must clear the hysteresis, so a marginal
+      # length gain never churns a settled frame.
+      var better = false
+      if sc.hits != bestScore.hits: better = sc.hits < bestScore.hits
+      elif sc.bends != bestScore.bends: better = sc.bends < bestScore.bends
+      else: better = sc.length < bestScore.length - compositeFrameHysteresis
+      if better: bestScore = sc; bestTheta = theta
+
+    # Only disturb the settled geometry when the frame actually changed --
+    # re-laying at the recentred origin otherwise nudges a legal unit.
+    if bestTheta != current:
+      plan.items[idx].unitRot = bestTheta
+      for at, m in members: pos[m] = origin + rotatedSlot(canon[at], bestTheta)

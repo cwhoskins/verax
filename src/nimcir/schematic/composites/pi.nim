@@ -158,6 +158,7 @@ proc piRotationCandidates(nl: Netlist, comps: seq[Component],
 
 proc piKind(): CompositeKind =
   CompositeKind(name: "pi",
+    orientable: false,   ## shunt legs run to ground; the frame is pinned
     recognize: piRecognize,
     internalLayout: piInternalLayout,
     externalPins: piExternalPins,

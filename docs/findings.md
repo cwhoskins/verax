@@ -453,19 +453,16 @@ Both turned up while measuring why `nimble test` takes ~7 minutes (see the
 `-d:slowTests` and shared the expensive `layout()` fixtures in
 `test_schematic.nim`). Both are findings, not proposals: the tool misbehaves.
 
-27. **`schematic/refinement.nim` is half-written and prints to stdout** (§68).
-    The straightening pass around `refinement.nim:43-68` has a dead
-    `for p in a.pins: discard` loop, a comment that trails off mid-sentence,
-    and — the visible part — two bare `echo` statements (lines 67-68) that dump
-    every net's bend count and its full wire object on **every** `layout()`
-    call. That means every `nimble test` run, every `nimcir check`, and every
-    archived SVG emits this debug noise to stdout. It is reached: the dump
-    appears whenever a non-trivial netlist is laid out. That the pass is
-    otherwise inert is what `test_schematic.nim`'s "the default pipeline and
-    its reserved no-op stages are byte-stable" asserts (it exercises
-    `lsConstrainedRefinement`), which is why that assertion was kept when its
-    test was folded. The fix is to finish the pass or delete its body and the
-    echoes; the stage stays reserved either way.
+27. **`schematic/refinement.nim` is half-written** (§68). *The stdout dump is
+    fixed* — the two bare `echo` statements that printed every net's bend
+    count and full wire object on every `layout()` call are gone (removed
+    alongside the composite unit-orientation work; they were making the test
+    corpus impractical to run and read). The pass itself is still an inert
+    stub: it computes `netwires`/`anchors` and does nothing with them, with a
+    dead `for p in a.pins: discard` loop and a comment that trails off
+    mid-sentence. Finish it or delete its body; the stage stays reserved
+    either way, as `test_schematic.nim`'s "the default pipeline and its
+    reserved no-op stages are byte-stable" asserts.
 
 28. **`layout()` is superlinear in part count** (§69). Measured on a plain
     series resistor chain, default policy: n=16 → 0.43s, n=24 → 3.2s, n=30 →
@@ -479,6 +476,21 @@ Both turned up while measuring why `nimble test` takes ~7 minutes (see the
     let `test_verify_keep`'s derived-fragment archive assertion come back off
     `-d:slowTests` (~140s of its ~144s was one `layout()` of the
     op-substituted fragment, not the simulation).
+
+29. **`lsCompositeOrient` displaces neighbours when it turns a composite**
+    (composite unit-orientation work, `docs/composite_placement_stage2.md`
+    §2.7). The stage picks each orientable composite's rigid frame *before*
+    separation, so a turn reshapes the unit (a vertical 80×160 decoupling
+    bank becomes a horizontal 160×80 one) and the separator then packs the
+    whole sheet around the new shape. On `designs/ts808_drive.nim` under
+    `--schematic-layout=constrained-layered` this pushes `C2` far enough from
+    its `vamp` net-mates that the net degrades to 3 fallback markers (0 on the
+    base commit). Only the opt-in constrained archive is affected — the
+    default historical layout is byte-identical, and `nimble verify` +
+    `nimble test` are clean. `revisitCompositeFrames` (the post-separation
+    pass) cannot undo it: it re-scores the composite's own frame, not the
+    collateral displacement. A real fix needs separation to be
+    orientation-aware, or the frame choice deferred until after it.
 
 ---
 

@@ -8,9 +8,9 @@ import std/[os, strutils]
 type
   StageId* = enum
     lsPrepare, lsSemanticSeed, lsForcePlacement, lsConstrainedRefinement,
-    lsSeparate, lsPack, lsOrient, lsLeafSnap, lsTerminalRepair,
-    lsPrepareRouting, lsRoute, lsRecoverRouting, lsRoutingAwareRepair,
-    lsLabels, lsBounds
+    lsCompositeOrient, lsSeparate, lsPack, lsOrient, lsLeafSnap,
+    lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting,
+    lsRoutingAwareRepair, lsLabels, lsBounds
 
   ## An explicit canonical stage description. `LayoutOptions.stages` filters
   ## this sequence; it cannot reorder it.
@@ -41,6 +41,9 @@ const canonicalStages*: array[StageId, StageSpec] = [
   StageSpec(id: lsSemanticSeed, enabled: true),
   StageSpec(id: lsForcePlacement, enabled: true),
   StageSpec(id: lsConstrainedRefinement, enabled: true),
+  # Also inert under lpHistorical (no CompositePlan is built): picks each
+  # orientable composite's rigid quarter-turn before separation legalizes it.
+  StageSpec(id: lsCompositeOrient, enabled: true),
   StageSpec(id: lsSeparate, enabled: true),
   StageSpec(id: lsPack, enabled: true),
   StageSpec(id: lsOrient, enabled: true),

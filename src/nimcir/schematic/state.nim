@@ -63,9 +63,21 @@ proc groupsOf(state: LayoutState): seq[int] =
 proc packGroups(state: var LayoutState, group: seq[int]) =
   packGroups(state.pos, state.ohw, state.ohh, group)
 
-proc constrainedRecomputeRotations(state: LayoutState): seq[float] =
-  constrainedRecomputeRotations(state.nl, state.comps, state.syms, state.pos,
+proc chooseCompositeOrientation(state: var LayoutState) =
+  ## `lsCompositeOrient`. No-op unless the constrained plan carries an
+  ## orientable composite.
+  chooseCompositeOrientation(state.nl, state.comps, state.syms, state.pos,
+    state.rots, state.composites)
+
+proc constrainedRecomputeRotations(state: var LayoutState) =
+  ## The definitive constrained orient pass: let each orientable composite
+  ## revisit its rigid frame now that centres are settled (`revisitCompositeFrames`),
+  ## then assign every member and singleton angle. Mutates `state.pos`,
+  ## `state.rots` and each composite's `unitRot` in place.
+  revisitCompositeFrames(state.nl, state.comps, state.syms, state.pos,
     state.rots, state.semanticAnchors, state.composites)
+  state.rots = constrainedRecomputeRotations(state.nl, state.comps, state.syms,
+    state.pos, state.rots, state.semanticAnchors, state.composites)
 
 proc leafSnap(state: var LayoutState) =
   leafSnap(state.comps, state.syms, state.pos, state.rots, state.ohw,

@@ -33,7 +33,7 @@ implements.
   **zero-space** fallback — no wire, only the marker and label at the pin.
   Fallbacks are stored in `Schematic.fallbacks`, *not* in `wires`, so they
   never reach the occupancy set or the junction pass.
-- **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, `finish.nim`, `diagnostics.nim`, and (see below) `composites/composite.nim`, `composites/passive.nim` and `constrained.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary. The include order is load-bearing: `composites/composite` and `composites/passive` sit after `placement.nim` (they use `rotationChoices`/`slotOf`/`rotatedSlot`/`axisUnit`/`pinWorldPositions`) and before `constrained.nim` (which pools placement over the arena they define), and `state.nim`'s include must stay between `constrained.nim` (uses its procs) and `routing.nim` (defines `RoutingState`). Private included `state.nim` holds `LayoutState`/`RoutingState`: component-symbol-position state and label-only routing metadata must never be added to public `Schematic`. `state.nim` also carries the placement-stage bodies (`prepare`, `forcePlace`, `snapToGrid`, `separate`) and the thin `*(state: var LayoutState)` forwarders, so `layout` itself is just the ordered stage list — the historical policy's serialized output stays byte-identical, so those bodies are a verbatim move, not a rewrite. `finish.nim` consumes the completed scene plus that state while preserving label order and bounds behavior. `LayoutOptions.policy` defaults to `lpHistorical`, whose output must remain byte-identical. `parseLayoutPolicy` and `archiveLayoutOptions` centralize the CLI/environment spelling used only by archive writers; ordinary `layout(nl)` remains historical. The opt-in `lpConstrainedLayered` policy gives `lsSemanticSeed` (after the deterministic golden-angle seed) and `lsConstrainedRefinement` (after force placement and before existing legalization) their bounded deterministic topology/layer meaning; it uses the existing bounded routing recovery as `lsRoutingAwareRepair`. It is for ordinary sheets (at most 64 *placement units*, and at most 256 raw parts), not a general graph-drawing solver: output-pin arcs seed left-to-right columns, while bounded deterministic stage placement folds each semantic layer across at most three adjacent columns (grouping parallel flat two-terminal parts by the same unordered net pair) rather than making a passive-heavy layer arbitrarily vertical; a same-component return has the adjacent-stage freedom on either side of its source, not an output-side-only rule. A bounded semantic walk follows every flat device with exactly two connected terminals (regardless of kind) until an input endpoint, stopping at rails, ground, hierarchy and inputs. It uses the existing `portDirection(net) == pdInput` result, including its no-driver fallback, for input interfaces. A traversal step is keyed on `(pool item, exit net)`, not the pool item alone: a recognized composite is one *placement unit* but its members are still distinct signal edges, so a pi's grounded shunt must not consume the pool position its series member needs to be walked through (the bug that put `RIAA_CHANNEL`'s `RL`–`CIN`–`RB` pi right of the op-amp it feeds). Both members of a parallel pair share both nets, so from either they yield the same `(pool, exit)` step and still collapse to one; `seen` stays raw so path length is bounded by the raw part count. A same-component return keeps its traversed parts in the source column; a genuine return to an earlier component keeps its path passives right of the driving output. Insertion order otherwise breaks feedback arcs, and existing legalization remains authoritative for non-overlap. Its signal trees are atomic trunk-and-tap attempts: a failed net restores occupancy and becomes marker-only fallbacks. Do not attach heuristics, reorder existing passes, or reinterpret terminal/recovery safeguards.
+- **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, `finish.nim`, `diagnostics.nim`, and (see below) `composites/composite.nim`, `composites/passive.nim` and `constrained.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary. The include order is load-bearing: `composites/composite` and `composites/passive` sit after `placement.nim` (they use `rotationChoices`/`slotOf`/`rotatedSlot`/`axisUnit`/`pinWorldPositions`) and before `constrained.nim` (which pools placement over the arena they define), and `state.nim`'s include must stay between `constrained.nim` (uses its procs) and `routing.nim` (defines `RoutingState`). Private included `state.nim` holds `LayoutState`/`RoutingState`: component-symbol-position state and label-only routing metadata must never be added to public `Schematic`. `state.nim` also carries the placement-stage bodies (`prepare`, `forcePlace`, `snapToGrid`, `separate`) and the thin `*(state: var LayoutState)` forwarders, so `layout` itself is just the ordered stage list — the historical policy's serialized output stays byte-identical, so those bodies are a verbatim move, not a rewrite. `finish.nim` consumes the completed scene plus that state while preserving label order and bounds behavior. `LayoutOptions.policy` defaults to `lpHistorical`, whose output must remain byte-identical. `parseLayoutPolicy` and `archiveLayoutOptions` centralize the CLI/environment spelling used only by archive writers; ordinary `layout(nl)` remains historical. The opt-in `lpConstrainedLayered` policy gives `lsSemanticSeed` (after the deterministic golden-angle seed), `lsConstrainedRefinement` (after force placement and before existing legalization) and `lsCompositeOrient` (right after refinement, before separation — picks each orientable composite's rigid `unitRot`, see the `composites/` bullet) their bounded deterministic meaning; it uses the existing bounded routing recovery as `lsRoutingAwareRepair`. It is for ordinary sheets (at most 64 *placement units*, and at most 256 raw parts), not a general graph-drawing solver: output-pin arcs seed left-to-right columns, while bounded deterministic stage placement folds each semantic layer across at most three adjacent columns (grouping parallel flat two-terminal parts by the same unordered net pair) rather than making a passive-heavy layer arbitrarily vertical; a same-component return has the adjacent-stage freedom on either side of its source, not an output-side-only rule. A bounded semantic walk follows every flat device with exactly two connected terminals (regardless of kind) until an input endpoint, stopping at rails, ground, hierarchy and inputs. It uses the existing `portDirection(net) == pdInput` result, including its no-driver fallback, for input interfaces. A traversal step is keyed on `(pool item, exit net)`, not the pool item alone: a recognized composite is one *placement unit* but its members are still distinct signal edges, so a pi's grounded shunt must not consume the pool position its series member needs to be walked through (the bug that put `RIAA_CHANNEL`'s `RL`–`CIN`–`RB` pi right of the op-amp it feeds). Both members of a parallel pair share both nets, so from either they yield the same `(pool, exit)` step and still collapse to one; `seen` stays raw so path length is bounded by the raw part count. A same-component return keeps its traversed parts in the source column; a genuine return to an earlier component keeps its path passives right of the driving output. Insertion order otherwise breaks feedback arcs, and existing legalization remains authoritative for non-overlap. Its signal trees are atomic trunk-and-tap attempts: a failed net restores occupancy and becomes marker-only fallbacks. Do not attach heuristics, reorder existing passes, or reinterpret terminal/recovery safeguards.
   A placement unit is a raw singleton or a whole recognized composite
   (`constrainedEligible`, `constrained.nim`): the semantic layering
   (`constrainedTopology`/`constrainedTargets`) and the per-candidate route
@@ -294,9 +294,33 @@ implements.
   `ownerOf`/`poolOf`, raw index to owning arena index / pool position), and
   the `CompositeKind` contract — seven `{.nimcall.}` hooks
   (`recognize`/`internalLayout`/`externalPins`/`pickRepresentative`/
-  `internalRoute`/`rotationCandidates`/`footprint`) a motif implements over
+  `internalRoute`/`rotationCandidates`/`footprint`) plus an `orientable` flag,
+  a motif implements over
   the arrays `LayoutState` already threads, so a recognizer needs no access to
-  placement/routing internals. `footprint` is routing-only: `boundingBoxFootprint`
+  placement/routing internals. **`internalLayout` authors one *canonical*
+  frame** (the horizontal row / vertical stack the motifs below describe);
+  `canonicalOffsets` returns it untouched and `rawOffsets` returns it turned
+  by `PlaceableItem.unitRot`, a rigid 0/90/180/270 quarter-turn the
+  `lsCompositeOrient` stage picks (and the definitive orient pass revisits via
+  `revisitCompositeFrames`) for an `orientable` kind — the parallel stack and
+  the series chain, whose canonical horizontal frame is arbitrary. The pi and
+  the tee are **not** orientable: their shunt legs run to ground and
+  ground-points-down is a real convention, so `unitRot` stays 0 and their
+  output is byte-identical. `lsCompositeOrient` scores a trial frame by turning
+  the *whole* unit (so internal pin distances stay fixed and only the reach to
+  external net-mates counts): a unit whose every external net is a rail/ground
+  (`unitExternallyPurePower` — a divider between planes, a decoupling bank) is
+  ranked by `powerRank` then `rotationScore`; a unit with an external signal
+  net by `rotationScore` alone (smaller angle breaks ties), so it turns only
+  to shorten a real connection, not to point a lone ground leg down. It runs
+  *before* `separate`/`pack` so a turned unit is legalized like any other, and
+  `revisitCompositeFrames` re-scores by `constrainedRouteScore` once centres
+  are settled, rejecting any frame whose turned bodies would overlap a foreign
+  part. Both stages leave geometry untouched when the chosen frame equals the
+  current one, and both are skipped on a sheet `constrainedEligible` declined.
+  `recoverRouting` respects the committed `unitRot` (angles compose through
+  `constrainedRecomputeRotations`) but deliberately does not re-search it per
+  candidate. See `docs/composite_placement_stage2.md` §2.7. `footprint` is routing-only: `boundingBoxFootprint`
   (one padded box over every member) is the default and what the parallel
   stack and the tee use — their external terminals sit on that box's edge — while
   the pi returns `memberBodiesFootprint` (each member body padded on its own),
@@ -320,7 +344,10 @@ implements.
   `passive.nim` holds two motifs. `parallelStackKind`: parallel flat
   two-terminal parts sharing an unordered net pair become one placement unit,
   keyed by that unordered net pair so declaration and pin order cannot split
-  the group (`parallelRecognize`). `seriesChainKind` (`docs/composites.md`
+  the group (`parallelRecognize`). Canonical frame: members stacked along y,
+  pin axis horizontal; `orientable`, so `lsCompositeOrient` may turn the stack
+  to run along x instead. `parallelInternalRoute` reads the stacking axis from
+  the covered-pin spread rather than assuming vertical. `seriesChainKind` (`docs/composites.md`
   idea 1, the complementary case — chained, not paralleled): flat two-terminal
   passive parts wired end to end through **link nets** become one horizontal
   row. A link net has exactly two pins in total, both on distinct *usable*
@@ -334,9 +361,12 @@ implements.
   per link net (the two free chain ends get none — a single interior pin each,
   and a ground/rail end still draws its own glyph), so every link net is a
   `routing.fullyInternalComposite` and `compositeInternalRoutes` owns its
-  wiring, exactly as the tee's mid node. Canonical drawing: every member
+  wiring, exactly as the tee's mid node. Canonical *frame*: every member
   horizontal, one `2 * grid` gutter between bodies (an even pitch, so the
-  grid-rounded centres stay symmetric), head-side net on the −x pin. It does
+  grid-rounded centres stay symmetric), head-side net on the −x pin —
+  `lsCompositeOrient` then turns the whole row through 0/90/180/270 (it is an
+  `orientable` kind), so a chain between an upper and a lower endpoint draws as
+  a vertical column. It does
   **not** compose with the parallel stack yet: a chain member is always a raw
   singleton, so a series-of-parallel-pairs needs the arena-index nesting fold
   `compositePlan` does not do (`docs/composite_placement_stage2.md` §2.6).

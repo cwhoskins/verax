@@ -135,6 +135,7 @@ proc teeRotationCandidates(nl: Netlist, comps: seq[Component],
 
 proc teeKind(): CompositeKind =
   CompositeKind(name: "tee",
+    orientable: false,   ## grounded shunt at the mid node; the frame is pinned
     recognize: teeRecognize,
     internalLayout: teeInternalLayout,
     externalPins: teeExternalPins,

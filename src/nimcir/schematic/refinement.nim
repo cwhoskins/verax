@@ -55,10 +55,11 @@ proc refineRouting(state: var LayoutState) =
   # Loop through the nets and try to straighten them
   # Regardless of the result add the moved components to the anchored list
   # and add their nets to the next iteration
-      
-  for n, w in netwires:
-    echo n, ": ", w.countbends()
-    echo w
+  discard netwires
+  # NOTE: this pass is a WIP stub -- it computes `netwires`/`anchors` and does
+  # nothing with them. It used to `echo` every routed wire on every `layout`
+  # call (megabytes of stdout across the test corpus); that debug output is
+  # removed here. Finishing or deleting the pass is tracked separately.
 
 proc portObstacle(p: SchematicPort): Obstacle =
   let hw = p.bodyW / 2.0 + routingClearance

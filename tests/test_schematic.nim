@@ -124,6 +124,24 @@ proc partOf(s: Schematic, desig: string): SchematicPart =
     if p.designator == desig: return p
   doAssert false, "no part named " & desig
 
+proc coStacked(a, b: SchematicPart, pitch = 80.0): bool =
+  ## An orientable composite (`lsCompositeOrient`) may turn a two-member
+  ## parallel/series unit through any of 0/90/180/270, so its members share
+  ## *one* axis coordinate and sit `pitch` apart on the other -- assert that
+  ## rather than a hardcoded column or row.
+  ((abs(a.x - b.x) < 1e-6 and abs(abs(a.y - b.y) - pitch) < 1e-6) or
+   (abs(a.y - b.y) < 1e-6 and abs(abs(a.x - b.x) - pitch) < 1e-6))
+
+proc unitVertical(members: openArray[SchematicPart]): bool =
+  ## Whether a rigid composite unit runs along y (its canonical frame) rather
+  ## than along x after an `lsCompositeOrient` quarter-turn. Ties -> vertical.
+  var minX, minY = Inf
+  var maxX, maxY = -Inf
+  for m in members:
+    minX = min(minX, m.x); maxX = max(maxX, m.x)
+    minY = min(minY, m.y); maxY = max(maxY, m.y)
+  (maxY - minY) >= (maxX - minX)
+
 proc sceneBBox(s: Schematic): tuple[x1, y1, x2, y2: float] =
   result = (x1: Inf, y1: Inf, x2: -Inf, y2: -Inf)
   for p in s.parts:
@@ -768,13 +786,14 @@ test "constrained stages group parallel passives and bound RIAA aspect ratio":
   var options = defaultLayoutOptions()
   options.policy = lpConstrainedLayered
   let s = layout(riaaChannel(), options)
-  # R7 || C5 and R8 || C6 are each placement units despite their different
-  # declarations and values, so their paired symbols share a stage.
-  check partOf(s, "R7").x == partOf(s, "C5").x
-  check partOf(s, "R8").x == partOf(s, "C6").x
+  # R7 || C5 and R8 || C6 are each one placement unit despite their different
+  # declarations and values: their paired symbols stay adjacent and co-stacked
+  # on one axis (the unit's frame is `lsCompositeOrient`'s to choose).
+  check coStacked(partOf(s, "R7"), partOf(s, "C5"))
+  check coStacked(partOf(s, "R8"), partOf(s, "C6"))
   # RL (shunt on IN) -- CIN (series) -- RB (shunt on amp) is a pi section:
-  # one packed, canonical unit, series horizontal with a shunt one grid pitch
-  # below each of its pins.
+  # a pinned unit, series horizontal with a shunt one grid pitch below each
+  # of its pins (pi is not orientable).
   block:
     let cin = partOf(s, "CIN")
     let rl = partOf(s, "RL")
@@ -843,7 +862,9 @@ test "constrained layering admits a raw-over-gate sheet whose pool clears it":
   check s.parts.len == 68
   check partOf(s, "U1").x < partOf(s, "U2").x
   for i in 1 .. 33:
-    check partOf(s, "R" & $i).x == partOf(s, "C" & $i).x
+    # Each R||C pair is one placement unit: adjacent and co-stacked on one
+    # axis, whichever frame `lsCompositeOrient` gave the unit.
+    check coStacked(partOf(s, "R" & $i), partOf(s, "C" & $i))
   let box = sceneBBox(s)
   # The layered treatment produces a wide, short sheet; the ungrouped
   # golden-spiral seed (what a raw-count-only gate would have fallen back to)
@@ -1393,10 +1414,10 @@ test "constrained parallel bridge keeps same-net pins adjacent despite reversed 
   for s in [a, b]:
     let rb = partOf(s, "RB")
     let cb = partOf(s, "CB")
-    check rb.x == cb.x                         # one placement column
     # Parallel 80 x 80 passives are a raw-body-touching composite: no
-    # placementPad is inserted between private members.
-    check abs(rb.y - cb.y) == 80.0
+    # placementPad between private members, and they stay co-stacked on one
+    # axis whichever frame `lsCompositeOrient` picked.
+    check coStacked(rb, cb)
     for net in ["left", "right"]:
       let p = pinPoints(s, "RB", net)[0]
       let q = pinPoints(s, "CB", net)[0]
@@ -1437,18 +1458,29 @@ test "constrained composite maps mixed native terminal axes and normalizes fanou
   let rb = partOf(s, "RB")
   let vb = partOf(s, "VB")
   let cb = partOf(s, "CB")
-  # The mixed-axis members remain the one locked, raw-body-touching unit.
-  check rb.x == vb.x and vb.x == cb.x
-  check abs(rb.y - vb.y) == 80.0 and abs(vb.y - cb.y) == 80.0
-  check vb.rotation in [90.0, 270.0] # voltage sources are native-vertical
+  # The mixed-axis members remain one locked, raw-body-touching unit, stacked
+  # 80 apart along whichever axis `lsCompositeOrient` chose for the unit.
+  let vert = unitVertical([rb, vb, cb])
+  if vert:
+    check rb.x == vb.x and vb.x == cb.x
+    check abs(rb.y - vb.y) == 80.0 and abs(vb.y - cb.y) == 80.0
+  else:
+    check rb.y == vb.y and vb.y == cb.y
+    check abs(rb.x - vb.x) == 80.0 and abs(vb.x - cb.x) == 80.0
   for part in [rb, vb, cb]:
-    # Every member, not just the reference passive, has a horizontal pin axis.
-    check abs(part.pins[0].y - part.pins[1].y) < 1e-6
-    check abs(abs(part.pins[0].x - part.pins[1].x) - 80.0) < 1e-6
+    # Every member, not just the reference passive, has its two pins on the
+    # unit's cross-axis, 80 apart -- the native-vertical source included.
+    if vert:
+      check abs(part.pins[0].y - part.pins[1].y) < 1e-6
+      check abs(abs(part.pins[0].x - part.pins[1].x) - 80.0) < 1e-6
+    else:
+      check abs(part.pins[0].x - part.pins[1].x) < 1e-6
+      check abs(abs(part.pins[0].y - part.pins[1].y) - 80.0) < 1e-6
   for net in ["left", "right"]:
     let points = @[pinPoints(s, "RB", net)[0], pinPoints(s, "VB", net)[0],
                    pinPoints(s, "CB", net)[0]]
-    check points[0].x == points[1].x and points[1].x == points[2].x
+    if vert: check points[0].x == points[1].x and points[1].x == points[2].x
+    else: check points[0].y == points[1].y and points[1].y == points[2].y
   # Three members exercise the one-trunk fanout; no pair of emitted wires may
   # retain the old overlapping collinear root runs.
   check distinctWiresNeverShareCollinearRuns(s)
@@ -1597,26 +1629,31 @@ proc seriesChainFilter(portOnLink = false): Netlist =
   addPort(result, "B", b)
   if portOnLink: addPort(result, "M1", m1)
 
-test "constrained series chain: passives in one horizontal row, links routed":
+test "constrained series chain: passives in one row, links routed":
   var options = defaultLayoutOptions()
   options.policy = lpConstrainedLayered
   let s = layout(seriesChainFilter(), options)
   var members: seq[SchematicPart]
   for d in ["RS", "R1", "C1", "L1"]: members.add partOf(s, d)
-  # One rigid canonical unit: every member horizontal, sharing one y.
-  let y0 = members[0].y
+  # One rigid unit: every member aligned on the unit's cross-axis and its two
+  # pins on that same cross-axis. `lsCompositeOrient` chose the frame.
+  let vert = unitVertical(members)
+  let along = proc(m: SchematicPart): float = (if vert: m.y else: m.x)
+  let across = proc(m: SchematicPart): float = (if vert: m.x else: m.y)
+  let base = across(members[0])
   for m in members:
-    check m.y == y0
-    check abs(m.pins[0].y - m.pins[1].y) < 1e-6
-  # Evenly spaced in x on a fixed 160 pitch, grid-aligned: four distinct
-  # members at x0, x0+160, x0+320, x0+480 in some order.
-  var minX = members[0].x
-  for m in members: minX = min(minX, m.x)
+    check across(m) == base
+    if vert: check abs(m.pins[0].x - m.pins[1].x) < 1e-6
+    else: check abs(m.pins[0].y - m.pins[1].y) < 1e-6
+  # Evenly spaced on a fixed 160 pitch, grid-aligned: four distinct members at
+  # d0, d0+160, d0+320, d0+480 in some order.
+  var minD = along(members[0])
+  for m in members: minD = min(minD, along(m))
   var slots: array[4, bool]
   for m in members:
-    let k = int(round((m.x - minX) / 160.0))
+    let k = int(round((along(m) - minD) / 160.0))
     check k in 0 .. 3
-    check abs((m.x - minX) - float(k) * 160.0) < 1e-6
+    check abs((along(m) - minD) - float(k) * 160.0) < 1e-6
     check not slots[k]
     slots[k] = true
   # The three internal link nets are real wires, not fallback markers.
@@ -1632,16 +1669,94 @@ test "a declared port on a link net is not absorbed into the chain":
   options.policy = lpConstrainedLayered
   let s = layout(seriesChainFilter(portOnLink = true), options)
   # R1 and C1 no longer form one rigid unit: `m1` is a routed external net
-  # (its own port symbol), so the two are free to sit apart / off-axis.
+  # (its own port symbol), so they are not aligned-and-160-apart the way two
+  # members of one chain unit would be (in either frame).
   let r1 = partOf(s, "R1")
   let c1 = partOf(s, "C1")
-  check (r1.y != c1.y) or (abs((r1.x - c1.x)) - 160.0 > 1e-6)
+  check not coStacked(r1, c1, 160.0)
   check "M1" in (block:
     var names: seq[string]
     for p in s.ports: names.add p.name
     names)
   check s.fallbacks.len == 0
   check layout(seriesChainFilter(portOnLink = true), options) == s
+
+proc railToGroundChain(): Netlist =
+  ## R1-R2-R3 in series from a driven VCC rail down to ground: a series chain
+  ## whose free ends are a rail and ground, so `powerRank` alone (not fragile
+  ## wirelength) forces `lsCompositeOrient` to stand it into a vertical column.
+  result = newNetlist("rail_chain")
+  let vcc = addNet(result, newNet("VCC", ntPower))
+  let m1 = addNet(result, newNet("m1"))
+  let m2 = addNet(result, newNet("m2"))
+  let gnd = addNet(result, newNet("0", ntGround))
+  let v1 = addComponent(result, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", vcc, ptPower); discard connect(v1, "-", gnd, ptGround)
+  v1.attrs["value"] = "DC 5"
+  let r1 = addComponent(result, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", vcc, ptPassive); discard connect(r1, "2", m1, ptPassive)
+  let r2 = addComponent(result, newComponent("R2", kind = "resistor"))
+  discard connect(r2, "1", m1, ptPassive); discard connect(r2, "2", m2, ptPassive)
+  let r3 = addComponent(result, newComponent("R3", kind = "resistor"))
+  discard connect(r3, "1", m2, ptPassive); discard connect(r3, "2", gnd, ptPassive)
+
+test "lsCompositeOrient stands a rail-to-ground series chain into a vertical column":
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(railToGroundChain(), options)
+  var members: seq[SchematicPart]
+  for d in ["R1", "R2", "R3"]: members.add partOf(s, d)
+  check unitVertical(members)                       # turned out of the row
+  check members[0].x == members[1].x and members[1].x == members[2].x
+  for m in members:                                 # each body vertical too
+    check abs(m.pins[0].x - m.pins[1].x) < 1e-6
+  # VCC end up, ground end down -- the powerRank result, with no motif rule.
+  check pinPoints(s, "R1", "VCC")[0].y < pinPoints(s, "R3", "0")[0].y
+  check s.fallbacks.len == 0
+  check distinctWiresNeverShareCollinearRuns(s)
+  check differentNetsRespectSeparation(s)
+  check layout(railToGroundChain(), options) == s
+
+test "a rail decoupling bank turns its caps upright, side by side":
+  # C1||C2 across VDD/0: powerRank prefers each cap vertical (VDD up, gnd down),
+  # so the stack runs horizontal -- the conventional decoupling picture.
+  let nl = newNetlist("decouple_bank")
+  let vdd = addNet(nl, newNet("VDD", ntPower))
+  let gnd = addNet(nl, newNet("0", ntGround))
+  let v1 = addComponent(nl, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", vdd, ptPower); discard connect(v1, "-", gnd, ptGround)
+  for d in ["C1", "C2"]:
+    let c = addComponent(nl, newComponent(d, kind = "capacitor"))
+    discard connect(c, "1", vdd, ptPassive)
+    discard connect(c, "2", gnd, ptPassive)
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(nl, options)
+  let c1 = partOf(s, "C1")
+  let c2 = partOf(s, "C2")
+  check c1.y == c2.y and abs(c1.x - c2.x) == 80.0    # side by side
+  for c in [c1, c2]:
+    check c.rotation in [90.0, 270.0]                 # upright
+    check pinPoints(s, c.designator, "0")[0].y > pinPoints(s, c.designator, "VDD")[0].y
+  check layout(nl, options) == s
+
+test "lsCompositeOrient leaves pi and tee pinned, and historical untouched":
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  # pi/tee are not orientable: their constrained scenes are byte-identical to
+  # what they were before the stage existed, which is also exactly the scene
+  # with lsCompositeOrient dropped.
+  for mk in [piFilter, teeFilter]:
+    let withStage = layout(mk(), options)
+    var without = options
+    without.stages.excl lsCompositeOrient
+    check layout(mk(), without) == withStage
+  # And the historical policy never builds the plan, so the stage is a no-op
+  # there for a composite-shaped netlist too.
+  var dropped = defaultLayoutOptions()
+  dropped.stages.excl lsCompositeOrient
+  for nl in [piFilter(), teeFilter(), seriesChainFilter(), railToGroundChain()]:
+    check layout(nl, dropped) == layout(nl)
 
 test "a parallel pair is still a parallel stack, not a series chain":
   # RP||CP share the identical net pair (a, b): those nets carry four pins, so
@@ -2612,7 +2727,8 @@ test "the default pipeline and its reserved no-op stages are byte-stable":
   # The reserved stages are still no-ops: dropping any one changes nothing.
   # `lsConstrainedRefinement` in particular is unfinished, so this is the
   # guard that it stays inert until it is done.
-  for stage in [lsSemanticSeed, lsConstrainedRefinement, lsRoutingAwareRepair]:
+  for stage in [lsSemanticSeed, lsConstrainedRefinement, lsCompositeOrient,
+                lsRoutingAwareRepair]:
     var options = defaultLayoutOptions()
     options.stages.excl stage
     let scene = layout(nl, options)

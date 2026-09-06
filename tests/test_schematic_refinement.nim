@@ -54,15 +54,16 @@ proc constrainedState(nl: Netlist): LayoutState =
   forcePlace(result)
   constrainedRefine(result)
   restoreCompositeOffsets(result)
+  chooseCompositeOrientation(result)
   snapToGrid(result)
   separate(result)
   let group = groupsOf(result)
   packGroups(result, group)
   restoreCompositeOffsets(result)
-  result.rots = constrainedRecomputeRotations(result)
+  constrainedRecomputeRotations(result)
   repairTerminalClearance(result)
   restoreCompositeOffsets(result)
-  result.rots = constrainedRecomputeRotations(result)
+  constrainedRecomputeRotations(result)
   result.routing = recoverRouting(result)
 
 test "verifyPartPlacement allows a move that clears every other part":

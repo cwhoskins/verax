@@ -26,6 +26,20 @@ drawing. A **series-of-parallels** (a chain whose members are themselves
 parallel banks, or vice versa) still needs the arena-index nesting fold §2.6
 does not yet do.
 
+**Unit orientation (shipped):** each `CompositeKind` now carries an
+`orientable` flag. `internalLayout` still authors a single *canonical* frame,
+but for an orientable kind — the parallel stack and the series chain — the
+`lsCompositeOrient` stage picks a rigid 0/90/180/270 turn of the whole unit
+(`PlaceableItem.unitRot`), and the definitive orient pass revisits it once
+centres are settled. The horizontal row / vertical stack the descriptions
+below give is therefore the canonical frame, not the final one: a chain whose
+endpoints sit above and below it will be drawn as a vertical column. The pi
+and the tee are **not** orientable — their shunt legs run to ground and
+ground-points-down is a real convention, not a wirelength trade — so idea 3
+below stays pinned, but idea 2 (the vertical voltage-divider frame) is the
+first idea this unblocks: it can be authored horizontal-canonical and left to
+`lsCompositeOrient` to stand up. See `composite_placement_stage2.md` §2.7.
+
 The rest of this file is the original brainstorm of what else fits the same
 `CompositeKind` contract (a pure-topology `recognize` over `comps`/`syms`, plus
 `internalLayout`/`externalPins`/`pickRepresentative`/`internalRoute`/
@@ -62,9 +76,12 @@ pin-kind sits on which net" is.
 
 2. **Voltage divider / termination pair** — two two-terminal parts in series
    between two fixed nets (rail/ground, or two signal rails) with the midpoint
-   tapped to a third net. A 3-port composite: two ends plus the tap, stacked
-   vertically with the tap escaping sideways. Reused below as the bias-ladder
-   shape for active stages.
+   tapped to a third net. A 3-port composite: two ends plus the tap. Its
+   textbook frame is vertical with the tap escaping sideways, but with
+   `orientable` + `lsCompositeOrient` shipped it can be authored the same
+   horizontal-canonical way the series chain is and left to the orient stage
+   to stand upright where a rail sits above and ground below. Reused below as
+   the bias-ladder shape for active stages.
 
 3. **Crystal/resonator + load caps** (generalizes to: **shunt pair flanking
    any part**) — a part with two caps, each from one of its terminals to
