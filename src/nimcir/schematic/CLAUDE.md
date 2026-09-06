@@ -286,7 +286,7 @@ implements.
   is there.
 - **`composites/composite.nim`**, **`composites/passive.nim`**,
   **`composites/pi.nim`** and **`composites/tee.nim`** — the composite arena
-  `constrained.nim` pools placement over, and the three motifs registered into
+  `constrained.nim` pools placement over, and the four motifs registered into
   it. `composite.nim` is kind-agnostic: `CompositePort`,
   `PlaceableItem`, `CompositePlan` (the arena: `items`, the leaf/composite
   entries; `topLevel`, the arena indices placement actually sees, singletons
@@ -317,10 +317,33 @@ implements.
   singletons; a later kind that must genuinely *consume* an earlier composite
   as one of its own members (the op-amp inverting-amp example) still needs the
   arena-index fold this does not do.
-  `passive.nim` holds `parallelStackKind`: parallel flat two-terminal parts
-  sharing an unordered net pair become one placement unit, keyed by that
-  unordered net pair so declaration and pin order cannot split the group
-  (`parallelRecognize`). `pi.nim` and `tee.nim` hold the two passive
+  `passive.nim` holds two motifs. `parallelStackKind`: parallel flat
+  two-terminal parts sharing an unordered net pair become one placement unit,
+  keyed by that unordered net pair so declaration and pin order cannot split
+  the group (`parallelRecognize`). `seriesChainKind` (`docs/composites.md`
+  idea 1, the complementary case — chained, not paralleled): flat two-terminal
+  passive parts wired end to end through **link nets** become one horizontal
+  row. A link net has exactly two pins in total, both on distinct *usable*
+  members (`isTraversable` **and** `isPassiveElement` **and** not a fallback
+  box — an MCU with two nets wired is traversable but has no place in a passive
+  row), and is neither ground, nor a rail, nor a declared `nl.ports` interface
+  (a port must stay an external routable endpoint). Link nets give every usable
+  part degree ≤ 2, so the link graph is paths and cycles; a cycle cannot be a
+  horizontal row, so it is declined outright rather than cut at an arbitrary
+  edge. There is no length cap. `seriesExternalPins` emits one `CompositePort`
+  per link net (the two free chain ends get none — a single interior pin each,
+  and a ground/rail end still draws its own glyph), so every link net is a
+  `routing.fullyInternalComposite` and `compositeInternalRoutes` owns its
+  wiring, exactly as the tee's mid node. Canonical drawing: every member
+  horizontal, one `2 * grid` gutter between bodies (an even pitch, so the
+  grid-rounded centres stay symmetric), head-side net on the −x pin. It does
+  **not** compose with the parallel stack yet: a chain member is always a raw
+  singleton, so a series-of-parallel-pairs needs the arena-index nesting fold
+  `compositePlan` does not do (`docs/composite_placement_stage2.md` §2.6).
+  Registered last, so where a pi/tee series leg also reads as a chain link the
+  canonical filter drawing wins and `compositePlan`'s all-or-nothing claim
+  check drops the chain group.
+  `pi.nim` and `tee.nim` hold the two passive
   filter-section motifs from `docs/composites.md` (ideas 3, and 1+2):
   * **pi** — a flat two-terminal series part with a flat two-terminal
     shunt-to-ground part at *each* end. Recognition is topology-only

@@ -1,21 +1,30 @@
 # Composite motif ideas beyond `parallel-stack`
 
 **Shipped since this brainstorm was written:** `compositeKinds`
-(`schematic/composites/composite.nim`) now registers three motifs —
-`parallelStackKind` (`passive.nim`), plus `piKind` (`pi.nim`) and `teeKind`
-(`tee.nim`), the two passive filter sections below. **pi** is idea 3 ("shunt
+(`schematic/composites/composite.nim`) now registers four motifs —
+`parallelStackKind` (`passive.nim`), plus `piKind` (`pi.nim`), `teeKind`
+(`tee.nim`) and `seriesChainKind` (`passive.nim`). **pi** is idea 3 ("shunt
 pair flanking any part"): a flat two-terminal series part with a
 shunt-to-ground flat two-terminal part at each end, drawn series-horizontal
-with a shunt dropping to ground from each pin. **tee** is ideas 1+2 (series
+with a shunt dropping to ground from each pin. **tee** is idea 2 (series
 chain with the midpoint tapped), tapped to ground: two flat two-terminal
 series parts meeting at a *private* mid node that also carries one
 shunt-to-ground part, drawn as a horizontal row with the shunt on the midline.
-Both stay topology-only, both exclude a source as a member, and pi requires
-its two external nets to reach beyond the composite so a real tee is not
-misread as a pi around one of its series legs. `compositePlan` folds the kinds
-in registration order (parallel, then pi, then tee), dropping any group whose
-members an earlier kind claimed — the non-nesting subset of
-`composite_placement_stage2.md` §2.6.
+**series chain** is idea 1: flat two-terminal *passive* parts wired end to end
+through private two-pin **link nets** (neither ground, rail, nor a declared
+interface port) become one horizontal row, with one composite port per link
+net and the two free ends left as ordinary router endpoints. A cycle in the
+link graph is declined rather than cut; there is no length cap. All four stay
+topology-only, all exclude a source as a member, and pi requires its two
+external nets to reach beyond the composite so a real tee is not misread as a
+pi around one of its series legs. `compositePlan` folds the kinds in
+registration order (parallel, pi, tee, then series chain), dropping any group
+whose members an earlier kind claimed — the non-nesting subset of
+`composite_placement_stage2.md` §2.6. Registering the chain last means a
+pi/tee series leg that also reads as a chain link keeps the canonical filter
+drawing. A **series-of-parallels** (a chain whose members are themselves
+parallel banks, or vice versa) still needs the arena-index nesting fold §2.6
+does not yet do.
 
 The rest of this file is the original brainstorm of what else fits the same
 `CompositeKind` contract (a pure-topology `recognize` over `comps`/`syms`, plus
@@ -41,11 +50,15 @@ pin-kind sits on which net" is.
 
 ## Passive motifs
 
-1. **Series chain** — two-terminal parts wired end-to-end with no other
-   branches at the shared node (R+C snubber, LED+resistor). `parallelRecognize`
-   only catches parts sharing the *identical* net pair; this is the
-   complementary case — chained, not paralleled. Lays out as a row with two
-   external ports (the free ends).
+1. **Series chain** — *shipped* as `seriesChainKind` (`passive.nim`).
+   Two-terminal passive parts wired end-to-end with no other branches at the
+   shared node (R+C snubber, LED+resistor). `parallelRecognize` only catches
+   parts sharing the *identical* net pair; this is the complementary case —
+   chained, not paralleled. Lays out as a horizontal row; the two free ends
+   stay ordinary router endpoints (a ground/rail end still draws its own
+   glyph), each internal link net is a fully-internal composite port. Still
+   non-nesting: a chain member is always a raw singleton, so a
+   series-of-parallels needs the §2.6 arena-index fold.
 
 2. **Voltage divider / termination pair** — two two-terminal parts in series
    between two fixed nets (rail/ground, or two signal rails) with the midpoint

@@ -1,13 +1,15 @@
 ## The composite arena: kind-agnostic scaffolding for schematic placement
 ## motifs, plus the registry that turns a plan of registered `CompositeKind`s
-## into one `CompositePlan`. The concrete motifs themselves (today just the
-## parallel stack) live in `./passive`, included straight after this file.
+## into one `CompositePlan`. The concrete motifs themselves -- the parallel
+## stack and the series chain in `./passive`, the pi and tee filter sections
+## in `./pi` and `./tee` -- live beside this file, all included straight after
+## it.
 ##
 ## Private, schema-preserving layout composites.  The scene still contains
 ## the original parts and pins; the arena below only makes their shared
 ## external terminals and reserved routing footprint explicit inside the
 ## pipeline. A composite type is a registered `CompositeKind` (defined
-## further down, once its six hooks' return types exist) -- adding a motif
+## further down, once its seven hooks' return types exist) -- adding a motif
 ## means registering another kind, never adding scene/API fields or a
 ## special case in the router, placement, or `constrainedRecomputeRotations`.
 type
@@ -318,15 +320,22 @@ proc compositeExternalPins(pins: seq[RoutePin], plan: CompositePlan): seq[RouteP
 proc parallelStackKind(): CompositeKind
 proc piKind(): CompositeKind
 proc teeKind(): CompositeKind
+proc seriesChainKind(): CompositeKind
 
 let compositeKinds: seq[CompositeKind] =
-  @[parallelStackKind(), piKind(), teeKind()]
+  @[parallelStackKind(), piKind(), teeKind(), seriesChainKind()]
   ## Registration order is recognition precedence is output (Trap A). `let`,
   ## not `var`: nothing outside this included module can register a kind, and
   ## the order must never change silently at runtime. The parallel stack goes
   ## first so a shunt that is really a parallel bank stays a parallel stack and
   ## the pi/tee that would have claimed it is declined (`compositePlan`'s
-  ## claim check).
+  ## claim check). The series chain goes *last*: a parallel pair's shared nets
+  ## carry four pins so they are never a chain's link net (the two kinds can
+  ## never both claim a part), but a pi/tee series leg *can* also read as a
+  ## chain link, and there the canonical filter-section drawing should win --
+  ## `compositePlan`'s all-or-nothing claim check then drops the overlapping
+  ## chain group. Trimming a partially-claimed group would change the fold for
+  ## every kind and belongs with the §2.6 nesting work, not here.
 
 proc compositePlan(comps: seq[Component], syms: seq[SymbolDef]): CompositePlan =
   ## Build the constrained placement arena before the first seed, by asking

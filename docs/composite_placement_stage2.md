@@ -295,7 +295,11 @@ the same one.
 
 **Partly done.** `piKind` and `teeKind` (`schematic/composites/pi.nim`,
 `tee.nim`) are now registered after `parallelStackKind` — the two passive
-filter sections from `docs/composites.md` (ideas 3, and 1+2). `compositePlan`
+filter sections from `docs/composites.md` (ideas 3, and 2). `seriesChainKind`
+(`passive.nim`) followed as the fourth kind under the same non-nesting fold —
+`docs/composites.md` idea 1, flat two-terminal passive parts wired end to end
+through private two-pin link nets, registered last so a pi/tee series leg that
+also reads as a chain link keeps the filter drawing. `compositePlan`
 gained a **non-nesting fold**: it keeps each kind's multi-member groups in
 registration order, drops any whose members an earlier kind already claimed,
 then lays the survivors plus unclaimed singletons into `topLevel` in ascending
@@ -322,7 +326,9 @@ composite as one of its own members (the original op-amp inverting-amplifier /
 parallel-passive-feedback example). That needs the arena-index fold over the
 pool an earlier kind's `topLevel` leaves behind, and it would be the first
 real exercise of `rawMembers`/`rawOffsets`'s recursion past depth 1. pi/tee
-did not need it (their members are always raw flat two-terminal singletons).
+and the series chain did not need it (their members are always raw flat
+two-terminal singletons); a series-of-parallel-pairs is the same still-open
+case from the passive side.
 
 ## Verification method, for whoever continues this
 

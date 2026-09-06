@@ -1505,12 +1505,118 @@ test "constrained tee composite: two series parts, a grounded shunt at the priva
   check differentNetsRespectSeparation(s)
   check layout(teeFilter(), options) == s
 
+proc seriesChainFilter(portOnLink = false): Netlist =
+  ## A four-part series chain RS-a-R1-m1-C1-m2-L1 driven from a source and
+  ## ending at an output port `b`, with no grounded shunt anywhere on the chain
+  ## so pi/tee cannot fire. `a`, `m1`, `m2` are private two-pin link nets;
+  ## `src` has a non-usable source pin on it and `b` is a declared port, so the
+  ## chain stops cleanly at RS and L1. With `portOnLink` the middle link `m1`
+  ## is also a declared port -- it must then route externally and split the
+  ## chain into RS-R1 and C1-L1.
+  result = newNetlist("series_chain_filter")
+  let src = addNet(result, newNet("src"))
+  let a = addNet(result, newNet("a"))
+  let m1 = addNet(result, newNet("m1"))
+  let m2 = addNet(result, newNet("m2"))
+  let b = addNet(result, newNet("b"))
+  let gnd = addNet(result, newNet("0", ntGround))
+  let v1 = addComponent(result, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", src); discard connect(v1, "-", gnd)
+  let rs = addComponent(result, newComponent("RS", kind = "resistor"))
+  discard connect(rs, "1", src, ptPassive); discard connect(rs, "2", a, ptPassive)
+  let r1 = addComponent(result, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", a, ptPassive); discard connect(r1, "2", m1, ptPassive)
+  let c1 = addComponent(result, newComponent("C1", kind = "capacitor"))
+  discard connect(c1, "1", m1, ptPassive); discard connect(c1, "2", m2, ptPassive)
+  let l1 = addComponent(result, newComponent("L1", kind = "inductor"))
+  discard connect(l1, "1", m2, ptPassive); discard connect(l1, "2", b, ptPassive)
+  addPort(result, "B", b)
+  if portOnLink: addPort(result, "M1", m1)
+
+test "constrained series chain: passives in one horizontal row, links routed":
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(seriesChainFilter(), options)
+  var members: seq[SchematicPart]
+  for d in ["RS", "R1", "C1", "L1"]: members.add partOf(s, d)
+  # One rigid canonical unit: every member horizontal, sharing one y.
+  let y0 = members[0].y
+  for m in members:
+    check m.y == y0
+    check abs(m.pins[0].y - m.pins[1].y) < 1e-6
+  # Evenly spaced in x on a fixed 160 pitch, grid-aligned: four distinct
+  # members at x0, x0+160, x0+320, x0+480 in some order.
+  var minX = members[0].x
+  for m in members: minX = min(minX, m.x)
+  var slots: array[4, bool]
+  for m in members:
+    let k = int(round((m.x - minX) / 160.0))
+    check k in 0 .. 3
+    check abs((m.x - minX) - float(k) * 160.0) < 1e-6
+    check not slots[k]
+    slots[k] = true
+  # The three internal link nets are real wires, not fallback markers.
+  for net in ["a", "m1", "m2"]:
+    check wirePoints(s, net).len > 0
+  check s.fallbacks.len == 0
+  check distinctWiresNeverShareCollinearRuns(s)
+  check differentNetsRespectSeparation(s)
+  check layout(seriesChainFilter(), options) == s
+
+test "a declared port on a link net is not absorbed into the chain":
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  let s = layout(seriesChainFilter(portOnLink = true), options)
+  # R1 and C1 no longer form one rigid unit: `m1` is a routed external net
+  # (its own port symbol), so the two are free to sit apart / off-axis.
+  let r1 = partOf(s, "R1")
+  let c1 = partOf(s, "C1")
+  check (r1.y != c1.y) or (abs((r1.x - c1.x)) - 160.0 > 1e-6)
+  check "M1" in (block:
+    var names: seq[string]
+    for p in s.ports: names.add p.name
+    names)
+  check s.fallbacks.len == 0
+  check layout(seriesChainFilter(portOnLink = true), options) == s
+
+test "a parallel pair is still a parallel stack, not a series chain":
+  # RP||CP share the identical net pair (a, b): those nets carry four pins, so
+  # neither is a chain link and the series kind cannot claim either part.
+  var options = defaultLayoutOptions()
+  options.policy = lpConstrainedLayered
+  var nl = newNetlist("par_not_chain")
+  let a = addNet(nl, newNet("a"))
+  let b = addNet(nl, newNet("b"))
+  let g = addNet(nl, newNet("0", ntGround))
+  let v1 = addComponent(nl, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", a); discard connect(v1, "-", g)
+  let rp = addComponent(nl, newComponent("RP", kind = "resistor"))
+  discard connect(rp, "1", a, ptPassive); discard connect(rp, "2", b, ptPassive)
+  let cp = addComponent(nl, newComponent("CP", kind = "capacitor"))
+  discard connect(cp, "1", a, ptPassive); discard connect(cp, "2", b, ptPassive)
+  let rl = addComponent(nl, newComponent("RL", kind = "resistor"))
+  discard connect(rl, "1", b, ptPassive); discard connect(rl, "2", g, ptPassive)
+  let s = layout(nl, options)
+  let p = partOf(s, "RP")
+  let q = partOf(s, "CP")
+  check p.rotation == q.rotation            # co-oriented parallel stack
+  for net in ["a", "b"]:
+    let dp = pinPoints(s, "RP", net)[0]
+    let dq = pinPoints(s, "CP", net)[0]
+    check abs(dp.x - dq.x) + abs(dp.y - dq.y) <= 160.0
+  check s.fallbacks.len == 0
+  check layout(nl, options) == s
+
 test "a pi and a tee do not fire under the historical policy":
   # Composites are a constrained-layered concern only; the default pipeline
   # never builds the plan, so these render as ordinary scattered parts.
-  for nl in [piFilter(), teeFilter()]:
+  for nl in [piFilter(), teeFilter(), seriesChainFilter()]:
     let s = layout(nl)
-    check s.parts.len == (if nl.name == "pi_filter": 7 else: 6)
+    let want = case nl.name
+      of "pi_filter": 7
+      of "tee_filter": 6
+      else: 5           # series_chain_filter: V1, RS, R1, C1, L1
+    check s.parts.len == want
     check layout(nl) == s
 
 test "a powered one-net leaf keeps its ground pin down":
