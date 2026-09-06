@@ -446,6 +446,47 @@ a regulator is asked and not a thing to bind separately.)
 
 ---
 
+## Multi-channel packaging — what shipped, and what is deferred
+
+§70. **Multi-channel packaging shipped** (`netlist/packages.nim`,
+`designs/lib/opamps.nim`, `riaa_preamp` + `aa_filter` packaged). A design can
+declare a physical package with a numbered pinout and named sections, assign
+those sections to `Component`s that live on different sheets, have
+`validatePackages` check the shared supply pins really are shared (by `Net`
+object identity through `Pin.hierNet`, not by name), and get one `Placement`
+and one `BomLine` for the chip. Membership is three dotted `attrs` keys, so it
+survives every transform for free and a SPICE round trip drops it
+intentionally. Four things were left out on purpose:
+
+- **Child-extraction global-pin boundary ports + a required-binding check.**
+  When `extractInstance`/`extractSubcircuit` cuts out a child that contains a
+  package member, the package's global pins (its supply rails) are lost: the
+  child alone has no `V+` net. The recorded design (from draft B): add them as
+  deterministic boundary ports named `<ref>.<section-or-gate>.<pin>` (e.g.
+  `U10.PWR.VCC`); child-only simulation must reject a missing binding **by
+  name before ngspice sees a deck**; no root supply is inherited and no logic
+  level is invented. Deferred because `extractInstance`/`extractSubcircuit`
+  are called from tests only — no CLI and no analysis path drives them.
+  Revisit when a production path extracts a child for simulation.
+- **Unused-section tie-off.** An unused half of a dual op-amp must have its
+  inputs tied off or it rails into the used half — a real board defect nothing
+  here sees. The obvious next `validatePackages` check.
+- **Package pin count vs. footprint.** Needs a board reader `pcb/formats` does
+  not have yet.
+- **Intra-`subckt` packaging.** A `subckt` is deep-cloned per instance, so a
+  package declared *inside* one would be a different physical part in every
+  instance while a package designator is a board-global join key. Which chip a
+  module's channels land in is a board decision.
+- **Cross-sheet reference on the symbol** ("U10B — sheet RIAA_CHANNEL").
+  Useful since the sections are on different sheets by construction, but a
+  second layout pass with its own placement question.
+- **Renaming the registered `package` (case size) key to `case_size`.**
+  `package = "0402"` and `package.ref = "U10"` sit side by side meaning
+  different things; a mechanical rename touching ~15 design files if the
+  adjacency proves confusing.
+
+---
+
 ## The schematic layout engine
 
 Both turned up while measuring why `nimble test` takes ~7 minutes (see the

@@ -12,7 +12,13 @@ implements.
 - **`scene.nim`** — the renderer-neutral middle layer. `Schematic`, with placed
   `SchematicPart`s (position, symbol, the pin-span `bodyW`/`bodyH` **and** the
   smaller drawn-ink `inkW`/`inkH`, a `rotation` of 0/90/180/270, per-pin world
-  positions),
+  positions, a `label` that overrides the drawn designator when it differs —
+  `"U10A"` for a section of a multi-channel package (`netlist/packages`), `""`
+  otherwise; `designator` itself is a join key `finish`/`routing`/`placement`
+  all key on and is **never** rewritten in place, and a multi-channel package
+  is deliberately **not** a composite — a recognizer keys on `Pin.kind`
+  topology and `isTraversable` wants two connected pins with
+  `subNetlist == nil`, which an op-amp sharing a die is not),
   `SchematicWire`s (per-net polylines, tagged signal/ground/supply),
   `SchematicJunction`s, `SchematicLabel`s (text plus `anchor`/`size`/`role`/
   `owner` — every one placed by `layout` against the finished geometry, the
@@ -473,9 +479,13 @@ implements.
   from one scene (both `spice/ngspice`'s `runNNN` and everything below use
   it, so the two files can never disagree about geometry). `keepFullSchematic(nl)`
   is the whole `$NIMCIR_KEEP_RUNS` job `verify` calls: `runFULL` for the root,
-  `runFULL.<safeSheetName>` per distinct child (`Netlist.name`-deduplicated),
-  and `runFULL.html`. `safeSheetName` maps anything outside `[A-Za-z0-9._-]`
-  to `_` so a `.SUBCKT` name is always a legal path fragment. Best-effort
+  `runFULL.<sheet-id>` per distinct child-sheet variant, and `runFULL.html`.
+  Same-named child occurrences deduplicate only when their routed scenes and
+  resolved direct descendant targets agree; otherwise IDs are deterministic
+  and globally collision-safe: the legacy unsuffixed `safeSheetName(name)`,
+  then `.2`, `.3`, etc. (including sanitization collisions). `safeSheetName`
+  maps anything outside `[A-Za-z0-9._-]` to `_` so a `.SUBCKT` name is always
+  a legal path fragment. Best-effort
   (a `CatchableError` is swallowed) and a no-op when the variable is unset —
   drawing a picture must never fail a check. It sits here rather than in
   `verify` because it needs only `netlist`, and lives *outside* `svg`/`json`
@@ -484,8 +494,9 @@ implements.
   opens straight from disk. `explorerSheet(n, scene, id)` folds one level into
   an `ExplorerSheet` (id, title, the inline SVG with its XML prolog stripped
   since `<?xml …?>` is invalid mid-document, and a JSON part list); a part
-  whose designator keys `n.children` carries that child's `safeSheetName` as
-  its `child`, every other part `null`. `renderExplorerHtml(sheets)` inlines
+  whose designator keys `n.children` carries that occurrence's resolved
+  archive sheet ID as its `child`, every other part `null`.
+  `renderExplorerHtml(sheets)` inlines
   every sheet into one `const MODEL` blob in the `explorerTemplate` (the only
   place `$TITLE$`/`$MODEL$` are substituted; `</` in the JSON is escaped so it
   cannot close the `<script>`). The page overlays one transparent `<rect>` per
@@ -499,6 +510,6 @@ implements.
 `spice/ngspice` imports `schematic` to archive each per-run scene as
 `runNNN.svg`/`runNNN.json` while `verify` imports it and calls
 `render.keepFullSchematic` to archive the authored design as
-`runFULL.svg`/`runFULL.json`, one `runFULL.<subckt>` pair per distinct
-instantiated subcircuit, and `runFULL.html` — both consumers sit above it on
+`runFULL.svg`/`runFULL.json`, one `runFULL.<sheet-id>` pair per distinct
+rendered child-sheet variant, and `runFULL.html` — both consumers sit above it on
 the existing spine, never across or up it.

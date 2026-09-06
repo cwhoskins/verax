@@ -505,3 +505,60 @@ test "a model may claim several purposes":
         pin "1", a
         pin "2", gnd
   check nl.components["U1"].simModels["m"].suits == @["startup", "steady_state"]
+
+# --- multi-channel packaging -----------------------------------------
+
+import nimcir/netlist/packages
+
+test "with = u10.section(...) composes with instance and writes package.*":
+  let dual = newPackageDef("DSL_DUAL", [
+    (id: "1", section: "A", logical: "OUT"),
+    (id: "2", section: "",  logical: "V+"),
+    (id: "3", section: "B", logical: "OUT")], partNumber = "DSL_DUAL")
+  registerPackage(dual)
+  let u10 = packageInstance("DSL_DUAL", "U10")
+
+  let ch = block:
+    proc mk(): Netlist =
+      subckt("CH", [O, VP]):
+        net O, kind = ntSignal
+        net VP, kind = ntPower
+        component U1, kind = "opamp":
+          pin "OUT", O, kind = ptOutput
+          pin "V+", VP, kind = ptPower
+    mk
+
+  let top = netlist("top"):
+    net vp, kind = ntPower
+    net oa, kind = ntSignal
+    net ob, kind = ntSignal
+    instance XA, ch(), [oa, vp], with = u10.section("A", "U1")
+    instance XB, ch(), [ob, vp], with = u10.section("B", "U1")
+
+  let a = findComponent(top, "XA.U1")
+  let b = findComponent(top, "XB.U1")
+  check a.attrs["package.ref"] == "U10"
+  check a.attrs["package.section"] == "A"
+  check a.attrs["package.def"] == "DSL_DUAL"
+  check b.attrs["package.section"] == "B"
+  check displayDesignator(a) == "U10A"
+
+test "the flat assign path writes the same three keys":
+  let dual = newPackageDef("DSL_FLAT", [
+    (id: "1", section: "A", logical: "OUT"),
+    (id: "2", section: "B", logical: "OUT")], partNumber = "DSL_FLAT")
+  registerPackage(dual)
+  let u1 = packageInstance("DSL_FLAT", "U1")
+  let nl = netlist("flat"):
+    net gnd, kind = ntGround, name = "0"
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    component U1A, kind = "opamp":
+      pin "OUT", a
+    component U1B, kind = "opamp":
+      pin "OUT", b
+  u1.assign(nl, "A", "U1A")
+  u1.assign(nl, "B", "U1B")
+  check nl.components["U1A"].attrs["package.ref"] == "U1"
+  check nl.components["U1A"].attrs["package.section"] == "A"
+  check nl.components["U1B"].attrs["package.def"] == "DSL_FLAT"

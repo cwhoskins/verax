@@ -120,7 +120,8 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
     # where `boxSlots` reserved the room -- only symbol parts are labelled here.
     if p.isBox: continue
     var lines: seq[LabelLine]
-    if p.designator.len > 0: lines.add (p.designator, designatorSize, lrDesignator)
+    let shownDesig = if p.label.len > 0: p.label else: p.designator
+    if shownDesig.len > 0: lines.add (shownDesig, designatorSize, lrDesignator)
     if p.value.len > 0: lines.add (p.value, valueSize, lrValue)
     if lines.len == 0: continue
     var occupied: set[Side]

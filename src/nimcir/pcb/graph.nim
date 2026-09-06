@@ -18,6 +18,7 @@ import ./units
 import ./geometry
 import ./types
 import ../netlist/types as nltypes
+import ../netlist/packages
 
 export types
 
@@ -228,21 +229,44 @@ proc addPlacement*(pcb: Pcb, p: Placement): Placement {.discardable.} =
   result = p
 
 proc bindComponent*(p: Placement, c: Component) =
-  ## Links a placement to its `nimcir/netlist` component. The designators
-  ## must agree -- they are the join key in both file formats.
+  ## Links a placement to its `nimcir/netlist` component.
+  ##
+  ## The designators normally agree -- they are the join key in both file
+  ## formats. The one exception is a multi-channel package: `c` may be one
+  ## *section* of the part, whose own designator is arbitrary, joined to the
+  ## placement through `package.ref`. Then the section is recorded in
+  ## `p.sections` and `p.component` is left nil, because there is no single
+  ## netlist component this placement *is*.
   if c == nil: return
-  if p.designator != c.designator:
-    raise newException(PcbError,
-      "designator mismatch binding placement '" & p.designator &
-      "' to component '" & c.designator & "'")
-  p.component = c
+  if p.designator == c.designator:
+    p.component = c
+    return
+  let r = packageRef(c)
+  if r.has and r.value == p.designator:
+    let s = packageSection(c)
+    p.sections[(if s.has: s.value else: "")] = c
+    return
+  raise newException(PcbError,
+    "designator mismatch binding placement '" & p.designator &
+    "' to component '" & c.designator & "'" &
+    (if r.has: " (its package.ref is '" & r.value & "')"
+     else: "; a placement and a component join on the reference designator, " &
+           "or on the component's package.ref for a multi-channel part"))
 
 proc placementOf*(pcb: Pcb, c: Component): Placement =
   ## The placement for a netlist component, or `nil` if it was never placed.
+  ## For a section of a multi-channel package the placement is keyed by the
+  ## package's board designator, not the section's own, so fall back to a
+  ## scan of `Placement.sections`.
   if c == nil: return nil
   result = pcb.placements.getOrDefault(c.designator)
-  if result != nil and result.component != nil and result.component != c:
-    result = nil
+  if result != nil and result.component == c: return
+  if result != nil and result.component == nil and result.sections.len == 0:
+    return   # an unbound footprint that shares the designator, as before
+  for _, p in pcb.placements:
+    for _, sc in p.sections:
+      if sc == c: return p
+  result = nil
 
 proc addLand*(p: Placement, pinName: string, c: Copper) =
   ## Records `c` as copper belonging to pin `pinName` of this placement, and
@@ -254,6 +278,35 @@ proc addLand*(p: Placement, pinName: string, c: Copper) =
     c.pin = pin
     if c.net == nil and pin.net != nil:
       setNet(c, pin.net)
+  elif p.component == nil and p.sections.len > 0:
+    # A multi-channel package: `pinName` is a package pad id. Resolve it
+    # through the definition to `(section, logical)` and bind from that
+    # section's own pin. A pad the definition does not declare leaves
+    # `c.pin` nil rather than guessing.
+    var defName = ""
+    for _, sc in p.sections:
+      let dn = packageDefName(sc)
+      if dn.has: defName = dn.value
+      break
+    if defName.len > 0 and isPackageRegistered(defName):
+      let def = packageDef(defName)
+      if def.pins.hasKey(pinName):
+        let pp = def.pins[pinName]
+        if pp.section.len > 0 and p.sections.hasKey(pp.section) and
+           p.sections[pp.section].pins.hasKey(pp.logical):
+          let pin = p.sections[pp.section].pins[pp.logical]
+          c.pin = pin
+          if c.net == nil and pin.net != nil:
+            setNet(c, pin.net)
+        elif pp.section.len == 0:
+          # a global pin: bind from whichever section carries it
+          for _, sc in p.sections:
+            if sc.pins.hasKey(pp.logical):
+              let pin = sc.pins[pp.logical]
+              c.pin = pin
+              if c.net == nil and pin.net != nil:
+                setNet(c, pin.net)
+              break
   if not p.lands.hasKey(pinName):
     p.lands[pinName] = @[]
   p.lands[pinName].add(c)

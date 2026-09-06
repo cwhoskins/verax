@@ -35,6 +35,15 @@ import nimcir/contract/dsl
 import nimcir/verify
 
 import ./lib/riaa
+import ./lib/opamps
+
+# One physical chip. The two channels are two instances of one `subckt`, so
+# `XL.U1` and `XR.U1` are separate objects in separate child netlists -- and
+# a stereo board built from a dual op-amp could not say so at all until
+# packaging. `with = u10.section(...)` runs against each instance's own clone
+# and tags its `U1` as section A or B of the one `U10`; `validatePackages`
+# then checks that both sections' `V+`/`V-` resolve to the same rail.
+let u10 = packageInstance("NE5532", "U10")
 
 let d = design("riaa_preamp"):
   # `global = true` so both instances share this one object rather than each
@@ -86,8 +95,10 @@ let d = design("riaa_preamp"):
   # Port order is the order `riaaChannel`'s `subckt` declares: IN, OUT, VP,
   # VN, GND. It is positional, and a miscount raises at instantiation rather
   # than producing a quietly miswired board.
-  instance XL, riaaChannel(), [inL, outL, vp, vn, gnd]
-  instance XR, riaaChannel(), [inR, outR, vp, vn, gnd]
+  instance XL, riaaChannel(), [inL, outL, vp, vn, gnd],
+    with = u10.section("A", "U1")
+  instance XR, riaaChannel(), [inR, outR, vp, vn, gnd],
+    with = u10.section("B", "U1")
 
   # --- claims -----------------------------------------------------------
 

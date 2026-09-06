@@ -94,11 +94,11 @@ proc riaaChannel*(): Netlist =
 
     # --- the amplifier -------------------------------------------------
     # `gbw` is stated, and it is not decoration. The substituted macromodel
-    # defaults to 1 MHz; an NE5534 is a 10 MHz part. On a stage of 39.8 dB
+    # defaults to 1 MHz; an NE5532 is a 10 MHz part. On a stage of 39.8 dB
     # the loop gain at 1 kHz is Aol(1k)/98, so the default costs 0.7 dB there
     # -- seven times the accuracy this network was designed to, and it would
     # have been reported as the circuit's gain rather than the model's.
-    component U1, kind = "opamp", partNumber = "NE5534":
+    component U1, kind = "opamp", partNumber = "NE5532":
       pin "IN+", amp, kind = ptInput
       pin "IN-", fb,  kind = ptInput
       pin "OUT", OUT, kind = ptOutput

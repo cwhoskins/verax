@@ -238,6 +238,11 @@ type
       ## ODB++ `.comp_height`. `0` means unknown.
     lands*: OrderedTable[string, seq[Copper]]
       ## Pin name -> its copper, which may span several layers.
+    sections*: OrderedTable[string, Component]
+      ## Section name -> the netlist component that is that section, for a
+      ## multi-channel package. Empty for the 1:1 case, where `component` is
+      ## the whole part. When this is populated `component` is deliberately
+      ## nil: a dual op-amp *is* no single netlist component.
     holes*: seq[Hole]
     pcb*: Pcb
     attrs*: OrderedTable[string, string]

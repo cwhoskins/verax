@@ -98,6 +98,73 @@ proc twoChannelBoard(): Design =
     instance XL, gainBlock(), [inL, outL]
     instance XR, gainBlock(), [inR, outR]
 
+proc namedGain(value: string): Netlist =
+  ## Deliberately shares a subcircuit name while changing its rendered scene.
+  subckt("GAIN_BLOCK", [IN, OUT]):
+    net IN, kind = ntSignal
+    net OUT, kind = ntSignal
+    component R1, kind = "resistor", value = value:
+      pin "1", IN, kind = ptPassive
+      pin "2", OUT, kind = ptPassive
+
+proc leaf(value: string): Netlist =
+  subckt("LEAF", [IN, OUT]):
+    net IN, kind = ntSignal
+    net OUT, kind = ntSignal
+    component R1, kind = "resistor", value = value:
+      pin "1", IN, kind = ptPassive
+      pin "2", OUT, kind = ptPassive
+
+proc parentWithLeaf(value: string): Netlist =
+  ## Its own sheet is unchanged; only its descendant's resolved target varies.
+  subckt("PARENT", [IN, OUT]):
+    net IN, kind = ntSignal
+    net OUT, kind = ntSignal
+    instance X1, leaf(value), [IN, OUT]
+
+proc sameNameVariantBoard(): Design =
+  design("same_name_variants"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    net c, kind = ntSignal
+    net d, kind = ntSignal
+    instance XA, namedGain("1k"), [a, b]
+    instance XB, namedGain("2k"), [c, d]
+
+proc descendantVariantBoard(): Design =
+  design("descendant_variants"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    net c, kind = ntSignal
+    net d, kind = ntSignal
+    instance XA, parentWithLeaf("1k"), [a, b]
+    instance XB, parentWithLeaf("2k"), [c, d]
+
+proc slashNamedBlock(): Netlist =
+  subckt("A/B", [IN, OUT]):
+    net IN, kind = ntSignal
+    net OUT, kind = ntSignal
+    component R1, kind = "resistor", value = "1k":
+      pin "1", IN, kind = ptPassive
+      pin "2", OUT, kind = ptPassive
+
+proc underscoreNamedBlock(): Netlist =
+  subckt("A_B", [IN, OUT]):
+    net IN, kind = ntSignal
+    net OUT, kind = ntSignal
+    component R1, kind = "resistor", value = "1k":
+      pin "1", IN, kind = ptPassive
+      pin "2", OUT, kind = ptPassive
+
+proc safeNameCollisionBoard(): Design =
+  design("safe_name_collision"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    net c, kind = ntSignal
+    net d, kind = ntSignal
+    instance XA, slashNamedBlock(), [a, b]
+    instance XB, underscoreNamedBlock(), [c, d]
+
 proc riaaBoard(): Design =
   ## The real stereo RIAA design (`designs/riaa_preamp.nim`) rebuilt here so a
   ## test can drive `verify` in-process: the same two `riaaChannel()`
@@ -246,6 +313,51 @@ test "runFULL.html is a self-contained hierarchy browser linking blocks to sheet
 
   # Each sheet inlines its SVG with the XML prolog stripped (invalid mid-HTML).
   check model["sheets"]["@root"]["svg"].getStr.startsWith("<svg")
+
+test "same-named children get distinct sheets when their rendered scenes differ":
+  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  defer: removeDir(dir)
+  withEnv("NIMCIR_KEEP_RUNS", dir):
+    discard verify(sameNameVariantBoard(), offlineCapabilities)
+
+  # The first occurrence keeps the legacy name; later non-equivalent ones are
+  # suffixed, both on disk and in the hierarchy browser.
+  check fileExists(dir / "runFULL.GAIN_BLOCK.svg")
+  check fileExists(dir / "runFULL.GAIN_BLOCK.2.svg")
+  let html = readFile(dir / "runFULL.html")
+  let modelStart = html.find("const MODEL = ") + "const MODEL = ".len
+  let modelEnd = html.find(";\n", modelStart)
+  let model = parseJson(html[modelStart ..< modelEnd])
+  var linked: seq[string]
+  for p in model["sheets"]["@root"]["parts"]:
+    if p["child"].kind != JNull: linked.add p["child"].getStr
+  check linked == @["GAIN_BLOCK", "GAIN_BLOCK.2"]
+
+test "same-named parents split when their resolved descendants differ":
+  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  defer: removeDir(dir)
+  withEnv("NIMCIR_KEEP_RUNS", dir):
+    discard verify(descendantVariantBoard(), offlineCapabilities)
+
+  check fileExists(dir / "runFULL.LEAF.svg")
+  check fileExists(dir / "runFULL.LEAF.2.svg")
+  check fileExists(dir / "runFULL.PARENT.svg")
+  check fileExists(dir / "runFULL.PARENT.2.svg")
+  let html = readFile(dir / "runFULL.html")
+  let modelStart = html.find("const MODEL = ") + "const MODEL = ".len
+  let modelEnd = html.find(";\n", modelStart)
+  let model = parseJson(html[modelStart ..< modelEnd])
+  check model["sheets"]["PARENT"]["parts"][0]["child"].getStr == "LEAF"
+  check model["sheets"]["PARENT.2"]["parts"][0]["child"].getStr == "LEAF.2"
+
+test "sanitized child-name collisions also receive globally unique IDs":
+  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  defer: removeDir(dir)
+  withEnv("NIMCIR_KEEP_RUNS", dir):
+    discard verify(safeNameCollisionBoard(), offlineCapabilities)
+
+  check fileExists(dir / "runFULL.A_B.svg")
+  check fileExists(dir / "runFULL.A_B.2.svg")
 
 test "the archive uses the constrained layout selected through the environment":
   let dir = createTempDir("nimcir_verifykeeptest_", "")

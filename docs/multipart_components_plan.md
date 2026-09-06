@@ -1,384 +1,550 @@
-# Multi-part components implementation plan
+# Multi-channel (multi-part) components — implementation plan
 
 > **Status:** approved implementation plan. This document specifies planned work
-> only; it does not claim that multi-part components are implemented.
+> only; it does not claim the feature is implemented. It consolidates two earlier
+> drafts (`docs/claude_multipart_components.md` and the previous contents of this
+> file); those are superseded and removed.
 
-## Approved semantics and scope
+## Context
 
-A physical package (for example, a quad logic IC) may be represented by
-several concrete functional units located in different child `Netlist`s below
-one root design. Package membership is design metadata over those existing
-components; it is not a new electrical hierarchy and does not merge their
-nets.
+A dual op-amp is one chip, one footprint, one BoM line, one silkscreen designator.
+`nimcir` today models it as N unrelated `Component`s that happen to share a
+`partNumber`:
 
-Each package declaration contains:
+- `designs/aa_filter.nim:105,130` writes `U1A` and `U1B` as two independent
+  components on one sheet, each restating `V+`/`V-`, with nothing saying they are
+  the same die.
+- `designs/riaa_preamp.nim:89-90` is the harder case: its two channels are two
+  `instance`s of one `subckt` (`designs/lib/riaa.nim:101`), so `XL.U1` and `XR.U1`
+  are separate objects in separate child netlists — *different sheets* — and a
+  stereo board built from a dual op-amp cannot currently say so at all.
 
-- named **functional units** (for example `A` through `D`), each assigned to
-  at most one concrete `Component`; and
-- one explicit **global-pin gate**, which names the package pins shared by the
-  functional units (commonly supply, ground, enable, reference, or thermal
-  pins) and their ordinary `Pin`/`Net` connectivity.
+Nothing in `src/nimcir/netlist/` has a package, section, gang or channel concept.
+The registered `package` annotation (`netlist/annotations.nim:170`) means **case
+size for parasitic lookup** (`"0402"`, `"film"`), not physical package identity.
 
-The global-pin gate is explicit package metadata, not a synthetic SPICE device
-or an implicit connection. It is required so the package's shared pins have a
-single identifiable owner and can be exposed when only one child is simulated.
-It must name existing pins/concrete graph objects; it must not create nets,
-attach a default source, or infer a logic value.
+**Outcome:** a design can declare a physical package with numbered pins and named
+sections, assign those sections to components that live on different sheets, have
+the tool check that the shared pins really are shared, and get one placement and
+one BoM line for the part that actually gets soldered.
 
-The following decisions are fixed:
+**Simulation does not change and no measured number moves.**
+`spice/models/opamp.nim:44` `idealOpAmp` documents that it does not connect to
+supply rails at all, so packaging two amplifiers together alters no deck. This is a
+physical/structural feature; §Verification proves that rather than asserting it.
 
-1. A package registry belongs to the root `Netlist`. Its members may be in the
-   root itself or in any concrete descendant child netlist, but may not cross
-   roots.
-2. Assigning the same functional unit twice is a `NetlistError`. Registering a
-   second global-pin gate is likewise an error. Assigning one concrete
-   component to incompatible package/unit identities is an error.
-3. Package completeness concerns declared functional-unit assignments and the
-   presence of the explicit global-pin gate. It **does not** report a missing
-   global-pin *connection* as a special package-completeness problem.
-4. A disconnected global pin is ordinary pin connectivity/validation input,
-   reported (or permitted) by the same generic electrical validation policy as
-   any other disconnected pin. Package validation must not duplicate it with a
-   package-specific diagnostic.
-5. SPICE serializes and re-parses the electrical graph, not package metadata.
-   A SPICE round trip must preserve the package's electrical connectivity, but
-   intentionally loses all package/unit/global-gate metadata. There is no
-   attempt to encode it in comments, invented devices, or names.
-6. Extracting/simulating a child that contains a member of a package must add
-   that package's global pins as named boundary ports of the extracted child.
-   The caller must explicitly bind or stimulate those ports. The simulation
-   must never inherit an implicit root-level driver or invent a high/low,
-   supply voltage, ground, termination, or leak beyond existing explicit
-   simulation policy.
+## Approach, and why
 
-Non-goals are package symbol drawing, PCB footprint/unit placement policy,
-automatic inference of package membership from reference designators, parsing
-package metadata from SPICE, and changing existing scalar hierarchy or SPICE
-semantics outside the required child-extraction boundary.
+The design follows draft A (`attrs`-based membership + a package definition
+registry) rather than draft B (a typed `Netlist.packages` root registry). The
+reasons, each verified against the code:
 
-## Proposed data model and public API
+1. **Membership survives every transform for free.** `graph.clone` copies `attrs`
+   verbatim at every level (`src/nimcir/netlist/graph.nim:378` netlist, `:398`
+   component, `:412` pin) and rebuilds nothing else. Storing membership in `attrs`
+   means it survives `clone`/`instantiate`/`flatten`/`extractSubcircuit`/`isolate`
+   with zero new code — the same argument `netlist/CLAUDE.md` already makes for
+   `environment.nim` and `contract/design.nim`'s `role.*` tags. A root registry of
+   direct `Component`/`Pin` references would need remapping written and tested
+   across all of those, and `extractInstance` (which clones a child *alone*) would
+   strand it entirely.
+2. **A package needs a definition.** Only a full pinout lets `pcb/graph.addLand`
+   resolve pad `"7"` on an NE5532 to section B's `OUT` — a join no board reader can
+   make on its own — and lets `bom.nim` fall back to a shared part number when
+   `Placement.component` is nil.
+3. **The shared-pin check is by object identity, not by name.** In `riaa_preamp`
+   both channels' `V+` nets are distinct `Net` objects that share the name `VP`
+   (clones of one template net). A name comparison would pass a genuinely miswired
+   board — the exact defect the check exists to catch.
 
-Add `src/nimcir/netlist/multipart.nim`, exported by `src/nimcir/netlist.nim`.
-Keep the persistent registry field and reference-safe clone support in
-`src/nimcir/netlist/types.nim`; keep every mutation in
-`src/nimcir/netlist/graph.nim`.
+Folded in from draft B: an explicit SPICE-lossiness regression test, lifecycle
+tests (clone-child-alone, remove/rename a member), an explicit single-root rule,
+and — **deferred by decision** — B's child-extraction global-pin ports and
+required-binding check.
 
-The exact field spelling may be refined during implementation, but the public
-model should have these concepts:
+## Fixed decisions
+
+| | Choice |
+|---|---|
+| Package definition | Full physical pinout: sections, per-section logical pins, global pins, package pin numbers |
+| Membership storage | Three dotted `attrs` keys on each member component; no side-car store, no `types.nim` change |
+| Assignment | Per-instance `with =` closure (reuses the existing `instance` hook); a post-block `assign` for the flat case |
+| Board join | One `Placement` per package; `bindComponent` gains a second branch |
+| Checks | Over-/mis-assignment and global-pin net agreement. Unused-section tie-off and footprint-pin-count are out (deferred) |
+| `riaa` worked example | Move `designs/lib/riaa.nim` from `NE5534` (single) to `NE5532` (genuine dual); number-neutral, must be proven so |
+| Child-extraction boundary | Deferred to `docs/findings.md` with B's design recorded |
+
+---
+
+## 1. The model — `src/nimcir/netlist/packages.nim`
+
+A new module, sibling to `environment.nim`: it stores its data in namespaced
+`attrs`, imports `types`/`graph`/`annotations`/`issue`, and adds **nothing** to
+`netlist/types.nim`.
+
+### 1.1 Definitions — a runtime registry of plain data
 
 ```nim
 type
-  PackageUnitKind* = enum
-    pukFunctional, pukGlobalPins
+  PackageSection* = object
+    name*: string            ## "A", "B"
+    pins*: seq[string]       ## logical pin names on this section
 
-  PackageUnit* = ref object
-    name*: string                 # e.g. "A", "B", "PWR"
-    kind*: PackageUnitKind
-    component*: Component         # existing concrete component
-    pins*: OrderedTable[string, Pin] # populated for pukGlobalPins only
+  PackagePin* = object
+    section*: string         ## "" for a global pin
+    logical*: string         ## "OUT", "V+"
 
-  MultipartPackage* = ref object
-    designator*: string           # physical-package identity, e.g. "U1"
-    partNumber*: string
-    units*: OrderedTable[string, PackageUnit]
-
-# Stored only on root Netlist:
-# Netlist.packages*: OrderedTable[string, MultipartPackage]
+  PackageDef* = ref object
+    name*: string                              ## registry key, "NE5532"
+    partNumber*, footprint*, doc*: string
+    sections*: seq[PackageSection]
+    globalPins*: seq[string]                   ## "V+", "V-", "EN"
+    pins*: OrderedTable[string, PackagePin]    ## package pin id -> what it is
+    attrs*: OrderedTable[string, string]
 ```
 
-A functional unit points at its concrete component. The global-pin gate is a
-separate `PackageUnit` with `kind == pukGlobalPins`; it owns a named map of
-existing pins. That makes the shared-pin declaration explicit without adding a
-fake component to the electrical graph. A global-gate pin may be unconnected;
-its `Pin.net == nil` remains the ordinary graph fact validation sees.
+- Pin ids are **strings, not ints** — BGA pads are `"A1"`, and both KiCad and
+  ODB++ carry pad names as text.
+- `PackageSection.pins` is per-section so a heterogeneous package (dual comparator
+  plus a reference) stays expressible; `newPackageDef` fills the homogeneous case.
+- A definition holds **no procs** (unlike `RoleDef`) — a package computes nothing —
+  so it could later be read from a file.
 
-Provide root-oriented graph APIs along these lines:
-
-- `addPackage(root, designator, partNumber = ""): MultipartPackage`
-- `addPackageUnit(pkg, name, component): PackageUnit`
-- `addPackageGlobalPinGate(pkg, name, pins: openArray[(string, Pin)]):
-  PackageUnit`
-- `findPackage(root, designator): MultipartPackage`
-- `packageOf(component): MultipartPackage` and `packageUnits(pkg)` lookup
-  helpers, without forcing callers to search raw tables;
-- `validatePackages(root): seq[Issue]` for package-structure/completeness
-  findings only; and
-- `packageGlobalPinsFor(child): seq[(package, gate, pinName, pin)]`, resolving
-  members against the root and returning a deterministic package/gate/pin
-  order for extraction.
-
-`addPackage*` and `addPackageUnit` must verify that the supplied root is
-`root(component.netlist)`, that a component is not assigned twice, that unit
-names are unique, and that a global gate occurs exactly once. APIs accept
-references rather than hierarchical strings so a rename or flatten-like
-transform cannot silently retarget membership. Diagnostics should include the
-package designator, unit/gate name, and both conflicting component paths where
-available.
-
-`validatePackages` should only diagnose structural facts: unknown/duplicate
-unit identity (defensively, for imported/programmatic graphs), a declared
-functional unit not assigned, no global-pin gate, a gate that names a pin not
-owned by its declared component, and cross-root/stale references. It must not
-inspect `Pin.net` to produce a package-completeness finding. Generic
-connectivity validation remains responsible for unconnected pins according to
-pin kind and existing policy.
-
-## Authoring surface
-
-Extend `src/nimcir/netlist/dsl.nim` after the graph API exists. Use a
-root-level `package` statement that declares a physical identity and registers
-already-created concrete units by their bound component names or explicit
-hierarchical lookup. Use an explicit `globalPins` gate block rather than
-special-casing pin names:
+Registry, mirroring `contract/roles/core.nim:96-111` and
+`netlist/kinds.registerDesignatorPrefix`:
 
 ```nim
-package U1, partNumber = "74HC00":
-  unit A, childA.UA
-  unit B, childB.UB
-  globalPins PWR, childA.UPWR:
-    pin "VCC"
-    pin "GND"
+var packageRegistry: OrderedTable[string, PackageDef]
+
+proc registerPackage*(def: PackageDef)      ## raises on empty/duplicate name; validates the def
+proc packageDef*(name: string): PackageDef  ## raises "no such package: <name>", naming knownPackages()
+proc knownPackages*(): seq[string]
+proc newPackageDef*(name: string, sections, pins: openArray[string],
+                    global: openArray[string] = [], partNumber = "",
+                    footprint = "", doc = ""): PackageDef
 ```
 
-The final grammar should permit references to units in concrete child
-netlists, including a runtime graph-building alternative for file readers,
-but must retain these semantic boundaries:
+`registerPackage` **validates and raises**: every section pin and every global pin
+must appear in `pins` exactly once, and every entry in `pins` must name a section
+the def declares (or be global). A datasheet transcription error is what this
+catches.
 
-- `unit` always means a functional unit; `globalPins` is the only global-pin
-  gate declaration.
-- `globalPins` identifies existing pins and does not connect them. A pin may
-  have no net at authoring time.
-- The macro expands only to `multipart`/`graph` APIs; it must not set package
-  maps, `Pin.net`, parent links, or child links directly.
-- Duplicate unit/gate declarations are rejected by the same runtime graph
-  checks as programmatic construction; statically obvious DSL duplicates may
-  additionally receive macro diagnostics.
-- Existing `netlist`, `subckt`, `instance`, component, and pin syntax remains
-  unchanged. Multipart syntax is opt-in.
+**No built-ins are registered.** There is no generic multi-channel package the way
+there is a generic `power_rail` role; every one is a specific part number. This
+library owns the mechanism; `designs/lib/` owns the catalogue — the line
+`parts/policy.nim` already draws.
 
-Before implementation, settle whether package declarations are accepted only
-at root `netlist` scope (preferred) or are parsed in a child and explicitly
-registered on `root(nl)`. The implementation must not permit a detached
-subckt template to own a package registry, because its later instances would
-make package identity ambiguous.
+### 1.2 Membership — three dotted keys on the member component
 
-## Child extraction and simulation boundary
+`const packagePrefix* = "package."`. Dotted keys are never seen by
+`validateAnnotations` (`annotations.isNamespaced` = `'.' in key`,
+`annotations.nim:326`), so nothing new needs registering there.
 
-Extend `src/nimcir/spice/extract.nim` rather than teaching ordinary hierarchy
-or SPICE serialization about package semantics.
+| key | meaning |
+|---|---|
+| `package.ref` | the physical package's board designator, e.g. `"U10"` |
+| `package.section` | which section this component is, e.g. `"A"` |
+| `package.def` | the `PackageDef` name it was assigned under, e.g. `"NE5532"` |
 
-1. Make `extractInstance` able to receive the source/root context (or add a
-   clearly named multipart-aware overload). The existing overload remains
-   source-compatible for packages-free callers.
-2. After cloning the requested child, find packages at the original root with
-   at least one functional member in that child subtree.
-3. For each applicable global-gate pin, add a deterministic, collision-checked
-   boundary port to the extracted child. The port name must contain the
-   package designator, gate name, and pin name (for example
-   `U1.PWR.VCC`), rather than relying on a local pin name that could collide
-   across packages.
-4. Preserve an explicit mapping from the new boundary port to the original
-   gate pin/net for the extraction caller. If the original global pin is
-   disconnected, retain it as an unbound boundary port; do not manufacture a
-   net connection merely to make a port exist.
-5. Provide or reuse an explicit binding API for the extracted fragment. It
-   must reject absent required bindings before a child-only simulation starts,
-   naming all unbound package-global ports. A binding can attach a caller-made
-   parent net or an explicitly stated `PortDrive`/stimulus through the existing
-   boundary/harness mechanisms.
-6. Do not call `harness` with root-derived drives and do not promote root nets
-   as identity-shared globals. A root supply is context outside the extracted
-   child and must be stated by the caller.
+`package.def` is redundant with the group and stored anyway: an `isolate`d fragment
+retains one member and must still be able to say what part it is (the same reason
+`annotations` stores provenance per key).
 
-This work should compose with `spice/boundary.asSubcircuit` and `harness`:
-ports remain ordinary `Netlist.ports`, and existing `PortDrive` choices retain
-their meaning. The multipart-aware extraction API owns the stricter
-"bindings required" check; ordinary connector-derived subcircuits continue to
-permit an intentionally open port as they do today.
+**No side-car store, no attachment step.** The netlist-side truth is entirely these
+attrs; `validatePackages` reconstructs each group by walking `nl` and its
+`children` recursively and grouping on `package.ref`. That is what makes cross-sheet
+packaging work without a design-global registry that `pcb` (which does not import
+`contract`) could not read.
 
-## SPICE and transform behavior
+Accessors — pure, never defaulting, following `annotations.nim`'s discipline:
 
-Changes are limited and deliberate:
+```nim
+proc packageRef*(c: Component): AnnValue[string]
+proc packageSection*(c: Component): AnnValue[string]
+proc packageDefName*(c: Component): AnnValue[string]
+proc isPackaged*(c: Component): bool
+proc displayDesignator*(c: Component): string    ## "U10A", else c.designator
+proc packageMembers*(nl: Netlist, pkgRef: string): seq[Component]
+proc packages*(nl: Netlist): OrderedTable[string, seq[Component]]   ## walks children
+```
 
-- `src/nimcir/netlist/formats/spice.nim`: do not serialize `packages` or
-  recreate them while reading. Keep current component/pin/net and subcircuit
-  behavior. Add regression coverage proving the emitted/reparsed circuit is
-  electrically equivalent while `packages.len == 0` after parse.
-- `src/nimcir/spice/flatten.nim`: package metadata must not affect flattening
-  or cause a synthetic component/net. Simulation flattening acts on the
-  concrete graph as today. If a work clone needs package lookup before
-  extraction, clone/remap metadata references before flattening; once the
-  graph is flattened, package metadata is allowed to be dropped from the
-  simulation work copy because it has no electrical meaning.
-- `src/nimcir/netlist/graph.nim` `clone`: clone package registry only when
-  cloning a complete root and remap every `Component`/`Pin` reference to the
-  new graph. Cloning a child in isolation must not carry a misleading partial
-  root registry; multipart-aware extraction supplies only the derived boundary
-  information it needs.
-- `src/nimcir/spice/transform.nim`, models, isolation, and ngspice deck
-  execution need no package-specific electrical model. They operate on the
-  explicit ports/bindings and concrete components produced above.
+`assignSection` is the **only** writer of `package.*` (the rule `graph.nim` has for
+back-references).
 
-## Implementation sequence
+### 1.3 `assignSection` — the one writer
 
-1. **Document invariants and choose names.** Finalize the root-only registry,
-   gate naming, deterministic port naming, and the multipart-aware extraction
-   API before adding DSL syntax. Record these in `netlist/CLAUDE.md` and
-   `spice/CLAUDE.md` with the clone/extraction ownership rules.
-2. **Core persistence.** Add types and the root package registry; implement
-   safe construction, lookup, duplicate/cross-root rejection, and package
-   structural validation in `multipart.nim`/`graph.nim`.
-3. **Lifecycle correctness.** Update `clone` to remap root package references;
-   add explicit behavior for cloning a child alone; verify remove/rename
-   operations either reject removal of registered components/pins or remove
-   membership through one graph-owned cleanup path. Do not leave dangling
-   metadata references.
-4. **DSL.** Add root-level package/global-gate syntax that calls the new APIs,
-   with useful compile-time syntax errors and runtime graph diagnostics.
-5. **Validation integration.** Invoke `validatePackages` from the normal
-   design-readiness/validation aggregation at the appropriate netlist layer.
-   Keep generic pin connectivity separate; do not add a special
-   "package-global-pin-unconnected" issue kind.
-6. **Extraction/binding.** Implement package-global boundary-port derivation,
-   explicit binding enforcement, and child-only simulation preparation in
-   `spice/extract.nim` (and `boundary.nim` only if a small shared binding helper
-   is genuinely needed).
-7. **SPICE lifecycle.** Confirm writer/readers ignore metadata intentionally,
-   retain electrical hierarchy behavior, and ensure clone/flatten work copies
-   cannot retain stale package references.
-8. **Documentation and regression sweep.** Update authoring documentation and
-   module guidance only for the finalized syntax/API; run focused checks and
-   preserve existing package-free tests unchanged.
+```nim
+proc assignSection(nl: Netlist, inst: Netlist, sectionName, localDesignator: string)
+```
 
-## Affected paths
+Resolves `localDesignator` in `inst` (an instance's own clone, or the design
+netlist for the flat case), then writes the three `package.*` keys. **Raises
+immediately** on what it can see at the statement:
 
-Primary planned changes:
+- a section name the definition does not declare (naming the ones it does);
+- a duplicate section letter within one `package.ref`;
+- over-assignment beyond the definition's section count;
+- a component already assigned to a different package;
+- **cross-root**: the resolved component's `root(c.netlist)` is not the design root
+  the package belongs to (draft B's explicit rule).
 
-- `src/nimcir/netlist/types.nim` — root registry storage and persistent types
-  if they must be visible to the core graph.
-- `src/nimcir/netlist/multipart.nim` — package types, lookup, structural
-  validation, root/subtree resolution, and public package API.
-- `src/nimcir/netlist/graph.nim` — graph-owned registration/removal/clone
-  remapping and root ownership checks.
-- `src/nimcir/netlist.nim` — export the multipart API.
-- `src/nimcir/netlist/dsl.nim` — root package/unit/global-pin-gate authoring.
-- `src/nimcir/netlist/formats/spice.nim` — explicit non-persistence contract
-  tests; no metadata encoding.
-- `src/nimcir/spice/extract.nim` — child extraction that derives package-global
-  boundary ports and binding requirements.
-- Potentially `src/nimcir/spice/boundary.nim` — a narrowly shared explicit
-  port-binding helper, only if `extract.nim` cannot use its existing API
-  without duplicating validation.
-- `src/nimcir/spice/flatten.nim` and `src/nimcir/spice/transform.nim` — only
-  lifecycle guards/tests needed to avoid stale metadata; no package model.
-- `src/nimcir/verify.nim` or the existing validation aggregation point — add
-  package-structure findings without conflating them with connectivity.
-- `docs/authoring.md`, `src/nimcir/netlist/CLAUDE.md`, and
-  `src/nimcir/spice/CLAUDE.md` — finalized API and invariants.
+Raising at the statement is the `addRole` precedent (`contract/roles/core.nim:79`).
 
-## Compatibility
+### 1.4 Authoring helpers
 
-Existing flat netlists, subcircuits, positional/named instances, clone,
-flatten, extraction, SPICE decks, and analysis APIs keep their meaning.
-`Netlist.packages` is empty for all existing designs. The new DSL is opt-in.
+A package instance is a small value created **before** the design block, so an
+unregistered definition raises at the `let` rather than inside a macro expansion:
 
-SPICE is intentionally lossy for this feature: importing a SPICE deck creates
-a valid electrically equivalent netlist with no multipart registry. Consumers
-that need physical-package intent must keep the original Nim/netlist source;
-they cannot depend on a SPICE round trip preserving it.
+```nim
+let u10 = packageInstance("NE5532", "U10")   # raises if NE5532 is not registered
+```
 
-No dependency direction changes are allowed: multipart core code stays under
-`netlist`; `spice` consumes it for extraction only; `analysis`, PCB, contract,
-and schematic must not become prerequisites for package registration. Use only
-the Nim standard library and retain Nim 2.2.10 compatibility.
+```nim
+type PackageInstance* = object
+  def*: PackageDef
+  designator*: string
 
-## Risks and mitigations
+proc packageInstance*(defName, designator: string): PackageInstance
+proc section*(pi: PackageInstance, name, localDesignator: string): proc (nl: Netlist)
+  ## returns a closure `proc (nl: Netlist) = assignSection(nl, nl, name, localDesignator)`
+  ## — but see note below on the flat vs. instance path
+proc assign*(pi: PackageInstance, nl: Netlist, name, localDesignator: string)
+proc assign*(pi: PackageInstance, c: Component, name: string)   ## caller holds the object
+```
 
-- **Dangling object references after clone/remove/flatten.** The registry holds
-  direct `Component`/`Pin` references, so lifecycle operations must remap or
-  reject cleanup atomically. Centralize every mutation in graph APIs and test
-  clone/remove paths.
-- **Ambiguous child membership.** A package may span descendants, so detect
-  membership by object/root ancestry, not designator spelling or a fragile
-  hierarchical-name string.
-- **Accidentally energizing a fragment.** Root-level power is not an implicit
-  simulation fixture. Require explicit child boundary bindings and test that
-  a missing one fails before ngspice receives a deck.
-- **Wrong diagnostic category.** Keep `validatePackages` structural. Reuse
-  normal pin validation for disconnected global pins so users do not see two
-  errors for one electrical fact.
-- **Port-name collisions and instability.** Derive names from package, gate,
-  and pin identifiers; reject collisions deterministically and never use a
-  generated logic value to resolve them.
-- **SPICE metadata illusion.** Do not write comments or pseudo-devices that
-  appear to preserve package data but fail on another reader. State and test
-  intentional metadata loss.
+**Instances on different sheets** — the target case, `designs/riaa_preamp.nim`:
 
-## Concrete test plan
+```nim
+instance XL, riaaChannel(), [inL, outL, vp, vn, gnd], with = u10.section("A", "U1")
+instance XR, riaaChannel(), [inR, outR, vp, vn, gnd], with = u10.section("B", "U1")
+```
 
-Add focused tests; do not require ngspice except for a narrow optional
-simulation smoke test where the toolchain is available.
+Verified: `handleInstance` (`netlist/dsl.nim:430,457-460`) already accepts an
+arbitrary expression for `with =` and calls it with `instVar.subNetlist`. So the
+closure receives the instance's own clone, and the only name it uses is the
+module's own local designator — exactly what `with =` is documented for
+(`netlist/dsl.nim:441-456`). **No DSL macro change is needed.**
 
-### `tests/test_netlist_multipart.nim` (new)
+**Flat components on one sheet** — `designs/aa_filter.nim`, no instance to hang a
+hook on. Assign after the block, the shape `spice/boundary.driveConnector`
+(`boundary.nim:311`) already established:
 
-1. Build one root with two concrete children, register `U1.A` in one and
-   `U1.B` in the other, add `U1.PWR` as the explicit global-pin gate, and
-   verify root lookup, direct references, deterministic unit order, and
-   root/subtree discovery.
-2. Verify a package may also contain a root-level concrete unit, while a
-   component from another root is rejected.
-3. Verify duplicate functional-unit assignment, duplicate global-gate
-   declaration, duplicate gate pin name, and reusing a component for a second
-   package/unit all raise `NetlistError` with identifying context.
-4. Verify package structural validation flags a missing declared functional
-   assignment and a missing gate, but does **not** issue a package finding when
-   a global-gate pin has `net == nil`.
-5. Run existing/general pin-connectivity validation over the same disconnected
-   pin and verify its ordinary connectivity result (or documented absence for
-   that pin kind), with no multipart-specific duplicate.
-6. Clone a root package graph and prove every package member/gate pin points
-   at the clone's objects, not originals; clone one child alone and prove it
-   does not retain a partial root package registry.
-7. Exercise component/pin removal or replacement after registration and prove
-   the selected lifecycle contract rejects it or cleans package membership
-   without stale references.
+```nim
+u1.assign(d.netlist, "A", "U1A")
+u1.assign(d.netlist, "B", "U1B")
+```
 
-### `tests/test_netlist_dsl.nim`
+### 1.5 Global pins stay on their sections
 
-8. Author a package from DSL with units in two instantiated children and an
-   explicit `globalPins` block; verify it produces exactly the programmatic
-   graph above.
-9. Verify DSL rejects malformed/missing gate syntax and duplicate visible unit
-   declarations, while existing package-free DSL fixtures compile unchanged.
+`designs/lib/riaa.nim:105-106` and `aa_filter.nim` already write `V+`/`V-` on each
+amplifier, and **that must not change**: `spice/models/opamp.nim:18` `supplyRailsOf`
+reads the rails off *the component's own* supply pins, and `opampModel` uses them
+for the saturation clamp. Move them onto a package carrier and the clamp is
+silently dropped and a large-signal measurement changes.
 
-### `tests/test_netlist_spice.nim`
+So `PackageDef.globalPins` buys a **check, not a restructuring**. A package-level
+pin that only one section wires (an `EN`) is authored on that section;
+`globalPins` is what says it belongs to the package rather than to that section.
+**No carrier `Component` is created**, so nothing new can reach a deck as a stray
+`U10` line (which ngspice reads as a uniformly-distributed RC line).
 
-10. Build an electrically connected multipart graph, render it, parse it, and
-    compare the relevant hierarchical component pins/nets and deck lines.
-    Verify the reparsed root has no package metadata. This is the required
-    electrical-preservation/metadata-loss round trip.
-11. Verify a disconnected global gate pin does not cause writer-created nodes,
-    synthetic devices, or a package annotation in the deck.
+### 1.6 `validatePackages(nl): seq[Issue]`
 
-### `tests/test_spice_extract.nim` and `tests/test_spice_boundary.nim`
+An `Issue`, not a raise, for anything a netlist can legitimately be *in*
+(`netlist/issue.nim` states that rule). Not a `contract` role: none of these is a
+measurement, there is no quantity and no evaluator, and routing it through
+`contract` would put the answer somewhere `pcb` cannot read it.
 
-12. Extract a child containing one functional unit from a package whose gate
-    lives elsewhere. Verify all applicable global pins appear as deterministic
-    boundary ports, including an originally disconnected pin.
-13. Verify a child with no package member gains no multipart ports; verify
-    multiple packages/gates with the same local pin name do not collide.
-14. Verify child-only simulation preparation rejects every missing required
-    package-global binding and lists its port names. Bind each port explicitly
-    to caller-provided nets/drives and verify no root driver or guessed logic
-    level/source appears.
-15. Verify an explicit open binding remains an explicit caller decision (and
-    follows the existing harness semantics), rather than being silently
-    substituted by a root net or default stimulus.
+`Issue.kind` strings are namespaced by prefix, e.g. `"package_unknown_def"`.
 
-### Regression checks
+| finding | severity |
+|---|---|
+| `package.def` names no registered definition | error |
+| members of one `package.ref` disagree on `package.def` | error |
+| section name not declared by the definition | error |
+| duplicate section letter within one package | error |
+| more sections assigned than the definition declares | error |
+| a section carries a pin the definition declares neither as a section pin nor as global | error |
+| **a global pin resolves to different nets across sections** | error |
+| a member lives under a different root than the rest of its package | error |
+| a declared section pin the component does not have | warning (message says **unconnected**, not *missing*) |
+| a member's `partNumber` disagrees with the definition's | warning |
 
-16. Run the focused core, DSL, SPICE-format, extraction, boundary, flatten,
-    and validation test files. Then run `nimble test` and inspect its output
-    using the repository-required failure scan. Existing hierarchy, flatten,
-    connector-boundary, and SPICE tests must remain unchanged unless a test is
-    specifically extended to assert the new opt-in behavior.
+**The global-pin check.** For each `globalPins` entry, collect the corresponding
+`Pin` on every section's component, resolve each **upward through `Pin.hierNet` to
+the outermost net**, and compare by **object identity**. Never by name: in
+`riaa_preamp` both clones are named `VP`, so a name comparison passes a genuinely
+miswired board.
+
+A missing section pin is a *warning* and the message says **unconnected**: pins are
+created on demand at `graph.connect`, so a section whose `IN-` is simply unwired
+has no `Pin` object at all.
+
+### 1.7 The `package` key adjacency
+
+`package = "0402"` (case size, registered) and `package.ref = "U10"` will sit side
+by side in one `attrs` bag meaning different things. Accept it and document it
+loudly. Renaming the registered key to `case_size` with `package` in its
+`AnnDef.aliases` is the tidier end state but touches ~15 design files and
+`spice/models/capacitor.nim`'s defaults table — a separate mechanical change if the
+adjacency proves confusing (deferred).
+
+### 1.8 Tests — `tests/test_netlist_packages.nim` (new)
+
+- Every row of the §1.6 table.
+- `registerPackage`'s definition checks (missing pin, extra pin, unknown section).
+- **The `hierNet` identity comparison across two `instantiate` clones** — build a
+  root with two children, each an instance of one template; package a section in
+  each; wire both `V+`s to the same parent net (passes) and to different parent
+  nets (fails); confirm two same-named clone nets on the *same* rail still pass.
+- **Cross-root rejection**: a component from another root raises.
+- **Lifecycle (from draft B):** clone a packaged root and confirm every member's
+  `package.*` points at the clone; `clone` a child alone and confirm it carries no
+  misleading partial group; remove or rename a member and confirm the group
+  reconstruction from `packages(nl)` simply omits it (no dangling reference,
+  because there are no references — this test *proves* the `attrs` choice).
+
+At the end of this step the feature is usable directly from Nim.
+
+---
+
+## 2. Report it
+
+One block in `verify.readiness` (`src/nimcir/verify.nim:245-248`), immediately
+after the `validateEnvironment` loop:
+
+```nim
+for i in validatePackages(d.netlist): result.structural.add i
+```
+
+`exitCode` already grades `result.structural` through the existing
+`sevError` / `strict && sevWarning` rule (`verify.nim:325-328`) — no change there.
+Findings land in the report's `STRUCTURE` section.
+
+Cases in `tests/test_verify_readiness.nim`: an error reaching `STRUCTURE`, and
+`exitCode` returning `exitStructural`.
+
+---
+
+## 3. Authoring ergonomics
+
+- Confirm `with = u10.section("A", "U1")` composes with `handleInstance` with no
+  macro change (it should — `with =` takes an arbitrary expression).
+- Add the `assign` overloads for the flat case (`Netlist` + local designator, and
+  `Component` for a caller with the object in hand).
+- Cases in `tests/test_netlist_dsl.nim`: the instance path, the flat path, and
+  assignment across an instance boundary producing the same three `package.*` keys.
+
+---
+
+## 4. A real definition and the target designs
+
+1. New **`designs/lib/opamps.nim`** (`lib/parts.nim`'s header reads as ".MODEL
+   cards", so it is the wrong home). Register an `NE5532` def (dual, 8-pin DIP/SOIC
+   pinout: `1=OUT` A, `2=IN-` A, `3=IN+` A, `4=V-` global, `5=IN+` B, `6=IN-` B,
+   `7=OUT` B, `8=V+` global) and an `OPA1642` def (same pinout family).
+2. **Swap `designs/lib/riaa.nim:101`** `partNumber` from `"NE5534"` to `"NE5532"`.
+   The design states `gbw = 10.MHz` (`lib/riaa.nim:107`); the NE5532 is also a
+   10 MHz part, so this is number-neutral — and §Verification proves the deck is
+   byte-identical afterward.
+3. Package `designs/riaa_preamp.nim`'s two `U1`s into one `U10` via
+   `with = u10.section(...)` — the cross-sheet case.
+4. Package `aa_filter.nim`'s `U1A`/`U1B` under `OPA1642` via the flat `assign`
+   path — costs nothing and exercises the other path.
+
+---
+
+## 5. Schematic label
+
+`SchematicPart` (`src/nimcir/schematic/scene.nim:25`) gains `label*: string`.
+
+- **Set** at `schematic/routing.nim:37`, the point a `SchematicPart` is built from
+  a `Component`: `label = displayDesignator(c)` — `"U10A"` for a packaged part,
+  `""` otherwise.
+- **Carry** through `schematic/json.nim`: write it beside `designator`
+  (`json.nim:103`) and read it back in the scene reconstruction (`json.nim:282`),
+  defaulting to `""` when absent so old scenes still parse. This keeps
+  `render.writeScenePair` scenes round-tripping.
+- **Draw** it where the designator is currently drawn as the visible label —
+  `schematic/finish.nim:123,138` and `schematic/svg.nim:161` — using `label` when
+  non-empty, else `designator`. `schematic/render.nim`'s explorer sidebar
+  (`render.nim:172,188`) likewise.
+
+**Do not overwrite `SchematicPart.designator`.** It is a join key: `finish.nim:159`
+builds `partIdxByDesig` from `c.designator` and looks it up by
+`p.component.designator`; `routing.nim:55` and the whole of `placement.nim` key on
+it. Changing the rendered string in place silently breaks net-label anchoring on
+every packaged part.
+
+A composite is **not** the mechanism: `docs/composites.md` requires recognizers to
+key on `Pin.kind` topology and `isTraversable` requires exactly two connected pins
+with `subNetlist == nil` — an op-amp qualifies for neither, and the sections are on
+different sheets anyway. Record that in `schematic/CLAUDE.md`.
+
+Cases in `tests/test_schematic.nim`: `label` set for a packaged part, empty
+otherwise, round-trips through JSON, and `designator` unchanged.
+
+---
+
+## 6. Board and BoM rollup
+
+`pcb/graph.bindComponent` (`src/nimcir/pcb/graph.nim:231`) raises unless
+`p.designator == c.designator`. That invariant gains a second branch — the one
+existing rule that genuinely has to move.
+
+1. **`src/nimcir/pcb/types.nim:219`** — one additive field on `Placement`:
+   ```nim
+   sections*: OrderedTable[string, Component]
+     ## Section name -> the netlist component that is that section, for a
+     ## multi-channel package. Empty for the 1:1 case, where `component` is
+     ## the whole part.
+   ```
+
+2. **`bindComponent`** — keep designator equality as the first branch, unchanged.
+   Add: when `packageRef(c).value == p.designator`, record
+   `p.sections[packageSection(c).value] = c` and **leave `p.component` nil**. Nil
+   is deliberate — `Placement.component` means "the netlist component this
+   placement *is*", and for a dual op-amp there is no such component. Grow the
+   mismatch message to name `package.ref` as the other way a placement and a
+   component may agree.
+
+3. **`pcb/graph.addLand` (`graph.nim:247`)** — today it keys `Placement.lands` by
+   pin name and binds `c.pin` from `p.component.pins[pinName]`. For a sectioned
+   placement (`p.component == nil and p.sections.len > 0`), look the pad id up in
+   the definition's `pins` map, get `(section, logical)`, and bind from
+   `p.sections[section].pins[logical]`. That makes pad `"7"` on an NE5532 resolve
+   to section B's `OUT`. A pad id the definition does not declare leaves `c.pin`
+   nil rather than guessing.
+
+4. **`pcb/bom.nim`** — `valueOf`/`partNumberOf`/`defaultKey` (`bom.nim:57-83`) fall
+   back to `p.component`, now nil for a package. Add a `p.sections` fallback that
+   reads the shared `packageDefName` off any section and returns its
+   `PackageDef.partNumber` / `footprint`. **`buildBom` (`bom.nim:85`) needs no
+   change**: one placement was always one `BomLine`, so N components collapsing to
+   one placement collapses to one line with the right quantity, for free.
+
+5. **Audit every `p.component` dereference** — not just `bom.nim`.
+   `pcb/graph.placementOf` (`graph.nim:239`) reads `result.component` and already
+   null-checks; sweep `pcb/` and `pcb/formats/` for any other reader and confirm
+   each tolerates nil (or guard it). This is an explicit step, not a spot check.
+
+Cases in `tests/test_pcb_bom.nim` (three components, one placement, one line with
+quantity 1 and the def's part number) and `tests/test_pcb_core.nim` (bind by
+`package.ref`; still raises on a real designator mismatch; pad `"7"` resolves to
+section B's `OUT`).
+
+---
+
+## 7. SPICE lossiness — explicit contract (from draft B)
+
+`attrs` never reach a deck, so this is already true; make it a *named test* so it
+cannot regress.
+
+`tests/test_netlist_spice.nim` (or the existing SPICE-format test file): build an
+electrically connected packaged graph, render to SPICE, parse it back, and assert:
+
+- the reparsed netlist has **no** `package.*` keys on any component;
+- no synthetic device, node, or comment encodes package identity;
+- the electrical graph (component pins, nets, deck lines) is unchanged.
+
+Document in `netlist/CLAUDE.md` and `docs/authoring.md` that a SPICE round trip
+**intentionally** loses package metadata; a consumer that needs it keeps the Nim
+source.
+
+---
+
+## 8. Docs
+
+- **`src/nimcir/netlist/CLAUDE.md`** — a `packages.nim` bullet written the way the
+  `environment.nim` one is: what it stores, why in `attrs` rather than `types.nim`,
+  why definitions are a registry and membership is not, the `hierNet`-identity rule
+  for the global-pin check, and the intentional SPICE metadata loss. Extend the
+  `dsl.nim` bullet to note `with =` now carries section assignment.
+- **`src/nimcir/pcb/CLAUDE.md`** — the "`Placement`/`Component` join on reference
+  designator" statement (line 5) is now false in one case; name `package.ref` as
+  the second join key, and `Placement.sections` / `addLand`'s pin-number path.
+- **`src/nimcir/schematic/CLAUDE.md`** — `label`, and why a composite is not the
+  mechanism.
+- **`designs/CLAUDE.md`** — the `riaa_preamp` entry gains a clause about the
+  package and the NE5534→NE5532 change.
+- **`docs/authoring.md`** — a section **"One part, several channels"**: the
+  definition, the two assignment paths, why it cannot live inside a `subckt`, what
+  the checks mean, and the SPICE round-trip caveat. Also `nimble guide`.
+- **`docs/findings.md`** — add multi-channel packaging with what stays deferred
+  (below), *including B's child-extraction design* so it is not re-derived:
+  extracting a child that contains a package member should add the package's global
+  pins as deterministic boundary ports named `<ref>.<section-or-gate>.<pin>`
+  (e.g. `U10.PWR.VCC`); child-only simulation must reject a missing binding by name
+  before ngspice sees a deck; no root supply is inherited and no logic level is
+  invented. Revisit when something other than a test calls `extractInstance`.
+- **`docs/composites.md`** — one sentence closing the "is a package a composite"
+  question.
+
+---
+
+## Steps (each lands independently)
+
+1. §1 — `packages.nim` + `tests/test_netlist_packages.nim`. Usable from Nim.
+2. §2 — one block in `verify.readiness` + `tests/test_verify_readiness.nim`.
+3. §3 — confirm `with =` composes; add `assign` overloads + `tests/test_netlist_dsl.nim`.
+4. §4 — `designs/lib/opamps.nim`, the `riaa.nim` swap, package both designs.
+5. §5 — `SchematicPart.label` and its touch points + `tests/test_schematic.nim`.
+6. §6 — `Placement.sections`, `bindComponent` branch, `addLand` resolution,
+   `bom.nim` fallbacks, `p.component`-reader audit + `tests/test_pcb_bom.nim`,
+   `tests/test_pcb_core.nim`.
+7. §7 — the SPICE-lossiness regression test.
+8. §8 — docs.
+
+---
+
+## Verification
+
+```
+nimble test 2>&1 | grep -cE "FAILED|Error:"     # must print 0 — read the output, never the exit code
+nimble verify
+nim c -r --path:./src tests/test_netlist_packages.nim
+nim c -r --path:./src tests/test_netlist_dsl.nim
+nim c -r --path:./src tests/test_verify_readiness.nim
+nim c -r --path:./src tests/test_schematic.nim
+nim c -r --path:./src tests/test_pcb_bom.nim tests/test_pcb_core.nim
+./bin/nimcir check designs/riaa_preamp.nim
+./bin/nimcir check designs/aa_filter.nim
+```
+
+**Proving no number moved** — the §Context claim, checked not asserted:
+
+```
+git stash && NIMCIR_KEEP_DECKS=/tmp/before ./bin/nimcir check designs/riaa_preamp.nim
+git stash pop && NIMCIR_KEEP_DECKS=/tmp/after ./bin/nimcir check designs/riaa_preamp.nim
+diff -r /tmp/before /tmp/after     # must be empty — includes the NE5534->NE5532 swap
+```
+
+Repeat for `aa_filter`. `tests/test_spice_keep.nim` is the existing precedent for
+pinning that shape of claim. `tests/test_spice_flatten.nim`,
+`tests/test_spice_isolate.nim` and `tests/test_spice_transform.nim` must pass
+untouched — those catch `package.*` failing to survive a transform.
+
+---
+
+## Deferred, deliberately
+
+- **Child-extraction global-pin boundary ports + required-binding check** (draft
+  B's §"Child extraction"). A good design, but `extractInstance`/`extractSubcircuit`
+  are called from tests only — no CLI, no analysis path drives them. Recorded in
+  `docs/findings.md`; revisit when a production path extracts a child for
+  simulation.
+- **Unused-section tie-off.** An unused half of a dual op-amp must have its inputs
+  tied off or it rails into the used half — a real board defect nothing here sees.
+  The obvious next check; write it into `findings.md`.
+- **Package pin count vs. footprint.** Needs a board reader `pcb/formats` does not
+  have yet.
+- **Intra-`subckt` packaging.** A `subckt` is deep-cloned per instance, so a
+  package declared inside one would be a different physical part in every instance
+  while a package designator is a board-global join key. Which chip a module's
+  channels land in is a board decision (`parts/CLAUDE.md`'s argument about who
+  chooses a part).
+- **Cross-sheet reference on the symbol** ("U10B — sheet RIAA_CHANNEL"). Useful,
+  since the sections are on different sheets by construction, but a second layout
+  pass with its own placement question.
+- **Renaming the registered `package` (case size) key to `case_size`.** A separate
+  mechanical change if the adjacency proves confusing.

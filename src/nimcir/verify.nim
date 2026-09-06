@@ -52,6 +52,7 @@ import ./eng
 import ./netlist/types
 import ./netlist/annotations
 import ./netlist/environment
+import ./netlist/packages
 import ./schematic
 import ./analysis/io_check
 import ./analysis/evaluators/contract_eval
@@ -245,6 +246,7 @@ proc readiness*(d: Design, allowed = allCapabilities): Readiness =
   result.structural = validateAnnotations(d.netlist)
   for i in analyzeIO(d.netlist): result.structural.add i
   for i in validateEnvironment(d.netlist): result.structural.add i
+  for i in validatePackages(d.netlist): result.structural.add i
 
   result.environment = environmentOf(d.netlist)
   result.hottest = describeHottest(d.netlist, result.environment)

@@ -1,5 +1,12 @@
 # Composite motif ideas beyond `parallel-stack`
 
+**A multi-channel package is not a composite.** A dual op-amp's two sections
+are one physical part but two `Component`s on different sheets; a composite
+recognizer keys on `Pin.kind` topology within one netlist and `isTraversable`
+wants exactly two connected pins with `subNetlist == nil`, and an op-amp is
+neither. Packaging (`netlist/packages.nim`) is design metadata in `attrs`, not
+a placement motif — see `netlist/CLAUDE.md` and `docs/authoring.md`.
+
 **Shipped since this brainstorm was written:** `compositeKinds`
 (`schematic/composites/composite.nim`) now registers four motifs —
 `parallelStackKind` (`passive.nim`), plus `piKind` (`pi.nim`), `teeKind`

@@ -101,6 +101,7 @@ proc sceneToJson*(s: Schematic): JsonNode =
   for p in s.parts:
     var o = newJObject()
     o["designator"] = %p.designator
+    o["label"] = %p.label
     o["kind"] = %p.kind
     o["name"] = %p.name
     o["value"] = %p.value
@@ -223,6 +224,14 @@ proc reqStr(n: JsonNode, key: string): string =
     fail("scene JSON: field \"" & key & "\" must be a string")
   n[key].str
 
+proc optStr(n: JsonNode, key: string): string =
+  ## An additive string field: `""` when absent (so an archive written before
+  ## the field existed still parses), but type-checked when present.
+  if not n.hasKey(key): return ""
+  if n[key].kind != JString:
+    fail("scene JSON: field \"" & key & "\" must be a string")
+  n[key].str
+
 proc reqBool(n: JsonNode, key: string): bool =
   if not n.hasKey(key): fail("scene JSON: missing field \"" & key & "\"")
   if n[key].kind != JBool:
@@ -281,6 +290,7 @@ proc jsonToScene*(node: JsonNode): Schematic =
     if pn.kind != JObject: fail("scene JSON: part must be an object")
     var p = SchematicPart(
       designator: reqStr(pn, "designator"),
+      label: optStr(pn, "label"),
       kind: reqStr(pn, "kind"),
       name: reqStr(pn, "name"),
       value: reqStr(pn, "value"),

@@ -968,6 +968,73 @@ That substitution is not a small thing to avoid: without a card, a pair of
 clipping diodes across a feedback network becomes four resistors to ground,
 whose 500 kΩ shunt on the inverting node acts as a second gain leg.
 
+## One part, several channels
+
+A dual op-amp is one chip, one footprint, one BoM line, one silkscreen
+designator — but the netlist models each amplifier as its own `Component`,
+often two instances of one `subckt` living on different sheets. A **package**
+says the sections are the same die.
+
+Register the pinout once, in a library module (importing it registers the
+definition, like a role):
+
+```nim
+# designs/lib/opamps.nim
+import nimcir/netlist/packages
+export packages
+
+registerPackage(newPackageDef("NE5532", [
+  (id: "1", section: "A", logical: "OUT"), (id: "2", section: "A", logical: "IN-"),
+  (id: "3", section: "A", logical: "IN+"), (id: "4", section: "", logical: "V-"),
+  (id: "5", section: "B", logical: "IN+"), (id: "6", section: "B", logical: "IN-"),
+  (id: "7", section: "B", logical: "OUT"), (id: "8", section: "", logical: "V+")],
+  partNumber = "NE5532", footprint = "SOIC-8"))
+```
+
+`section = ""` is a **global pin** — a supply or enable shared by both halves.
+
+Create the package instance *before* the design block (an unregistered
+definition raises here, not inside a macro), then assign sections. **Two
+instances of one `subckt`** — the cross-sheet case — use `with =`:
+
+```nim
+let u10 = packageInstance("NE5532", "U10")
+
+let d = design("riaa_preamp"):
+  ...
+  instance XL, riaaChannel(), [inL, outL, vp, vn, gnd],
+    with = u10.section("A", "U1")
+  instance XR, riaaChannel(), [inR, outR, vp, vn, gnd],
+    with = u10.section("B", "U1")
+```
+
+**Flat components on one sheet** assign after the block:
+
+```nim
+u1.assign(d.netlist, "A", "U1A")
+u1.assign(d.netlist, "B", "U1B")
+```
+
+The checks (reported under `STRUCTURE`): a section the definition does not
+declare, a duplicate section letter, more sections than the part has, a pin
+the definition declares nowhere, a member under a different root, a
+`partNumber` that disagrees with the definition — and the one worth the
+machinery, **a global pin that resolves to different nets across sections**,
+compared by net *identity* so two same-named clone nets on one rail still
+pass but a genuinely miswired channel fails.
+
+**It cannot live inside a `subckt`.** A `subckt` is deep-cloned per instance,
+so a package declared inside one would be a different physical chip in every
+instance — while a package designator is a board-global join key. Which chip a
+module's channels land in is a board decision, made where the module is
+instanced.
+
+**A SPICE round trip drops the packaging.** `package.*` are `attrs`, they
+never reach a deck, and nothing synthetic encodes package identity. Simulation
+does not change and no measured number moves — `idealOpAmp` never connected to
+the rails, so packaging two amplifiers together alters no deck. A consumer
+that needs the packaging keeps the Nim source.
+
 ## Exit codes
 
 | Code | Meaning |

@@ -192,3 +192,43 @@ test "a written deck spells every device from its kind":
   writeNetlist(nl, s)
   check "LFB1 a 0 600n" in s.data
   check "\nFB1 " notin s.data
+
+import nimcir/netlist/dsl as nldsl
+import nimcir/netlist/packages
+
+test "a SPICE round trip intentionally loses package metadata":
+  let def = newPackageDef("SPICE_DUAL", [
+    (id: "1", section: "A", logical: "OUT"),
+    (id: "2", section: "B", logical: "OUT")], partNumber = "SPICE_DUAL")
+  try: registerPackage(def)
+  except CatchableError: discard
+  let pkg = packageInstance("SPICE_DUAL", "U10")
+
+  let nl = nldsl.netlist("pkgdeck"):
+    net gnd, kind = ntGround, name = "0"
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    component RA, kind = "resistor", value = "1k":
+      pin "1", a
+      pin "2", gnd
+    component RB, kind = "resistor", value = "2k":
+      pin "1", b
+      pin "2", gnd
+    component I1, kind = "current_source", value = "DC 1m":
+      pin "+", a
+      pin "-", gnd
+  pkg.assign(nl, "A", "RA")
+  pkg.assign(nl, "B", "RB")
+
+  let text = render(nl)
+  check "package" notin text            # no synthetic device, node or comment
+  check "U10" notin text
+
+  let back = readNetlist(newStringStream(text), "pkgdeck")
+  for _, c in back.components:
+    for k in c.attrs.keys:
+      check not k.startsWith("package.")
+  # the electrical graph is unchanged
+  check back.components.len == 3
+  check back.nets["a"].pins.len == nl.nets["a"].pins.len
+  check back.nets["0"].pins.len == nl.nets["0"].pins.len

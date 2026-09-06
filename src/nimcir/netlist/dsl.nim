@@ -73,8 +73,9 @@ import std/[macros, strutils, tables]
 import ./types
 import ./graph
 import ./annotations
+import ./packages
 
-export types, graph, annotations
+export types, graph, annotations, packages
 
 const
   netKnownFields = ["kind"]

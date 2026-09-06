@@ -158,7 +158,8 @@ proc drawPart(p: SchematicPart): seq[string] =
         result.add textAt(pin.x, cy + hh - boxStub - 6.0, pin.name, "middle", 9)
     # Designator and value/name stack at the top-left inside corner, clear of
     # the centred rows and columns of pin labels.
-    result.add textAt(bx + 5.0, by + 13.0, p.designator, "start")
+    result.add textAt(bx + 5.0, by + 13.0,
+                      (if p.label.len > 0: p.label else: p.designator), "start")
     let sub = if p.value.len > 0: p.value
               elif p.name.len > 0: p.name
               else: p.kind

@@ -16,6 +16,7 @@
 
 import std/[strutils, tables]
 import ./types
+import ../netlist/packages
 
 export types
 
@@ -55,6 +56,15 @@ proc firstAttr*(p: Placement, keys: openArray[string]): string =
       return p.attrs[k]
   ""
 
+proc packageDefOf*(p: Placement): PackageDef =
+  ## The `PackageDef` a sectioned placement stands for, or `nil`. Read off
+  ## any section -- they all share it.
+  for _, sc in p.sections:
+    let dn = packageDefName(sc)
+    if dn.has and isPackageRegistered(dn.value):
+      return packageDef(dn.value)
+  nil
+
 proc valueOf*(p: Placement): string =
   result = firstAttr(p, ValueKeys)
   if result.len == 0 and p.component != nil:
@@ -65,6 +75,17 @@ proc partNumberOf*(p: Placement): string =
   result = firstAttr(p, PartNumberKeys)
   if result.len == 0 and p.component != nil:
     result = p.component.partNumber
+  if result.len == 0:
+    let def = packageDefOf(p)
+    if def != nil: result = def.partNumber
+
+proc footprintOf*(p: Placement): string =
+  ## `p.footprint` as read from the board, falling back to the package
+  ## definition's footprint for a synthesized sectioned placement.
+  result = p.footprint
+  if result.len == 0:
+    let def = packageDefOf(p)
+    if def != nil: result = def.footprint
 
 proc mpnOf*(p: Placement): string = firstAttr(p, MpnKeys)
 proc manufacturerOf*(p: Placement): string = firstAttr(p, ManufacturerKeys)
@@ -80,7 +101,7 @@ proc defaultKey*(p: Placement): string =
   if mpn.len > 0: return "mpn:" & mpn & dnp
   let pn = partNumberOf(p)
   if pn.len > 0: return "pn:" & pn & dnp
-  "vf:" & valueOf(p) & "|" & p.footprint & dnp
+  "vf:" & valueOf(p) & "|" & footprintOf(p) & dnp
 
 proc buildBom*(pcb: Pcb, groupBy: proc (p: Placement): string {.closure.} = nil): Bom =
   ## Rolls every placed component up into `BomLine`s.
@@ -97,7 +118,7 @@ proc buildBom*(pcb: Pcb, groupBy: proc (p: Placement): string {.closure.} = nil)
     if not byKey.hasKey(key):
       let line = BomLine(key: key,
                          value: valueOf(p),
-                         footprint: p.footprint,
+                         footprint: footprintOf(p),
                          partNumber: partNumberOf(p),
                          manufacturer: manufacturerOf(p),
                          mpn: mpnOf(p),

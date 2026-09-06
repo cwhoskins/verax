@@ -35,6 +35,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   for i, c in comps:
     let sd = syms[i]
     var sp = SchematicPart(designator: c.designator, kind: c.kind,
+                           label: (if isPackaged(c): displayDesignator(c) else: ""),
                            name: c.name, value: c.attrs.getOrDefault("value", ""),
                            symbol: sd.name, isBox: sd.isBox,
                            bodyW: sd.bodyW, bodyH: sd.bodyH,

@@ -8,6 +8,7 @@ import std/[algorithm, math, sets, strutils, tables, sequtils, heapqueue]
 import ../netlist/types
 import ../netlist/kinds
 import ../netlist/annotations
+import ../netlist/packages
 import ./scene
 import ./pipeline
 

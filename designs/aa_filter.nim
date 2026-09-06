@@ -26,6 +26,14 @@
 import nimcir/contract/dsl
 import nimcir/verify
 
+import ./lib/opamps
+
+# U1A and U1B are the two halves of one dual op-amp. Nothing about the deck
+# changes -- `idealOpAmp` never connected to the rails -- but the board now
+# gets one placement and one BoM line, and `validatePackages` checks the two
+# sections share their supply pins.
+let u1 = packageInstance("OPA1642", "U1")
+
 let d = design("aa_filter"):
   net gnd, kind = ntGround, name = "0"
   net vcc, kind = ntPower:
@@ -179,5 +187,8 @@ let d = design("aa_filter"):
   role "opamp_stage", sec2, opamp = U1B, input = vo1, output = vout,
        maxPeaking = 3.5.dB,
        without = "phase_margin"
+
+u1.assign(d.netlist, "A", "U1A")
+u1.assign(d.netlist, "B", "U1B")
 
 quit(verifyMain(d))

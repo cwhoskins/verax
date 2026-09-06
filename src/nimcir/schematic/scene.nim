@@ -24,6 +24,12 @@ type
 
   SchematicPart* = object
     designator*: string
+      ## The netlist reference designator, and a **join key** -- `finish`/
+      ## `routing`/`placement` all key on it, so it is never rewritten.
+    label*: string
+      ## The visible label when it differs from `designator`: `"U10A"` for a
+      ## section of a multi-channel package, `""` otherwise. Renderers draw
+      ## `label` when non-empty, else `designator`.
     kind*: string
     name*: string
     value*: string

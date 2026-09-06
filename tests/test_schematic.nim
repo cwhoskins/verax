@@ -2788,3 +2788,57 @@ suite "run archive svg":
       check fileExists(dir / "run000.svg")
       check fileExists(dir / "run000.json")
       check ">U1</text>" in readFile(dir / "run000.svg")
+
+# --- multi-channel package labels -----------------------------------
+
+import nimcir/netlist/dsl as nldsl
+import nimcir/netlist/packages
+
+suite "packaged part labels":
+  proc packagedPair(): Netlist =
+    let dual = newPackageDef("SCH_DUAL", [
+      (id: "1", section: "A", logical: "OUT"),
+      (id: "2", section: "B", logical: "OUT")], partNumber = "SCH_DUAL")
+    try: registerPackage(dual)
+    except CatchableError: discard
+    let u5 = packageInstance("SCH_DUAL", "U5")
+    result = nldsl.netlist("pp"):
+      net gnd, kind = ntGround, name = "0"
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      component IC1, kind = "opamp":
+        pin "OUT", a
+        pin "IN", gnd
+      component IC2, kind = "opamp":
+        pin "OUT", b
+        pin "IN", gnd
+    u5.assign(result, "A", "IC1")
+    u5.assign(result, "B", "IC2")
+
+  test "label is the display designator for a packaged part, empty otherwise":
+    let s = layout(packagedPair())
+    var byDesig: Table[string, SchematicPart]
+    for p in s.parts: byDesig[p.designator] = p
+    check byDesig["IC1"].label == "U5A"   # ref U5 + section A
+    check byDesig["IC2"].label == "U5B"
+    check byDesig["IC1"].designator == "IC1"   # join key untouched
+
+  test "label round-trips through the scene JSON":
+    let s = layout(packagedPair())
+    let back = jsonToScene(parseJson(sceneToJsonString(s)))
+    var a, b: SchematicPart
+    for p in back.parts:
+      if p.designator == "IC1": a = p
+      if p.designator == "IC2": b = p
+    check a.label == "U5A"
+    check b.label == "U5B"
+
+  test "an unpackaged part carries an empty label":
+    let nl = nldsl.netlist("plain"):
+      net gnd, kind = ntGround, name = "0"
+      net a, kind = ntSignal
+      component R1, kind = "resistor", value = "1k":
+        pin "1", a
+        pin "2", gnd
+    for p in layout(nl).parts:
+      check p.label == ""

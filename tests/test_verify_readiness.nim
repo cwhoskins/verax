@@ -8,6 +8,7 @@ import std/[os, strutils, tables, unittest]
 
 import nimcir/contract/dsl
 import nimcir/verify
+import nimcir/netlist/packages
 
 # --- fixtures -----------------------------------------------------------
 
@@ -97,6 +98,38 @@ suite "readiness":
     check r.structural.len > 0
     check exitCode(r) == exitFailed              # warning does not promote
     check exitCode(r, strict = true) == exitStructural
+
+  test "a package finding reaches STRUCTURE and grades the exit code":
+    registerPackage(newPackageDef("TEST_DUAL_RDY", [
+      (id: "1", section: "A", logical: "OUT"),
+      (id: "2", section: "A", logical: "IN"),
+      (id: "3", section: "",  logical: "V+"),
+      (id: "4", section: "B", logical: "IN"),
+      (id: "5", section: "B", logical: "OUT")], partNumber = "TEST_DUAL_RDY"))
+    let pkg = packageInstance("TEST_DUAL_RDY", "U9")
+    let d = design("packaged"):
+      net gnd, kind = ntGround, name = "0"
+      net vpa, kind = ntPower, voltage = "5"
+      net vpb, kind = ntPower, voltage = "5"
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      component U9A, kind = "opamp", partNumber = "TEST_DUAL_RDY":
+        pin "OUT", a
+        pin "IN", gnd
+        pin "V+", vpa, kind = ptPower
+      component U9B, kind = "opamp", partNumber = "TEST_DUAL_RDY":
+        pin "OUT", b
+        pin "IN", gnd
+        pin "V+", vpb, kind = ptPower
+    pkg.assign(d.netlist, "A", "U9A")
+    pkg.assign(d.netlist, "B", "U9B")
+    let r = readiness(d, offlineCapabilities)
+    var found = false
+    for i in r.structural:
+      if i.kind == "package_global_pin_conflict": found = true
+    check found
+    check exitCode(r) == exitStructural
+    check "STRUCTURE" in render(r)
 
   test "a design claiming nothing says so":
     let r = readiness(claimingNothing(), offlineCapabilities)

@@ -105,3 +105,34 @@ test "rendering a BoM line is human-readable":
   for l in bom.lines:
     if l.doNotPopulate:
       check "[DNP]" in $l
+
+# --- multi-channel package rollup ----------------------------------
+
+import nimcir/netlist/packages
+
+test "a dual op-amp collapses to one BoM line with the definition's part number":
+  let def = newPackageDef("BOM_NE5532", [
+    (id: "1", section: "A", logical: "OUT"),
+    (id: "2", section: "B", logical: "OUT")], partNumber = "NE5532",
+    footprint = "SOIC-8")
+  try: registerPackage(def)
+  except CatchableError: discard
+
+  let pcb = newPcb("stereo")
+  let nl = pcb.netlist
+  for (d, sect) in {"OA1": "A", "OA2": "B"}:
+    let c = addComponent(nl, newComponent(d, kind = "opamp"))
+    c.attrs["package.ref"] = "U10"
+    c.attrs["package.section"] = sect
+    c.attrs["package.def"] = "BOM_NE5532"
+  # One placement for the physical chip, bound to both sections.
+  let p = addPlacement(pcb, newPlacement("U10"))    # no footprint on the board
+  bindComponent(p, nl.components["OA1"])
+  bindComponent(p, nl.components["OA2"])
+
+  let bom = buildBom(pcb)
+  check bom.lines.len == 1
+  check bom.lines[0].quantity == 1
+  check bom.lines[0].designators == @["U10"]
+  check bom.lines[0].partNumber == "NE5532"
+  check bom.lines[0].footprint == "SOIC-8"    # fell back to the def

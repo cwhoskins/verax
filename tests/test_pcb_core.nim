@@ -217,3 +217,74 @@ test "board extent falls back to copper when no outline is stitched yet":
     [pt(mm(0.0), mm(0.0)), pt(mm(30.0), mm(0.0)),
      pt(mm(30.0), mm(20.0)), pt(mm(0.0), mm(20.0))], closed = true))
   check boardBox(pcb) == boxOf(pt(mm(0.0), mm(0.0)), pt(mm(30.0), mm(20.0)))
+
+# --- multi-channel packages -----------------------------------------
+
+import nimcir/netlist/packages
+
+proc dualPackDef(): PackageDef =
+  result = newPackageDef("PCB_NE5532", [
+    (id: "1", section: "A", logical: "OUT"),
+    (id: "2", section: "A", logical: "IN-"),
+    (id: "3", section: "A", logical: "IN+"),
+    (id: "4", section: "",  logical: "V-"),
+    (id: "5", section: "B", logical: "IN+"),
+    (id: "6", section: "B", logical: "IN-"),
+    (id: "7", section: "B", logical: "OUT"),
+    (id: "8", section: "",  logical: "V+")], partNumber = "NE5532",
+    footprint = "SOIC-8")
+  try: registerPackage(result)
+  except CatchableError: result = packageDef("PCB_NE5532")
+
+proc packagedBoard(): (Pcb, Component, Component) =
+  let def = dualPackDef()
+  let pcb = newPcb("packaged")
+  let nl = pcb.netlist
+  let outB = addNet(nl, newNet("outB", ntSignal))
+  let gnd = addNet(nl, newNet("0", ntGround))
+  let a = addComponent(nl, newComponent("OA1", kind = "opamp", partNumber = "NE5532"))
+  let b = addComponent(nl, newComponent("OA2", kind = "opamp", partNumber = "NE5532"))
+  discard connect(a, "OUT", addNet(nl, newNet("outA", ntSignal)), ptOutput)
+  discard connect(b, "OUT", outB, ptOutput)
+  a.attrs["package.ref"] = "U10"
+  a.attrs["package.section"] = "A"
+  a.attrs["package.def"] = def.name
+  b.attrs["package.ref"] = "U10"
+  b.attrs["package.section"] = "B"
+  b.attrs["package.def"] = def.name
+  (pcb, a, b)
+
+test "a placement binds two sections by package.ref and leaves component nil":
+  let (pcb, a, b) = packagedBoard()
+  let p = addPlacement(pcb, newPlacement("U10", "SOIC-8"))
+  bindComponent(p, a)
+  bindComponent(p, b)
+  check p.component == nil
+  check p.sections.len == 2
+  check p.sections["A"] == a
+  check p.sections["B"] == b
+  check placementOf(pcb, a) == p
+  check placementOf(pcb, b) == p
+
+test "a genuine designator mismatch still raises":
+  let (pcb, a, _) = packagedBoard()
+  a.attrs.del("package.ref")            # no packaging -> plain designator join
+  let p = addPlacement(pcb, newPlacement("U11"))
+  expect(PcbError):
+    bindComponent(p, a)
+
+test "pad 7 on an NE5532 resolves to section B's OUT":
+  let (pcb, a, b) = packagedBoard()
+  let top = addLayer(pcb, newPcbLayer("F.Cu", lfSignal, lsTop))
+  let p = addPlacement(pcb, newPlacement("U10", "SOIC-8"))
+  bindComponent(p, a)
+  bindComponent(p, b)
+  let padAp = internAperture(pcb, Aperture(name: "r500", kind: akCircle, dia: mm(0.5)))
+  let pad7 = addCopper(top, newCopper(ckLand, pad(padAp, pt(mm(1.0), mm(1.0)))))
+  addLand(p, "7", pad7)
+  check pad7.pin == b.pins["OUT"]
+  check pad7.net == b.pins["OUT"].net
+  # an undeclared pad id binds nothing rather than guessing
+  let pad99 = addCopper(top, newCopper(ckLand, pad(padAp, pt(mm(2.0), mm(1.0)))))
+  addLand(p, "99", pad99)
+  check pad99.pin == nil

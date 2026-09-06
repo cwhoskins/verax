@@ -45,22 +45,20 @@ type
     id*, title*, svg*: string
     parts*: JsonNode
 
-proc explorerSheet*(n: Netlist, s: Schematic, id: string): ExplorerSheet =
-  ## Fold one netlist level and its routed scene into an `ExplorerSheet`. A
-  ## part whose designator keys `n.children` is a hierarchical instance, so it
-  ## carries the `safeSheetName` of the child it opens on a double-click; every
-  ## other part carries `null` there.
-  var childOf = initTable[string, string]()
-  for desig, child in n.children:
-    if child.name.len > 0:
-      childOf[desig] = safeSheetName(child.name)
+proc explorerSheet*(n: Netlist, s: Schematic, id: string,
+                    childOf: OrderedTable[string, string]): ExplorerSheet =
+  ## Fold one netlist level and its routed scene into an `ExplorerSheet`.
+  ## `childOf` contains the archive IDs resolved for this occurrence, rather
+  ## than deriving an ID from a child name: same-named, non-equivalent blocks
+  ## need separate sheets.
+
   var parts = newJArray()
   for p in s.parts:
     var pins = newJArray()
     for pin in p.pins:
       pins.add %*{"name": pin.name, "net": pin.net}
     parts.add %*{
-      "designator": p.designator, "kind": p.kind, "name": p.name,
+      "designator": p.designator, "label": p.label, "kind": p.kind, "name": p.name,
       "value": p.value, "x": p.x, "y": p.y,
       "bodyW": p.bodyW, "bodyH": p.bodyH, "pins": pins,
       "child": (if p.designator in childOf: %childOf[p.designator]
@@ -71,6 +69,14 @@ proc explorerSheet*(n: Netlist, s: Schematic, id: string): ExplorerSheet =
     svg = svg[close + 2 .. ^1].strip(leading = true, trailing = false)
   ExplorerSheet(id: id, title: (if n.name.len > 0: n.name else: id),
                 svg: svg, parts: parts)
+
+proc explorerSheet*(n: Netlist, s: Schematic, id: string): ExplorerSheet =
+  ## Compatibility helper for a caller that has no resolved archive map.
+  var childOf = initOrderedTable[string, string]()
+  for desig, child in n.children:
+    if child.name.len > 0:
+      childOf[desig] = safeSheetName(child.name)
+  explorerSheet(n, s, id, childOf)
 
 const explorerTemplate = """<!doctype html>
 <html lang="en">
@@ -168,8 +174,8 @@ function render() {
     r.setAttribute("class", p.child ? "hit nav" : "hit");
     const tip = document.createElementNS(SVGNS, "title");
     tip.textContent = p.child
-      ? `${p.designator || p.kind} — double-click to open ${p.child}`
-      : (p.designator || p.kind || "");
+      ? `${p.label || p.designator || p.kind} — double-click to open ${p.child}`
+      : (p.label || p.designator || p.kind || "");
     r.appendChild(tip);
     let timer = null;
     r.addEventListener("click", () => {
@@ -185,7 +191,7 @@ function render() {
 }
 
 function showProps(p) {
-  document.getElementById("pname").textContent = p.designator || "(no designator)";
+  document.getElementById("pname").textContent = p.label || p.designator || "(no designator)";
   document.getElementById("pkind").textContent = p.kind || "";
   const rows = [
     ["Name", p.name], ["Value", p.value], ["Kind", p.kind],
@@ -242,8 +248,8 @@ proc renderExplorerHtml*(sheets: seq[ExplorerSheet]): string =
 
 proc keepFullSchematic*(nl: Netlist) =
   ## Renders the authored design as `runFULL.svg`/`runFULL.json` in a run
-  ## archive, plus one `runFULL.<subckt>.svg`/`.json` per distinct subcircuit
-  ## it instantiates, and one `runFULL.html` that browses the whole hierarchy
+  ## archive, plus one `runFULL.<sheet-id>.svg`/`.json` per distinct rendered
+  ## child-sheet variant, and one `runFULL.html` that browses the hierarchy
   ## interactively -- when an archive is being kept and before any derived
   ## fragment is simulated.
   ##
@@ -262,9 +268,11 @@ proc keepFullSchematic*(nl: Netlist) =
   ## button (a breadcrumb history) to come back out. It is self-contained --
   ## no external file, so it opens straight from disk.
   ##
-  ## A subcircuit instantiated twice (two channels of a stereo stage, say) is
-  ## deep-cloned per instance but drawn once, keyed by `Netlist.name` -- the
-  ## `.SUBCKT` name, which is also how the deck writes it.
+  ## Equivalent deep clones of a subcircuit (two channels of a stereo stage,
+  ## say) are drawn once.  A shared `Netlist.name` alone is not enough: both
+  ## the rendered scene and the resolved sheets its instances lead to must
+  ## agree.  Non-equivalent occurrences get deterministic, globally unique
+  ## IDs (`name`, then `name.2`, `name.3`).
   ##
   ## Best effort, and off unless `$NIMCIR_KEEP_RUNS` is set, on the same
   ## reasoning as the archive itself: drawing a picture must never be able to
@@ -274,21 +282,74 @@ proc keepFullSchematic*(nl: Netlist) =
   try:
     createDir(dir)
     let options = archiveLayoutOptions()
-    var sheets: seq[ExplorerSheet]
-    let rootScene = layout(nl, options)
-    writeScenePair(rootScene, dir / "runFULL")
-    sheets.add explorerSheet(nl, rootScene, "@root")
-    var seen: seq[string]
-    proc walk(n: Netlist) =
+    type ArchiveSheet = object
+      id, name, sceneJson: string
+      netlist: Netlist
+      scene: Schematic
+      childOf: OrderedTable[string, string]
+
+    var sheets: seq[ArchiveSheet]
+    var usedIds = initTable[string, bool]()
+
+    proc sameTargets(a, b: OrderedTable[string, string]): bool =
+      if a.len != b.len: return false
+      for designator, target in a:
+        if not b.hasKey(designator) or b[designator] != target: return false
+      true
+
+    proc allocateId(name: string): string =
+      let base = safeSheetName(name)
+      var n = 1
+      while true:
+        result = if n == 1: base else: base & "." & $n
+        if not usedIds.hasKey(result):
+          usedIds[result] = true
+          return
+        inc n
+
+    proc walk(n: Netlist): string
+    proc walkUnnamed(n: Netlist) =
+      ## Preserve the old treatment of an unnamed intermediate child: it has
+      ## no sheet of its own, but its named descendants are still archived.
       for _, child in n.children:
-        if child.name.len > 0 and child.name notin seen:
-          seen.add child.name
-          let sid = safeSheetName(child.name)
-          let scene = layout(child, options)
-          writeScenePair(scene, dir / ("runFULL." & sid))
-          sheets.add explorerSheet(child, scene, sid)
-        walk(child)
-    walk(nl)
-    writeFile(dir / "runFULL.html", renderExplorerHtml(sheets))
+        if child.name.len > 0: discard walk(child)
+        else: walkUnnamed(child)
+
+    proc walk(n: Netlist): string =
+      var childOf = initOrderedTable[string, string]()
+      for designator, child in n.children:
+        if child.name.len > 0:
+          childOf[designator] = walk(child)
+        else:
+          walkUnnamed(child)
+
+      let scene = layout(n, options)
+      let sceneJson = sceneToJsonString(scene)
+      for sheet in sheets:
+        if sheet.name == n.name and sheet.sceneJson == sceneJson and
+           sameTargets(sheet.childOf, childOf):
+          return sheet.id
+
+      result = allocateId(n.name)
+      sheets.add ArchiveSheet(id: result, name: n.name, netlist: n,
+                              scene: scene, sceneJson: sceneJson,
+                              childOf: childOf)
+
+    let rootScene = layout(nl, options)
+    var rootChildren = initOrderedTable[string, string]()
+    for designator, child in nl.children:
+      if child.name.len > 0:
+        rootChildren[designator] = walk(child)
+      else:
+        walkUnnamed(child)
+    writeScenePair(rootScene, dir / "runFULL")
+
+    var explorerSheets: seq[ExplorerSheet]
+    explorerSheets.add explorerSheet(nl, rootScene, "@root", rootChildren)
+    for sheet in sheets:
+      writeScenePair(sheet.scene, dir / ("runFULL." & sheet.id))
+      explorerSheets.add explorerSheet(sheet.netlist, sheet.scene, sheet.id,
+                                       sheet.childOf)
+    writeFile(dir / "runFULL.html", renderExplorerHtml(explorerSheets))
   except CatchableError:
     discard
