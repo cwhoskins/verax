@@ -2468,3 +2468,31 @@ polyline, not a labelled bundle with tick marks); deriving `groupSide` for a
 non-ported merged pin from the net-mates' centroid rather than the folded
 direction; and the SPICE round trip still loses the grouping (inherent, like
 `Pin.kind` fidelity).
+
+**Follow-up — grouped net labels + a bus-slice narrowing.** The
+"**published** bundle that fails collapse → net-label tags" and "the `>= 2`
+floor keeps `designs/i2c_eeprom.nim` byte-identical" claims above are
+**superseded**. `brNetLabel` now also fires for a bus or interface whose
+members span **3+ component entities** (`union.parts`, never the sheet
+boundary), published or not — the conventional shared-bus schematic. The tags
+merge per endpoint: a box carrying `>= 2` members gets one merged pin with one
+tag (`groupText`: `spi1` for the whole interface, `spi1(cs0)` for a coherent
+slice, `spi1(sclk, mosi)` for a partial tap), a single-member or two-terminal
+carrier keeps its bare member tag. `laneOf` is the single source of the merged
+lane string so box sizing and `svg` cannot disagree; `bundleReport` gained a
+`labels` field. A `>= 3`-entity interface no longer retries per `bus.name`, so
+it never gets a collapsed sub-bus. `spi_memories`' top now draws three
+`netlabel` interface bundles (`runFULL.json` wires 33→17, fallbacks 17→12) and
+`designs/i2c_eeprom.nim`'s sda/scl draw as grouped `i2c` tags — its **readiness
+report stays byte-identical** because the `i2c` role reads the netlist, not the
+picture (that is the acceptance criterion now, not `runFULL.json` geometry).
+The zero-value guarantee is unchanged: a bus-free netlist still yields a
+byte-identical scene.
+
+`designs/spi_memories.nim` also lost its `spi1.bus("cs")[k]` boilerplate:
+`narrow(Interface, signal, k)` presents an interface with one wide signal cut
+to width 1 in pure value space, wired by name as
+`{"spi": spi1.narrow("cs", 0)}`. Latent `wiringOf` bugs fixed at the same time
+— a `seq[Net]`/`Bus`/whole-`InterfaceView` argument member-suffixes now
+(`label_0 …`) instead of repeating the bare label, which made
+`docs/buses_and_interfaces.md` item 9 true.

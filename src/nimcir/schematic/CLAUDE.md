@@ -328,16 +328,25 @@ implements.
     `bus.name`. Reject a candidate with `< 2` member nets (discarded — its
     net routes as an ordinary scalar, keeping only its `ofNet` colour), or
     any member for which `isGroundHere`/`isRailHere` (a rail member declines
-    the **whole** bundle), or a non-box carrier. An interface that fails
-    whole-instance collapse retries per member `bus.name`; each `>= 2`-member
-    sub-bus re-runs the test as a bus. A candidate whose members *uniformly*
-    touch exactly two endpoint entities (a component, or the sheet boundary
-    — `bePort`, one entity however many `nl.ports` keys) → **`brCollapsed`**:
-    one merged pin per end, one thick coloured wire. A *published* candidate
-    that fails collapse → **`brNetLabel`**: teal name tags at every pin, no
-    wires. A non-published failure stays **`brScalar`**: ordinary wires,
-    recoloured. The `>= 2`-member floor and the whole-bundle rail decline are
-    what keep `designs/i2c_eeprom.nim` byte-identical.
+    the **whole** bundle). A non-box carrier blocks **collapse only**, not
+    net-label degradation. A candidate whose members *uniformly* touch
+    exactly two endpoint entities (a component, or the sheet boundary —
+    `bePort`, one entity however many `nl.ports` keys) → **`brCollapsed`**:
+    one merged pin per end, one thick coloured wire. Otherwise, if the
+    candidate is **published or its members span 3+ component entities**
+    (`union.parts` counts components, never the sheet boundary) →
+    **`brNetLabel`**: grouped net-label tags, no wires — one merged tag per
+    box endpoint carrying `>= 2` members (`spi1`, or `spi1(cs0)` for a
+    coherent slice, `groupText`), a bare member tag on every other endpoint.
+    A `>= 3`-entity interface takes this branch directly and **no longer
+    retries per `bus.name`** (so it never gets a collapsed sub-bus); the
+    retry survives only for the `< 3`-entity, non-ported, non-uniform
+    leftover, where a wide sub-bus can still collapse point-to-point. A
+    remaining failure stays **`brScalar`**: ordinary wires, recoloured. The
+    whole-bundle rail decline and the `< 2` floor still keep a genuinely
+    point-to-point bus free to collapse; `designs/i2c_eeprom.nim`'s sda/scl
+    now draw as grouped `i2c` tags (4 entities), and its readiness report is
+    unchanged because the `i2c` role reads the netlist, not the picture.
   * **The plan is a function of the netlist alone.** Which nets group, and
     how, depends only on `attrs`, `nl.ports` identity and the pin graph, none
     of which a `recoverRouting` candidate move touches — so recovery moves
@@ -366,7 +375,16 @@ implements.
     lane holding one shared slot `Point`, so `slotOf`/`pinWorldPositions`/
     `rotationScore`/`terminalClearance` are untouched. **`groupOf.len == 0`
     is the historical path, bit-for-bit** — that one default is the whole
-    inertness guarantee at this layer.
+    inertness guarantee at this layer. A merged net-label group resizes its
+    box exactly as a collapsed one does (`byPin`/`bundled` cover both).
+  * **`laneOf` is the one source of a merged lane's string.** Both
+    `bundleGroupsFor` (box sizing) and `routing.nim`'s part loop (the merged
+    `SchematicPin.name`/`.members`) route through it: a collapsed bundle
+    gives `(b.pinName, b.sceneMembers)` unchanged, a merged `LabelGroup` its
+    own `(text, members)`. Sizing `innerW` for `spi1(cs0)` while `svg` prints
+    `spi1[5]` is the divergence this prevents. `SchematicPin.net` stays
+    `b.display`, never the group text — `diagnostics.sceneRouterInputs` would
+    re-seed an escape stub under a tag routing never used.
   * **The zero-value invariant.** A netlist with no `bus.*`/`iface.*` net
     attr yields a zero-value `BundlePlan`, and every new downstream path
     (`wireKindFor`, the collapsed/net-label branches in `routing.nim`, the
@@ -374,7 +392,9 @@ implements.
     on a non-empty plan ⇒ byte-identical historical output.
   * Public `bundleReport(nl)` sits beside `diagnoseFallbackNet`: "does
     `spi1_cs` collapse?" is a one-line unit test rather than an inference
-    from geometry.
+    from geometry. Its `labels` field renders each `brNetLabel` group's
+    merged tag (`"U1=spi1"` / `"X1=spi1(cs0)"` / `"R1="` for an unmerged
+    carrier), so `groupText` is testable without laying anything out.
 - **`composites/composite.nim`**, **`composites/passive.nim`**,
   **`composites/pi.nim`** and **`composites/tee.nim`** — the composite arena
   `constrained.nim` pools placement over, and the four motifs registered into

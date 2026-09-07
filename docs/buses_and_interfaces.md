@@ -273,6 +273,18 @@ macro never sees one. Implementation is overload arms on `netsOf`/`wiringOf` onl
 and `instantiate`'s existing arity check (`graph.nim:439`) already reports a width mismatch naming
 the subcircuit.
 
+When the slice is *one member of a wide signal inside an interface* — a memory owning one line of a
+shared chip-select bus — `narrow` presents the whole interface with that signal cut to width 1:
+
+```nim
+instance X1, SPI_MEMORY, {"vdd": vdd, "gnd": gnd, "spi": spi1.narrow("cs", 0)}
+```
+
+`spi1.narrow("cs", 0)` is a pure value-space copy (it never touches the netlist or the registry, so
+it survives `clone`); `wiringOf(label, Interface)` then member-suffixes each signal — `spi_sclk`,
+`spi_mosi`, `spi_miso`, `spi_cs` — onto the child's port list. `spi1["cs", 0]` is the same member
+as a bare `Net`. `designs/spi_memories.nim` is the worked example.
+
 **Case 2 — an optional signal is a modport, not an omission.** A write-only display with no MISO, or
 a device that ignores a reset line, is a property of that *side*, not of that instance site.
 Decision 6 covers it: define `peripheral_wo` without `miso` and the child's port list simply lacks

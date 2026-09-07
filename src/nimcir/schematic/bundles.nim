@@ -36,12 +36,14 @@ type
     btBus, btInterface
 
   BundleRole = enum
-    brScalar     ## fails collapse, non-ported (or a <2-entity candidate):
-                 ## ordinary wires, membership colour only
+    brScalar     ## fails collapse, non-ported, < 3 component entities: ordinary
+                 ## wires, membership colour only
     brCollapsed  ## exactly two endpoint entities, uniform: one merged pin per
                  ## end, one thick wire between them
-    brNetLabel   ## ported and fails collapse: a deliberate net-label tag at
-                 ## every member pin, no wires
+    brNetLabel   ## fails collapse **and** (published or spanning 3+ component
+                 ## entities): grouped net-label tags, no wires -- one merged
+                 ## tag per box endpoint carrying >= 2 members, a bare member
+                 ## tag elsewhere
 
   LabelGroup = object
     ## One endpoint's share of a `brNetLabel` bundle: the member pins on one
