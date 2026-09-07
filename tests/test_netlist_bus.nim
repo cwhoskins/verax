@@ -20,3 +20,13 @@ suite "bus views":
     expect NetlistError: discard addBus(nl, "x", 0)
     discard addNet(nl, newNet("x_0"))
     expect NetlistError: discard addBus(nl, "x", 2)
+
+  test "wiringOf on a bus member-suffixes wide, bares width-1":
+    let nl = newNetlist("b")
+    let dq = addBus(nl, "dq", 4)
+    let w = wiringOf("host", dq)
+    check w.len == 4
+    check w[0] == ("host_0", dq[0])
+    check w[3] == ("host_3", dq[3])
+    let one = addBus(nl, "irq", 1)
+    check wiringOf("host", one) == @[("host", one[0])]

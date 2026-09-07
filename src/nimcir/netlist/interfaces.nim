@@ -123,6 +123,48 @@ proc `[]`*(i: Interface, signal: string): Net =
   let b = i.bus(signal)
   if b.len != 1: raise newException(NetlistError, "interface signal '" & signal & "' is wide")
   b[0]
+proc `[]`*(i: Interface, signal: string, k: int): Net = i.bus(signal)[k]
+  ## One member of a wide signal by index. `spi1["cs", 0]` parses as
+  ## `` `[]`(spi1, "cs", 0) `` -- the arity-3 form, no ambiguity with the
+  ## arity-2 whole-signal overload above. Replaces `spi1.bus("cs")[0]`, the
+  ## boilerplate `spi_memories.nim` repeated six times.
+
+proc narrow*(i: Interface, signal: string, k: int): Interface =
+  ## `i` presented with one wide signal cut down to the single member `k`, as a
+  ## width-1 bus -- the parent-side view a child that owns exactly one member
+  ## of a shared bus sees. Pure value space: it copies `i` and rewrites only
+  ## the local `signals` table and `def.signals[j].width`, touching neither the
+  ## netlist nor the registry, so it survives `clone` and cannot rewrite a
+  ## net's `bus.index` (the reason `busOf` is dangerous to reach for here).
+  ##
+  ## `{"spi": spi1.narrow("cs", 0)}` wires through `wiringOf(label, Interface)`
+  ## to `spi_sclk, spi_mosi, spi_miso, spi_cs` -- exactly a single-select
+  ## peripheral sheet's port list. The rejected alternative was a `spi1 with
+  ## cs = 0` macro form: it does not parse in a Nim macro argument position,
+  ## and passing a bare interface would leave `vdd`/`gnd` unwired and raise.
+  result = i
+  let b = i.bus(signal)
+  if k notin 0 ..< b.len:
+    raise newException(NetlistError, "interface '" & i.name & "' signal '" &
+      signal & "' has no member " & $k & " (width " & $b.len & ")")
+  result.signals[signal] = Bus(name: b.name, nets: @[b.nets[k]])
+  for j in 0 ..< result.def.signals.len:
+    if result.def.signals[j].name == signal: result.def.signals[j].width = 1
+
+proc narrow*(i: Interface, signal: string, s: HSlice[int, int]): Interface =
+  ## The `hostData[4..7]` shape: `i` with one wide signal cut to the members
+  ## `s`, re-indexed from zero in the returned view. Same value-space rules as
+  ## the single-member overload.
+  result = i
+  let b = i.bus(signal)
+  if s.a < 0 or s.b >= b.len or s.a > s.b:
+    raise newException(NetlistError, "interface '" & i.name & "' signal '" &
+      signal & "' has no members " & $s.a & ".." & $s.b & " (width " & $b.len & ")")
+  result.signals[signal] = Bus(name: b.name, nets: b.nets[s.a .. s.b])
+  for j in 0 ..< result.def.signals.len:
+    if result.def.signals[j].name == signal:
+      result.def.signals[j].width = s.b - s.a + 1
+
 proc view*(i: Interface, modport: string): InterfaceView =
   if not i.def.modports.hasKey(modport): raise newException(NetlistError, "interface '" & i.def.name & "' has no modport '" & modport & "'")
   InterfaceView(iface: i, modport: modport)
@@ -176,16 +218,37 @@ proc netsOf*(v: InterfaceView): seq[Net] =
     if mp.dirs.hasKey(s.name): result.add v.iface.bus(s.name).nets
 proc wiringOf*(label: string, n: Net): seq[(string, Net)] = @[(label, n)]
 proc wiringOf*(label: string, ns: seq[Net]): seq[(string, Net)] =
-  for n in ns: result.add (label, n)
+  ## A width-1 group is the bare `label` (it maps to one scalar child port); a
+  ## wider one is `label_0 .. label_(N-1)`, matching how `addPorts` names a bus
+  ## on the child side. Fixing the previous all-bare form is what makes
+  ## `docs/buses_and_interfaces.md` item 9 true -- there was no call site
+  ## passing a Bus/seq here to break (checked across `designs/`, `tests/`,
+  ## `templates/`).
+  if ns.len == 1: return @[(label, ns[0])]
+  for i, n in ns: result.add (label & "_" & $i, n)
 proc wiringOf*(label: string, b: Bus): seq[(string, Net)] = wiringOf(label, b.nets)
 proc wiringOf*(label: string, i: Interface): seq[(string, Net)] =
+  ## Member-suffix a wide signal the same way `addPorts(_, _, InterfaceView)`
+  ## does (`label_signal` for width 1, `label_signal_k` for a wide one), so a
+  ## `narrow`ed interface -- one signal presented as width 1 -- wires straight
+  ## onto a single-member child port.
   for s in i.def.signals:
-    for n in i.bus(s.name).nets: result.add (label & "_" & s.name, n)
+    let nets = i.bus(s.name).nets
+    for k, n in nets:
+      result.add (label & "_" & memberName(s.name, k, s.width), n)
 proc wiringOf*(label: string, v: InterfaceView): seq[(string, Net)] =
-  for entry in wiringOf(label, v.iface):
-    let signal = entry[0].substr(label.len + 1)
-    if v.iface.def.modports[v.modport].dirs.hasKey(signal):
-      result.add entry
+  ## Off `def.signals` directly, mirroring `addPorts(_, _, InterfaceView)`.
+  ## The previous version recovered the signal name from
+  ## `entry[0].substr(label.len + 1)` and tested `mp.dirs` on it -- once the
+  ## interface overload member-suffixes a wide signal that substring is
+  ## `cs_0`, never a modport key, so every wide-signal entry was silently
+  ## dropped.
+  let mp = v.iface.def.modports[v.modport]
+  for s in v.iface.def.signals:
+    if not mp.dirs.hasKey(s.name): continue
+    let nets = v.iface.bus(s.name).nets
+    for k, n in nets:
+      result.add (label & "_" & memberName(s.name, k, s.width), n)
 proc instantiateByPortOpen*(parent: Netlist, instanceDesignator: string,
                             defNetlist: Netlist, wiring: openArray[(string, Net)],
                             openGroups: openArray[string],
