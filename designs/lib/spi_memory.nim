@@ -12,23 +12,29 @@ let spiMemoryLink = interfaceDef("spi_memory_link"):
   signal sclk
   signal mosi
   signal miso, shared = true
+  signal cs
   modport peripheral:
     sclk = ptInput
     mosi = ptInput
     miso = ptInOut
+    cs = ptInput
 
-let SPI_MEMORY* = subckt("SPI_MEMORY", [vdd, gnd, spi.peripheral, cs]):
+# `cs` is a member of the link, not a fourth loose port: a parent shares
+# `sclk`/`mosi`/`miso` and selects this memory with one member of a wider
+# chip-select bus via `spi1.narrow("cs", k)`, which presents `spi1` with `cs`
+# as a width-1 bus and wires straight onto `spi_cs`. Publishing `cs` in the
+# interface (rather than a standalone `net cs` + `pin "CS"`) is also what lets
+# the child sheet's SPI port collapse to one `spi[4]` pennant.
+let SPI_MEMORY* = subckt("SPI_MEMORY", [vdd, gnd, spi.peripheral]):
   net gnd, kind = ntGround, name = "0"
   net vdd, kind = ntPower
   iface spi, spiMemoryLink
-  net cs, kind = ntSignal
 
   component U1, kind = "memory", partNumber = "23LC1024-I/SN":
     pin "VCC", vdd, kind = ptPower
     pin "VSS", gnd, kind = ptGround
     port spi, peripheral, pins = {"sclk": "SCK", "mosi": "SI",
-                                  "miso": "SO"}
-    pin "CS", cs, kind = ptInput
+                                  "miso": "SO", "cs": "CS"}
     # The board uses ordinary SPI rather than the part's SQI mode.
     pin "HOLD", vdd, kind = ptInput
     pin "WP", vdd, kind = ptInput

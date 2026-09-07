@@ -46,23 +46,14 @@ let d = design("spi_memories"):
     pin "1", spi3["miso"], kind = ptPassive
     pin "2", gnd, kind = ptGround
 
-  instance X1, SPI_MEMORY, {"vdd": vdd, "gnd": gnd,
-                             "spi_sclk": spi1["sclk"], "spi_mosi": spi1["mosi"],
-                             "spi_miso": spi1["miso"], "cs": spi1.bus("cs")[0]}
-  instance X2, SPI_MEMORY, {"vdd": vdd, "gnd": gnd,
-                             "spi_sclk": spi1["sclk"], "spi_mosi": spi1["mosi"],
-                             "spi_miso": spi1["miso"], "cs": spi1.bus("cs")[1]}
-  instance X3, SPI_MEMORY, {"vdd": vdd, "gnd": gnd,
-                             "spi_sclk": spi2["sclk"], "spi_mosi": spi2["mosi"],
-                             "spi_miso": spi2["miso"], "cs": spi2.bus("cs")[0]}
-  instance X4, SPI_MEMORY, {"vdd": vdd, "gnd": gnd,
-                             "spi_sclk": spi2["sclk"], "spi_mosi": spi2["mosi"],
-                             "spi_miso": spi2["miso"], "cs": spi2.bus("cs")[1]}
-  instance X5, SPI_MEMORY, {"vdd": vdd, "gnd": gnd,
-                             "spi_sclk": spi3["sclk"], "spi_mosi": spi3["mosi"],
-                             "spi_miso": spi3["miso"], "cs": spi3.bus("cs")[0]}
-  instance X6, SPI_MEMORY, {"vdd": vdd, "gnd": gnd,
-                             "spi_sclk": spi3["sclk"], "spi_mosi": spi3["mosi"],
-                             "spi_miso": spi3["miso"], "cs": spi3.bus("cs")[1]}
+  # Each memory owns a single chip-select line: `narrow("cs", k)` presents its
+  # controller's SPI with `cs` cut to one member, so the whole port is one
+  # value wired by name -- no `spi1.bus("cs")[k]` per-signal boilerplate.
+  instance X1, SPI_MEMORY, {"vdd": vdd, "gnd": gnd, "spi": spi1.narrow("cs", 0)}
+  instance X2, SPI_MEMORY, {"vdd": vdd, "gnd": gnd, "spi": spi1.narrow("cs", 1)}
+  instance X3, SPI_MEMORY, {"vdd": vdd, "gnd": gnd, "spi": spi2.narrow("cs", 0)}
+  instance X4, SPI_MEMORY, {"vdd": vdd, "gnd": gnd, "spi": spi2.narrow("cs", 1)}
+  instance X5, SPI_MEMORY, {"vdd": vdd, "gnd": gnd, "spi": spi3.narrow("cs", 0)}
+  instance X6, SPI_MEMORY, {"vdd": vdd, "gnd": gnd, "spi": spi3.narrow("cs", 1)}
 
 quit(verifyMain(d))

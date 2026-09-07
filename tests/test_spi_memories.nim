@@ -28,6 +28,6 @@ suite "SPI memory sheet":
     check x1.subNetlist.components["U1"].partNumber == "23LC1024-I/SN"
     check x1.pins["spi_miso"].kind == ptInOut
     check x1.pins["spi_miso"].attrs["iface.instance"] == "spi"
-    check x2.pins["cs"].net == spi.bus("cs")[1]
+    check x2.pins["spi_cs"].net == spi.bus("cs")[1]
     check checkOutputConflicts(nl).len == 0
     check validateInterfaces(nl).len == 0
