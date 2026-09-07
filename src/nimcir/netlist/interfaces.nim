@@ -4,6 +4,7 @@ import std/[tables, algorithm, strutils]
 import ./types
 import ./graph
 import ./issue
+import ./pinmux
 
 type
   Bus* = object
@@ -300,16 +301,33 @@ proc promotePortDirections*(inst: Component) =
       for key, value in source.attrs:
         if key.startsWith("iface."): p.attrs[key] = value
 proc connectPort*(c: Component, b: Bus, pins: openArray[(string,string)] = [], prefix = "") =
-  ## A bare bus deliberately states no direction.
+  ## A bare bus deliberately states no direction -- and no pin function, so
+  ## this overload takes no `peripheral`/`functions` the way the `InterfaceView`
+  ## one does.
   for k, n in b.nets:
     var pinName = if b.len == 1: b.name else: $k
     for pair in pins:
       if pair[0] == b.name: pinName = pair[1]
     discard connect(c, prefix & pinName, n, ptUnknown)
 
-proc connectPort*(c: Component, v: InterfaceView, pins: openArray[(string,string)] = [], prefix = "") =
+proc connectPort*(c: Component, v: InterfaceView, pins: openArray[(string,string)] = [], prefix = "",
+                  peripheral = "", functions: openArray[(string,string)] = []) =
+  ## `peripheral` names the concrete peripheral instance this port is wired as
+  ## ("SPI1"), and `functions` overrides that per member -- `{"cs_1": "GPIO"}`
+  ## for a software chip select that is not an SPI function. Both are stamped
+  ## onto the pins as `pinmux.*` attrs for `validatePinmux` and default to
+  ## stamping nothing, so a design that names no peripheral is unaffected.
   let mp = v.iface.def.modports[v.modport]
   for pair in pins:
+    var known = v.iface.signals.hasKey(pair[0])
+    if not known:
+      for s in v.iface.def.signals:
+        if s.width > 1:
+          for k in 0 ..< s.width:
+            if pair[0] == s.name & "_" & $k: known = true
+    if not known:
+      raise newException(NetlistError, "interface '" & v.iface.name & "' has no signal or member '" & pair[0] & "'")
+  for pair in functions:
     var known = v.iface.signals.hasKey(pair[0])
     if not known:
       for s in v.iface.def.signals:
@@ -333,7 +351,16 @@ proc connectPort*(c: Component, v: InterfaceView, pins: openArray[(string,string
       if prefix.len > 0:
         pinName = prefix & pinName
       let p = connect(c, pinName, n, mp.dirs[s.name])
-      p.attrs["iface.instance"] = v.iface.name; p.attrs["iface.signal"] = s.name; p.attrs["iface.modport"] = v.modport
+      p.attrs["iface.instance"] = v.iface.name; p.attrs["iface.signal"] = s.name
+      p.attrs["iface.modport"] = v.modport; p.attrs["iface.def"] = v.iface.def.name
+      # Pin function: a per-member `functions` entry wins over the port-wide
+      # `peripheral`.  A member override wearing "PERIPH.sig" also sets the
+      # peripheral; a bare "GPIO" clears it.
+      var fn = ""
+      if peripheral.len > 0: fn = peripheral & "." & s.name
+      for pair in functions:
+        if pair[0] == s.name or pair[0] == member: fn = pair[1]
+      if fn.len > 0: setPinFunction(p, fn)
 
 proc validateInterfaces*(nl: Netlist, recursive = true): seq[Issue] =
   ## Validate both graph-authored metadata and direction constraints.  The

@@ -4,6 +4,7 @@
 import std/[tables, unittest]
 import nimcir/netlist
 import nimcir/netlist/interfaces/std
+import nimcir/netlist/pinmux
 import nimcir/analysis/io_check
 
 import "../designs/lib/spi_memory"
@@ -36,3 +37,20 @@ suite "SPI memory sheet":
     check x2.pins["wp"].net == wp[1]
     check checkOutputConflicts(nl).len == 0
     check validateInterfaces(nl).len == 0
+
+  test "connectPort stamps peripheral and function onto the port pins":
+    let nl = newNetlist("board")
+    let spi = addInterface(nl, "spi", spiInterface(2))
+    let mcu = addComponent(nl, newComponent("U1", kind = "mcu"))
+    connectPort(mcu, view(spi, "controller"),
+      pins = {"sclk": "PA5", "mosi": "PA7", "miso": "PA6",
+              "cs_0": "PA4", "cs_1": "PD14"},
+      peripheral = "SPI1", functions = {"cs_1": "GPIO"})
+    check mcu.pins["PA5"].attrs[keyPinmuxPeripheral] == "SPI1"
+    check mcu.pins["PA5"].attrs[keyPinmuxSignal] == "sclk"
+    check mcu.pins["PA5"].attrs["iface.def"] == "spi"
+    check mcu.pins["PA4"].attrs[keyPinmuxPeripheral] == "SPI1"
+    check mcu.pins["PA4"].attrs[keyPinmuxSignal] == "cs"
+    # The software chip select is a GPIO, not an SPI1 function.
+    check not mcu.pins["PD14"].attrs.hasKey(keyPinmuxPeripheral)
+    check mcu.pins["PD14"].attrs[keyPinmuxSignal] == "GPIO"

@@ -4,12 +4,20 @@
 ## `23LC1024-I/SN` are logical board parts, not simulator stand-ins: the check
 ## proves the sheet interfaces, pin naming, chip-select slices and tri-state
 ## MISO topology without claiming firmware timing or memory transactions.
+##
+## Each controller port names the concrete peripheral it is wired as
+## (`peripheral = "SPI1"`) and the real device pins it lands on, so
+## `validatePinmux` checks those pins against `lib/stm32h563.nim`'s
+## alternate-function table -- routing a clock to a pin the silicon cannot mux
+## it onto is now a structural error.  The second chip select of each pair is a
+## software GPIO (`functions = {"cs_1": "GPIO"}`), not a hardware NSS.
 
 import nimcir/contract/dsl
 import nimcir/verify
 import nimcir/netlist/interfaces/std
 
 import ./lib/spi_memory
+import ./lib/stm32h563
 
 let d = design("spi_memories"):
   net gnd, kind = ntGround, name = "0"
@@ -28,21 +36,24 @@ let d = design("spi_memories"):
   component U1, kind = "mcu", partNumber = "STM32H563ZIT6":
     pin "VDD", vdd, kind = ptPower
     pin "VSS", gnd, kind = ptGround
-    port spi[0], controller, pins = {"sclk": "SPI1_SCK", "mosi": "SPI1_MOSI",
-                                     "miso": "SPI1_MISO", "cs_0": "SPI1_NSS0",
-                                     "cs_1": "SPI1_NSS1"}
-    port spi[1], controller, pins = {"sclk": "SPI2_SCK", "mosi": "SPI2_MOSI",
-                                     "miso": "SPI2_MISO", "cs_0": "SPI2_NSS0",
-                                     "cs_1": "SPI2_NSS1"}
-    port spi[2], controller, pins = {"sclk": "SPI3_SCK", "mosi": "SPI3_MOSI",
-                                     "miso": "SPI3_MISO", "cs_0": "SPI3_NSS0",
-                                     "cs_1": "SPI3_NSS1"}
-    pin "WP0", wp[0], kind = ptOutput
-    pin "WP1", wp[1], kind = ptOutput
-    pin "WP2", wp[2], kind = ptOutput
-    pin "WP3", wp[3], kind = ptOutput
-    pin "WP4", wp[4], kind = ptOutput
-    pin "WP5", wp[5], kind = ptOutput
+    port spi[0], controller, peripheral = "SPI1",
+      pins = {"sclk": "PA5", "mosi": "PA7", "miso": "PA6",
+              "cs_0": "PA4", "cs_1": "PD14"},
+      functions = {"cs_1": "GPIO"}
+    port spi[1], controller, peripheral = "SPI2",
+      pins = {"sclk": "PB13", "mosi": "PB15", "miso": "PB14",
+              "cs_0": "PB12", "cs_1": "PD15"},
+      functions = {"cs_1": "GPIO"}
+    port spi[2], controller, peripheral = "SPI3",
+      pins = {"sclk": "PC10", "mosi": "PC12", "miso": "PC11",
+              "cs_0": "PA15", "cs_1": "PF12"},
+      functions = {"cs_1": "GPIO"}
+    pin "PE0", wp[0], kind = ptOutput, function = "GPIO"
+    pin "PE1", wp[1], kind = ptOutput, function = "GPIO"
+    pin "PE2", wp[2], kind = ptOutput, function = "GPIO"
+    pin "PE3", wp[3], kind = ptOutput, function = "GPIO"
+    pin "PE4", wp[4], kind = ptOutput, function = "GPIO"
+    pin "PE5", wp[5], kind = ptOutput, function = "GPIO"
 
   # Every SRAM releases MISO unless selected.  These weak pulls give the MCU
   # a defined idle level and a DC path without changing the shared-bus model.

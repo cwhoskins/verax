@@ -1047,6 +1047,78 @@ does not change and no measured number moves — `idealOpAmp` never connected to
 the rails, so packaging two amplifiers together alters no deck. A consumer
 that needs the packaging keeps the Nim source.
 
+## What a pin is allowed to be
+
+An MCU pin is not a blank terminal. `PA5` on an STM32H563 can be `SPI1_SCK` or
+`SPI2_SCK` or `TIM2_CH1` or a plain GPIO — and it can never be `SPI3_SCK`.
+Without a statement of that, a design wiring `{"sclk": "PA5"}` is believed
+whatever string you type, and a clock routed to a pin the silicon cannot mux it
+onto is a board respin.
+
+**Write the table in a library module**, the way `registerPackage` tables live:
+
+```nim
+# designs/lib/stm32h563.nim
+import nimcir/netlist/pinmux
+
+registerPartPinmux(newPartPinmux("STM32H563",
+  partNumbers = ["STM32H563ZIT6"],
+  complete = false,
+  peripherals = [(name: "SPI1", iface: "spi"), (name: "SPI2", iface: "spi")],
+  pins = [
+    (pin: "PA5", function: "SPI1.sclk"),
+    (pin: "PA6", function: "SPI1.miso"),
+    (pin: "PB3", function: "SPI1.sclk"),   # a pin with two alternates is two lines
+    (pin: "PB13", function: "SPI2.sclk"),
+    (pin: "PE0", function: "GPIO")]))
+```
+
+A capability is spelled `"PERIPH.signal"`, split on the last dot; a bare
+`"GPIO"` (or any string with no dot) is a function not tied to a numbered
+peripheral. **Signal names are the interface's**, not the datasheet's —
+`spiInterface` calls its select `cs`, so the table says `SPI1.cs`, never
+`SPI1.NSS`.
+
+**Then name the peripheral where you wire the port:**
+
+```nim
+import ./lib/stm32h563
+
+component U1, kind = "mcu", partNumber = "STM32H563ZIT6":
+  port spi[0], controller, peripheral = "SPI1",
+    pins = {"sclk": "PA5", "mosi": "PA7", "miso": "PA6",
+            "cs_0": "PA4", "cs_1": "PD14"},
+    functions = {"cs_1": "GPIO"}
+  pin "PA3", vsense, kind = ptInput, function = "ADC1.in3"
+```
+
+`peripheral =` applies to every member of the port; `functions = {…}` overrides
+it per member. That override is not a convenience — a hardware SPI has **one**
+NSS, so a second or third chip select genuinely is a software GPIO and must not
+be checked as an SPI function. `function =` on a plain `pin` does the same for a
+terminal that is not part of an interface.
+
+The peripheral is stated rather than inferred from the pins on purpose: an
+inferred assignment cannot name which pin is the offender when it is
+unsatisfiable, and it silently accepts two independent ports that both resolve
+to `SPI1`.
+
+The checks (reported under `STRUCTURE`):
+
+| kind | when | severity |
+|---|---|---|
+| `pinmux_incapable` | the pin does not offer `(peripheral, signal)`; the message lists what it does offer | error |
+| `pinmux_peripheral_unknown` | `peripheral =` names something the table does not declare | error |
+| `pinmux_peripheral_kind_mismatch` | the peripheral's interface disagrees with the port's (an `spi` port wired as `I2C1`) | error |
+| `pinmux_peripheral_double_booked` | two ports on one part both claim `SPI1` | error |
+| `pinmux_function_duplicated` | two pins on one part both assigned `SPI1.sclk` (usually a missing `functions` override) | error |
+| `pinmux_pin_unknown` | the pin is absent from the table | warning, or error if `complete = true` |
+
+A part whose part number matches **no** registered table is not checked at all —
+adding a table is opt-in and never changes an existing design. Set
+`complete = true` once the whole device pinout is transcribed; until then a
+partial table stays useful and an unlisted pin is only a warning.
+
 ## Exit codes
 
 | Code | Meaning |

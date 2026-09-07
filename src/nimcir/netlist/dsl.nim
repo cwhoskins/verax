@@ -75,8 +75,9 @@ import ./graph
 import ./annotations
 import ./packages
 import ./interfaces
+import ./pinmux
 
-export types, graph, annotations, packages, interfaces
+export types, graph, annotations, packages, interfaces, pinmux
 
 const
   netKnownFields = ["kind"]
@@ -303,6 +304,8 @@ proc handlePort(compVar: NimNode, stmt: NimNode): NimNode =
   if stmt.len < 2: error("`port` requires a bus or an interface and modport", stmt)
   var prefix: NimNode = newLit("")
   var mapping = newTree(nnkBracket)
+  var funcs = newTree(nnkBracket)
+  var peripheral: NimNode = nil
   var modport: NimNode = nil
   var firstOption = 2
   if stmt.len >= 3 and stmt[2].kind == nnkIdent:
@@ -311,14 +314,21 @@ proc handlePort(compVar: NimNode, stmt: NimNode): NimNode =
     stmt[i].expectKind(nnkExprEqExpr)
     case stmt[i][0].strVal
     of "prefix": prefix = stmt[i][1]
-    of "pins":
-      if stmt[i][1].kind != nnkTableConstr: error("`pins` must be a table", stmt[i])
+    of "peripheral": peripheral = stmt[i][1]
+    of "pins", "functions":
+      if stmt[i][1].kind != nnkTableConstr:
+        error("`" & stmt[i][0].strVal & "` must be a table", stmt[i])
+      let dst = if stmt[i][0].strVal == "pins": mapping else: funcs
       for pair in stmt[i][1]:
         pair.expectKind(nnkExprColonExpr)
-        mapping.add newTree(nnkTupleConstr, pair[0], pair[1])
+        dst.add newTree(nnkTupleConstr, pair[0], pair[1])
     else: error("unknown `port` option", stmt[i])
   let target = if modport == nil: stmt[1] else: newCall(ident"view", stmt[1], newLit(modport.strVal))
-  newCall(ident"connectPort", compVar, target, mapping, prefix)
+  if peripheral == nil and funcs.len == 0:
+    newCall(ident"connectPort", compVar, target, mapping, prefix)
+  else:
+    newCall(ident"connectPort", compVar, target, mapping, prefix,
+            (if peripheral == nil: newLit("") else: peripheral), funcs)
 
 proc handlePin(compVar: NimNode, stmt: NimNode): NimNode =
   var args: seq[NimNode]
@@ -333,11 +343,16 @@ proc handlePin(compVar: NimNode, stmt: NimNode): NimNode =
   let netNode = rest[1]
 
   var kindNode: NimNode = ident"ptUnknown"
+  var functionNode: NimNode = nil
   var fieldPairs: seq[NimNode]
   for a in rest[2 ..^ 1]:
     a.expectKind(nnkExprEqExpr)
     case a[0].strVal
     of "kind": kindNode = a[1]
+    # Handled explicitly rather than left to `dispatchField`, which would write
+    # an unregistered bare `function` key that `validateAnnotations` then
+    # reports as a misspelling.
+    of "function": functionNode = a[1]
     else: fieldPairs.add(a)
 
   let pinVar = genSym(nskLet, "pin")
@@ -345,6 +360,8 @@ proc handlePin(compVar: NimNode, stmt: NimNode): NimNode =
   result.add newLetStmt(pinVar, newCall(ident"connect", compVar, pinNameNode, netNode, kindNode))
   for p in fieldPairs:
     result.add dispatchField(pinVar, pinKnownFields, p)
+  if functionNode != nil:
+    result.add newCall(ident"setPinFunction", pinVar, functionNode)
   result.copyLineInfo(stmt)
 
 proc handleSimReplacePin(replVar: NimNode, stmt: NimNode): NimNode =
@@ -494,8 +511,8 @@ proc handleComponent(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
       elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("spec"):
         result.add handleSpec(compVar, asComponent, inner)
       else:
-        error("only `pin`, `simReplace` and `spec` statements are allowed inside " &
-              "a `component` block", inner)
+        error("only `pin`, `port`, `simReplace` and `spec` statements are " &
+              "allowed inside a `component` block", inner)
   result.copyLineInfo(stmt)
 
 proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
