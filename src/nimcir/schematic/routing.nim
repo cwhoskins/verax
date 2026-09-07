@@ -70,15 +70,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   proc ownsPin(p: Pin): bool =
     p.component != nil and p.component.netlist == nl
 
-  # `isGround` also fires on a net that merely has a `ptGround`-kinded pin --
-  # an op-amp's `V-` supply pin, say -- so an explicitly `ntPower` net would
-  # be drawn with a ground glyph instead of its rail stub. An explicit net
-  # kind wins here: a `ptGround` pin on a power net makes it a rail, not
-  # ground.
-  proc isGroundHere(net: Net): bool =
-    net != nil and isGround(net) and net.kind != ntPower
-  proc isRailHere(net: Net): bool =
-    net != nil and isRail(net) and not isGroundHere(net)
+  # `isGroundHere` / `isRailHere` are module-level in `geometry.nim` now --
+  # `bundlePlan` is the third consumer of that one-liner.
 
   # Every signal pin -- and every interface port's connection point -- leaves
   # its body through a short fixed-direction stub to the routing grid. Those

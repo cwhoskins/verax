@@ -13,14 +13,11 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
   let portedNets {.cursor.} = routing.portedNets
   let railLabelReqs {.cursor.} = routing.railLabelReqs
 
-  # These wrappers mirror the ones inside `routeScene`; the label pass needs
-  # the same rail/ground reading when it decides which nets get a name label.
+  # `ownsPin` mirrors the one inside `routeScene`; the label pass needs the
+  # same rail/ground reading (`isGroundHere`/`isRailHere`, module-level in
+  # `geometry.nim`) when it decides which nets get a name label.
   proc ownsPin(p: Pin): bool =
     p.component != nil and p.component.netlist == nl
-  proc isGroundHere(net: Net): bool =
-    net != nil and isGround(net) and net.kind != ntPower
-  proc isRailHere(net: Net): bool =
-    net != nil and isRail(net) and not isGroundHere(net)
 
   # --- label placement --------------------------------------------------------
   # Part designators/values, signal-net names and supply-rail names are all

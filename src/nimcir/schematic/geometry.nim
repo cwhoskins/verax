@@ -72,6 +72,22 @@ type
 
 proc sameCoord(a, b: float): bool {.inline.} = abs(a - b) < 1e-9
 
+proc isGroundHere(net: Net): bool {.inline.} =
+  ## `isGround` also fires on a net that merely has a `ptGround`-kinded pin --
+  ## an op-amp's `V-` supply pin, say -- so an explicitly `ntPower` net would
+  ## be drawn with a ground glyph instead of its rail stub. An explicit net
+  ## kind wins here: a `ptGround` pin on a power net makes it a rail, not
+  ## ground.
+  ##
+  ## Hoisted here from what were verbatim-duplicate local closures in
+  ## `routing.nim` and `finish.nim`: `bundles.nim` is the third consumer (a
+  ## rail member declines a whole bundle), and three copies of a one-liner is
+  ## the trigger `schematic/CLAUDE.md` already flags.
+  net != nil and isGround(net) and net.kind != ntPower
+
+proc isRailHere(net: Net): bool {.inline.} =
+  net != nil and isRail(net) and not isGroundHere(net)
+
 proc segBlocked(a, b: Point, obstacles: seq[Obstacle]): bool =
   ## True if the axis-aligned segment `a`--`b` enters the interior of any
   ## obstacle. Touching a boundary is allowed, which is how a route may run
