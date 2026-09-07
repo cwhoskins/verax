@@ -503,7 +503,10 @@ Both turned up while measuring why `nimble test` takes ~7 minutes (see the
     dead `for p in a.pins: discard` loop and a comment that trails off
     mid-sentence. Finish it or delete its body; the stage stays reserved
     either way, as `test_schematic.nim`'s "the default pipeline and its
-    reserved no-op stages are byte-stable" asserts.
+    reserved no-op stages are byte-stable" asserts. Note its `wkSignal`
+    filter (`filterIt(it.kind == wkSignal)`) now also excludes `wkBus`/
+    `wkInterface` wires — still inert, since the pass does nothing with
+    what it collects.
 
 28. **`layout()` is superlinear in part count** (§69). Measured on a plain
     series resistor chain, default policy: n=16 → 0.43s, n=24 → 3.2s, n=30 →
@@ -516,7 +519,11 @@ Both turned up while measuring why `nimble test` takes ~7 minutes (see the
     can picture before a `nimcir check` visibly stalls. Fixing it would also
     let `test_verify_keep`'s derived-fragment archive assertion come back off
     `-d:slowTests` (~140s of its ~144s was one `layout()` of the
-    op-substituted fragment, not the simulation).
+    op-substituted fragment, not the simulation). `schematic/bundles.nim`
+    (§71 resolved) helps at the margin: collapsing an interface to one routed
+    net and one merged pin strictly reduces the router's and force layout's
+    problem size on exactly the sheets — wide-bus hierarchy tops — that were
+    getting large.
 
 29. **`lsCompositeOrient` displaces neighbours when it turns a composite**
     (composite unit-orientation work, `docs/composite_placement_stage2.md`

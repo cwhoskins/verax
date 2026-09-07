@@ -39,7 +39,17 @@ implements.
   **zero-space** fallback — no wire, only the marker and label at the pin.
   Fallbacks are stored in `Schematic.fallbacks`, *not* in `wires`, so they
   never reach the occupancy set or the junction pass.
-- **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, `finish.nim`, `diagnostics.nim`, and (see below) `composites/composite.nim`, `composites/passive.nim` and `constrained.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary. The include order is load-bearing: `composites/composite` and `composites/passive` sit after `placement.nim` (they use `rotationChoices`/`slotOf`/`rotatedSlot`/`axisUnit`/`pinWorldPositions`) and before `constrained.nim` (which pools placement over the arena they define), and `state.nim`'s include must stay between `constrained.nim` (uses its procs) and `routing.nim` (defines `RoutingState`). Private included `state.nim` holds `LayoutState`/`RoutingState`: component-symbol-position state and label-only routing metadata must never be added to public `Schematic`. `state.nim` also carries the placement-stage bodies (`prepare`, `forcePlace`, `snapToGrid`, `separate`) and the thin `*(state: var LayoutState)` forwarders, so `layout` itself is just the ordered stage list — the historical policy's serialized output stays byte-identical, so those bodies are a verbatim move, not a rewrite. `finish.nim` consumes the completed scene plus that state while preserving label order and bounds behavior. `LayoutOptions.policy` defaults to `lpHistorical`, whose output must remain byte-identical. `parseLayoutPolicy` and `archiveLayoutOptions` centralize the CLI/environment spelling used only by archive writers; ordinary `layout(nl)` remains historical. The opt-in `lpConstrainedLayered` policy gives `lsSemanticSeed` (after the deterministic golden-angle seed), `lsConstrainedRefinement` (after force placement and before existing legalization) and `lsCompositeOrient` (right after refinement, before separation — picks each orientable composite's rigid `unitRot`, see the `composites/` bullet) their bounded deterministic meaning; it uses the existing bounded routing recovery as `lsRoutingAwareRepair`. It is for ordinary sheets (at most 64 *placement units*, and at most 256 raw parts), not a general graph-drawing solver: output-pin arcs seed left-to-right columns, while bounded deterministic stage placement folds each semantic layer across at most three adjacent columns (grouping parallel flat two-terminal parts by the same unordered net pair) rather than making a passive-heavy layer arbitrarily vertical; a same-component return has the adjacent-stage freedom on either side of its source, not an output-side-only rule. A bounded semantic walk follows every flat device with exactly two connected terminals (regardless of kind) until an input endpoint, stopping at rails, ground, hierarchy and inputs. It uses the existing `portDirection(net) == pdInput` result, including its no-driver fallback, for input interfaces. A traversal step is keyed on `(pool item, exit net)`, not the pool item alone: a recognized composite is one *placement unit* but its members are still distinct signal edges, so a pi's grounded shunt must not consume the pool position its series member needs to be walked through (the bug that put `RIAA_CHANNEL`'s `RL`–`CIN`–`RB` pi right of the op-amp it feeds). Both members of a parallel pair share both nets, so from either they yield the same `(pool, exit)` step and still collapse to one; `seen` stays raw so path length is bounded by the raw part count. A same-component return keeps its traversed parts in the source column; a genuine return to an earlier component keeps its path passives right of the driving output. Insertion order otherwise breaks feedback arcs, and existing legalization remains authoritative for non-overlap. Its signal trees are atomic trunk-and-tap attempts: a failed net restores occupancy and becomes marker-only fallbacks. Do not attach heuristics, reorder existing passes, or reinterpret terminal/recovery safeguards.
+  Bus/interface additions are **additive only** (`sceneSchemaVersion` stays
+  **1**): `BundleMember` (`name`, `net`); `WireKind` gains `wkBus`/`wkInterface`
+  *appended* so every archived ordinal is unchanged; `FallbackKind`
+  (`fbUnrouted` is ordinal **0** and the zero value, so every pre-field
+  archive is unchanged, and the writer emits `kind` only when it is not
+  this); `members` on `SchematicWire` (member net names, empty for a scalar),
+  `SchematicPin` and `SchematicPort` (the declared pairs a merged pin/port
+  stands for). Width (`members.len > 1`) means one wire carries more than one
+  net; colour (`wkBus` blue / `wkInterface` purple) means membership, and
+  applies whether or not anything collapsed.
+- **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, `finish.nim`, `diagnostics.nim`, and (see below) `composites/composite.nim`, `composites/passive.nim` and `constrained.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary. The include order is load-bearing: `composites/composite` and `composites/passive` sit after `placement.nim` (they use `rotationChoices`/`slotOf`/`rotatedSlot`/`axisUnit`/`pinWorldPositions`) and before `constrained.nim` (which pools placement over the arena they define), and `state.nim`'s include must stay between `constrained.nim` (uses its procs) and `routing.nim` (defines `RoutingState`). `bundles.nim` (bus/interface grouping) is included after `./placement` and before `./composites/composite` — see its own bullet; the two rail predicates `isGroundHere`/`isRailHere` were hoisted to module level in `geometry.nim` (the first include) once `bundlePlan` became the third consumer, deleting the verbatim-duplicate local closures that had sat in `routing.nim` and `finish.nim`. The pipeline stage list gained `lsBundles` between `lsPrepare` and `lsSemanticSeed` (also consumed inside `prepare`); off ⇒ a zero-value `BundlePlan` and byte-identical historical output. Private included `state.nim` holds `LayoutState`/`RoutingState`: component-symbol-position state and label-only routing metadata must never be added to public `Schematic`. `state.nim` also carries the placement-stage bodies (`prepare`, `forcePlace`, `snapToGrid`, `separate`) and the thin `*(state: var LayoutState)` forwarders, so `layout` itself is just the ordered stage list — the historical policy's serialized output stays byte-identical, so those bodies are a verbatim move, not a rewrite. `finish.nim` consumes the completed scene plus that state while preserving label order and bounds behavior. `LayoutOptions.policy` defaults to `lpHistorical`, whose output must remain byte-identical. `parseLayoutPolicy` and `archiveLayoutOptions` centralize the CLI/environment spelling used only by archive writers; ordinary `layout(nl)` remains historical. The opt-in `lpConstrainedLayered` policy gives `lsSemanticSeed` (after the deterministic golden-angle seed), `lsConstrainedRefinement` (after force placement and before existing legalization) and `lsCompositeOrient` (right after refinement, before separation — picks each orientable composite's rigid `unitRot`, see the `composites/` bullet) their bounded deterministic meaning; it uses the existing bounded routing recovery as `lsRoutingAwareRepair`. It is for ordinary sheets (at most 64 *placement units*, and at most 256 raw parts), not a general graph-drawing solver: output-pin arcs seed left-to-right columns, while bounded deterministic stage placement folds each semantic layer across at most three adjacent columns (grouping parallel flat two-terminal parts by the same unordered net pair) rather than making a passive-heavy layer arbitrarily vertical; a same-component return has the adjacent-stage freedom on either side of its source, not an output-side-only rule. A bounded semantic walk follows every flat device with exactly two connected terminals (regardless of kind) until an input endpoint, stopping at rails, ground, hierarchy and inputs. It uses the existing `portDirection(net) == pdInput` result, including its no-driver fallback, for input interfaces. A traversal step is keyed on `(pool item, exit net)`, not the pool item alone: a recognized composite is one *placement unit* but its members are still distinct signal edges, so a pi's grounded shunt must not consume the pool position its series member needs to be walked through (the bug that put `RIAA_CHANNEL`'s `RL`–`CIN`–`RB` pi right of the op-amp it feeds). Both members of a parallel pair share both nets, so from either they yield the same `(pool, exit)` step and still collapse to one; `seen` stays raw so path length is bounded by the raw part count. A same-component return keeps its traversed parts in the source column; a genuine return to an earlier component keeps its path passives right of the driving output. Insertion order otherwise breaks feedback arcs, and existing legalization remains authoritative for non-overlap. Its signal trees are atomic trunk-and-tap attempts: a failed net restores occupancy and becomes marker-only fallbacks. Do not attach heuristics, reorder existing passes, or reinterpret terminal/recovery safeguards.
   A placement unit is a raw singleton or a whole recognized composite
   (`constrainedEligible`, `constrained.nim`): the semantic layering
   (`constrainedTopology`/`constrainedTargets`) and the per-candidate route
@@ -289,7 +299,82 @@ implements.
   guessing a specific occupant — and it never attempts a placement feedback
   move. The scene-with-no-netlist input is why it pairs with the JSON reader:
   a run-archive `runNNN.json` is enough to ask why a dashed fallback marker
-  is there.
+  is there. `diagnoseFallbackNet` **refuses** to diagnose a net whose every
+  record is `fbNetLabel` (a deliberate bus/interface name tag): the scene
+  reserved no channel for it, so "blocked by occupancy" would be a false
+  alarm — it returns `deliberate = true, routed = true, failPin = -1`.
+  `diagnoseAllFallbacks` **skips** those nets entirely (fifteen tags on a
+  three-interface sheet would bury the one real failure). This works off the
+  scene alone, which is why `SchematicFallback.kind` is serialized.
+- **`bundles.nim`** — the bus/interface grouping index, an `include`d unit
+  spliced **after `./placement`** (for `pinKey`/`portDirection`) and **before
+  `./composites/composite`** (so `compositePlan` can exclude a bundled part).
+  Buses and declared interfaces are *views* over scalar net `attrs`
+  (`netlist/interfaces.nim`): `bundlePlan(nl)` is one read-only pass over
+  `nl.nets` reading `bus.name`/`iface.instance` and friends **directly**.
+  * **`findBus`/`findInterface`/`interfacesOf` are forbidden here.** They
+    rescan every net; `findInterface` raises unless the `InterfaceDef` was
+    registered *in this process*; and `busOf` — which `addInterfaceRecovery`
+    calls — **writes** `bus.index` from table order. Layout must stay
+    read-only, the pattern `analysis/io_check.nim:74-79` and
+    `contract/design.nim:279` already use.
+  * **Net attrs only, never a pin attr.** `promotePortDirections`
+    (`interfaces.nim:223-238`) copies every `iface.*` key onto instance
+    *pins* preferring the parent net's identity, so a pin-attr read would
+    drag an `iface.nc` open net (`nc_X1_spi_miso`, which carries no
+    `iface.instance` on the *net*) into the bundle it was explicitly left out
+    of. Net-attr-only keeps a no-connect out by construction.
+  * **Eligibility.** Group in `nl.nets` order: `iface.instance` wins, else
+    `bus.name`. Reject a candidate with `< 2` member nets (discarded — its
+    net routes as an ordinary scalar, keeping only its `ofNet` colour), or
+    any member for which `isGroundHere`/`isRailHere` (a rail member declines
+    the **whole** bundle), or a non-box carrier. An interface that fails
+    whole-instance collapse retries per member `bus.name`; each `>= 2`-member
+    sub-bus re-runs the test as a bus. A candidate whose members *uniformly*
+    touch exactly two endpoint entities (a component, or the sheet boundary
+    — `bePort`, one entity however many `nl.ports` keys) → **`brCollapsed`**:
+    one merged pin per end, one thick coloured wire. A *published* candidate
+    that fails collapse → **`brNetLabel`**: teal name tags at every pin, no
+    wires. A non-published failure stays **`brScalar`**: ordinary wires,
+    recoloured. The `>= 2`-member floor and the whole-bundle rail decline are
+    what keep `designs/i2c_eeprom.nim` byte-identical.
+  * **The plan is a function of the netlist alone.** Which nets group, and
+    how, depends only on `attrs`, `nl.ports` identity and the pin graph, none
+    of which a `recoverRouting` candidate move touches — so recovery moves
+    never rebuild it. `prepare` computes it once, gated on `lsBundles`,
+    **before `state.syms` is sized**: a merged pin takes `SPI_MEMORY`'s `U1`
+    from `rows = 5` (`bodyH` 272) to `rows = 3` (`bodyH` 192), so the box
+    sizing depends on the plan.
+  * **`Bundle.display` is the occupancy tag.** `SchematicWire.net`,
+    `SchematicPort.net`, the merged `SchematicPin.net` and
+    `diagnostics.sceneRouterInputs` all key on it, so `bundlePlan`
+    disambiguates it against every `nl.nets` key (append `"_iface"`/`"_bus"`,
+    then `"_2"`…) — two scene entities silently sharing one tag is an
+    invisible failure.
+  * **The escape-seed dedupe trap** (in the voice of the sibling-clone
+    `ownsPin` trap): `routing.nim` seeds one escape stub per pin of every
+    non-rail net, tagged with *that net's* name. With merged slots,
+    `spi_sclk`/`spi_mosi`/`spi_miso` all seed the *identical* segment at the
+    merged point under three tags — and the bundle's own route then sees
+    three **foreign** seeds lying exactly along its own first hop, which
+    `edgeAllowed` forbids, so **the bundle can never route**. Same at the
+    merged port. Fix: a collapsed pin/port is seeded **once**, tagged
+    `b.display`, guarded by a `seededBundle` set.
+  * **`boxSlots`/`symbolFor` take plain-data partitions**, not the plan
+    object — `symbols.nim` is spliced long before `bundles.nim`. `groupOf`
+    (parallel to `c.pins`), `groupNames`, `groupSide`; a merged group is one
+    lane holding one shared slot `Point`, so `slotOf`/`pinWorldPositions`/
+    `rotationScore`/`terminalClearance` are untouched. **`groupOf.len == 0`
+    is the historical path, bit-for-bit** — that one default is the whole
+    inertness guarantee at this layer.
+  * **The zero-value invariant.** A netlist with no `bus.*`/`iface.*` net
+    attr yields a zero-value `BundlePlan`, and every new downstream path
+    (`wireKindFor`, the collapsed/net-label branches in `routing.nim`, the
+    merged `PortPlan`, `finish`'s `bundleNets`/`bundleLabelReqs`) is guarded
+    on a non-empty plan ⇒ byte-identical historical output.
+  * Public `bundleReport(nl)` sits beside `diagnoseFallbackNet`: "does
+    `spi1_cs` collapse?" is a one-line unit test rather than an inference
+    from geometry.
 - **`composites/composite.nim`**, **`composites/passive.nim`**,
   **`composites/pi.nim`** and **`composites/tee.nim`** — the composite arena
   `constrained.nim` pools placement over, and the four motifs registered into
@@ -424,10 +509,19 @@ implements.
   a change to a symbol's drawing here needs the matching entry updated there.
   A rotated part is drawn with a `rotate(rotation)` group around its centre;
   its `SchematicLabel`s were placed by `layout` outside any group and rendered
-  after it, so they stay upright. `drawFallback` renders each
-  `SchematicFallback` as a dashed amber/orange polyline (`stroke-dasharray`)
-  capped with a small open-circle endpoint marker; an empty `points` draws
-  only the marker at the pin. **Painter order** is grid, wires, fallback
+  after it, so they stay upright. `drawFallback` branches on `kind`:
+  `fbUnrouted` is a dashed amber polyline capped with an open circle (an empty
+  `points` draws only the marker); `fbNetLabel` is a **solid teal** stub
+  capped with a **chevron** — a deliberate name tag, told apart from a routing
+  failure by colour. `lineAt`/`polyAt` take optional `stroke`/`width`
+  defaulting to today's `#333333`/`2` literals, so every existing call site
+  emits the identical string; a `wkBus` wire is `#1f6feb`, a `wkInterface`
+  wire `#8250df`, both stroke **4** when collapsed. **Stroke width is
+  cosmetic** — 4 leaves 4 units of visible gap inside `wireMinSeparation`'s 8,
+  so the router needs no per-net clearance; a per-net clearance is a separate
+  change with its own invariant test, and going to stroke 6 (2 units of gap
+  reads as touching) is the thing to resist without also raising
+  `wireMinSeparation`, which would move every existing layout. **Painter order** is grid, wires, fallback
   stubs, junction dots, part symbols, ports, labels: dots sit on top of the
   wires they join
   but under any symbol fill, so a dot that lands at a part pin or port edge
@@ -473,6 +567,14 @@ implements.
   The run archive writes the JSON beside its SVG: `spice/ngspice` for each
   derived `runNNN`, and `render.nim` for `runFULL` and each child sheet —
   always from the one routed scene, never a second layout.
+  **Bus/interface fields go in additively and `sceneSchemaVersion` stays 1.**
+  `optArr` sits beside `optStr` (absent → empty array, type-checked when
+  present); `wireKindName`/`FromName` gain `"bus"`/`"interface"` and
+  `fallbackKindName`/`FromName` are new, both failing loudly on an unknown
+  token like every other enum here. The writer emits `members` on
+  wires/pins/ports and `kind`/`bundle` on fallbacks **only when non-default**,
+  so a bus-free scene's JSON is byte-identical to a pre-feature archive and
+  both still round-trip.
 - **`render.nim`** — the composition layer above `svg`/`json`: it drives
   `layout` over a whole design *and* its sub-circuits and writes the run
   archive. `writeScenePair(scene, base)` writes `base.svg` and `base.json`
@@ -505,6 +607,16 @@ implements.
   a `child`-bearing part pushes its sheet, an *Up* button pops the breadcrumb
   history. The root sheet's id is the sentinel `@root`, which `safeSheetName`
   can never produce, so it never collides with a subcircuit's.
+  A **merged bundle pin is click-to-expand**: `explorerSheet`'s per-pin
+  projection carries `x`/`y`/`members`, and `render()` appends one
+  `rect.bundle` hit box per pin with a non-empty `members` **after** every
+  part rect (so a pin wins the hit test — SVG hit-tests topmost-first), whose
+  click opens `showPinProps` rendering the member list as the same two-column
+  Pin/Net table. No schema or `json.nim` change — the explorer model is built
+  independently of `sceneToJson`. Two traps hold: nothing in the file may
+  contain the literal `src=` (`test_verify_keep.nim` asserts it over the whole
+  HTML), and `const MODEL = …;` must stay one line (the same test extracts it
+  with `html.find(";\n", …)`).
 
 **Dependency direction stays intact**: `schematic` imports only `netlist`, and
 `spice/ngspice` imports `schematic` to archive each per-run scene as

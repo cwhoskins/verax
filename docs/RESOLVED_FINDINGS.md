@@ -2423,3 +2423,48 @@ spelling, a transformer left alone, isolation pulling in a `K`, and an ngspice
 `tests/test_spice_switch.nim` (the `S` line's node order, the `.MODEL SW` card,
 and an ADG904 decoding all four throws plus the all-off absorptive state). Both
 gated on ngspice for the runs. `nimble verify` exercises the designs.
+
+## 71. A wide bus drew as N port glyphs and N wires
+
+**What it was.** `b385e8b` gave the netlist buses and declared interfaces, but
+only as an *authoring* view: `netlist/interfaces.nim` lowers everything to
+scalar nets and records membership in `Net.attrs`. Nothing in
+`src/nimcir/schematic/` read any of it, so a bus was invisible to the picture.
+On `designs/lib/spi_memory.nim`'s `SPI_MEMORY` sheet, one SPI link to one chip
+drew as **3 port pennants + 3 thin wires**, with `U1` sized at `rows = 5`
+(`bodyH` 272). `designs/spi_memories.nim`'s top drew its three shared SPI links
+as 15 ordinary thin wires among an MCU and six memory instances.
+`docs/buses_and_interfaces.md` had booked this as known-out-of-scope: "a bus
+glyph and a ripper are a schematic-layer feature".
+
+**The fix.** `src/nimcir/schematic/bundles.nim` — a read-only index built in
+`prepare`, before any symbol is sized, reading the `bus.*`/`iface.*` **net**
+attrs directly (never `findBus`/`findInterface`, which rescan, need a process
+registry and mutate `bus.index`; never a *pin* attr, which
+`promotePortDirections` pollutes with `iface.nc`). A bus or interface whose
+members *uniformly* touch exactly two endpoint entities — any pair of {a
+component, the sheet boundary} — collapses to one merged pin per end
+(`boxSlots` gives the member pins one shared slot `Point`, so
+`slotOf`/`pinWorldPositions`/`rotationScore` are untouched) and one thick
+coloured wire (blue bus / purple interface). A **published** bundle that fails
+that degrades to teal net-label tags at every pin; every other bus/interface
+wire is merely recoloured. `SPI_MEMORY` went to **1 pennant + 1 purple wire**,
+`rows = 3` (`bodyH` 192); `spi_memories`' portless top recoloured its 16 SPI
+wires and moved nothing.
+
+**The `>= 2`-member floor, and why.** A grouping candidate with fewer than two
+member nets — after an interface's per-signal-bus retry — is **discarded**: its
+net routes as an ordinary scalar, keeping only its membership colour. This is
+what keeps `designs/i2c_eeprom.nim` byte-identical: it instantiates an
+interface but never *publishes* it, so `i2c_sda`/`i2c_scl` each retry as a
+width-1 bus, fall below the floor, and are discarded. Making that design's
+`runFULL.json` geometry byte-identical (colours only) was an explicit
+acceptance criterion. The general guarantee: a netlist with no `bus.*`/`iface.*`
+net attr yields a zero-value `BundlePlan` and byte-identical historical output,
+and every new downstream code path is guarded on a non-empty plan.
+
+**Not modelled:** a genuine bus *ripper* glyph (the merged wire is drawn as one
+polyline, not a labelled bundle with tick marks); deriving `groupSide` for a
+non-ported merged pin from the net-mates' centroid rather than the folded
+direction; and the SPICE round trip still loses the grouping (inherent, like
+`Pin.kind` fidelity).
