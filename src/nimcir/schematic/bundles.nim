@@ -58,6 +58,10 @@ type
     memberPins: seq[tuple[desig, pin, net: string]]
       ## every owned physical pin of every member net, in member then pin
       ## order -- the routing endpoints and the net-label pins
+    sceneMembers: seq[BundleMember]
+      ## the drawn (signal name, scalar net) pairs -- one per member net, in
+      ## member order. This is what a merged `SchematicPin`/`SchematicPort`
+      ## carries and what `runFULL.html` expands.
 
   BundlePlan = object
     bundles: seq[Bundle]
@@ -81,6 +85,30 @@ proc wireKindFor(plan: BundlePlan, netName: string): WireKind {.inline.} =
   ## more than one net. A zero-value plan colours nothing.
   if not plan.ofNet.hasKey(netName): return wkSignal
   if plan.ofNet[netName] == btInterface: wkInterface else: wkBus
+
+proc bundleGroupsFor(plan: BundlePlan, c: Component):
+    tuple[groupOf, groupSide: seq[int], groupNames: seq[string]] =
+  ## The per-pin partition `boxSlots` needs for `c` when it carries one or
+  ## more collapsed bundles: `groupOf[i]` a local group id for a member pin,
+  ## `-1` for an ordinary pin. `groupSide` is derived from the folded member
+  ## direction -- an input/unspecified bundle takes the left column, an
+  ## output/bidirectional one the right, matching where its port pennant
+  ## sits. Returns three empty seqs when `c` carries no collapsed bundle, so
+  ## `prepare` passes the historical `boxSlots` path unchanged.
+  if c.designator notin plan.bundled: return
+  var localOf = initTable[int, int]()
+  for pinName, _ in c.pins:
+    let bi = plan.byPin.getOrDefault(pinKey(c, pinName), -1)
+    if bi < 0:
+      result.groupOf.add -1
+      continue
+    if bi notin localOf:
+      localOf[bi] = result.groupNames.len
+      result.groupNames.add plan.bundles[bi].pinName
+      result.groupSide.add (case plan.bundles[bi].dir
+        of pdInput, pdUnspecified: 0
+        of pdOutput, pdBidir: 1)
+    result.groupOf.add localOf[bi]
 
 proc bundleEntities(nl: Netlist, members: seq[Net]):
     tuple[parts: seq[string], ported, uniform: bool] =
@@ -162,6 +190,16 @@ proc bundlePlan(nl: Netlist): BundlePlan =
   for _, c in nl.components:
     boxOf[c.designator] = symbolFor(c).isBox
 
+  proc memberLabel(n: Net): string =
+    ## The signal-level name of a member: the interface signal (with a bus
+    ## index when the signal is wide), or the bare member net name for a
+    ## plain bus. `connectPort` never emits `[`, so `pinName` (this plus the
+    ## width) cannot collide with a real pin name.
+    let sig = n.attrs.getOrDefault("iface.signal")
+    if sig.len == 0: return n.name
+    let w = n.attrs.getOrDefault("bus.width", "1")
+    if w != "1": sig & "_" & n.attrs.getOrDefault("bus.index", "0") else: sig
+
   proc naturalName(key: string, tag: BundleTag): string =
     if tag == btInterface: key["iface:".len .. ^1]
     else: key["bus:".len .. ^1]
@@ -215,6 +253,7 @@ proc bundlePlan(nl: Netlist): BundlePlan =
       for n in members:
         if pn == n and portName notin b.portNames: b.portNames.add portName
     for n in members:
+      b.sceneMembers.add BundleMember(name: memberLabel(n), net: n.name)
       for p in n.pins:
         if p.component != nil and p.component.netlist == nl:
           b.memberPins.add (p.component.designator, p.name, n.name)

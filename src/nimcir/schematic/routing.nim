@@ -43,6 +43,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                            inkW: sd.inkW, inkH: sd.inkH,
                            x: pos[i].x, y: pos[i].y, rotation: rots[i])
     var pi = 0
+    var groupPinDone: HashSet[int]
     for pinName, p in c.pins:
       let slot0 =
         if sd.byName.len > 0: sd.byName[pinName]
@@ -50,9 +51,23 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       let slot = rotatedSlot(slot0, rots[i])
       let px = pos[i].x + slot.x
       let py = pos[i].y + slot.y
-      sp.pins.add SchematicPin(name: pinName, x: px, y: py,
-                               net: (if p.net != nil: p.net.name else: ""))
+      # `pinPos` receives *every* member key (all -> the merged point), which
+      # is what keeps the escape-seed loop, port anchoring, finish's label
+      # anchors and diagnostics working with no per-consumer bundle knowledge.
       pinPos[pinKey(c, pinName)] = Point(x: px, y: py)
+      let bi = bundles.byPin.getOrDefault(pinKey(c, pinName), -1)
+      if bi >= 0:
+        # One `SchematicPin` per merged lane: `SchematicPart.pins.len` then
+        # differs from `c.pins.len`, which every audited scene consumer
+        # (svg box branch, finish, diagnostics, render, json) tolerates.
+        if bi notin groupPinDone:
+          groupPinDone.incl bi
+          let b = bundles.bundles[bi]
+          sp.pins.add SchematicPin(name: b.pinName, x: px, y: py,
+                                   net: b.display, members: b.sceneMembers)
+      else:
+        sp.pins.add SchematicPin(name: pinName, x: px, y: py,
+                                 net: (if p.net != nil: p.net.name else: ""))
       inc pi
     partIdxByDesig[c.designator] = result.parts.len
     result.parts.add sp
@@ -83,6 +98,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   # pin's own escape seed must not read as a foreign wire there (it would
   # zero every fallback marker).
   var escapeSeeds: seq[OccSeg]
+  var seededBundle: HashSet[string]      ## "<partIdx>\x1f<bundle>" seeded once
   for _, net in nl.nets:
     if isGroundHere(net) or isRailHere(net): continue
     for p in net.pins:
@@ -96,10 +112,21 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       # router endpoints or foreign-net blockers.
       let cp = compositePort(composites, partIdx, p.name)
       if constrained and cp.found and not cp.representative: continue
+      # A collapsed bundle's members share one merged point. Seed it **once**,
+      # tagged `b.display` -- three foreign seeds lying along the bundle's own
+      # first hop would make `edgeAllowed` forbid it forever, so the bundle
+      # could never route. `seededBundle` guards the loop.
+      let bi = bundles.byPin.getOrDefault(key, -1)
+      var seedNet = net.name
+      if bi >= 0:
+        seedNet = bundles.bundles[bi].display
+        let sk = $partIdx & "\x1f" & seedNet
+        if sk in seededBundle: continue
+        seededBundle.incl sk
       let pt = pinPos[key]
       let part = result.parts[partIdx]
       addOcc(escapeSeeds, pt, pt + escapeDir(part, pt) * routingClearance,
-             net.name)
+             seedNet)
 
   # --- interface ports: a fixed column per direction ------------------
   # Each entry of `nl.ports` (declared order -- an `OrderedTable`, iterated
@@ -132,10 +159,14 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     dir: PortDirection
     toRight: bool
     prefY, bodyW, bodyH: float
+    members: seq[BundleMember]
   var plans: seq[PortPlan]
+  var planForBundle = initTable[int, int]()      ## bundle idx -> plans index
+  var bundleAnchorX = initTable[int, float]()
   for portName, net in nl.ports:
     if net == nil or isGroundHere(net) or isRailHere(net): continue
-    let dir = portDirection(net)
+    let bi = bundles.byPort.getOrDefault(portName, -1)
+    let dir = (if bi >= 0: bundles.bundles[bi].dir else: portDirection(net))
     let toRight = dir in {pdOutput, pdBidir}
     var anchorX, anchorY = 0.0
     var have = false
@@ -153,6 +184,27 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         anchorY = pt.y
         have = true
     if not have: continue
+    if bi >= 0:
+      # A collapsed bundle's member ports fold to one pennant. Keep the same
+      # "better" anchor test across every member's best pin.
+      let b = bundles.bundles[bi]
+      portedNets.incl net.name
+      portedNets.incl b.display
+      if planForBundle.hasKey(bi):
+        let pidx = planForBundle[bi]
+        let prev = bundleAnchorX.getOrDefault(bi, anchorX)
+        if (toRight and anchorX > prev + 1e-9) or
+           (not toRight and anchorX < prev - 1e-9):
+          plans[pidx].prefY = anchorY
+          bundleAnchorX[bi] = anchorX
+        continue
+      planForBundle[bi] = plans.len
+      bundleAnchorX[bi] = anchorX
+      plans.add PortPlan(name: b.pinName, net: b.display, dir: dir,
+        toRight: toRight, prefY: anchorY, bodyH: 24.0,
+        bodyW: max(60.0, float(b.pinName.len) * 8.0 + 28.0),
+        members: b.sceneMembers)
+      continue
     portedNets.incl net.name
     plans.add PortPlan(name: portName, net: net.name, dir: dir, toRight: toRight,
       prefY: anchorY, bodyH: 24.0,
@@ -179,7 +231,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       if abs(y) < 1e-9: y = 0.0
       result.ports.add SchematicPort(name: pl.name, net: pl.net, dir: pl.dir,
         x: px, y: y, bodyW: pl.bodyW, bodyH: pl.bodyH,
-        rotation: (if onRight: 0.0 else: 180.0))
+        rotation: (if onRight: 0.0 else: 180.0), members: pl.members)
       let conn = Point(x: edgeX, y: y)
       let inward = Point(x: (if onRight: -1.0 else: 1.0), y: 0.0)
       portConn[pl.net] = (at: conn, inward: inward)
@@ -283,23 +335,59 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   free = buildFreeGrid(obstacles, escapeTerminals)
 
   var sigOrd = 0
-  var pendingFallbacks: seq[tuple[pin: RoutePin, netName: string]]
+  var pendingFallbacks: seq[tuple[pin: RoutePin, netName: string,
+                                  kind: FallbackKind, bundle: string]]
   for _, net in nl.nets:
     if isGroundHere(net) or isRailHere(net): continue
+
+    # A collapsed bundle routes once, from its representative member -- one
+    # `RoutePin` per part entity at the merged point, plus the merged port
+    # point. Every other member `inc sigOrd; continue`s so `sigOrd`'s
+    # meaning (one per `nl.nets` entry) and `recoverRouting`'s `failOrd`
+    # comparisons are unchanged.
+    let bi = bundles.byNet.getOrDefault(net.name, -1)
+    let coll = bi >= 0 and bundles.bundles[bi].role == brCollapsed
+    if coll and net.name != bundles.bundles[bi].members[0]:
+      inc sigOrd
+      continue
+    let routeName = (if coll: bundles.bundles[bi].display else: net.name)
+
     var pins: seq[RoutePin]
-    for p in net.pins:
-      if ownsPin(p):
-        let key = pinKey(p.component, p.name)
-        if pinPos.hasKey(key) and partIdxByDesig.hasKey(p.component.designator):
-          pins.add (pt: pinPos[key],
-                    partIdx: partIdxByDesig[p.component.designator],
-                    esc: Point(x: 0.0, y: 0.0),
-                    pinName: p.name)
-    if portConn.hasKey(net.name):
-      let pc = portConn[net.name]
-      pins.add (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: "")
+    if coll:
+      let b = bundles.bundles[bi]
+      for m in b.members: result.bundleNets.incl m
+      result.bundleNets.incl b.display
+      for desig in b.parts:
+        if not partIdxByDesig.hasKey(desig): continue
+        var mpt: Point
+        var got = false
+        for mp in b.memberPins:
+          if mp.desig != desig: continue
+          let k = mp.desig & "\x1f" & mp.pin
+          if pinPos.hasKey(k):
+            mpt = pinPos[k]
+            got = true
+            break
+        if got:
+          pins.add (pt: mpt, partIdx: partIdxByDesig[desig],
+                    esc: Point(x: 0.0, y: 0.0), pinName: b.pinName)
+      if b.ported and portConn.hasKey(b.display):
+        let pc = portConn[b.display]
+        pins.add (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: "")
+    else:
+      for p in net.pins:
+        if ownsPin(p):
+          let key = pinKey(p.component, p.name)
+          if pinPos.hasKey(key) and partIdxByDesig.hasKey(p.component.designator):
+            pins.add (pt: pinPos[key],
+                      partIdx: partIdxByDesig[p.component.designator],
+                      esc: Point(x: 0.0, y: 0.0),
+                      pinName: p.name)
+      if portConn.hasKey(net.name):
+        let pc = portConn[net.name]
+        pins.add (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: "")
     let physicalPins = pins
-    if constrained and fullyInternalComposite(physicalPins, composites):
+    if not coll and constrained and fullyInternalComposite(physicalPins, composites):
       # A signal net wholly inside one composite -- a tee filter's mid node,
       # every pin covered by the same composite port and nothing external on
       # it. There is no tree to route; its wiring is the composite's own
@@ -308,7 +396,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       result.wires.add compositeInternalRoutes(composites, result.parts, net.name)
       inc sigOrd
       continue
-    if constrained:
+    if not coll and constrained:
       pins = compositeExternalPins(pins, composites)
     if pins.len < 2:
       # A net with a single pin is a dangling connection: a dashed stub +
@@ -318,19 +406,30 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       # route, not only the fallback route.
       if pins.len == 1:
         for pin in physicalPins:
-          pendingFallbacks.add (pin: pin, netName: net.name)
+          pendingFallbacks.add (pin: pin, netName: net.name,
+                                kind: fbUnrouted, bundle: "")
       inc sigOrd
       continue
     var adj = initTable[Point, HashSet[Point]]()
     let occBefore = occ
     let ro =
-      if constrained:
-        routeConstrainedNet(pins, result.parts, obstacles, free, occ, net.name,
+      if constrained and not coll:
+        routeConstrainedNet(pins, result.parts, obstacles, free, occ, routeName,
                             escapeSeeds, glyphs)
       else:
-        routeNet(pins, result.parts, obstacles, free, occ, net.name,
+        routeNet(pins, result.parts, obstacles, free, occ, routeName,
                  escapeSeeds, glyphs)
     if not ro.ok:
+      if coll:
+        # A collapsed bundle that will not route is not a dashed failure: drop
+        # its partial branches and carry every member by name instead (§6).
+        occ = occBefore
+        let b = bundles.bundles[bi]
+        for pin in pins:
+          pendingFallbacks.add (pin: pin, netName: b.display,
+                                kind: fbNetLabel, bundle: b.display)
+        inc sigOrd
+        continue
       if withFallbacks:
         # `routeNet` may have recorded the net's already-connected branches
         # in `occ` before it failed; none of them are emitted, so drop them
@@ -340,34 +439,48 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         # A failed external composite endpoint represents every physical pin,
         # not just its canonical terminal. Ports remain one fallback endpoint.
         for pin in physicalPins:
-          pendingFallbacks.add (pin: pin, netName: net.name)
+          pendingFallbacks.add (pin: pin, netName: net.name,
+                                kind: fbUnrouted, bundle: "")
         inc sigOrd
         continue
       result.ok = false
       result.failOrd = sigOrd
-      result.failNet = net.name
+      result.failNet = routeName
       result.failPin = ro.failPin
       if ro.failPin >= 0 and ro.failPin < pins.len:
         result.failPt = pins[ro.failPin].pt
       return
     for poly in ro.polys:
-      result.wires.add SchematicWire(net: net.name, kind: wireKindFor(bundles, net.name),
-                                     points: poly)
+      if coll:
+        let b = bundles.bundles[bi]
+        result.wires.add SchematicWire(net: b.display,
+          kind: (if b.tag == btInterface: wkInterface else: wkBus),
+          members: b.members, points: poly)
+      else:
+        result.wires.add SchematicWire(net: net.name,
+          kind: wireKindFor(bundles, net.name), points: poly)
       addSegments(adj, poly)
-    if constrained:
+    if coll and not bundles.bundles[bi].ported and pins.len > 0:
+      # A non-ported collapsed bundle has no port pennant to read its name, so
+      # request one `lrNet` label at the merged pin.
+      let b = bundles.bundles[bi]
+      result.bundleLabelReqs.add (text: b.pinName, at: pins[0].pt,
+        esc: escapeDir(result.parts[pins[0].partIdx], pins[0].pt))
+    if constrained and not coll:
       # Append fanout only after the external tree succeeds, preserving the
       # net's atomic fallback behavior.
       result.wires.add compositeInternalRoutes(composites, result.parts, net.name)
     for p, nbrs in adj:
       if nbrs.len >= 3:
-        result.junctions.add SchematicJunction(net: net.name, x: p.x, y: p.y)
+        result.junctions.add SchematicJunction(net: routeName, x: p.x, y: p.y)
     inc sigOrd
 
   # Fallback stubs are sized against the *complete* occupancy set, so a
   # dashed marker never runs along a real wire that routed after the net it
   # belongs to failed.
   for req in pendingFallbacks:
-    result.fallbacks.add fallbackFor(req.pin, result.parts, req.netName, occ)
+    result.fallbacks.add fallbackFor(req.pin, result.parts, req.netName, occ,
+                                     req.kind, req.bundle)
 
   result.junctions.sort(cmpJunction)
   result.ok = true

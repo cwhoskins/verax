@@ -12,6 +12,8 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
   let partIdxByDesig {.cursor.} = routing.partIdxByDesig
   let portedNets {.cursor.} = routing.portedNets
   let railLabelReqs {.cursor.} = routing.railLabelReqs
+  let bundleNets {.cursor.} = routing.bundleNets
+  let bundleLabelReqs {.cursor.} = routing.bundleLabelReqs
 
   # `ownsPin` mirrors the one inside `routeScene`; the label pass needs the
   # same rail/ground reading (`isGroundHere`/`isRailHere`, module-level in
@@ -147,6 +149,7 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
     if net.name.len == 0: continue
     if net.name in portedNets: continue
     if net.name in fallbackNets: continue
+    if net.name in bundleNets: continue     # a merged pin, named once below
     var anchor: Point
     var anchorEsc: Point
     var have = false
@@ -190,6 +193,21 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
     order.add escSide
     let dot: Rect = (f.x, f.y, f.x, f.y)
     place(@[(f.net, netLabelSize, lrNet)], dot, order, "", -1)
+
+  # Non-ported collapsed bundle names: one `"spi[3]"` label at the merged pin,
+  # searched like a net name with the merged pin's own escape side tried last.
+  for req in bundleLabelReqs:
+    let escSide =
+      if req.esc.x > 0.5: sRight
+      elif req.esc.x < -0.5: sLeft
+      elif req.esc.y > 0.5: sBottom
+      else: sTop
+    var order: seq[Side]
+    for s in [sTop, sRight, sLeft, sBottom]:
+      if s != escSide: order.add s
+    order.add escSide
+    let dot: Rect = (req.at.x, req.at.y, req.at.x, req.at.y)
+    place(@[(req.text, netLabelSize, lrNet)], dot, order, "", -1)
 
   # Supply-rail names: at the stub end, biased to sit past the glyph. The dot
   # is inflated to the rail glyph's ~10-unit half-extent so the label clears

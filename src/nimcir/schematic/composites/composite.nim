@@ -365,7 +365,8 @@ let compositeKinds: seq[CompositeKind] =
   ## chain group. Trimming a partially-claimed group would change the fold for
   ## every kind and belongs with the §2.6 nesting work, not here.
 
-proc compositePlan(comps: seq[Component], syms: seq[SymbolDef]): CompositePlan =
+proc compositePlan(comps: seq[Component], syms: seq[SymbolDef],
+                   bundled: HashSet[string] = initHashSet[string]()): CompositePlan =
   ## Build the constrained placement arena before the first seed, by asking
   ## each registered `CompositeKind` in turn to partition `comps`, then
   ## delegating every accepted multi-member group's internal geometry and
@@ -403,6 +404,12 @@ proc compositePlan(comps: seq[Component], syms: seq[SymbolDef]): CompositePlan =
       var first = members[0]
       for m in members:
         if claimed[m]: free = false
+        # A collapsed-bundle carrier's merged slot would make `slotForNet`
+        # hand two member nets the same point. It cannot arise -- every
+        # carrier is a box, and `isTraversable` wants two connected pins with
+        # `subNetlist == nil` -- but make the exclusion explicit rather than
+        # rely on the accident.
+        if comps[m].designator in bundled: free = false
         first = min(first, m)
       if not free: continue
       for m in members: claimed[m] = true

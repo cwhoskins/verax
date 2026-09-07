@@ -24,7 +24,9 @@ const boxStub* = 20.0
   ## extent so routing stays grid-aligned; `svg` insets the visible rectangle
   ## by this much and draws a stub from that edge out to the pin.
 
-proc boxSlots(c: Component): tuple[slots: seq[Point], halfW, halfH: float] =
+proc boxSlots(c: Component, groupOf: seq[int] = @[],
+              groupNames: seq[string] = @[], groupSide: seq[int] = @[]):
+    tuple[slots: seq[Point], halfW, halfH: float] =
   ## Deterministic fallback-box pin placement, keyed on pin type: declared
   ## power pins leave the top edge, ground pins the bottom, inputs the left and
   ## outputs the right; every other pin fills the left edge then the right.
@@ -32,47 +34,114 @@ proc boxSlots(c: Component): tuple[slots: seq[Point], halfW, halfH: float] =
   ## `halfW`/`halfH` are the pin extent -- pins sit on this rectangle so their
   ## escape points land on the routing grid, and `svg` draws the body itself
   ## `boxStub` smaller so each pin visibly juts out with its name just inside.
+  ##
+  ## `groupOf` (parallel to `c.pins`: `-1` an own slot, `>=0` a merged-group
+  ## id), `groupNames[g]` (the drawn lane name, `"spi[3]"`) and `groupSide[g]`
+  ## (`-1` auto / `0` left / `1` right) collapse a collapsed bundle's member
+  ## pins onto **one lane sharing one slot `Point`**, so `SymbolDef.slots`
+  ## stays parallel to `c.pins` and `slotOf`/`pinWorldPositions`/`rotationScore`
+  ## are untouched. `rows`/`cols` count *lanes*. **`groupOf.len == 0` is the
+  ## historical path, bit-for-bit** -- that one default is the whole inertness
+  ## guarantee at this layer.
   const
     pitch = 40.0       ## row spacing on the left/right edges
     endPitch = 80.0     ## column spacing on the top/bottom edges -- wider so a
                         ## rail stub's net-name label clears the next pin
-  var names: seq[string]
+  proc spread(count, k: int, step: float): float =
+    (float(k) - float(count - 1) / 2.0) * step
+
+  if groupOf.len == 0:
+    var names: seq[string]
+    var top, bot, left, right: seq[int]
+    var i = 0
+    for name, p in c.pins:
+      names.add name
+      case p.kind
+      of ptPower: top.add i
+      of ptGround: bot.add i
+      of ptInput: left.add i
+      of ptOutput: right.add i
+      elif left.len <= right.len: left.add i
+      else: right.add i
+      inc i
+    let n = i
+    let rows = max(left.len, right.len)
+    let cols = max(top.len, bot.len)
+    var sideChars = 0
+    for idx in left & right: sideChars = max(sideChars, names[idx].len)
+    let innerW = max(max(float(cols) * endPitch / 2.0 + 16.0, 46.0),
+                     float(sideChars) * 6.0 + 14.0)
+    let innerH = max(float(rows) * pitch / 2.0 + 16.0, 30.0)
+    let halfW = innerW + boxStub
+    let halfH = innerH + boxStub
+    result.slots.setLen(n)
+    for k, idx in left:
+      result.slots[idx] = Point(x: -halfW, y: spread(left.len, k, pitch))
+    for k, idx in right:
+      result.slots[idx] = Point(x: halfW, y: spread(right.len, k, pitch))
+    for k, idx in top:
+      result.slots[idx] = Point(x: spread(top.len, k, endPitch), y: -halfH)
+    for k, idx in bot:
+      result.slots[idx] = Point(x: spread(bot.len, k, endPitch), y: halfH)
+    result.halfW = halfW
+    result.halfH = halfH
+    return
+
+  # Lane-based: a merged group is one lane; every other pin is its own lane.
+  var laneNames: seq[string]
+  var laneOfGroup = initTable[int, int]()
+  var laneForPin: seq[int]
   var top, bot, left, right: seq[int]
   var i = 0
   for name, p in c.pins:
-    names.add name
-    case p.kind
-    of ptPower: top.add i
-    of ptGround: bot.add i
-    of ptInput: left.add i
-    of ptOutput: right.add i
-    elif left.len <= right.len: left.add i
-    else: right.add i
+    let g = groupOf[i]
+    if g >= 0 and laneOfGroup.hasKey(g):
+      laneForPin.add laneOfGroup[g]
+      inc i
+      continue
+    let laneName =
+      if g >= 0 and g < groupNames.len and groupNames[g].len > 0: groupNames[g]
+      else: name
+    let forced =
+      if g >= 0 and g < groupSide.len: groupSide[g] else: -1
+    let laneId = laneNames.len
+    if forced == 0: left.add laneId
+    elif forced == 1: right.add laneId
+    else:
+      case p.kind
+      of ptPower: top.add laneId
+      of ptGround: bot.add laneId
+      of ptInput: left.add laneId
+      of ptOutput: right.add laneId
+      else:
+        if left.len <= right.len: left.add laneId
+        else: right.add laneId
+    laneNames.add laneName
+    if g >= 0: laneOfGroup[g] = laneId
+    laneForPin.add laneId
     inc i
   let n = i
   let rows = max(left.len, right.len)
   let cols = max(top.len, bot.len)
   var sideChars = 0
-  for idx in left & right: sideChars = max(sideChars, names[idx].len)
-  # Inner (drawn) half-extents: room for the pin rows/columns plus a margin, a
-  # floor that keeps room for the centred designator/value text, and width for
-  # the longest side-pin name printed inside. The pin extent adds `boxStub`.
+  for laneId in left & right: sideChars = max(sideChars, laneNames[laneId].len)
   let innerW = max(max(float(cols) * endPitch / 2.0 + 16.0, 46.0),
                    float(sideChars) * 6.0 + 14.0)
   let innerH = max(float(rows) * pitch / 2.0 + 16.0, 30.0)
   let halfW = innerW + boxStub
   let halfH = innerH + boxStub
-  proc spread(count, k: int, step: float): float =
-    (float(k) - float(count - 1) / 2.0) * step
+  var laneSlot = newSeq[Point](laneNames.len)
+  for k, laneId in left:
+    laneSlot[laneId] = Point(x: -halfW, y: spread(left.len, k, pitch))
+  for k, laneId in right:
+    laneSlot[laneId] = Point(x: halfW, y: spread(right.len, k, pitch))
+  for k, laneId in top:
+    laneSlot[laneId] = Point(x: spread(top.len, k, endPitch), y: -halfH)
+  for k, laneId in bot:
+    laneSlot[laneId] = Point(x: spread(bot.len, k, endPitch), y: halfH)
   result.slots.setLen(n)
-  for k, idx in left:
-    result.slots[idx] = Point(x: -halfW, y: spread(left.len, k, pitch))
-  for k, idx in right:
-    result.slots[idx] = Point(x: halfW, y: spread(right.len, k, pitch))
-  for k, idx in top:
-    result.slots[idx] = Point(x: spread(top.len, k, endPitch), y: -halfH)
-  for k, idx in bot:
-    result.slots[idx] = Point(x: spread(bot.len, k, endPitch), y: halfH)
+  for pi in 0 ..< n:
+    result.slots[pi] = laneSlot[laneForPin[pi]]
   result.halfW = halfW
   result.halfH = halfH
 
@@ -90,15 +159,21 @@ proc inkExtent(name: string, bodyW, bodyH: float): tuple[w, h: float] =
   of "transistor": (bodyH, bodyH)
   else: (bodyW, bodyH)          # source4, box: the drawn shape is the body
 
-proc symbolFor(c: Component): SymbolDef =
+proc symbolFor(c: Component, groupOf: seq[int] = @[],
+               groupNames: seq[string] = @[], groupSide: seq[int] = @[]): SymbolDef =
   ## The symbol for `c.kind`, with pin slots relative to the part centre.
   ##
   ## A part is a fallback box when its kind has no registered symbol, when it
   ## instantiates hierarchy (its pins are the child's ports, best drawn as a
   ## box), or when its pin count does not match the symbol's slots.
+  ##
+  ## The `group*` params reach only the box branch -- every collapsed-bundle
+  ## carrier is a box (`bundlePlan` declined a non-box carrier), and the fixed
+  ## 2-slot / `byName` symbols have no lane to merge, so confining it there
+  ## keeps `rotatable`/`slotOf` untouched.
   let n = c.pins.len
   proc box(): SymbolDef =
-    let b = boxSlots(c)
+    let b = boxSlots(c, groupOf, groupNames, groupSide)
     SymbolDef(name: "box", isBox: true, bodyW: b.halfW * 2.0,
               bodyH: b.halfH * 2.0,
               inkW: b.halfW * 2.0 - 2.0 * boxStub,

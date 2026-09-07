@@ -2973,3 +2973,177 @@ suite "bundle plan (bus/interface grouping)":
         inc recoloured
     check recoloured > 0
     check "#8250df" in renderSvg(coloured)
+
+  proc twoBoxBundleSheet(): Netlist =
+    ## A bus wired between two boxes and nowhere else: {U1, U2}, not ported ->
+    ## 2 + 0 == 2 entities -> collapses to one thick wire, no port.
+    nldsl.netlist("two_box_bus"):
+      net gnd, kind = ntGround, name = "0"
+      bus db, width = 4
+      component U1, kind = "mcu":
+        pin "G", gnd, kind = ptGround
+        pin "D0", db[0], kind = ptOutput
+        pin "D1", db[1], kind = ptOutput
+        pin "D2", db[2], kind = ptOutput
+        pin "D3", db[3], kind = ptOutput
+      component U2, kind = "mem":
+        pin "G", gnd, kind = ptGround
+        pin "Q0", db[0], kind = ptInput
+        pin "Q1", db[1], kind = ptInput
+        pin "Q2", db[2], kind = ptInput
+        pin "Q3", db[3], kind = ptInput
+
+  test "a published peripheral interface collapses to one merged pin and wire":
+    let nl = spiPeripheralSheet()
+    let s = layout(nl)
+    var u1: SchematicPart
+    for p in s.parts:
+      if p.designator == "U1": u1 = p
+    let c = nl.findComponent("U1")
+    check u1.pins.len == c.pins.len - 2          # SCK/SI/SO -> one "spi[3]"
+    var merged: SchematicPin
+    var mergedCount = 0
+    for pin in u1.pins:
+      if pin.name == "spi[3]":
+        merged = pin
+        inc mergedCount
+    check mergedCount == 1
+    check merged.net == "spi"
+    check merged.members.len == 3
+    check merged.members[0] == BundleMember(name: "sclk", net: "spi_sclk")
+    # One merged port, bidirectional (sclk/mosi in, miso inout -> mixed).
+    var ports: seq[SchematicPort]
+    for pt in s.ports:
+      if pt.name == "spi[3]": ports.add pt
+    check ports.len == 1
+    check ports[0].dir == pdBidir
+    check ports[0].net == "spi"
+    check ports[0].members.len == 3
+    # One thick interface wire carrying all three member nets, no fallbacks.
+    var busWires: seq[SchematicWire]
+    for w in s.wires:
+      if w.kind == wkInterface: busWires.add w
+    check busWires.len == 1
+    check busWires[0].net == "spi"
+    check busWires[0].members.len == 3
+    check s.fallbacks.len == 0
+    # The 4-unit stroke did not leak into the router.
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
+    check signalWiresRespectForeignSeeds(s)
+    let svg = renderSvg(s)
+    check "#8250df" in svg
+    check "stroke-width=\"4\"" in svg
+
+  test "lsBundles off restores the pre-feature scene":
+    let nl = spiPeripheralSheet()
+    var opts = defaultLayoutOptions()
+    opts.stages.excl lsBundles
+    let s = layout(nl, opts)
+    var u1: SchematicPart
+    for p in s.parts:
+      if p.designator == "U1": u1 = p
+    check u1.pins.len == nl.findComponent("U1").pins.len
+    var spiPorts, spiWires = 0
+    for pt in s.ports:
+      if pt.name.startsWith("spi_"): inc spiPorts
+    for w in s.wires:
+      if w.net.startsWith("spi_") and w.kind == wkSignal: inc spiWires
+    check spiPorts == 3
+    check spiWires == 3
+    for w in s.wires:
+      check w.kind != wkInterface
+      check w.kind != wkBus
+
+  test "a bus between two boxes with no port collapses to one thick wire":
+    let rep = bundleReport(twoBoxBundleSheet())
+    check rep.len == 1
+    check rep[0].role == "collapsed"
+    check rep[0].entities == @["U1", "U2"]
+    let s = layout(twoBoxBundleSheet())
+    var thick = 0
+    for w in s.wires:
+      if w.kind == wkBus and w.members.len > 1: inc thick
+    check thick == 1
+    check s.ports.len == 0
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
+
+  test "a bundled sheet still upholds the occupancy invariants":
+    for nl in [spiPeripheralSheet(), twoBoxBundleSheet()]:
+      let s = layout(nl)
+      check distinctWiresNeverShareCollinearRuns(s)
+      check differentNetsRespectSeparation(s)
+      check signalWiresRespectForeignSeeds(s)
+
+  test "a discarded singleton interface is inert bar the wire colour":
+    ## The strongest test for the >=2 floor: the same netlist with its
+    ## iface/bus net attrs stripped lays out identically -- only wire `kind`
+    ## moves. Stripping in place keeps net names and order fixed.
+    proc bussed(): Netlist =
+      nldsl.netlist("i2c_bus"):
+        net gnd, kind = ntGround, name = "0"
+        net vdd, kind = ntPower
+        iface i2c, nlstd.i2cInterface()
+        component U1, kind = "mcu":
+          pin "VDD", vdd, kind = ptPower
+          pin "VSS", gnd, kind = ptGround
+          pin "SDA", i2c["sda"], kind = ptInOut
+          pin "SCL", i2c["scl"], kind = ptOutput
+        component R1, kind = "resistor", value = "1.5k":
+          pin "1", vdd, kind = ptPassive
+          pin "2", i2c["sda"], kind = ptPassive
+        component R2, kind = "resistor", value = "1.5k":
+          pin "1", vdd, kind = ptPassive
+          pin "2", i2c["scl"], kind = ptPassive
+        component U2, kind = "eeprom":
+          pin "SDA", i2c["sda"], kind = ptInOut
+          pin "SCL", i2c["scl"], kind = ptInput
+          pin "VSS", gnd, kind = ptGround
+    let withBus = sceneToJsonString(layout(bussed()))
+    check bundleReport(bussed()).len == 0
+    let nl = bussed()
+    for _, net in nl.nets:
+      var kill: seq[string]
+      for k in net.attrs.keys:
+        if k.startsWith("bus.") or k.startsWith("iface."): kill.add k
+      for k in kill: net.attrs.del k
+    var a = jsonToScene(withBus)
+    let b = jsonToScene(sceneToJsonString(layout(nl)))
+    check a.parts == b.parts
+    check a.junctions == b.junctions
+    check a.labels == b.labels
+    check a.ports == b.ports
+    check a.fallbacks == b.fallbacks
+    check a.wires.len == b.wires.len
+    for i in 0 ..< a.wires.len:
+      check a.wires[i].net == b.wires[i].net
+      check a.wires[i].points == b.wires[i].points
+      if a.wires[i].kind != b.wires[i].kind:
+        check b.wires[i].kind == wkSignal
+        check a.wires[i].kind == wkInterface
+    # strip wire kind and the two scenes are byte-identical JSON
+    var bb = b
+    for i in 0 ..< a.wires.len: a.wires[i].kind = wkSignal
+    for i in 0 ..< bb.wires.len: bb.wires[i].kind = wkSignal
+    check sceneToJsonString(a) == sceneToJsonString(bb)
+
+  test "a rail bus declines the whole bundle":
+    proc railBus(): Netlist =
+      nldsl.netlist("rail_bus"):
+        net gnd, kind = ntGround, name = "0"
+        bus pwr, width = 2
+        component U1, kind = "mcu":
+          pin "G", gnd, kind = ptGround
+          pin "P0", pwr[0], kind = ptPower
+          pin "P1", pwr[1], kind = ptPower
+        component U2, kind = "mem":
+          pin "G", gnd, kind = ptGround
+          pin "P0", pwr[0], kind = ptPower
+          pin "P1", pwr[1], kind = ptPower
+    check bundleReport(railBus()).len == 0
+    let s = layout(railBus())
+    var supply = 0
+    for w in s.wires:
+      if w.kind == wkSupply: inc supply
+    check supply == 4

@@ -25,6 +25,14 @@ type
     partIdxByDesig: Table[string, int]
     portedNets: HashSet[string]
     railLabelReqs: seq[tuple[text: string, at, dir: Point]]
+    bundleNets: HashSet[string]
+      ## Every collapsed-bundle member net name plus its `display`. `finish`
+      ## skips these in the ordinary net-name pass -- a merged pin would
+      ## otherwise get one label per member stacked on it.
+    bundleLabelReqs: seq[tuple[text: string, at, esc: Point]]
+      ## One request per **non-ported** collapsed bundle: `finish` places a
+      ## single `lrNet` label (`"spi[3]"`) at the merged pin. A ported bundle
+      ## emits none -- its port pennant already reads the name.
 
   LayoutState = object
     ## All transient placement/routing state. `Schematic` remains solely the
@@ -49,7 +57,7 @@ type
     routing: RoutingState
 
 proc planComposites(state: var LayoutState) =
-  state.composites = compositePlan(state.comps, state.syms)
+  state.composites = compositePlan(state.comps, state.syms, state.bundles.bundled)
 
 proc constrainedSemanticSeed(state: var LayoutState) =
   constrainedSemanticSeed(state.comps, state.pos, state.idxOf, state.composites)
@@ -167,7 +175,12 @@ proc prepare(state: var LayoutState) =
     state.bundles = bundlePlan(state.nl)
 
   state.syms = newSeq[SymbolDef](n)
-  for i, c in state.comps: state.syms[i] = symbolFor(c)
+  for i, c in state.comps:
+    if c.designator in state.bundles.bundled:
+      let g = bundleGroupsFor(state.bundles, c)
+      state.syms[i] = symbolFor(c, g.groupOf, g.groupNames, g.groupSide)
+    else:
+      state.syms[i] = symbolFor(c)
   # The constrained plan is made before placement and remains the sole source
   # of member offsets and external composite geometry for the whole pipeline.
   if state.options.policy == lpConstrainedLayered:

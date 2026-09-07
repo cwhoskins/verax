@@ -168,14 +168,17 @@ proc fallbackStub(p: Point, dir: Point, span: float, occ: seq[OccSeg]):
   @[p, e]
 
 proc fallbackFor(pin: RoutePin, parts: seq[SchematicPart], netName: string,
-                 occ: seq[OccSeg]): SchematicFallback =
-  ## The public record for one unrouteable pin. The stub direction is the
-  ## pin's normal outward escape (or a port point's inward escape), so the
-  ## dashed marker leaves the body the way a real wire would have.
+                 occ: seq[OccSeg], kind = fbUnrouted,
+                 bundle = ""): SchematicFallback =
+  ## The public record for one unrouteable pin (`fbUnrouted`) or one member
+  ## pin of a bundle carried by name (`fbNetLabel`, `bundle` = the bundle's
+  ## display identity). The stub direction is the pin's normal outward escape
+  ## (or a port point's inward escape), so the marker leaves the body the way
+  ## a real wire would have.
   let dir =
     if pin.esc.x != 0.0 or pin.esc.y != 0.0: pin.esc
     else: escapeDir(parts[pin.partIdx], pin.pt)
-  result = SchematicFallback(net: netName,
+  result = SchematicFallback(kind: kind, bundle: bundle, net: netName,
     part: (if pin.pinName.len > 0: parts[pin.partIdx].designator else: ""),
     pin: pin.pinName, x: pin.pt.x, y: pin.pt.y, ex: dir.x, ey: dir.y,
     points: fallbackStub(pin.pt, dir, routingClearance, occ))
