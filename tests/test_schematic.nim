@@ -8,7 +8,7 @@
 ## deterministic pin placement; and the archive's SVG is a pure function of
 ## the netlist, so drawing it cannot change what was simulated.
 
-import std/[json, math, os, sets, streams, strutils, tables, tempfiles, unittest]
+import std/[algorithm, json, math, os, sets, streams, strutils, tables, tempfiles, unittest]
 
 import nimcir/netlist
 import nimcir/netlist/formats/spice
@@ -3177,6 +3177,34 @@ suite "bundle plan (bus/interface grouping)":
     let off = sceneToJsonString(layout(nl, opts))
     check on == off
 
+  test "the i2c shared-bus shape: merged tags on the boxes, bare tags on the pull-ups":
+    let nl = i2cUnpublishedSheet()
+    let rep = bundleReport(nl)
+    check rep.len == 1
+    check rep[0].role == "netlabel"
+    check rep[0].labels.sorted == @["R1=", "R2=", "U1=i2c", "U2=i2c"]
+    let s = layout(nl)
+    # The two boxes carry one merged "i2c" pin each; the pull-ups keep a bare
+    # member tag.
+    var mergedBoxes = 0
+    for p in s.parts:
+      if p.designator notin ["U1", "U2"]: continue
+      for pin in p.pins:
+        if pin.name == "i2c":
+          check pin.members.len == 2
+          inc mergedBoxes
+    check mergedBoxes == 2
+    var tags = initCountTable[string]()
+    for f in s.fallbacks:
+      check f.kind == fbNetLabel
+      tags.inc f.net
+    check tags["i2c"] == 2
+    check tags["i2c_sda"] == 1
+    check tags["i2c_scl"] == 1
+    # No member-net wires.
+    for w in s.wires:
+      check w.net notin ["i2c_sda", "i2c_scl", "i2c"]
+
   test "a rail bus declines the whole bundle":
     proc railBus(): Netlist =
       nldsl.netlist("rail_bus"):
@@ -3219,23 +3247,31 @@ suite "bundle plan (bus/interface grouping)":
     let rep = bundleReport(nl)
     check rep.len == 1
     check rep[0].role == "netlabel"
+    check rep[0].labels == @["U1=spi", "U2=spi"]     # both carry all 3 -> merged
     let s = layout(nl)
-    # Every member net is a set of teal name tags, no real wire.
     var labelNets: seq[string]
     for f in s.fallbacks:
       check f.kind == fbNetLabel
       check f.bundle == rep[0].display
       if f.net notin labelNets: labelNets.add f.net
-    check labelNets.len == 3
-    for name in ["spi_sclk", "spi_mosi", "spi_miso"]:
+    # 3 member names from the port connection tags + "spi" from the two merged
+    # part tags.
+    check labelNets.len == 4
+    for name in ["spi_sclk", "spi_mosi", "spi_miso", "spi"]:
       check name in labelNets
     for w in s.wires:
       check w.net notin ["spi_sclk", "spi_mosi", "spi_miso"]
       check w.net != rep[0].display
-    # No merged pin: the pins are not collapsed in this case.
+    # U1 and U2 each collapse their three member pins onto one merged "spi" pin.
+    var merged = 0
     for p in s.parts:
+      if p.designator notin ["U1", "U2"]: continue
       for pin in p.pins:
-        check pin.members.len == 0
+        if pin.name == "spi":
+          check pin.members.len == 3
+          check pin.net == rep[0].display
+          inc merged
+    check merged == 2
     # The teal chevron, not the amber open circle.
     let svg = renderSvg(s)
     check "#0f7b6c" in svg
@@ -3243,11 +3279,8 @@ suite "bundle plan (bus/interface grouping)":
 
   test "diagnostics refuses a deliberate net label and skips it in the sweep":
     let s = layout(brokenOutInterfaceSheet())
-    var aMember = ""
-    for f in s.fallbacks:
-      if f.kind == fbNetLabel: aMember = f.net; break
-    check aMember.len > 0
-    let one = diagnoseFallbackNet(s, aMember)
+    # Diagnose the merged group tag specifically -- a group text, not a net.
+    let one = diagnoseFallbackNet(s, "spi")
     check one.deliberate
     check one.routed
     check one.failPin == -1
@@ -3261,9 +3294,12 @@ suite "bundle plan (bus/interface grouping)":
     var fbCount = initCountTable[string]()
     for f in s.fallbacks:
       if f.kind == fbNetLabel: fbCount.inc f.net
-    # One label per fallback tag and no extra from the ordinary net-name pass.
+    # The two merged part tags: one label each, none added by the net-name pass.
+    check fbCount["spi"] == 2
+    check labelCount["spi"] == 2
+    # The three port connection tags: one label per member name.
     for name in ["spi_sclk", "spi_mosi", "spi_miso"]:
-      check fbCount[name] > 0
+      check fbCount[name] == 1
       check labelCount[name] == fbCount[name]
 
   test "the strict json reader round-trips a collapsed and a net-label scene":

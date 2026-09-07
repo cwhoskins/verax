@@ -63,8 +63,14 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         if bi notin groupPinDone:
           groupPinDone.incl bi
           let b = bundles.bundles[bi]
-          sp.pins.add SchematicPin(name: b.pinName, x: px, y: py,
-                                   net: b.display, members: b.sceneMembers)
+          # `laneOf` gives a collapsed bundle `(b.pinName, b.sceneMembers)`
+          # unchanged, and a merged net-label group its own `(text, members)`.
+          # `net` stays `b.display` -- the group text would make
+          # `diagnostics.sceneRouterInputs` re-seed an escape stub under a tag
+          # routing never used.
+          let lane = laneOf(bundles, bi, c.designator)
+          sp.pins.add SchematicPin(name: lane.name, x: px, y: py,
+                                   net: b.display, members: lane.members)
       else:
         sp.pins.add SchematicPin(name: pinName, x: px, y: py,
                                  net: (if p.net != nil: p.net.name else: ""))
@@ -347,28 +353,46 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     # comparisons are unchanged.
     let bi = bundles.byNet.getOrDefault(net.name, -1)
 
-    # A ported bundle that failed collapse (three-plus endpoints, or
-    # non-uniform): drop this member's wire and tag every one of its pins --
-    # and its port connection point -- with the member net name. Pins are
-    # **not** merged here (merging is collapse-only), so this is exactly the
-    # existing per-pin fallback shape; `finish`'s `fallbackNets` already
-    # suppresses the ordinary net-name label for a net with a fallback record.
+    # A bundle that failed collapse (3+ endpoints, or non-uniform): no member
+    # wires, one `fbNetLabel` tag per `LabelGroup`. Fires **once per bundle**
+    # (guarded on the first member, like the collapsed path), never once per
+    # member. A *merged* group gets one tag (`lg.text`) at the merged pin;
+    # `lg.text` must equal that group's merged `SchematicPin.name` so
+    # `fallbackFor` sets `part` and `fallbackEscapeDir` can match. An
+    # *unmerged* group keeps one tag per pin under the real member net name.
+    # Port connection points always get one tag per member under the member
+    # net name -- retagging them breaks the shipped port assertion.
     if bi >= 0 and bundles.bundles[bi].role == brNetLabel:
       let b = bundles.bundles[bi]
-      for p in net.pins:
-        if not ownsPin(p): continue
-        let key = pinKey(p.component, p.name)
-        if not (pinPos.hasKey(key) and
-                partIdxByDesig.hasKey(p.component.designator)): continue
-        pendingFallbacks.add (
-          pin: (pt: pinPos[key], partIdx: partIdxByDesig[p.component.designator],
-                esc: Point(x: 0.0, y: 0.0), pinName: p.name),
-          netName: net.name, kind: fbNetLabel, bundle: b.display)
-      if portConn.hasKey(net.name):
-        let pc = portConn[net.name]
-        pendingFallbacks.add (
-          pin: (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: ""),
-          netName: net.name, kind: fbNetLabel, bundle: b.display)
+      if net.name != b.members[0]:
+        inc sigOrd
+        continue
+      for m in b.members: result.bundleNets.incl m
+      for lg in b.labelGroups:
+        if not partIdxByDesig.hasKey(lg.desig): continue
+        let pIdx = partIdxByDesig[lg.desig]
+        let comp = nl.components[lg.desig]
+        if lg.merged:
+          let key = pinKey(comp, lg.pins[0].pin)
+          if not pinPos.hasKey(key): continue
+          pendingFallbacks.add (
+            pin: (pt: pinPos[key], partIdx: pIdx,
+                  esc: Point(x: 0.0, y: 0.0), pinName: lg.text),
+            netName: lg.text, kind: fbNetLabel, bundle: b.display)
+        else:
+          for pr in lg.pins:
+            let key = pinKey(comp, pr.pin)
+            if not pinPos.hasKey(key): continue
+            pendingFallbacks.add (
+              pin: (pt: pinPos[key], partIdx: pIdx,
+                    esc: Point(x: 0.0, y: 0.0), pinName: pr.pin),
+              netName: pr.net, kind: fbNetLabel, bundle: b.display)
+      for m in b.members:
+        if portConn.hasKey(m):
+          let pc = portConn[m]
+          pendingFallbacks.add (
+            pin: (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: ""),
+            netName: m, kind: fbNetLabel, bundle: b.display)
       inc sigOrd
       continue
 

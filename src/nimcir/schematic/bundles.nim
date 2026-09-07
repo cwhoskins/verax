@@ -43,6 +43,19 @@ type
     brNetLabel   ## ported and fails collapse: a deliberate net-label tag at
                  ## every member pin, no wires
 
+  LabelGroup = object
+    ## One endpoint's share of a `brNetLabel` bundle: the member pins on one
+    ## component, and how their tags merge. A *box* component carrying >= 2
+    ## members gets ONE merged pin with one tag (`text`); a component carrying
+    ## a single member keeps the bare member label. Populated in
+    ## `b.memberPins` desig-first-seen order, which `bundleReport.labels` and
+    ## `laneOf`'s linear scan both rely on.
+    desig: string
+    pins: seq[tuple[pin, net: string]]  ## owned member pins, memberPins order
+    members: seq[BundleMember]          ## this group's subset, member order
+    merged: bool                        ## >= 2 owned members AND a box carrier
+    text: string                        ## "spi1" / "spi1(cs0)"; "" when unmerged
+
   Bundle = object
     key: string              ## "iface:spi" / "bus:spi1_cs" -- index identity
     display: string          ## the scene net identity ("spi"), guaranteed
@@ -62,6 +75,9 @@ type
       ## the drawn (signal name, scalar net) pairs -- one per member net, in
       ## member order. This is what a merged `SchematicPin`/`SchematicPort`
       ## carries and what `runFULL.html` expands.
+    labelGroups: seq[LabelGroup]
+      ## `brNetLabel` only; empty otherwise. One entry per component entity,
+      ## in `memberPins` desig-first-seen order.
 
   BundlePlan = object
     bundles: seq[Bundle]
@@ -71,11 +87,12 @@ type
     byNet: Table[string, int]
       ## member net -> bundle index. Only nets that belong to a real Bundle.
     byPin: Table[string, int]
-      ## `pinKey(c, pin)` -> bundle index, collapsed bundles only
+      ## `pinKey(c, pin)` -> bundle index. Collapsed bundles, and the merged
+      ## `LabelGroup`s of a `brNetLabel` bundle.
     byPort: Table[string, int]
       ## `nl.ports` key -> bundle index, collapsed bundles only
     bundled: HashSet[string]
-      ## designators carrying any collapsed bundle
+      ## designators carrying a collapsed bundle or a merged net-label group
 
 proc wireKindFor(plan: BundlePlan, netName: string): WireKind {.inline.} =
   ## The membership colour for a signal wire on `netName`: purple for an
@@ -86,15 +103,30 @@ proc wireKindFor(plan: BundlePlan, netName: string): WireKind {.inline.} =
   if not plan.ofNet.hasKey(netName): return wkSignal
   if plan.ofNet[netName] == btInterface: wkInterface else: wkBus
 
+proc laneOf(plan: BundlePlan, bi: int, desig: string):
+    tuple[name: string, members: seq[BundleMember]] =
+  ## The one source of a merged lane's drawn string and member list, so
+  ## `bundleGroupsFor` (box sizing) and `routing.nim`'s part loop (the merged
+  ## `SchematicPin`) never disagree -- `boxSlots` sizing `innerW` for
+  ## `spi1(cs0)` while `svg` prints `spi1[5]` is the bug this prevents. A
+  ## linear scan: `labelGroups.len` is the entity count, no table to keep in
+  ## sync. Collapsed bundles are returned unchanged.
+  let b = plan.bundles[bi]
+  if b.role == brNetLabel:
+    for lg in b.labelGroups:
+      if lg.desig == desig and lg.merged: return (lg.text, lg.members)
+  (b.pinName, b.sceneMembers)
+
 proc bundleGroupsFor(plan: BundlePlan, c: Component):
     tuple[groupOf, groupSide: seq[int], groupNames: seq[string]] =
   ## The per-pin partition `boxSlots` needs for `c` when it carries one or
-  ## more collapsed bundles: `groupOf[i]` a local group id for a member pin,
-  ## `-1` for an ordinary pin. `groupSide` is derived from the folded member
-  ## direction -- an input/unspecified bundle takes the left column, an
-  ## output/bidirectional one the right, matching where its port pennant
-  ## sits. Returns three empty seqs when `c` carries no collapsed bundle, so
-  ## `prepare` passes the historical `boxSlots` path unchanged.
+  ## more collapsed bundles, or the merged group of a net-label bundle:
+  ## `groupOf[i]` a local group id for a member pin, `-1` for an ordinary
+  ## pin. `groupSide` is derived from the folded member direction -- an
+  ## input/unspecified bundle takes the left column, an output/bidirectional
+  ## one the right, matching where its port pennant sits. Returns three empty
+  ## seqs when `c` carries none, so `prepare` passes the historical
+  ## `boxSlots` path unchanged.
   if c.designator notin plan.bundled: return
   var localOf = initTable[int, int]()
   for pinName, _ in c.pins:
@@ -104,7 +136,7 @@ proc bundleGroupsFor(plan: BundlePlan, c: Component):
       continue
     if bi notin localOf:
       localOf[bi] = result.groupNames.len
-      result.groupNames.add plan.bundles[bi].pinName
+      result.groupNames.add laneOf(plan, bi, c.designator).name
       result.groupSide.add (case plan.bundles[bi].dir
         of pdInput, pdUnspecified: 0
         of pdOutput, pdBidir: 1)
@@ -157,6 +189,46 @@ proc bundleUnionEntities(nl: Netlist, members: seq[Net]):
       if portNet == n: ported = true
   parts.sort()
   (parts, ported)
+
+proc sigOf(n: Net): string =
+  ## The signal a member belongs to: `iface.signal` for an interface member,
+  ## else `bus.name`. Never `iface.instance` -- a group text names *which
+  ## signals* a component carries, not which interface.
+  let s = n.attrs.getOrDefault("iface.signal")
+  if s.len > 0: s else: n.attrs.getOrDefault("bus.name")
+
+proc groupText(b: Bundle, owned, allMembers: seq[Net]): string =
+  ## The tag on a merged net-label pin. `owned` is this component's member
+  ## subset, `allMembers` the bundle's, both in bundle-member order.
+  ##
+  ## "Full" for a signal is computed from the bundle's own members, **never**
+  ## `bus.width`: `busOf` (which interface recovery runs) rewrites
+  ## `bus.index`/`bus.width` from table order, so `findBus` is forbidden here
+  ## and the width it would report is not trustworthy anyway.
+  ##
+  ## Cases: whole interface -> `spi1`; a coherent slice -> `spi1(cs0)`; a
+  ## two-wire tap -> `spi1(sclk, mosi)`; a CS-only analyzer -> `spi1(cs)`;
+  ## a `bus dq` carrying bits 0 and 3 -> `dq(0, 3)`; all 8 -> `dq`.
+  let base = b.display
+  var sigOrder: seq[string]
+  var total = initCountTable[string]()
+  for n in allMembers:
+    let s = sigOf(n)
+    if s notin sigOrder: sigOrder.add s
+    total.inc s
+  var carried = initTable[string, seq[Net]]()
+  for n in owned: carried.mgetOrPut(sigOf(n), @[]).add n
+  let allSigs = carried.len == sigOrder.len
+  var parts: seq[string]
+  for s in sigOrder:
+    if s notin carried: continue
+    if allSigs and carried[s].len == total[s]: continue      # full + complete
+    if carried[s].len == total[s]: parts.add s                # this signal full
+    elif b.tag == btBus:
+      for n in carried[s]: parts.add n.attrs.getOrDefault("bus.index", "0")
+    else:
+      for n in carried[s]: parts.add s & n.attrs.getOrDefault("bus.index", "0")
+  if parts.len == 0: base else: base & "(" & parts.join(", ") & ")"
 
 proc bundlePlan(nl: Netlist): BundlePlan =
   ## One pass over `nl.nets` in insertion order. Returns a zero-value plan the
@@ -257,6 +329,30 @@ proc bundlePlan(nl: Netlist): BundlePlan =
       for p in n.pins:
         if p.component != nil and p.component.netlist == nl:
           b.memberPins.add (p.component.designator, p.name, n.name)
+
+    if role == brNetLabel:
+      var netByName = initTable[string, Net]()
+      for n in members: netByName[n.name] = n
+      var order: seq[string]
+      var pinsBy = initTable[string, seq[tuple[pin, net: string]]]()
+      for mp in b.memberPins:
+        if mp.desig notin pinsBy:
+          order.add mp.desig
+          pinsBy[mp.desig] = @[]
+        pinsBy[mp.desig].add (mp.pin, mp.net)
+      for d in order:
+        var lg = LabelGroup(desig: d, pins: pinsBy[d])
+        var owned: seq[Net]
+        for n in members:                       # member order, distinct
+          for pr in pinsBy[d]:
+            if pr.net == n.name:
+              owned.add n
+              lg.members.add BundleMember(name: memberLabel(n), net: n.name)
+              break
+        lg.merged = owned.len >= 2 and boxOf.getOrDefault(d, true)
+        if lg.merged: lg.text = groupText(b, owned, members)
+        b.labelGroups.add lg
+
     let idx = plan.bundles.len
     plan.bundles.add b
     for n in members:
@@ -267,6 +363,15 @@ proc bundlePlan(nl: Netlist): BundlePlan =
       for pn in b.portNames:
         plan.byPort[pn] = idx
       for d in b.parts: plan.bundled.incl d
+    elif role == brNetLabel:
+      # Merged groups only: `symbolFor`'s lane merge and `routing`'s merged
+      # `SchematicPin` both key on `byPin`, and an unmerged (single-member, or
+      # two-terminal) carrier must keep its bare per-pin tag.
+      for lg in b.labelGroups:
+        if not lg.merged: continue
+        plan.bundled.incl lg.desig
+        for pr in lg.pins:
+          plan.byPin[pinKey(nl.components[lg.desig], pr.pin)] = idx
 
   proc disposeBus(key: string, members: seq[Net]) =
     ## A `btBus` candidate (no further retry): collapse if eligible, else
@@ -347,13 +452,17 @@ proc bundlePlan(nl: Netlist): BundlePlan =
 # --- public reporter -------------------------------------------------------
 
 proc bundleReport*(nl: Netlist): seq[tuple[display, kind, role: string,
-                                           members, entities: seq[string]]] =
+                                     members, entities, labels: seq[string]]] =
   ## Every grouped bundle, so "does `spi1_cs` collapse?" is a one-line unit
   ## test instead of an inference from geometry. A netlist with no bus or
-  ## interface net attrs -- and `designs/i2c_eeprom.nim`, whose interface is
-  ## instantiated but never published -- yields an empty report.
+  ## interface net attrs yields an empty report. `labels` renders each
+  ## `brNetLabel` group's merged tag as `"U1=spi1"` / `"X1=spi1(cs0)"` /
+  ## `"R1="` (empty for an unmerged carrier), in `labelGroups` order; it is
+  ## empty for every other role.
   let plan = bundlePlan(nl)
   for b in plan.bundles:
+    var labels: seq[string]
+    for lg in b.labelGroups: labels.add lg.desig & "=" & lg.text
     result.add (display: b.display,
                 kind: (if b.tag == btInterface: "interface" else: "bus"),
                 role: (case b.role
@@ -361,4 +470,5 @@ proc bundleReport*(nl: Netlist): seq[tuple[display, kind, role: string,
                        of brCollapsed: "collapsed"
                        of brNetLabel: "netlabel"),
                 members: b.members,
-                entities: b.parts)
+                entities: b.parts,
+                labels: labels)
