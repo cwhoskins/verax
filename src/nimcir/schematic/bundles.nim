@@ -270,8 +270,16 @@ proc bundlePlan(nl: Netlist): BundlePlan =
 
   proc disposeBus(key: string, members: seq[Net]) =
     ## A `btBus` candidate (no further retry): collapse if eligible, else
-    ## net-label if ported, else scalar recolour, else -- below two members --
-    ## discard (the `ofNet` colour still applies).
+    ## net-label if ported **or spanning 3+ component entities**, else scalar
+    ## recolour, else -- below two members -- discard (the `ofNet` colour still
+    ## applies).
+    ##
+    ## The `>= 3` arm is the shared-bus rule: `union.parts` holds component
+    ## designators only (the `p.component.netlist == nl` guard), never the
+    ## sheet boundary, so three-plus *components* fanning off one bus draw as
+    ## grouped net-label tags -- the conventional schematic -- rather than a
+    ## nest of N recoloured wires. Collapse is still tested first, so a
+    ## two-endpoint bus is unaffected.
     if members.len < 2 or anyRailOrGround(members): return
     let ent = bundleEntities(nl, members)
     let union = bundleUnionEntities(nl, members)
@@ -279,7 +287,7 @@ proc bundlePlan(nl: Netlist): BundlePlan =
        collapsible(ent.parts, ent.ported):
       addBundle(key, btBus, members, brCollapsed,
                 (parts: ent.parts, ported: ent.ported))
-    elif union.ported:
+    elif union.ported or union.parts.len >= 3:
       addBundle(key, btBus, members, brNetLabel, union)
     else:
       addBundle(key, btBus, members, brScalar, union)
@@ -300,9 +308,20 @@ proc bundlePlan(nl: Netlist): BundlePlan =
         addBundle(key, btInterface, members, brCollapsed,
                   (parts: ent.parts, ported: ent.ported))
         continue
+      # A published interface, or one fanning to 3+ component entities, that
+      # fails collapse becomes ONE net-label bundle over *all* its member
+      # nets -- the per-`bus.name` retry is skipped entirely. The trade,
+      # stated in `schematic/CLAUDE.md`: a >= 3-entity interface no longer
+      # gets a collapsed sub-bus (e.g. `spiSharedBusSheet` loses its
+      # `bus:spi1_cs` sub-bundle -- it is claimed by `iface:spi1`).
+      if union.ported or union.parts.len >= 3:
+        addBundle(key, btInterface, members, brNetLabel, union)
+        continue
 
     # Retry: re-split by the members' recorded `bus.name` (`addInterface`
     # always sets it). Each sub-bus with >= 2 members re-runs as `btBus`.
+    # Reached only for the < 3-entity, non-ported, non-uniform leftover,
+    # where a wide sub-bus can still collapse point-to-point.
     var subOrder: seq[string]
     var subNets = initTable[string, seq[Net]]()
     for n in members:
@@ -313,20 +332,15 @@ proc bundlePlan(nl: Netlist): BundlePlan =
         subOrder.add sk
         subNets[sk] = @[]
       subNets[sk].add n
-    var claimedAny = false
     for sk in subOrder:
-      let before = plan.bundles.len
       disposeBus(sk, subNets[sk])
-      if plan.bundles.len > before: claimedAny = true
 
-    # After a fruitless retry the interface-level candidate is disposed only
-    # when it is ported -- net-label degradation additionally needs a port,
-    # which is what keeps `designs/i2c_eeprom.nim` (an unpublished interface)
-    # byte-identical: its members fall to `ofNet` colour and nothing else.
-    if not claimedAny and members.len >= 2 and not anyRailOrGround(members):
-      let union = bundleUnionEntities(nl, members)
-      if union.ported:
-        addBundle(key, btInterface, members, brNetLabel, union)
+    # The old trailing "dispose the interface-level candidate when ported"
+    # block is gone: a ported interface (and any >= 3-entity one) is now
+    # claimed as `brNetLabel` in the main branch above and never reaches the
+    # retry, so that block could only ever add a duplicate. An unpublished
+    # < 3-entity interface still falls through to `ofNet` colour and nothing
+    # else -- what keeps a genuinely point-to-point sub-bus free to collapse.
 
   result = plan
 

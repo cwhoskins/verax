@@ -2935,27 +2935,54 @@ suite "bundle plan (bus/interface grouping)":
     check rep[0].members == @["spi_sclk", "spi_mosi", "spi_miso"]
     check rep[0].entities == @["U1"]
 
-  test "a shared bus across three-plus endpoints is recoloured, never collapsed":
+  test "a shared bus across three-plus endpoints degrades to grouped net labels":
     let rep = bundleReport(spiSharedBusSheet())
-    # The whole interface fails collapse (MCU + two boxes). It retries per
-    # signal: sclk/mosi/miso are width-1 and fall below the two-member floor;
-    # only `spi1_cs` (two members) survives -- and it too spans three
-    # entities and is not published, so it stays a recoloured scalar.
+    # The whole interface fails collapse (MCU + two memory boxes + the MISO
+    # pull-down = 4 component entities). Under the 3+-entity rule it becomes
+    # ONE net-label bundle over every member net -- the per-signal retry is
+    # skipped, so there is no `spi1_cs` sub-bundle.
     check rep.len == 1
-    check rep[0].display == "spi1_cs"
-    check rep[0].kind == "bus"
-    check rep[0].role == "scalar"
-    check rep[0].members == @["spi1_cs_0", "spi1_cs_1"]
-    check rep[0].entities == @["U1", "U2", "U3"]
+    check rep[0].display == "spi1"
+    check rep[0].kind == "interface"
+    check rep[0].role == "netlabel"
+    check rep[0].members == @["spi1_sclk", "spi1_mosi", "spi1_miso",
+                              "spi1_cs_0", "spi1_cs_1"]
+    check rep[0].entities == @["R1", "U1", "U2", "U3"]
 
-  test "an interface that is instantiated but never published yields an empty report":
-    check bundleReport(i2cUnpublishedSheet()).len == 0
+  test "an unpublished interface across 3+ entities also degrades to net labels":
+    let rep = bundleReport(i2cUnpublishedSheet())
+    check rep.len == 1
+    check rep[0].kind == "interface"
+    check rep[0].role == "netlabel"
+    check rep[0].members == @["i2c_scl", "i2c_sda"]
+    check rep[0].entities == @["R1", "R2", "U1", "U2"]
 
   test "a bus-free netlist yields an empty report":
     check bundleReport(divider()).len == 0
 
+  proc discardedBusSheet(): Netlist =
+    ## A width-1 bus wired between three parts: below the two-member floor, so
+    ## it is *discarded* -- its net routes as an ordinary scalar and only the
+    ## `ofNet` blue colour applies. Geometry is identical to the bus-free
+    ## netlist by construction.
+    nldsl.netlist("discarded_bus"):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      bus b, width = 1
+      component U1, kind = "mcu":
+        pin "VDD", vdd, kind = ptPower
+        pin "G", gnd, kind = ptGround
+        pin "D", b[0], kind = ptOutput
+      component U2, kind = "mem":
+        pin "G", gnd, kind = ptGround
+        pin "Q", b[0], kind = ptInput
+      component R1, kind = "resistor", value = "10k":
+        pin "1", b[0], kind = ptPassive
+        pin "2", gnd, kind = ptGround
+
   test "membership colour recolours a wire without moving it":
-    let nl = spiSharedBusSheet()
+    let nl = discardedBusSheet()
+    check bundleReport(nl).len == 0            # discarded, no bundle
     var opts = defaultLayoutOptions()
     let coloured = layout(nl, opts)
     opts.stages.excl lsBundles
@@ -2968,11 +2995,43 @@ suite "bundle plan (bus/interface grouping)":
       check coloured.wires[i].net == plain.wires[i].net
       if coloured.wires[i].kind != plain.wires[i].kind:
         check plain.wires[i].kind == wkSignal
-        check coloured.wires[i].kind == wkInterface
+        check coloured.wires[i].kind == wkBus
         check coloured.wires[i].members.len == 0   # colour only, not collapsed
         inc recoloured
     check recoloured > 0
-    check "#8250df" in renderSvg(coloured)
+    check "#1f6feb" in renderSvg(coloured)
+
+  proc scalarBusSheet(): Netlist =
+    ## A 2-net bus over exactly two component entities, non-uniform (one member
+    ## touches both parts, the other only U2) and non-ported: below the
+    ## 3-entity net-label threshold, so it stays `brScalar` -- ordinary wires,
+    ## recoloured.
+    nldsl.netlist("scalar_bus"):
+      net gnd, kind = ntGround, name = "0"
+      bus b, width = 2
+      component U1, kind = "mcu":
+        pin "G", gnd, kind = ptGround
+        pin "D0", b[0], kind = ptOutput
+      component U2, kind = "mem":
+        pin "G", gnd, kind = ptGround
+        pin "Q0", b[0], kind = ptInput
+        pin "Q1", b[1], kind = ptInput
+        pin "Q1B", b[1], kind = ptInput
+
+  test "a 2-entity non-uniform bus stays a recoloured scalar":
+    let rep = bundleReport(scalarBusSheet())
+    check rep.len == 1
+    check rep[0].kind == "bus"
+    check rep[0].role == "scalar"
+    check rep[0].members == @["b_0", "b_1"]
+    check rep[0].entities == @["U1", "U2"]
+    let s = layout(scalarBusSheet())
+    var recoloured = 0
+    for w in s.wires:
+      if w.kind == wkBus:
+        check w.members.len == 0
+        inc recoloured
+    check recoloured > 0
 
   proc twoBoxBundleSheet(): Netlist =
     ## A bus wired between two boxes and nowhere else: {U1, U2}, not ported ->
@@ -3070,16 +3129,19 @@ suite "bundle plan (bus/interface grouping)":
     check differentNetsRespectSeparation(s)
 
   test "a bundled sheet still upholds the occupancy invariants":
-    for nl in [spiPeripheralSheet(), twoBoxBundleSheet()]:
+    for nl in [spiPeripheralSheet(), twoBoxBundleSheet(),
+               spiSharedBusSheet(), i2cUnpublishedSheet()]:
       let s = layout(nl)
       check distinctWiresNeverShareCollinearRuns(s)
       check differentNetsRespectSeparation(s)
       check signalWiresRespectForeignSeeds(s)
 
-  test "a discarded singleton interface is inert bar the wire colour":
-    ## The strongest test for the >=2 floor: the same netlist with its
-    ## iface/bus net attrs stripped lays out identically -- only wire `kind`
-    ## moves. Stripping in place keeps net names and order fixed.
+  test "stripping every bus/iface attr restores the pre-feature scene byte-for-byte":
+    ## Reversed premise: `bussed()` (4 component entities) now degrades to
+    ## grouped net labels and is no longer inert. What still holds is the
+    ## zero-value guarantee -- a netlist carrying no `bus.*`/`iface.*` net attr
+    ## lays out byte-identically with `lsBundles` on or off, no wire-kind
+    ## exemption.
     proc bussed(): Netlist =
       nldsl.netlist("i2c_bus"):
         net gnd, kind = ntGround, name = "0"
@@ -3100,33 +3162,20 @@ suite "bundle plan (bus/interface grouping)":
           pin "SDA", i2c["sda"], kind = ptInOut
           pin "SCL", i2c["scl"], kind = ptInput
           pin "VSS", gnd, kind = ptGround
-    let withBus = sceneToJsonString(layout(bussed()))
-    check bundleReport(bussed()).len == 0
+    # As authored (i2c interface across 4 entities) it is a real net-label bundle.
+    check bundleReport(bussed()).len == 1
     let nl = bussed()
     for _, net in nl.nets:
       var kill: seq[string]
       for k in net.attrs.keys:
         if k.startsWith("bus.") or k.startsWith("iface."): kill.add k
       for k in kill: net.attrs.del k
-    var a = jsonToScene(withBus)
-    let b = jsonToScene(sceneToJsonString(layout(nl)))
-    check a.parts == b.parts
-    check a.junctions == b.junctions
-    check a.labels == b.labels
-    check a.ports == b.ports
-    check a.fallbacks == b.fallbacks
-    check a.wires.len == b.wires.len
-    for i in 0 ..< a.wires.len:
-      check a.wires[i].net == b.wires[i].net
-      check a.wires[i].points == b.wires[i].points
-      if a.wires[i].kind != b.wires[i].kind:
-        check b.wires[i].kind == wkSignal
-        check a.wires[i].kind == wkInterface
-    # strip wire kind and the two scenes are byte-identical JSON
-    var bb = b
-    for i in 0 ..< a.wires.len: a.wires[i].kind = wkSignal
-    for i in 0 ..< bb.wires.len: bb.wires[i].kind = wkSignal
-    check sceneToJsonString(a) == sceneToJsonString(bb)
+    check bundleReport(nl).len == 0
+    var opts = defaultLayoutOptions()
+    let on = sceneToJsonString(layout(nl, opts))
+    opts.stages.excl lsBundles
+    let off = sceneToJsonString(layout(nl, opts))
+    check on == off
 
   test "a rail bus declines the whole bundle":
     proc railBus(): Netlist =
