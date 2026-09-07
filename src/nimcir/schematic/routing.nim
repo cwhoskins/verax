@@ -346,6 +346,32 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     # meaning (one per `nl.nets` entry) and `recoverRouting`'s `failOrd`
     # comparisons are unchanged.
     let bi = bundles.byNet.getOrDefault(net.name, -1)
+
+    # A ported bundle that failed collapse (three-plus endpoints, or
+    # non-uniform): drop this member's wire and tag every one of its pins --
+    # and its port connection point -- with the member net name. Pins are
+    # **not** merged here (merging is collapse-only), so this is exactly the
+    # existing per-pin fallback shape; `finish`'s `fallbackNets` already
+    # suppresses the ordinary net-name label for a net with a fallback record.
+    if bi >= 0 and bundles.bundles[bi].role == brNetLabel:
+      let b = bundles.bundles[bi]
+      for p in net.pins:
+        if not ownsPin(p): continue
+        let key = pinKey(p.component, p.name)
+        if not (pinPos.hasKey(key) and
+                partIdxByDesig.hasKey(p.component.designator)): continue
+        pendingFallbacks.add (
+          pin: (pt: pinPos[key], partIdx: partIdxByDesig[p.component.designator],
+                esc: Point(x: 0.0, y: 0.0), pinName: p.name),
+          netName: net.name, kind: fbNetLabel, bundle: b.display)
+      if portConn.hasKey(net.name):
+        let pc = portConn[net.name]
+        pendingFallbacks.add (
+          pin: (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: ""),
+          netName: net.name, kind: fbNetLabel, bundle: b.display)
+      inc sigOrd
+      continue
+
     let coll = bi >= 0 and bundles.bundles[bi].role == brCollapsed
     if coll and net.name != bundles.bundles[bi].members[0]:
       inc sigOrd

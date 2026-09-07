@@ -3147,3 +3147,97 @@ suite "bundle plan (bus/interface grouping)":
     for w in s.wires:
       if w.kind == wkSupply: inc supply
     check supply == 4
+
+  proc brokenOutInterfaceSheet(): Netlist =
+    ## A subckt taking an interface modport port and wiring every signal into
+    ## *two* internal parts -> three entities (the boundary + two parts) ->
+    ## brNetLabel: every member drawn as a deliberate teal name tag, no wires.
+    nldsl.subckt("SPI_FANOUT", [vdd, gnd, spi.peripheral]):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      iface spi, spiMemLink
+      component U1, kind = "memory":
+        pin "VCC", vdd, kind = ptPower
+        pin "VSS", gnd, kind = ptGround
+        port spi, peripheral, pins = {"sclk": "SCK", "mosi": "SI", "miso": "SO"}
+      component U2, kind = "memory":
+        pin "VCC", vdd, kind = ptPower
+        pin "VSS", gnd, kind = ptGround
+        port spi, peripheral, pins = {"sclk": "SCK", "mosi": "SI", "miso": "SO"}
+
+  test "a ported interface broken out across three entities degrades to net labels":
+    let nl = brokenOutInterfaceSheet()
+    let rep = bundleReport(nl)
+    check rep.len == 1
+    check rep[0].role == "netlabel"
+    let s = layout(nl)
+    # Every member net is a set of teal name tags, no real wire.
+    var labelNets: seq[string]
+    for f in s.fallbacks:
+      check f.kind == fbNetLabel
+      check f.bundle == rep[0].display
+      if f.net notin labelNets: labelNets.add f.net
+    check labelNets.len == 3
+    for name in ["spi_sclk", "spi_mosi", "spi_miso"]:
+      check name in labelNets
+    for w in s.wires:
+      check w.net notin ["spi_sclk", "spi_mosi", "spi_miso"]
+      check w.net != rep[0].display
+    # No merged pin: the pins are not collapsed in this case.
+    for p in s.parts:
+      for pin in p.pins:
+        check pin.members.len == 0
+    # The teal chevron, not the amber open circle.
+    let svg = renderSvg(s)
+    check "#0f7b6c" in svg
+    check "#e67e22" notin svg
+
+  test "diagnostics refuses a deliberate net label and skips it in the sweep":
+    let s = layout(brokenOutInterfaceSheet())
+    var aMember = ""
+    for f in s.fallbacks:
+      if f.kind == fbNetLabel: aMember = f.net; break
+    check aMember.len > 0
+    let one = diagnoseFallbackNet(s, aMember)
+    check one.deliberate
+    check one.routed
+    check one.failPin == -1
+    check diagnoseAllFallbacks(s).len == 0
+
+  test "a net-label member name is drawn once per tag, not doubled by the net-name pass":
+    let s = layout(brokenOutInterfaceSheet())
+    var labelCount = initCountTable[string]()
+    for lb in s.labels:
+      if lb.role == lrNet: labelCount.inc lb.text
+    var fbCount = initCountTable[string]()
+    for f in s.fallbacks:
+      if f.kind == fbNetLabel: fbCount.inc f.net
+    # One label per fallback tag and no extra from the ordinary net-name pass.
+    for name in ["spi_sclk", "spi_mosi", "spi_miso"]:
+      check fbCount[name] > 0
+      check labelCount[name] == fbCount[name]
+
+  test "the strict json reader round-trips a collapsed and a net-label scene":
+    for s in [layout(spiPeripheralSheet()), layout(twoBoxBundleSheet()),
+              layout(brokenOutInterfaceSheet()), layout(spiSharedBusSheet())]:
+      check jsonToScene(sceneToJsonString(s)) == s
+
+  test "a scene doc with members/kind stripped reads back as scalar and unrouted":
+    let s = layout(spiPeripheralSheet())
+    var node = parseJson(sceneToJsonString(s))
+    for w in node["wires"]:
+      if w.hasKey("members"): w.delete("members")
+    for p in node["parts"]:
+      for pin in p["pins"]:
+        if pin.hasKey("members"): pin.delete("members")
+    for pt in node["ports"]:
+      if pt.hasKey("members"): pt.delete("members")
+    for f in node["fallbacks"]:
+      if f.hasKey("kind"): f.delete("kind")
+      if f.hasKey("bundle"): f.delete("bundle")
+    let back = jsonToScene(node)
+    for w in back.wires: check w.members.len == 0
+    for p in back.parts:
+      for pin in p.pins: check pin.members.len == 0
+    for pt in back.ports: check pt.members.len == 0
+    for f in back.fallbacks: check f.kind == fbUnrouted

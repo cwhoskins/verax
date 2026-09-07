@@ -39,6 +39,11 @@ type
     routed*: bool
       ## Whether `routeNet` can connect every endpoint as a real tree under
       ## the final occupancy. `true` for a dangling single pin.
+    deliberate*: bool
+      ## `true` when every fallback record on this net is `fbNetLabel` -- a
+      ## bus/interface carried by name on purpose. The scene reserved no
+      ## channel for it, so "blocked by occupancy" would be a false alarm;
+      ## this refuses to diagnose rather than invent one.
     failPin*: int
       ## The index of the first unreachable endpoint when `routed` is false;
       ## -1 otherwise.
@@ -224,6 +229,22 @@ proc diagnoseFallbackNet*(s: Schematic, net: string): FallbackReroute =
   result.pins = ep.pins.len
   result.failPin = -1
 
+  # A deliberate bus/interface net label is not a failure. Proceed to a real
+  # reroute only if some record on this net is an actual routing failure.
+  var haveNet = false
+  var allLabel = false
+  for f in s.fallbacks:
+    if f.net != net: continue
+    if f.kind == fbNetLabel:
+      allLabel = true
+    else:
+      haveNet = true
+  if allLabel and not haveNet:
+    result.routed = true
+    result.deliberate = true
+    result.blockDetail = "deliberate bus/interface net label; not a routing failure"
+    return
+
   if ep.pins.len < 2:
     result.routed = true
     if ep.pins.len == 0:
@@ -264,10 +285,19 @@ proc diagnoseFallbackNets*(s: Schematic, nets: seq[string]): seq[FallbackReroute
 
 proc diagnoseAllFallbacks*(s: Schematic): seq[FallbackReroute] =
   ## Diagnoses every distinct fallback net in `s`, in first-appearance order.
+  ## A net whose every record is `fbNetLabel` is **skipped**: a sheet with
+  ## three broken-out interfaces carries fifteen deliberate tags, and they
+  ## would bury the one real failure.
+  var labelOnly = initHashSet[string]()
+  var hasReal = initHashSet[string]()
+  for f in s.fallbacks:
+    if f.kind == fbNetLabel: labelOnly.incl f.net
+    else: hasReal.incl f.net
   var seen = initHashSet[string]()
   var nets: seq[string]
   for f in s.fallbacks:
-    if f.net notin seen:
-      seen.incl f.net
-      nets.add f.net
+    if f.net in seen: continue
+    seen.incl f.net
+    if f.net in labelOnly and f.net notin hasReal: continue
+    nets.add f.net
   diagnoseFallbackNets(s, nets)

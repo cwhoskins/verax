@@ -72,6 +72,13 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
       let b = f.points[k + 1]
       if abs(a.x - b.x) > 1e-6 or abs(a.y - b.y) > 1e-6:
         fallbackSegs.add (a: a, b: b)
+    # `svg` caps an `fbNetLabel` stub with a chevron reaching ~6 units past
+    # the stub end; reserve a short axis-aligned span there so a label never
+    # lands across it.
+    if f.kind == fbNetLabel:
+      let tip = if f.points.len >= 1: f.points[^1] else: Point(x: f.x, y: f.y)
+      fallbackSegs.add (a: tip,
+                        b: Point(x: tip.x + f.ex * 8.0, y: tip.y + f.ey * 8.0))
 
   proc overlapArea(a, b: Rect): float =
     let w = min(a.x2, b.x2) - max(a.x1, b.x1)
@@ -253,6 +260,10 @@ proc finishBounds(scene: var Schematic, enabled: bool) =
   for f in scene.fallbacks:
     includePt(f.x, f.y)
     for pt in f.points: includePt(pt.x, pt.y)
+    if f.kind == fbNetLabel:
+      # the chevron cap reaches ~6 units past the stub end
+      let tip = if f.points.len >= 1: f.points[^1] else: Point(x: f.x, y: f.y)
+      includePt(tip.x + f.ex * 6.0, tip.y + f.ey * 6.0)
   for lb in scene.labels:
     let sz = if lb.size > 0.0: lb.size else: 12.0
     let b = lineBox(lb.x, lb.y, lb.text, lb.anchor, sz)
