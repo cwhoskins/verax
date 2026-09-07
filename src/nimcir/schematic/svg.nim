@@ -49,14 +49,18 @@ proc textAt(x, y: float, s: string, anchor = "start", size = 12): string =
     "\" fill=\"#333333\" text-anchor=\"" & anchor & "\">" &
     xmlEscape(s) & "</text>"
 
-proc lineAt(x1, y1, x2, y2: float): string =
+proc lineAt(x1, y1, x2, y2: float, stroke = "#333333", width = "2"): string =
+  ## `stroke`/`width` default to the historical literals, so every existing
+  ## call site emits the identical string. A bus/interface wire passes a
+  ## colour and stroke 4; stroke width is purely cosmetic (it stays inside
+  ## `wireMinSeparation`'s 8-unit gap), so the router needs no per-net rule.
   "<line x1=\"" & num(x1) & "\" y1=\"" & num(y1) &
     "\" x2=\"" & num(x2) & "\" y2=\"" & num(y2) &
-    "\" stroke=\"#333333\" stroke-width=\"2\"/>"
+    "\" stroke=\"" & stroke & "\" stroke-width=\"" & width & "\"/>"
 
-proc polyAt(pts: seq[Point]): string =
-  "<polyline fill=\"none\" stroke=\"#333333\" stroke-width=\"2\" points=\"" &
-    pointsAttr(pts) & "\"/>"
+proc polyAt(pts: seq[Point], stroke = "#333333", width = "2"): string =
+  "<polyline fill=\"none\" stroke=\"" & stroke & "\" stroke-width=\"" & width &
+    "\" points=\"" & pointsAttr(pts) & "\"/>"
 
 proc isJunction(junctions: seq[SchematicJunction], net: string, p: Point): bool =
   for j in junctions:
@@ -284,22 +288,50 @@ proc drawPort(p: SchematicPort): seq[string] =
     "\" fill=\"#ffffff\" stroke=\"#333333\" stroke-width=\"2\"/>"
   result.add textAt(p.x, y + 4.0, p.name, "middle", 10)
 
+proc chevronCap(tip: Point, outward: Point): string =
+  ## A two-segment "<" pointing back along `outward` at `tip` -- the solid cap
+  ## that tells a deliberate net-label tag apart from a routing failure's open
+  ## circle. `outward` is the stub's own leaving direction (unit ±x / ±y).
+  let o =
+    if abs(outward.x) >= abs(outward.y) and outward.x != 0.0:
+      Point(x: (if outward.x > 0.0: 1.0 else: -1.0), y: 0.0)
+    elif outward.y != 0.0:
+      Point(x: 0.0, y: (if outward.y > 0.0: 1.0 else: -1.0))
+    else:
+      Point(x: 1.0, y: 0.0)
+  let q = Point(x: -o.y, y: o.x)
+  let b = tip - o * 6.0
+  "<polyline fill=\"none\" stroke=\"#0f7b6c\" stroke-width=\"2\" points=\"" &
+    pointsAttr(@[b + q * 5.0, tip, b - q * 5.0]) & "\"/>"
+
 proc drawFallback(f: SchematicFallback): seq[string] =
-  ## A dashed amber/orange stub plus an open-endpoint marker. The stub reads
-  ## as "this net is here, and is deliberately not connected" rather than as
-  ## copper: it is dashed, amber, and never joins the occupancy set. A
-  ## zero-space fallback (empty `points`) draws only the marker at the pin.
-  const amber = "#e67e22"
-  if f.points.len >= 2:
-    result.add "<polyline fill=\"none\" stroke=\"" & amber &
-      "\" stroke-width=\"2\" stroke-dasharray=\"6 4\" points=\"" &
-      pointsAttr(f.points) & "\"/>"
-    let e = f.points[^1]
-    result.add "<circle cx=\"" & num(e.x) & "\" cy=\"" & num(e.y) &
-      "\" r=\"4\" fill=\"#ffffff\" stroke=\"" & amber & "\" stroke-width=\"2\"/>"
-  else:
-    result.add "<circle cx=\"" & num(f.x) & "\" cy=\"" & num(f.y) &
-      "\" r=\"4\" fill=\"#ffffff\" stroke=\"" & amber & "\" stroke-width=\"2\"/>"
+  ## `fbUnrouted`: a dashed amber stub plus an open-endpoint marker -- "this
+  ## net is here, and is deliberately not connected" rather than copper.
+  ## `fbNetLabel`: a solid teal stub plus a chevron cap -- "this net is
+  ## carried by name" (a bus/interface broken out or an unroutable bundle).
+  ## Both never join the occupancy set. A zero-space fallback (empty `points`)
+  ## draws only the cap at the pin.
+  case f.kind
+  of fbUnrouted:
+    const amber = "#e67e22"
+    if f.points.len >= 2:
+      result.add "<polyline fill=\"none\" stroke=\"" & amber &
+        "\" stroke-width=\"2\" stroke-dasharray=\"6 4\" points=\"" &
+        pointsAttr(f.points) & "\"/>"
+      let e = f.points[^1]
+      result.add "<circle cx=\"" & num(e.x) & "\" cy=\"" & num(e.y) &
+        "\" r=\"4\" fill=\"#ffffff\" stroke=\"" & amber & "\" stroke-width=\"2\"/>"
+    else:
+      result.add "<circle cx=\"" & num(f.x) & "\" cy=\"" & num(f.y) &
+        "\" r=\"4\" fill=\"#ffffff\" stroke=\"" & amber & "\" stroke-width=\"2\"/>"
+  of fbNetLabel:
+    const teal = "#0f7b6c"
+    if f.points.len >= 2:
+      result.add "<polyline fill=\"none\" stroke=\"" & teal &
+        "\" stroke-width=\"2\" points=\"" & pointsAttr(f.points) & "\"/>"
+      result.add chevronCap(f.points[^1], f.points[^1] - f.points[^2])
+    else:
+      result.add chevronCap(Point(x: f.x, y: f.y), Point(x: f.ex, y: f.ey))
 
 proc renderSvg*(s: Schematic): string =
   ## The whole scene as one self-contained SVG document.
@@ -334,6 +366,13 @@ proc renderSvg*(s: Schematic): string =
     case wire.kind
     of wkSignal:
       L.add "  " & polyAt(chamferedWirePoints(wire, s.junctions))
+    of wkBus, wkInterface:
+      # Colour is membership (blue bus / purple interface), width is collapse
+      # (>1 member -> one thick wire carrying the whole bundle). A lone
+      # width-1 interface signal draws thin-but-purple.
+      let col = if wire.kind == wkInterface: "#8250df" else: "#1f6feb"
+      let wd = if wire.members.len > 1: "4" else: "2"
+      L.add "  " & polyAt(chamferedWirePoints(wire, s.junctions), col, wd)
     of wkGround:
       L.add "  " & polyAt(chamferedWirePoints(wire, s.junctions))
       let p = wire.points[^1]

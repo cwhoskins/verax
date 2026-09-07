@@ -37,13 +37,28 @@ proc wireKindName(k: WireKind): string =
   of wkSignal: "signal"
   of wkGround: "ground"
   of wkSupply: "supply"
+  of wkBus: "bus"
+  of wkInterface: "interface"
 
 proc wireKindFromName(s: string): WireKind =
   case s
   of "signal": wkSignal
   of "ground": wkGround
   of "supply": wkSupply
+  of "bus": wkBus
+  of "interface": wkInterface
   else: fail("scene JSON: field \"kind\" has unknown wire kind \"" & s & "\"")
+
+proc fallbackKindName(k: FallbackKind): string =
+  case k
+  of fbUnrouted: "unrouted"
+  of fbNetLabel: "netlabel"
+
+proc fallbackKindFromName(s: string): FallbackKind =
+  case s
+  of "unrouted": fbUnrouted
+  of "netlabel": fbNetLabel
+  else: fail("scene JSON: field \"kind\" has unknown fallback kind \"" & s & "\"")
 
 proc textAnchorName(a: TextAnchor): string =
   case a
@@ -88,6 +103,14 @@ proc portDirFromName(s: string): PortDirection =
   of "bidir": pdBidir
   else: fail("scene JSON: field \"dir\" has unknown port direction \"" & s & "\"")
 
+proc membersJson(members: seq[BundleMember]): JsonNode =
+  result = newJArray()
+  for m in members:
+    var o = newJObject()
+    o["name"] = %m.name
+    o["net"] = %m.net
+    result.add o
+
 proc sceneToJson*(s: Schematic): JsonNode =
   result = newJObject()
   result["schemaVersion"] = %sceneSchemaVersion
@@ -121,6 +144,7 @@ proc sceneToJson*(s: Schematic): JsonNode =
       po["net"] = %pin.net
       po["x"] = %pin.x
       po["y"] = %pin.y
+      if pin.members.len > 0: po["members"] = membersJson(pin.members)
       pins.add po
     o["pins"] = pins
     parts.add o
@@ -131,6 +155,10 @@ proc sceneToJson*(s: Schematic): JsonNode =
     var wo = newJObject()
     wo["net"] = %w.net
     wo["kind"] = %wireKindName(w.kind)
+    if w.members.len > 0:
+      var ms = newJArray()
+      for m in w.members: ms.add %m
+      wo["members"] = ms
     var pts = newJArray()
     for pt in w.points:
       var pto = newJObject()
@@ -174,12 +202,15 @@ proc sceneToJson*(s: Schematic): JsonNode =
     o["bodyW"] = %pt.bodyW
     o["bodyH"] = %pt.bodyH
     o["rotation"] = %pt.rotation
+    if pt.members.len > 0: o["members"] = membersJson(pt.members)
     ports.add o
   result["ports"] = ports
 
   var fallbacks = newJArray()
   for f in s.fallbacks:
     var o = newJObject()
+    if f.kind != fbUnrouted: o["kind"] = %fallbackKindName(f.kind)
+    if f.bundle.len > 0: o["bundle"] = %f.bundle
     o["net"] = %f.net
     o["part"] = %f.part
     o["pin"] = %f.pin
@@ -231,6 +262,21 @@ proc optStr(n: JsonNode, key: string): string =
   if n[key].kind != JString:
     fail("scene JSON: field \"" & key & "\" must be a string")
   n[key].str
+
+proc optArr(n: JsonNode, key: string): JsonNode =
+  ## An additive array field: an empty `JArray` when absent (so an archive
+  ## written before the field existed still parses), but type-checked when
+  ## present. Beside `optStr` -- the same additive contract, for the bundle
+  ## member lists added with buses/interfaces.
+  if not n.hasKey(key): return newJArray()
+  if n[key].kind != JArray:
+    fail("scene JSON: field \"" & key & "\" must be an array")
+  n[key]
+
+proc optBundleMembers(n: JsonNode, key: string): seq[BundleMember] =
+  for m in optArr(n, key):
+    if m.kind != JObject: fail("scene JSON: bundle member must be an object")
+    result.add BundleMember(name: reqStr(m, "name"), net: reqStr(m, "net"))
 
 proc reqBool(n: JsonNode, key: string): bool =
   if not n.hasKey(key): fail("scene JSON: missing field \"" & key & "\"")
@@ -309,13 +355,17 @@ proc jsonToScene*(node: JsonNode): Schematic =
         name: reqStr(pin, "name"),
         net: reqStr(pin, "net"),
         x: reqFloat(pin, "x"),
-        y: reqFloat(pin, "y"))
+        y: reqFloat(pin, "y"),
+        members: optBundleMembers(pin, "members"))
     result.parts.add p
 
   for wn in reqArr(node, "wires"):
     if wn.kind != JObject: fail("scene JSON: wire must be an object")
     var w = SchematicWire(net: reqStr(wn, "net"),
                           kind: wireKindFromName(reqStr(wn, "kind")))
+    for m in optArr(wn, "members"):
+      if m.kind != JString: fail("scene JSON: wire member must be a string")
+      w.members.add m.str
     for pt in reqArr(wn, "points"):
       w.points.add reqPoint(pt)
     result.wires.add w
@@ -348,11 +398,15 @@ proc jsonToScene*(node: JsonNode): Schematic =
       y: reqFloat(ptn, "y"),
       bodyW: reqFloat(ptn, "bodyW"),
       bodyH: reqFloat(ptn, "bodyH"),
-      rotation: reqFloat(ptn, "rotation"))
+      rotation: reqFloat(ptn, "rotation"),
+      members: optBundleMembers(ptn, "members"))
 
   for fn in reqArr(node, "fallbacks"):
     if fn.kind != JObject: fail("scene JSON: fallback must be an object")
     var f = SchematicFallback(
+      kind: (if fn.hasKey("kind"): fallbackKindFromName(reqStr(fn, "kind"))
+             else: fbUnrouted),
+      bundle: optStr(fn, "bundle"),
       net: reqStr(fn, "net"),
       part: reqStr(fn, "part"),
       pin: reqStr(fn, "pin"),

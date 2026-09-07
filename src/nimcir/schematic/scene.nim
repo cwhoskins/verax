@@ -12,15 +12,29 @@ type
   Point* = object
     x*, y*: float
 
+  BundleMember* = object
+    ## One declared pin/port that a merged bundle pin, port or wire stands
+    ## for. `name` is the drawn member name (a `connectPort` pin name or an
+    ## `nl.ports` key), `net` the scalar member net it lowered to. Empty
+    ## everywhere except on a collapsed bus/interface (`schematic/bundles.nim`).
+    name*, net*: string
+
   SchematicPin* = object
     ## One pin of a placed part, at an absolute world position, carrying the
     ## net name it connects to ("" when unconnected).
     name*: string
     x*, y*: float
     net*: string
+    members*: seq[BundleMember]
+      ## Non-empty only on a merged bundle pin: the N declared member
+      ## (name, net) pairs the one drawn pin collapses. `net` above is then
+      ## the bundle's scene identity (`Bundle.display`), not any member net.
 
   WireKind* = enum
-    wkSignal, wkGround, wkSupply
+    ## `wkBus`/`wkInterface` are appended so existing ordinals -- and every
+    ## archived scene -- are unchanged. Width (`SchematicWire.members.len`)
+    ## says a wire collapses more than one net; kind says what the net *is*.
+    wkSignal, wkGround, wkSupply, wkBus, wkInterface
 
   SchematicPart* = object
     designator*: string
@@ -66,6 +80,11 @@ type
   SchematicWire* = object
     net*: string
     kind*: WireKind
+    members*: seq[string]
+      ## Member net names, in `nl.nets` order; empty for a scalar wire. A
+      ## collapsed bus/interface route has `members.len >= 2` and `net` set to
+      ## the bundle's scene identity; a recoloured-only wire keeps `net` and
+      ## leaves this empty.
     points*: seq[Point]
       ## Axis-aligned polyline. Two wires of the *same* net may share a vertex
       ## (and may continue straight through one), but never overlap along a
@@ -121,6 +140,19 @@ type
       ## 0 -- body extends to the right of its connection point (an output or
       ## bidirectional port); 180 -- body extends to the left (an input or an
       ## unspecified port). Never any other value.
+    members*: seq[BundleMember]
+      ## Non-empty only on a merged bundle port: the declared member
+      ## (name, net) pairs. `net` above is then `Bundle.display`.
+
+  FallbackKind* = enum
+    ## `fbUnrouted` is ordinal 0 and the zero value on purpose: every
+    ## pre-field `SchematicFallback` and every archive written before this
+    ## field are unchanged, and the writer only emits `kind` when it is not
+    ## this.
+    fbUnrouted     ## a route failed: dashed amber, open-circle cap
+    fbNetLabel     ## deliberately connected by name (a bus/interface broken
+                   ## out across three-plus endpoints, or an unroutable
+                   ## bundle): solid teal, chevron cap
 
   SchematicFallback* = object
     ## One pin whose signal net could not be routed as a real wire: a net with
@@ -133,6 +165,14 @@ type
     ## `points` is the stub polyline from the pin outward; when even the short
     ## stub has no room (`points.len == 0`), the fallback is zero-space -- no
     ## wire, only the marker and label at the pin.
+    kind*: FallbackKind
+      ## `fbUnrouted` (the zero value) unless this is a deliberate net-label
+      ## tag. `diagnostics` refuses to diagnose an `fbNetLabel` record: the
+      ## scene never reserved a channel for it, so "blocked by occupancy"
+      ## would be a false alarm.
+    bundle*: string
+      ## The owning bundle's scene identity (`Bundle.display`) for an
+      ## `fbNetLabel` record; "" otherwise.
     net*: string
       ## The exact net name, used verbatim for the fallback's label.
     part*: string
