@@ -56,7 +56,10 @@ proc explorerSheet*(n: Netlist, s: Schematic, id: string,
   for p in s.parts:
     var pins = newJArray()
     for pin in p.pins:
-      pins.add %*{"name": pin.name, "net": pin.net}
+      var members = newJArray()
+      for m in pin.members: members.add %*{"name": m.name, "net": m.net}
+      pins.add %*{"name": pin.name, "net": pin.net, "x": pin.x, "y": pin.y,
+                  "members": members}
     parts.add %*{
       "designator": p.designator, "label": p.label, "kind": p.kind, "name": p.name,
       "value": p.value, "x": p.x, "y": p.y,
@@ -107,6 +110,9 @@ const explorerTemplate = """<!doctype html>
   rect.nav { cursor: pointer; }
   rect.nav:hover { fill: rgba(46,180,110,.18); stroke: #2eb46e;
                    stroke-width: 1.5; stroke-dasharray: 5 3; }
+  rect.bundle { cursor: pointer; }
+  rect.bundle:hover { fill: rgba(130,80,223,.18); stroke: #8250df;
+                      stroke-width: 1.5; }
   aside { position: fixed; top: 45px; right: 0; width: 300px;
           height: calc(100vh - 45px); background: #fff;
           border-left: 1px solid #d8dbe0; transform: translateX(100%);
@@ -188,6 +194,36 @@ function render() {
     });
     svg.appendChild(r);
   }
+  // A merged bus/interface pin is click-to-expand. Appended after every part
+  // rect so a pin wins the hit test (SVG hit-tests topmost-first).
+  for (const p of sheet.parts) {
+    for (const pin of (p.pins || [])) {
+      if (!pin.members || !pin.members.length) continue;
+      const b = document.createElementNS(SVGNS, "rect");
+      const g = 40;
+      b.setAttribute("x", pin.x - g / 2);
+      b.setAttribute("y", pin.y - g / 2);
+      b.setAttribute("width", g);
+      b.setAttribute("height", g);
+      b.setAttribute("class", "hit bundle");
+      const tip = document.createElementNS(SVGNS, "title");
+      tip.textContent = `${pin.name} — ${pin.members.length} nets, click to expand`;
+      b.appendChild(tip);
+      b.addEventListener("click", () => showPinProps(pin));
+      svg.appendChild(b);
+    }
+  }
+}
+
+function showPinProps(pin) {
+  document.getElementById("pname").textContent = pin.name;
+  document.getElementById("pkind").textContent = `${pin.members.length} nets`;
+  document.getElementById("pbody").innerHTML =
+    "<table><thead><tr><th>Pin</th><th>Net</th></tr></thead><tbody>" +
+    pin.members.map(m =>
+      `<tr><td>${esc(m.name)}</td><td>${esc(m.net)}</td></tr>`).join("") +
+    "</tbody></table>";
+  document.getElementById("props").classList.add("open");
 }
 
 function showProps(p) {

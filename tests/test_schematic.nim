@@ -3241,3 +3241,23 @@ suite "bundle plan (bus/interface grouping)":
       for pin in p.pins: check pin.members.len == 0
     for pt in back.ports: check pt.members.len == 0
     for f in back.fallbacks: check f.kind == fbUnrouted
+
+  test "runFULL.html makes a merged bundle pin click-to-expand":
+    let nl = spiPeripheralSheet()
+    let sh = explorerSheet(nl, layout(nl), "SPI_MEMORY")
+    let html = renderExplorerHtml(@[sh])
+    check "rect.bundle" in html                 # the new CSS class
+    check "showPinProps" in html
+    check "src=" notin html                     # still self-contained
+    # The merged pin's members reached the explorer model.
+    var sawMerged = false
+    for p in sh.parts:
+      for pin in p["pins"]:
+        if pin["members"].len == 3 and pin["name"].getStr == "spi[3]":
+          sawMerged = true
+          check pin.hasKey("x")
+          check pin.hasKey("y")
+    check sawMerged
+    # `const MODEL = ...;` stays one line.
+    let ms = html.find("const MODEL = ")
+    check html.find(";\n", ms) > ms

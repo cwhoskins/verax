@@ -559,10 +559,20 @@ contract obligations, which no netlist statement previously did. It stays inert 
   incomplete rather than returning a short bus.
 - **Underscore names can collide with hand-authored nets.** `addNet` raises on a duplicate, which is
   loud and correct; the plan does not add a private namespace to dodge it.
-- **N stacked port symbols.** A wide bus draws N port glyphs in one schematic column
-  (`schematic/routing.nim:169`). Out of scope, and worth a `docs/findings.md` entry: a bus glyph and
-  a ripper are a schematic-layer feature. Modport-stamped `Pin.kind` does improve
-  `placement.portDirection` for free.
+- **N stacked port symbols — landed.** `schematic/bundles.nim` reads the `bus.*`/`iface.*` net
+  attrs (a read-only index built in `prepare`, before any symbol is sized) and groups the members.
+  Eligibility in one sentence: a bus or interface whose members *uniformly* touch exactly two
+  endpoint entities — any pair of {a component, the sheet boundary} — collapses to **one merged pin
+  per end and one thick coloured wire** (blue for a bus, purple for an interface); a *published*
+  bundle that fails that (three-plus endpoints, or non-uniform) drops its wires for **net labels** at
+  every pin; every other bus/interface wire is merely recoloured. On `designs/lib/spi_memory.nim`'s
+  `SPI_MEMORY` sheet this took 3 port pennants + 3 thin wires + `U1` at `rows = 5` (`bodyH` 272) to
+  1 pennant + 1 purple wire + `rows = 3` (`bodyH` 192); `designs/spi_memories.nim`'s portless top
+  recoloured its 16 SPI wires and moved nothing. **Guaranteed non-change:** a netlist with no
+  `bus.*`/`iface.*` net attr, or a bundle of fewer than two member nets, yields a zero-value
+  `BundlePlan` and byte-identical historical output — `designs/i2c_eeprom.nim` (an interface
+  instantiated but never published) is the worked case, geometry byte-identical, colours only.
+  Modport-stamped `Pin.kind` still improves `placement.portDirection` for free.
 - **SPICE round-trip loses the grouping.** Inherent, like `Pin.kind` fidelity already is; stated in
   `netlist/CLAUDE.md` in the same terms rather than worked around.
 - **`from = <Interface>` could bind a role part by accident.** Only exact name matches bind, explicit
