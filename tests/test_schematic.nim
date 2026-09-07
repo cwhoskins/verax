@@ -3304,8 +3304,23 @@ suite "bundle plan (bus/interface grouping)":
 
   test "the strict json reader round-trips a collapsed and a net-label scene":
     for s in [layout(spiPeripheralSheet()), layout(twoBoxBundleSheet()),
-              layout(brokenOutInterfaceSheet()), layout(spiSharedBusSheet())]:
+              layout(brokenOutInterfaceSheet()), layout(spiSharedBusSheet()),
+              layout(i2cUnpublishedSheet())]:
       check jsonToScene(sceneToJsonString(s)) == s
+
+  test "a merged slice tag survives diagnostics, the SVG and a round-trip":
+    let s = layout(spiSharedBusSheet())
+    # U2 owns cs_0, U3 owns cs_1 -> slice tags on the two memory boxes.
+    var sliceTags: seq[string]
+    for f in s.fallbacks:
+      if f.kind == fbNetLabel and f.net.startsWith("spi1("):
+        if f.net notin sliceTags: sliceTags.add f.net
+    check sliceTags.sorted == @["spi1(cs0)", "spi1(cs1)"]
+    let d = diagnoseFallbackNet(s, "spi1(cs0)")
+    check d.deliberate
+    check d.routed
+    check diagnoseAllFallbacks(s).len == 0     # every tag skipped
+    check "spi1(cs0)" in renderSvg(s)
 
   test "a scene doc with members/kind stripped reads back as scalar and unrouted":
     let s = layout(spiPeripheralSheet())
