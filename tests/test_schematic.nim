@@ -2727,8 +2727,8 @@ test "the default pipeline and its reserved no-op stages are byte-stable":
   # The reserved stages are still no-ops: dropping any one changes nothing.
   # `lsConstrainedRefinement` in particular is unfinished, so this is the
   # guard that it stays inert until it is done.
-  for stage in [lsSemanticSeed, lsConstrainedRefinement, lsCompositeOrient,
-                lsRoutingAwareRepair]:
+  for stage in [lsBundles, lsSemanticSeed, lsConstrainedRefinement,
+                lsCompositeOrient, lsRoutingAwareRepair]:
     var options = defaultLayoutOptions()
     options.stages.excl stage
     let scene = layout(nl, options)
@@ -2842,3 +2842,114 @@ suite "packaged part labels":
         pin "2", gnd
     for p in layout(nl).parts:
       check p.label == ""
+
+# --- bus- and interface-aware rendering -----------------------------------
+
+import nimcir/netlist/interfaces
+import nimcir/netlist/interfaces/std as nlstd
+
+suite "bundle plan (bus/interface grouping)":
+  let spiMemLink = block:
+    let d = nldsl.interfaceDef("spi_memory_link"):
+      signal sclk
+      signal mosi
+      signal miso, shared = true
+      modport peripheral:
+        sclk = ptInput
+        mosi = ptInput
+        miso = ptInOut
+    d
+
+  proc spiPeripheralSheet(): Netlist =
+    ## Mirrors `designs/lib/spi_memory.nim`: one memory box, its SPI link
+    ## published as a peripheral modport port, plus two straps to a rail.
+    nldsl.subckt("SPI_MEMORY", [vdd, gnd, spi.peripheral, cs]):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      iface spi, spiMemLink
+      net cs, kind = ntSignal
+      component U1, kind = "memory":
+        pin "VCC", vdd, kind = ptPower
+        pin "VSS", gnd, kind = ptGround
+        port spi, peripheral, pins = {"sclk": "SCK", "mosi": "SI", "miso": "SO"}
+        pin "CS", cs, kind = ptInput
+        pin "HOLD", vdd, kind = ptInput
+        pin "WP", vdd, kind = ptInput
+
+  proc spiSharedBusSheet(): Netlist =
+    ## Mirrors `designs/spi_memories.nim`'s top: an MCU sharing one SPI bus
+    ## between two peripheral boxes, plus a MISO pull-down. Portless.
+    nldsl.netlist("spi_shared"):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      iface spi1, nlstd.spiInterface(2)
+      component U1, kind = "mcu":
+        pin "VDD", vdd, kind = ptPower
+        pin "VSS", gnd, kind = ptGround
+        port spi1, controller, pins = {"sclk": "SCK", "mosi": "MOSI",
+          "miso": "MISO", "cs_0": "NSS0", "cs_1": "NSS1"}
+      component R1, kind = "resistor", value = "100k":
+        pin "1", spi1["miso"], kind = ptPassive
+        pin "2", gnd, kind = ptGround
+      component U2, kind = "memory":
+        pin "SCK", spi1["sclk"], kind = ptInput
+        pin "SI", spi1["mosi"], kind = ptInput
+        pin "SO", spi1["miso"], kind = ptInOut
+        pin "CS", spi1.bus("cs")[0], kind = ptInput
+        pin "VSS", gnd, kind = ptGround
+      component U3, kind = "memory":
+        pin "SCK", spi1["sclk"], kind = ptInput
+        pin "SI", spi1["mosi"], kind = ptInput
+        pin "SO", spi1["miso"], kind = ptInOut
+        pin "CS", spi1.bus("cs")[1], kind = ptInput
+        pin "VSS", gnd, kind = ptGround
+
+  proc i2cUnpublishedSheet(): Netlist =
+    ## Mirrors `designs/i2c_eeprom.nim`: an interface instantiated across four
+    ## parts but never *published* -- flat, no subckt, no port.
+    nldsl.netlist("i2c_flat"):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      iface i2c, nlstd.i2cInterface()
+      component U1, kind = "mcu":
+        pin "VDD", vdd, kind = ptPower
+        pin "VSS", gnd, kind = ptGround
+        port i2c, controller
+      component R1, kind = "resistor", value = "1.5k":
+        pin "1", vdd, kind = ptPassive
+        pin "2", i2c["sda"], kind = ptPassive
+      component R2, kind = "resistor", value = "1.5k":
+        pin "1", vdd, kind = ptPassive
+        pin "2", i2c["scl"], kind = ptPassive
+      component U2, kind = "eeprom":
+        pin "SDA", i2c["sda"], kind = ptInOut
+        pin "SCL", i2c["scl"], kind = ptInput
+        pin "VSS", gnd, kind = ptGround
+
+  test "a published peripheral interface on one box collapses":
+    let rep = bundleReport(spiPeripheralSheet())
+    check rep.len == 1
+    check rep[0].display == "spi"
+    check rep[0].kind == "interface"
+    check rep[0].role == "collapsed"
+    check rep[0].members == @["spi_sclk", "spi_mosi", "spi_miso"]
+    check rep[0].entities == @["U1"]
+
+  test "a shared bus across three-plus endpoints is recoloured, never collapsed":
+    let rep = bundleReport(spiSharedBusSheet())
+    # The whole interface fails collapse (MCU + two boxes). It retries per
+    # signal: sclk/mosi/miso are width-1 and fall below the two-member floor;
+    # only `spi1_cs` (two members) survives -- and it too spans three
+    # entities and is not published, so it stays a recoloured scalar.
+    check rep.len == 1
+    check rep[0].display == "spi1_cs"
+    check rep[0].kind == "bus"
+    check rep[0].role == "scalar"
+    check rep[0].members == @["spi1_cs_0", "spi1_cs_1"]
+    check rep[0].entities == @["U1", "U2", "U3"]
+
+  test "an interface that is instantiated but never published yields an empty report":
+    check bundleReport(i2cUnpublishedSheet()).len == 0
+
+  test "a bus-free netlist yields an empty report":
+    check bundleReport(divider()).len == 0

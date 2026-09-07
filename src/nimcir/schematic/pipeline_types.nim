@@ -7,7 +7,7 @@ import std/[os, strutils]
 
 type
   StageId* = enum
-    lsPrepare, lsSemanticSeed, lsForcePlacement, lsConstrainedRefinement,
+    lsPrepare, lsBundles, lsSemanticSeed, lsForcePlacement, lsConstrainedRefinement,
     lsCompositeOrient, lsSeparate, lsPack, lsOrient, lsLeafSnap,
     lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting,
     lsRoutingAwareRepair, lsLabels, lsBounds
@@ -36,6 +36,9 @@ const allLayoutStages* = {lsPrepare..lsBounds}
 
 const canonicalStages*: array[StageId, StageSpec] = [
   StageSpec(id: lsPrepare, enabled: true),
+  # Consumed inside `prepare` (precedent: `lsSemanticSeed` is too). Off ->
+  # a zero-value `BundlePlan` and the pre-feature scene, bit-for-bit.
+  StageSpec(id: lsBundles, enabled: true),
   # These stages are inert under lpHistorical; lpConstrainedLayered gives
   # them deterministic topology/layer and bounded repair meanings.
   StageSpec(id: lsSemanticSeed, enabled: true),

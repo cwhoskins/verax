@@ -17,6 +17,7 @@ include ./symbols
 include ./router
 include ./labels
 include ./placement
+include ./bundles
 include ./composites/composite
 include ./composites/passive
 include ./composites/pi

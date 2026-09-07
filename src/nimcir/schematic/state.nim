@@ -39,6 +39,12 @@ type
     ohw: seq[float]
     ohh: seq[float]
     composites: CompositePlan
+    bundles: BundlePlan
+      ## Bus/interface grouping, a function of netlist topology alone (see
+      ## `bundles.nim`). Built at the top of `prepare` when `lsBundles` is on,
+      ## before `state.syms` is sized -- a merged pin takes `SPI_MEMORY`'s
+      ## `U1` from `rows = 5` to `rows = 4`. `recoverRouting`'s candidate
+      ## moves never rebuild it.
     semanticAnchors: seq[Point]
     routing: RoutingState
 
@@ -153,6 +159,12 @@ proc prepare(state: var LayoutState) =
   ## established serialized SVG / JSON output.
   for _, c in state.nl.components: state.comps.add c
   let n = state.comps.len
+
+  # Bus/interface grouping first: a merged pin changes `symbolFor`'s box
+  # sizing (`SPI_MEMORY`'s `U1`, `rows = 5` -> `rows = 4`), so the plan must
+  # exist before the symbols are built. A zero-value plan when nothing groups.
+  if state.options.stageEnabled(lsBundles):
+    state.bundles = bundlePlan(state.nl)
 
   state.syms = newSeq[SymbolDef](n)
   for i, c in state.comps: state.syms[i] = symbolFor(c)
