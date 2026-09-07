@@ -19,7 +19,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                 pos: seq[Point], rots: seq[float],
                 idxOf: Table[string, int],
                 withFallbacks = false, constrained = false,
-                composites = CompositePlan()): RoutingState =
+                composites = CompositePlan(),
+                bundles = BundlePlan()): RoutingState =
   ## Build the routed scene for the given centres/rotations. Pure and
   ## deterministic. `ok` is false only when `routeNet` reports an unreachable
   ## pin and `withFallbacks` is false -- the one recoverable routing failure,
@@ -350,7 +351,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         result.failPt = pins[ro.failPin].pt
       return
     for poly in ro.polys:
-      result.wires.add SchematicWire(net: net.name, kind: wkSignal,
+      result.wires.add SchematicWire(net: net.name, kind: wireKindFor(bundles, net.name),
                                      points: poly)
       addSegments(adj, poly)
     if constrained:
@@ -408,7 +409,8 @@ const
 proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                     pos: seq[Point], rots: seq[float],
                     idxOf: Table[string, int], options: LayoutOptions,
-                    composites: CompositePlan): RoutingState =
+                    composites: CompositePlan,
+                    bundles = BundlePlan()): RoutingState =
   ## The placement-routing feedback loop. When `routeScene` cannot route a
   ## signal net it tries deterministic single-part moves and keeps any move
   ## that routes strictly further than the best layout so far, up to
@@ -426,7 +428,8 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   ## pin instead of an assertion.
   let constrained = options.policy == lpConstrainedLayered
   var best = routeScene(nl, comps, syms, pos, rots, idxOf,
-                        constrained = constrained, composites = composites)
+                        constrained = constrained, composites = composites,
+                        bundles = bundles)
   if best.ok: return best
 
   # Pool length, not raw count, is what should gate the recovery loop: its
@@ -449,7 +452,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
      comps.len > 4 * options.feedbackMaxParts:
     return routeScene(nl, comps, syms, pos, rots, idxOf,
                       withFallbacks = true, constrained = constrained,
-                      composites = composites)
+                      composites = composites, bundles = bundles)
 
   var bestPos = pos
   var bestRots = rots
@@ -515,7 +518,8 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
             if terminalClearance(comps, syms, candPos, candRots).coincidences > 0:
               continue
             let cand = routeScene(nl, comps, syms, candPos, candRots, idxOf,
-                                  constrained = constrained, composites = composites)
+                                  constrained = constrained, composites = composites,
+                                  bundles = bundles)
             if cand.ok or cand.failOrd > best.failOrd:
               best = cand
               bestPos = candPos
@@ -531,7 +535,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   if not best.ok:
     return routeScene(nl, comps, syms, bestPos, bestRots, idxOf,
                       withFallbacks = true, constrained = constrained,
-                      composites = composites)
+                      composites = composites, bundles = bundles)
   best
 
 proc recomputeRotations(state: LayoutState): seq[float] =
@@ -541,9 +545,9 @@ proc routeScene(state: LayoutState, withFallbacks = false): RoutingState =
   routeScene(state.nl, state.comps, state.syms, state.pos, state.rots,
     state.idxOf, withFallbacks = withFallbacks,
     constrained = state.options.policy == lpConstrainedLayered,
-    composites = state.composites)
+    composites = state.composites, bundles = state.bundles)
 
 proc recoverRouting(state: LayoutState): RoutingState =
   recoverRouting(state.nl, state.comps, state.syms, state.pos, state.rots,
-    state.idxOf, state.options, state.composites)
+    state.idxOf, state.options, state.composites, state.bundles)
 

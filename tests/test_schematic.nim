@@ -2953,3 +2953,23 @@ suite "bundle plan (bus/interface grouping)":
 
   test "a bus-free netlist yields an empty report":
     check bundleReport(divider()).len == 0
+
+  test "membership colour recolours a wire without moving it":
+    let nl = spiSharedBusSheet()
+    var opts = defaultLayoutOptions()
+    let coloured = layout(nl, opts)
+    opts.stages.excl lsBundles
+    let plain = layout(nl, opts)
+    # Same geometry, only the wire kind differs.
+    check coloured.wires.len == plain.wires.len
+    var recoloured = 0
+    for i in 0 ..< coloured.wires.len:
+      check coloured.wires[i].points == plain.wires[i].points
+      check coloured.wires[i].net == plain.wires[i].net
+      if coloured.wires[i].kind != plain.wires[i].kind:
+        check plain.wires[i].kind == wkSignal
+        check coloured.wires[i].kind == wkInterface
+        check coloured.wires[i].members.len == 0   # colour only, not collapsed
+        inc recoloured
+    check recoloured > 0
+    check "#8250df" in renderSvg(coloured)

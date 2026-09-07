@@ -73,6 +73,15 @@ type
     bundled: HashSet[string]
       ## designators carrying any collapsed bundle
 
+proc wireKindFor(plan: BundlePlan, netName: string): WireKind {.inline.} =
+  ## The membership colour for a signal wire on `netName`: purple for an
+  ## interface member, blue for a bus member, `wkSignal` otherwise. Colour is
+  ## membership and applies to *every* wire whether or not anything collapsed;
+  ## thickness (`SchematicWire.members.len > 1`) is what says a wire collapses
+  ## more than one net. A zero-value plan colours nothing.
+  if not plan.ofNet.hasKey(netName): return wkSignal
+  if plan.ofNet[netName] == btInterface: wkInterface else: wkBus
+
 proc bundleEntities(nl: Netlist, members: seq[Net]):
     tuple[parts: seq[string], ported, uniform: bool] =
   ## `uniform` is the collapse precondition: every member must touch the *same*
