@@ -1,11 +1,11 @@
 import std/[math, os, osproc, strutils, tables, tempfiles, unittest]
 
-import nimcir/netlist/types
-import nimcir/netlist/graph
-import nimcir/spice/ngspice
-import nimcir/spice/xspice
-import nimcir/spice/xspice/build
-import nimcir/spice/xspice/instance
+import verax/netlist/types
+import verax/netlist/graph
+import verax/spice/ngspice
+import verax/spice/xspice
+import verax/spice/xspice/build
+import verax/spice/xspice/instance
 
 ## Building a `.cm` needs a *configured* ngspice source tree, which a distro
 ## `-devel` package does not provide. Gated the same way `test_spice_ngspice`
@@ -21,7 +21,7 @@ let haveToolchain =
 
 proc opVoltage(cmPath, deck: string): float =
   ## Run a deck that prints `v(vout)` and return it.
-  let bd = createTempDir("nimcir_xsim_", "")
+  let bd = createTempDir("verax_xsim_", "")
   defer: removeDir(bd)
   writeFile(bd / "t.cir", deck % [cmPath])
   let (output, _) = execCmdEx(quoteShellCommand(@["ngspice", "-b", "t.cir"]),
@@ -31,7 +31,7 @@ proc opVoltage(cmPath, deck: string): float =
       return parseFloat(line.split('=')[1].strip)
   raise newException(ValueError, "no v(vout) in ngspice output:\n" & output)
 
-const deckTemplate = """* nimcir xspice build test
+const deckTemplate = """* verax xspice build test
 V1 vin 0 DC 3
 a1 vin vout g1
 R1 vout 0 1meg
@@ -71,7 +71,7 @@ else:
 
   # Built once at module scope: `defer` inside unittest's `test` template does
   # not scope the way it reads, and one build is enough for both assertions.
-  let outDir = createTempDir("nimcir_xbuild_", "")
+  let outDir = createTempDir("verax_xbuild_", "")
   let cm = buildCodeModel(repoRoot / "examples" / "xspice_gain.nim",
                           outDir / "gain.cm", tc)
 
@@ -93,7 +93,7 @@ else:
     # check, so the offset is what proves both parameters arrive.
     check abs(opVoltage(deckSafeCmPath(cm), deckTemplate) - 7.0) < 1e-6
 
-  test "author, build, instantiate and simulate, all from nimcir":
+  test "author, build, instantiate and simulate, all from verax":
     # The spec here must mirror examples/xspice_gain.nim; a drift shows up as
     # an ngspice model-resolution error rather than a silent wrong answer.
     let spec = ModelSpec(

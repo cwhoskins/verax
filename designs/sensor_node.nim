@@ -1,6 +1,6 @@
 ## A USB-powered environmental sensor node.
 ##
-##   nimcir check designs/sensor_node.nim
+##   verax check designs/sensor_node.nim
 ##
 ## The shape most open-hardware sensor breakouts take: USB 5 V in, a linear
 ## regulator down to 3.3 V, an MCU and an I2C sensor across it, and a
@@ -14,9 +14,9 @@
 ## absolute maximum, and that the I2C bus can actually run at the clock it
 ## is configured for.
 
-import nimcir/contract/dsl
-import nimcir/verify
-import nimcir/spice/boundary
+import verax/contract/dsl
+import verax/verify
+import verax/spice/boundary
 
 let d = design("sensor_node"):
   # Where the board has to work. Stated on the board because it is a fact

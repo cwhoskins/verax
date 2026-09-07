@@ -1,8 +1,8 @@
 import std/[os, strutils, tables, unittest]
 
-import nimcir/netlist
-import nimcir/analysis
-import nimcir/analysis/analyses/spice_fallback
+import verax/netlist
+import verax/analysis
+import verax/analysis/analyses/spice_fallback
 
 let haveNgspice = findExe("ngspice").len > 0
 

@@ -3,9 +3,9 @@
 
 import std/[strutils, tables, unittest]
 
-import nimcir/netlist
-import nimcir/netlist/dsl
-import nimcir/netlist/packages
+import verax/netlist
+import verax/netlist/dsl
+import verax/netlist/packages
 
 proc dualDef(name = "NE5532"): PackageDef =
   newPackageDef(name, [
@@ -212,7 +212,7 @@ test "removing a member simply drops it from the reconstructed group":
 
 # --- SPICE lossiness --------------------------------------------------
 
-import nimcir/netlist/formats/spice as spiceFmt
+import verax/netlist/formats/spice as spiceFmt
 import std/streams
 
 test "a SPICE round trip drops every package.* key":

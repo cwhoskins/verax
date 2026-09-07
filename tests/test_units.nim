@@ -1,6 +1,6 @@
 import std/[math, unittest]
 
-import nimcir/units
+import verax/units
 
 test "suffixes scale to SI base units":
   check toFloat(3.3.V) == 3.3

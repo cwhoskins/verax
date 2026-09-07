@@ -1,10 +1,10 @@
 import std/[os, osproc, strutils, tables, tempfiles, unittest]
 
-import nimcir/netlist/types
-import nimcir/netlist/graph
-import nimcir/spice/ngspice
-import nimcir/spice/xspice
-import nimcir/spice/xspice/build
+import verax/netlist/types
+import verax/netlist/graph
+import verax/spice/ngspice
+import verax/spice/xspice
+import verax/spice/xspice/build
 
 ## Event-driven (digital) code models. Gated the same way as
 ## `test_xspice_build.nim`, since producing a `.cm` needs an ngspice source
@@ -47,7 +47,7 @@ type Edge = tuple[time: float, level: int]
 
 proc qEdges(cm, clkDelay, ic: string): (int, seq[Edge]) =
   ## Run the deck and return q's initial level plus every transition.
-  let bd = createTempDir("nimcir_dff_", "")
+  let bd = createTempDir("verax_dff_", "")
   defer: removeDir(bd)
   writeFile(bd / "t.cir", deckTemplate % [cm, clkDelay, ic])
   let (output, _) = execCmdEx(quoteShellCommand(@["ngspice", "-b", "t.cir"]),
@@ -75,7 +75,7 @@ if not haveToolchain:
   echo "SKIP: NGSPICE_SRC not set to a configured ngspice source tree, " &
        "skipping digital code model tests"
 else:
-  let outDir = createTempDir("nimcir_dffbuild_", "")
+  let outDir = createTempDir("verax_dffbuild_", "")
   let cm = deckSafeCmPath(buildCodeModel(repoRoot / "examples" / "xspice_dff.nim",
                                          outDir / "dff.cm"))
 

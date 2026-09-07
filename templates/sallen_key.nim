@@ -1,7 +1,7 @@
 ## A second-order Sallen-Key low-pass, and the template where `without`
 ## earns its keep.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## Butterworth at 10 kHz: unity gain, Q = 0.707, 12 dB/octave beyond the
 ## corner. The filter itself is four passives and a follower. What makes it
@@ -29,8 +29,8 @@
 ## every run is its own harm, because NOT CHECKED is precisely the section
 ## that must not become background noise.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("sallen_key"):
   net gnd, kind = ntGround, name = "0"

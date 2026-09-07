@@ -1,8 +1,8 @@
 import std/[strutils, tables, unittest]
 
-import nimcir/netlist
-import nimcir/netlist/dsl
-import nimcir/spice/transform
+import verax/netlist
+import verax/netlist/dsl
+import verax/spice/transform
 
 test "replaceComponent swaps kind and auto-derives a SPICE-correct designator":
   let nl = newNetlist("t")

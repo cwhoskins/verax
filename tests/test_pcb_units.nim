@@ -1,6 +1,6 @@
 import std/unittest
 
-import nimcir/pcb/units
+import verax/pcb/units
 
 test "length constructors and accessors round-trip":
   check mm(1.0).raw == 1_000_000

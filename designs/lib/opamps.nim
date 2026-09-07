@@ -16,7 +16,7 @@
 ## sections' supply pins resolve to the same net, which is the one thing a
 ## two-section board can get wrong that no per-section check would catch.
 
-import nimcir/netlist/packages
+import verax/netlist/packages
 export packages
 
 const dualOpampPinout = [

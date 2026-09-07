@@ -1,8 +1,8 @@
 import std/[unittest, tables]
-import nimcir/netlist
-import nimcir/netlist/interfaces
-import nimcir/netlist/dsl
-import nimcir/netlist/interfaces/std
+import verax/netlist
+import verax/netlist/interfaces
+import verax/netlist/dsl
+import verax/netlist/interfaces/std
 
 let macroDef = interfaceDef("macro_test"):
   signal tx

@@ -1,6 +1,6 @@
 import std/[math, unittest]
 
-import nimcir/pcb/geometry
+import verax/pcb/geometry
 
 proc approx(a, b: float, tol = 1.0): bool = abs(a - b) <= tol
 

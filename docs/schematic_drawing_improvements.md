@@ -1,6 +1,6 @@
 # Schematic drawing: where placement and routing fall short, and how to fix it
 
-Notes on the readability ceiling of `src/nimcir/schematic/layout.nim` and the
+Notes on the readability ceiling of `src/verax/schematic/layout.nim` and the
 concrete ways past it. Written against the state after the alignment pass
 (`alignAxes`) and the route corner-minimisation pass (`smoothPolylines`) landed
 — both help, neither addresses the structural problems below.

@@ -15,7 +15,7 @@ simulated`, because there is no way to say it in the language. Three costs follo
 1. **Repetition at the port boundary.** A `subckt` port list is one identifier per wire, and an
    `instance` is one net per wire in the same order. An 8-bit bus is 8 chances to transpose two.
 2. **Direction is unstated almost everywhere.** `Pin.kind` carries `ptInput`/`ptOutput`/`ptInOut`,
-   but `graph.instantiate` (`src/nimcir/netlist/graph.nim:451`) creates every hierarchical instance
+   but `graph.instantiate` (`src/verax/netlist/graph.nim:451`) creates every hierarchical instance
    pin as `newPin(portName)` — `ptUnknown`. Five consumers read direction and get nothing:
    `analysis/io_check`, `schematic/placement.portDirection`, `schematic/symbols`,
    `spice/models/pin_models.byKind`, `formats/spice.pinTemplates`.
@@ -102,7 +102,7 @@ Non-goals: protocol *semantics* (no timing, no arbitration, no transaction model
 interfaces, bus glyphs in the schematic renderer, recovering a bus from a read-back SPICE deck, and
 any change to what a deck contains.
 
-## Data model — `src/nimcir/netlist/interfaces.nim` (new)
+## Data model — `src/verax/netlist/interfaces.nim` (new)
 
 One new module, importing `types`, `graph`, `annotations`, `issue`; imported by `netlist/dsl.nim`.
 It sits above `graph` and below `dsl`, and adds no edge out of the `netlist` submodule.
@@ -395,7 +395,7 @@ bind one** — raise naming the signal rather than binding index 0; the case tha
 instance per link, which is the interface-array path. And add one optional field
 **`RoleDef.expects: string`**, the interface def a role is written against, so
 `role i2c, "u0", from = spi0` fails with one message naming both rather than a pile of unbound-part
-errors — and so `nimcir role i2c` can print the interface and `nimcir interface i2c` the roles.
+errors — and so `verax role i2c` can print the interface and `verax interface i2c` the roles.
 
 **The payoff** is `controller_count`: declaring the bus becomes enough, and the check
 `static.nim:9-13` currently refuses to attempt starts working with no author action.
@@ -420,7 +420,7 @@ Two further bounded changes, both aimed at the same gap:
 `contract/` keeps its single dependency on `netlist`, and the interface never becomes a `Subject` — a
 claim is still about a net, a component or a pin. `subjectOf` is unchanged.
 
-## Standard definitions — `src/nimcir/netlist/interfaces/std.nim` (new)
+## Standard definitions — `src/verax/netlist/interfaces/std.nim` (new)
 
 Opt-in per import, like every format module. Registers three definitions on module init:
 
@@ -435,9 +435,9 @@ Opt-in per import, like every format module. Registers three definitions on modu
 
 ## Discovery
 
-`nimcir interfaces` and `nimcir interface <name>` mirror `roles`/`role`: `describeInterfaces` and
+`verax interfaces` and `verax interface <name>` mirror `roles`/`role`: `describeInterfaces` and
 `describeInterface` live in `verify.nim` beside `describeRoles`, `cli.nim` gains the two verbs, the
-usage text and a count line in `nimcir env`, and `cli.nim` imports `netlist/interfaces/std` so the
+usage text and a count line in `verax env`, and `cli.nim` imports `netlist/interfaces/std` so the
 built-ins are listed. Both `interface` and `role` print the pairing, in whichever direction they are
 asked. Root `CLAUDE.md`'s discovery line gains them.
 
@@ -445,7 +445,7 @@ asked. Root `CLAUDE.md`'s discovery line gains them.
 
 Roughly ten files plus four new test files. Land it in four phases, each independently green.
 
-**Phase 1 — buses, slices and lowering.** `src/nimcir/netlist/interfaces.nim` with `Bus`, `addBus`,
+**Phase 1 — buses, slices and lowering.** `src/verax/netlist/interfaces.nim` with `Bus`, `addBus`,
 `busOf`, `findBus`, `[]`, `[a..b]`, `len`, and the `netsOf`/`wiringOf` overload sets. In `dsl.nim`:
 the `bus` handler, one `elif` arm in `buildNetlistBody`, and the `handleInstance` change from
 `@[a, b, c]` to `netsOf(a) & netsOf(b) & …` (positional, `dsl.nim:410-411`) and to `wiringOf(k, v)`
@@ -467,7 +467,7 @@ identical `seq[Net]`, so no existing design changes.
 `InterfaceView`, the registry (shaped like `roleRegistry`, `contract/roles/core.nim:96`), the
 `interfaceDef` macro, `iface` and the `port` statement inside `component`, `subckt` port lists
 accepting `iface.modport`, and `promotePortDirections` emitted after `instantiate`.
-`src/nimcir/netlist/interfaces/std.nim` with i2c, spi, uart. The `open` token and its
+`src/verax/netlist/interfaces/std.nim` with i2c, spi, uart. The `open` token and its
 `nc_<designator>_<port>` lowering land here.
 
 `tests/test_netlist_interface.nim`:
@@ -505,7 +505,7 @@ the bus, as the worked before/after.
 **Phase 4 — contract and discovery.** `controller_count`'s second source in `evaluators/static.nim`;
 `role … from = <Interface>` in `contract/dsl.nim` + `contract/design.nim`; `InterfaceDef.implies` +
 `RoleDef.expects` + `addImpliedRoles` appended in `buildDesignBody`, with `implies "i2c"` on the std
-i2c def; `nimcir interfaces` / `nimcir interface <name>`; and the docs.
+i2c def; `verax interfaces` / `verax interface <name>`; and the docs.
 
 `tests/test_contract_interface.nim`:
 27. `controller_count` returns 1 from modports alone, with no `controller` role binding.
@@ -528,22 +528,22 @@ i2c def; `nimcir interfaces` / `nimcir interface <name>`; and the docs.
 
 ## Affected paths
 
-- `src/nimcir/netlist/interfaces.nim` — new; the whole model, wiring, lowering helpers and ERC.
-- `src/nimcir/netlist/interfaces/std.nim` — new; i2c, spi, uart.
-- `src/nimcir/netlist/dsl.nim` — new `interfaceDef` macro; `bus`, `iface` and (inside `component`)
+- `src/verax/netlist/interfaces.nim` — new; the whole model, wiring, lowering helpers and ERC.
+- `src/verax/netlist/interfaces/std.nim` — new; i2c, spi, uart.
+- `src/verax/netlist/dsl.nim` — new `interfaceDef` macro; `bus`, `iface` and (inside `component`)
   `port` handlers; two `elif` arms in `buildNetlistBody` plus the two error strings at `:502`/`:546`;
   `subckt`'s port loop accepts a bus/interface/`iface.modport` value; `handleInstance` builds its port
   list through `netsOf`/`wiringOf`, accepts `open`, and emits `promotePortDirections`.
-- `src/nimcir/analysis/io_check.nim` — the declared-shared-bus exception in `checkOutputConflicts`.
-- `src/nimcir/verify.nim` — `validateInterfaces` into `structural`; `describeInterfaces`/`describeInterface`.
-- `src/nimcir/cli.nim` — two verbs, usage, `env` count, the std import.
-- `src/nimcir/contract/evaluators/static.nim` — the second source for `controller_count`.
-- `src/nimcir/contract/roles/core.nim` — the optional `RoleDef.expects` field.
-- `src/nimcir/contract/design.nim`, `src/nimcir/contract/dsl.nim` — `from = <Interface>` on `role`,
+- `src/verax/analysis/io_check.nim` — the declared-shared-bus exception in `checkOutputConflicts`.
+- `src/verax/verify.nim` — `validateInterfaces` into `structural`; `describeInterfaces`/`describeInterface`.
+- `src/verax/cli.nim` — two verbs, usage, `env` count, the std import.
+- `src/verax/contract/evaluators/static.nim` — the second source for `controller_count`.
+- `src/verax/contract/roles/core.nim` — the optional `RoleDef.expects` field.
+- `src/verax/contract/design.nim`, `src/verax/contract/dsl.nim` — `from = <Interface>` on `role`,
   and `addImpliedRoles` appended in `buildDesignBody`.
 - `designs/i2c_eeprom.nim` — rewritten to declare the bus, as the worked before/after.
-- Docs: `src/nimcir/netlist/CLAUDE.md` (the module, the naming rule, the attrs it owns, and that a
-  copied `Bus` carries no authority), `src/nimcir/contract/CLAUDE.md`, `docs/authoring.md` and
+- Docs: `src/verax/netlist/CLAUDE.md` (the module, the naming rule, the attrs it owns, and that a
+  copied `Bus` carries no authority), `src/verax/contract/CLAUDE.md`, `docs/authoring.md` and
   `cli.nim`'s `guideText`, `docs/architecture.md` §9's table, and a `docs/findings.md` entry for
   nested interfaces and for bus glyphs.
 
@@ -553,7 +553,7 @@ Every existing design keeps its meaning. `netsOf`-based port lists produce the i
 for scalar ports; `promotePortDirections` is a no-op without `iface.dir`; the `io_check` exception
 requires a declared shared signal, so no existing warning disappears; a def without `implies` adds no
 roles; the annotation registry, the deck writer and the reader are untouched. The one visible change
-to an unmodified design is that `nimcir env` reports an extra count.
+to an unmodified design is that `verax env` reports an extra count.
 
 One widening is worth stating plainly: an `iface` statement inside `design(...)` can now create
 contract obligations, which no netlist statement previously did. It stays inert inside a plain
@@ -593,25 +593,25 @@ contract obligations, which no netlist statement previously did. It stays inert 
 
 ### Coordination note
 
-`src/nimcir/netlist/packages.nim` (multipart components) adds `validatePackages` to the same
+`src/verax/netlist/packages.nim` (multipart components) adds `validatePackages` to the same
 `structural` list and modifies the same `buildNetlistBody` dispatcher. No semantic conflict, but land
 that work first or expect textual conflicts in both files.
 
 ## Verification
 
 ```
-nim check --path:./src src/nimcir/netlist/interfaces.nim
+nim check --path:./src src/verax/netlist/interfaces.nim
 nim c -r --path:./src tests/test_netlist_bus.nim
 nim c -r --path:./src tests/test_netlist_interface.nim
 nim c -r --path:./src tests/test_netlist_interface_erc.nim
 nim c -r --path:./src tests/test_contract_interface.nim
 nimble test 2>&1 | grep -cE "FAILED|Error:"     # must print 0 -- exit code means nothing
-nimble build && ./bin/nimcir interfaces && ./bin/nimcir interface i2c && ./bin/nimcir role i2c
-./bin/nimcir check designs/i2c_eeprom.nim       # before/after the rewrite
+nimble build && ./bin/verax interfaces && ./bin/verax interface i2c && ./bin/verax role i2c
+./bin/verax check designs/i2c_eeprom.nim       # before/after the rewrite
 nimble verify
 ```
 
-The end-to-end check that the feature did what it claims: `NIMCIR_KEEP_RUNS=1 ./bin/nimcir check
+The end-to-end check that the feature did what it claims: `VERAX_KEEP_RUNS=1 ./bin/verax check
 designs/i2c_eeprom.nim`, then confirm the emitted deck names `i2c0_sda`/`i2c0_scl` where it named
 `sda`/`scl`, that the topology is otherwise byte-identical, and that the readiness report's STRUCTURE
 section has lost the two `output_conflict` warnings and gained a `controller_count` verdict.
@@ -622,6 +622,6 @@ Interfaces are authored with `interfaceDef`, realised with `iface`, and wired
 through `port`. Interface definitions lower to scalar nets and pins. A role can
 bind matching interface signals with ``role "i2c", bus, `from` = i2c``;
 backticks are required because `from` is a Nim keyword. Import
-`nimcir/netlist/interfaces/std` for the standard I2C, SPI, and UART definitions.
-Use `nimcir interfaces` and `nimcir interface <name>` to inspect the live
+`verax/netlist/interfaces/std` for the standard I2C, SPI, and UART definitions.
+Use `verax interfaces` and `verax interface <name>` to inspect the live
 catalogue.

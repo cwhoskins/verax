@@ -1,6 +1,6 @@
 import std/[tables, unittest]
 
-import nimcir/netlist
+import verax/netlist
 
 test "hand-built netlist is walkable both ways":
   let nl = newNetlist("divider")

@@ -1,10 +1,10 @@
 import std/[strutils, tables, unittest]
 
-import nimcir/netlist/dsl
-import nimcir/netlist/annotations
-import nimcir/units
-import nimcir/spice/isolate
-import nimcir/spice/models
+import verax/netlist/dsl
+import verax/netlist/annotations
+import verax/units
+import verax/spice/isolate
+import verax/spice/models
 
 proc board(): Netlist =
   ## An op-amp with an input divider and feedback, its own decoupling cap on
@@ -218,7 +218,7 @@ test "two distinct grounds are a design decision, not a transform":
 
 # --- annotations and role membership across the cut --------------------
 
-import nimcir/contract
+import verax/contract
 
 test "annotations and role membership survive isolation, rename included":
   # The decisive case for storing this on the entity rather than in a

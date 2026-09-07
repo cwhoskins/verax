@@ -46,7 +46,7 @@
 ## Datasheet figures (LT8640A Rev. 0) are the parameter defaults, so a deck
 ## that states nothing gets the real part.
 
-import nimcir/spice/xspice/dsl
+import verax/spice/xspice/dsl
 
 codeModel "lt8640a_avg":
   description "lt8640a averaged step-down controller: reference, soft start, en, pg"

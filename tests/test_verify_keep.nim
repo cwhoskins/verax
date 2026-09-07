@@ -22,9 +22,9 @@
 
 import std/[json, os, strutils, tempfiles, unittest]
 
-import nimcir/contract/dsl
-import nimcir/schematic
-import nimcir/verify
+import verax/contract/dsl
+import verax/schematic
+import verax/verify
 
 import designs/lib/riaa
 
@@ -229,9 +229,9 @@ proc riaaBoard(): Design =
          fFrom = 20.Hz, fTo = 20.kHz, maxGainDelta = 0.5.dB
 
 test "runFULL.svg and its json scene are written before readiness, even with no simulation":
-  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  let dir = createTempDir("verax_verifykeeptest_", "")
   defer: removeDir(dir)
-  withEnv("NIMCIR_KEEP_RUNS", dir):
+  withEnv("VERAX_KEEP_RUNS", dir):
     discard verify(bareBoard(), offlineCapabilities)
 
   check fileExists(dir / "runFULL.svg")
@@ -250,9 +250,9 @@ test "runFULL.svg and its json scene are written before readiness, even with no 
   check readFile(dir / "runFULL.json") == sceneToJsonString(bareBoard().netlist)
 
 test "a subcircuit gets its own runFULL.<name> svg+json sheet, deduped by name":
-  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  let dir = createTempDir("verax_verifykeeptest_", "")
   defer: removeDir(dir)
-  withEnv("NIMCIR_KEEP_RUNS", dir):
+  withEnv("VERAX_KEEP_RUNS", dir):
     discard verify(twoChannelBoard(), offlineCapabilities)
 
   check fileExists(dir / "runFULL.svg")
@@ -280,9 +280,9 @@ test "a subcircuit gets its own runFULL.<name> svg+json sheet, deduped by name":
   check not fileExists(dir / "index.txt")
 
 test "runFULL.html is a self-contained hierarchy browser linking blocks to sheets":
-  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  let dir = createTempDir("verax_verifykeeptest_", "")
   defer: removeDir(dir)
-  withEnv("NIMCIR_KEEP_RUNS", dir):
+  withEnv("VERAX_KEEP_RUNS", dir):
     discard verify(twoChannelBoard(), offlineCapabilities)
 
   check fileExists(dir / "runFULL.html")
@@ -315,9 +315,9 @@ test "runFULL.html is a self-contained hierarchy browser linking blocks to sheet
   check model["sheets"]["@root"]["svg"].getStr.startsWith("<svg")
 
 test "same-named children get distinct sheets when their rendered scenes differ":
-  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  let dir = createTempDir("verax_verifykeeptest_", "")
   defer: removeDir(dir)
-  withEnv("NIMCIR_KEEP_RUNS", dir):
+  withEnv("VERAX_KEEP_RUNS", dir):
     discard verify(sameNameVariantBoard(), offlineCapabilities)
 
   # The first occurrence keeps the legacy name; later non-equivalent ones are
@@ -334,9 +334,9 @@ test "same-named children get distinct sheets when their rendered scenes differ"
   check linked == @["GAIN_BLOCK", "GAIN_BLOCK.2"]
 
 test "same-named parents split when their resolved descendants differ":
-  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  let dir = createTempDir("verax_verifykeeptest_", "")
   defer: removeDir(dir)
-  withEnv("NIMCIR_KEEP_RUNS", dir):
+  withEnv("VERAX_KEEP_RUNS", dir):
     discard verify(descendantVariantBoard(), offlineCapabilities)
 
   check fileExists(dir / "runFULL.LEAF.svg")
@@ -351,21 +351,21 @@ test "same-named parents split when their resolved descendants differ":
   check model["sheets"]["PARENT.2"]["parts"][0]["child"].getStr == "LEAF.2"
 
 test "sanitized child-name collisions also receive globally unique IDs":
-  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  let dir = createTempDir("verax_verifykeeptest_", "")
   defer: removeDir(dir)
-  withEnv("NIMCIR_KEEP_RUNS", dir):
+  withEnv("VERAX_KEEP_RUNS", dir):
     discard verify(safeNameCollisionBoard(), offlineCapabilities)
 
   check fileExists(dir / "runFULL.A_B.svg")
   check fileExists(dir / "runFULL.A_B.2.svg")
 
 test "the archive uses the constrained layout selected through the environment":
-  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  let dir = createTempDir("verax_verifykeeptest_", "")
   defer: removeDir(dir)
   var options = defaultLayoutOptions()
   options.policy = lpConstrainedLayered
-  withEnv("NIMCIR_KEEP_RUNS", dir):
-    withEnv("NIMCIR_SCHEMATIC_LAYOUT", "constrained-layered"):
+  withEnv("VERAX_KEEP_RUNS", dir):
+    withEnv("VERAX_SCHEMATIC_LAYOUT", "constrained-layered"):
       discard verify(twoChannelBoard(), offlineCapabilities)
 
   check readFile(dir / "runFULL.json") ==
@@ -374,9 +374,9 @@ test "the archive uses the constrained layout selected through the environment":
         sceneToJsonString(layout(gainBlock(), options))
 
 test "a flat design writes only runFULL.svg and runFULL.json":
-  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  let dir = createTempDir("verax_verifykeeptest_", "")
   defer: removeDir(dir)
-  withEnv("NIMCIR_KEEP_RUNS", dir):
+  withEnv("VERAX_KEEP_RUNS", dir):
     discard verify(bareBoard(), offlineCapabilities)
   check fileExists(dir / "runFULL.svg")
   check fileExists(dir / "runFULL.json")
@@ -386,12 +386,12 @@ test "a flat design writes only runFULL.svg and runFULL.json":
     check false  # no runFULL.<name>.json either
 
 test "a child sheet is overwritten, not slotted":
-  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  let dir = createTempDir("verax_verifykeeptest_", "")
   defer: removeDir(dir)
   createDir(dir)
   writeFile(dir / "runFULL.GAIN_BLOCK.svg", "sentinel")
   writeFile(dir / "runFULL.GAIN_BLOCK.json", "sentinel")
-  withEnv("NIMCIR_KEEP_RUNS", dir):
+  withEnv("VERAX_KEEP_RUNS", dir):
     discard verify(twoChannelBoard(), offlineCapabilities)
   let child = readFile(dir / "runFULL.GAIN_BLOCK.svg")
   check child.startsWith("<?xml")
@@ -401,12 +401,12 @@ test "a child sheet is overwritten, not slotted":
   check parseJson(childScene).hasKey("parts")
 
 test "runFULL.svg and runFULL.json are overwritten, not appended or slotted":
-  let dir = createTempDir("nimcir_verifykeeptest_", "")
+  let dir = createTempDir("verax_verifykeeptest_", "")
   defer: removeDir(dir)
   createDir(dir)
   writeFile(dir / "runFULL.svg", "sentinel")
   writeFile(dir / "runFULL.json", "sentinel")
-  withEnv("NIMCIR_KEEP_RUNS", dir):
+  withEnv("VERAX_KEEP_RUNS", dir):
     discard verify(bareBoard(), offlineCapabilities)
 
   let svg = readFile(dir / "runFULL.svg")
@@ -421,9 +421,9 @@ suite "runFULL.svg beside the derived runNNN.svg":
     echo "  [skipped: ngspice not found on PATH]"
   else:
     test "the authored design and the derived fragment both appear, and only the run is indexed":
-      let dir = createTempDir("nimcir_verifykeeptest_", "")
+      let dir = createTempDir("verax_verifykeeptest_", "")
       defer: removeDir(dir)
-      withEnv("NIMCIR_KEEP_RUNS", dir):
+      withEnv("VERAX_KEEP_RUNS", dir):
         discard verify(dividerBoard(), allCapabilities)
 
       check fileExists(dir / "runFULL.svg")
@@ -465,9 +465,9 @@ suite "runFULL.svg beside the derived runNNN.svg":
         # not fallback markers. ~140s, almost all of it one `layout()` of the
         # derived fragment -- hence `-d:slowTests`. The authored-side half of
         # this property is pinned cheaply below, off `{capStatic}`.
-        let dir = createTempDir("nimcir_riaaregress_", "")
+        let dir = createTempDir("verax_riaaregress_", "")
         defer: removeDir(dir)
-        withEnv("NIMCIR_KEEP_RUNS", dir):
+        withEnv("VERAX_KEEP_RUNS", dir):
           discard verify(riaaBoard(), allCapabilities)
 
         check fileExists(dir / "run000.svg")
@@ -492,9 +492,9 @@ test "the RIAA archive keeps a routed authored design and child sheet":
   # so no derived fragment is simulated (~2s rather than ~140s). The full
   # top sheet and the `RIAA_CHANNEL` child sheet both come from the design as
   # written, so they are written even with no run.
-  let dir = createTempDir("nimcir_riaaauthored_", "")
+  let dir = createTempDir("verax_riaaauthored_", "")
   defer: removeDir(dir)
-  withEnv("NIMCIR_KEEP_RUNS", dir):
+  withEnv("VERAX_KEEP_RUNS", dir):
     discard verify(riaaBoard(), {capStatic})
 
   check fileExists(dir / "runFULL.svg")

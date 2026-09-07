@@ -55,7 +55,7 @@
 ## release, `dsZero`/`dgStrong` to pull down -- so the clock is something the
 ## bus can hold down even though nothing here does.
 
-import nimcir/spice/xspice/dsl
+import verax/spice/xspice/dsl
 
 const
   mcuProgMax* = 176

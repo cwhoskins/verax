@@ -2,7 +2,7 @@
 description: Plan, implement, and test a feature through specialized agents
 argument-hint: "<feature description>"
 ---
-Run the nimcir agent pipeline for this feature request:
+Run the verax agent pipeline for this feature request:
 
 $ARGUMENTS
 

@@ -1,6 +1,6 @@
 ## Whether the parts on a rail are being used within what they can take.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## Every other template here asks whether the circuit *works*. This one asks
 ## whether it will keep working, which is a different question and changes
@@ -44,8 +44,8 @@
 ## needs a `.tran`. For a converter that is the failure mode that matters, so
 ## do not read a clean report here as a statement about either.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("derating"):
   environment:

@@ -19,7 +19,7 @@ let swModel = repoRoot / "designs" / "lib" / "lt8640a_sw.nim"
 proc renderViaDsl(model: string): string =
   ## Compile the example model in interface-only mode, run it, read the
   ## `ifspec.ifs` it writes. This is exactly step 1 of the `.cm` pipeline.
-  let bd = createTempDir("nimcir_dsltest_", "")
+  let bd = createTempDir("verax_dsltest_", "")
   defer: removeDir(bd)
   let exe = bd / "genifs"
   let (output, code) = execCmdEx(quoteShellCommand(@[

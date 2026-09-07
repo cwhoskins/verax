@@ -1,6 +1,6 @@
 import std/[streams, strutils, unittest]
 
-import nimcir/ibis
+import verax/ibis
 
 const sample = """
 [IBIS Ver]   3.2

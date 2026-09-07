@@ -1,4 +1,4 @@
-## Example: build a netlist with the `nimcir/netlist/dsl` macro DSL, then
+## Example: build a netlist with the `verax/netlist/dsl` macro DSL, then
 ## write it out as a SPICE deck.
 ##
 ## Run with:
@@ -6,8 +6,8 @@
 
 import std/[streams, tables]
 
-import nimcir/netlist/dsl
-import nimcir/netlist/formats/spice
+import verax/netlist/dsl
+import verax/netlist/formats/spice
 
 let nl = netlist("divider"):
   net vin, kind = ntSignal

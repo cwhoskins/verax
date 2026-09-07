@@ -1,16 +1,16 @@
-# Authoring a nimcir design
+# Authoring a verax design
 
 A design is an ordinary Nim file. You state what the circuit *is* and what it
-must *do*; `nimcir check` decides what to measure, measures it, and reports.
+must *do*; `verax check` decides what to measure, measures it, and reports.
 
-    nimcir new rail designs/vdd.nim     # start from a template
-    nimcir check designs/vdd.nim        # check it
+    verax new rail designs/vdd.nim     # start from a template
+    verax check designs/vdd.nim        # check it
 
 ## The shape of a design file
 
 ```nim
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("board_name"):
   net gnd, kind = ntGround, name = "0"
@@ -50,7 +50,7 @@ Add `name = "0"` to give the net a different SPICE name from its identifier.
 
 ### Interfaces
 
-Import `nimcir/netlist/interfaces/std` for the standard I2C, SPI and UART
+Import `verax/netlist/interfaces/std` for the standard I2C, SPI and UART
 catalogue. `iface spi, spiInterface(2)` creates scalar SCLK, MOSI and MISO
 nets plus a two-member chip-select bus. A `port spi, controller` or `port spi,
 peripheral` connects every member with its declared direction; map wide members
@@ -62,7 +62,7 @@ recovers parameterized widths from graph metadata after cloning or hierarchy.
 
 **`spec:`** — typed annotations, checked **at compile time**. A misspelled key
 or one used on the wrong kind of entity fails the build rather than being
-silently ignored. Run `nimcir annotations` for the live list. Values take unit
+silently ignored. Run `verax annotations` for the live list. Values take unit
 literals, and the unit is checked: `esr = 20.nF` will not compile.
 
 **Passive ratings.** `dielectric`, `voltage_rating`, `current_rating`, `isat`
@@ -72,7 +72,7 @@ Y5V) loses capacitance under DC bias, and an unstated one is assumed to be X7R
 and derated accordingly. State `dielectric = "C0G"` on a capacitor that sets a
 frequency or a time constant — Class 1 does not derate at all, and that is what
 keeps a filter corner where you put it. `voltage_rating` feeds both the derating
-and `nimcir`'s check that the part is inside it; add `maxDerating` to a
+and `verax`'s check that the part is inside it; add `maxDerating` to a
 `power_rail` role to claim that.
 
 **Connectors.** Write `kind = "connector"` and give it the pins it has. A
@@ -129,7 +129,7 @@ transient run.
 
 **`role "<name>", <instance>, part = <net-or-component>, param = <value>`** —
 a role is a parameterized bundle of assertions, and some roles also *write*
-annotations onto the netlist. Run `nimcir roles` and `nimcir role <name>`.
+annotations onto the netlist. Run `verax roles` and `verax role <name>`.
 
 `without = "<claim>"` declines one of a role's claims, comma-separated for
 several. Use it when a claim cannot be measured on your topology — a
@@ -221,11 +221,11 @@ complete, so build the parts conditionally and state the claims after.
 
 **`require <quantity>(<subjects>) <op> <value>`** — `==`, `>=`, `<=`, with
 optional `id = "..."`, `because = "..."`, and condition keys such as
-`f_from` / `f_to` / `at_t`. Run `nimcir quantities` for what can be measured.
+`f_from` / `f_to` / `at_t`. Run `verax quantities` for what can be measured.
 
 Most quantities take one subject. A few take two — `gain_delta_max_db(left,
 right)` is one channel *versus* another — and `require q(a, b) <= x` spells
-that with no extra syntax. `nimcir quantities` marks such a quantity `2
+that with no extra syntax. `verax quantities` marks such a quantity `2
 subjects`, and a `require` with the wrong count is refused at plan time
 naming the arity. When the two subjects are themselves role instances — as
 `channel_match` binds two stages — write `roleRef("<instance name>")`, and
@@ -264,7 +264,7 @@ the claim inspectable.
 
 ## Writing a role of your own
 
-`nimcir quantities` marks each quantity with how it can be claimed:
+`verax quantities` marks each quantity with how it can be claimed:
 
 | marker | meaning |
 |---|---|
@@ -315,7 +315,7 @@ Three things carry the weight:
   evaluator has for the bindings, and without it the claim comes back
   `not evaluable`.
 - **The `parts` names must match what the evaluator looks for** — the column
-  in `nimcir quantities` tells you which (`opamp/input`, `regulator/output`,
+  in `verax quantities` tells you which (`opamp/input`, `regulator/output`,
   `controller`).
 - **Claim only what was stated.** `if hasParam(...)` is the convention, so
   omitting a parameter claims nothing rather than inventing a default the
@@ -379,7 +379,7 @@ Three parts, and each answers a different question:
 - **`ran:`** — what was actually simulated, in words. The fragment handed to
   ngspice is *derived* — isolated, terminated, model-substituted — so it is
   never the netlist you wrote, and this is what says which analysis produced
-  the number and what it does and does not cover. (`NIMCIR_KEEP_DECKS=<dir>`
+  the number and what it does and does not cover. (`VERAX_KEEP_DECKS=<dir>`
   writes out the decks themselves; `--keep-runs=<dir>` writes out the decks,
   the raw results, ngspice's log, and an SVG schematic with its JSON scene,
   with an `index.txt` saying which run is which — see below. Use
@@ -408,7 +408,7 @@ figure, an impedance across the sweep rather than its worst point — ask for th
 run archive:
 
 ```
-nimcir check --keep-runs=./runs designs/sensor_node.nim
+verax check --keep-runs=./runs designs/sensor_node.nim
 ```
 
 That leaves one deck, one rawfile, one ngspice log, one SVG schematic and its
@@ -992,7 +992,7 @@ definition, like a role):
 
 ```nim
 # designs/lib/opamps.nim
-import nimcir/netlist/packages
+import verax/netlist/packages
 export packages
 
 registerPackage(newPackageDef("NE5532", [
@@ -1059,7 +1059,7 @@ onto is a board respin.
 
 ```nim
 # designs/lib/stm32h563.nim
-import nimcir/netlist/pinmux
+import verax/netlist/pinmux
 
 registerPartPinmux(newPartPinmux("STM32H563",
   partNumbers = ["STM32H563ZIT6"],
@@ -1140,7 +1140,7 @@ specific subset), `--verbose` (show the full plan and the passing assertions),
 `--schematic-layout=historical|constrained-layered` (choose the layout used
 only for SVG/JSON artifacts in a run archive; `historical` is the default).
 The same archive-only selection can be supplied as
-`NIMCIR_SCHEMATIC_LAYOUT=historical|constrained-layered`.
+`VERAX_SCHEMATIC_LAYOUT=historical|constrained-layered`.
 
 ## Numbers the tool invents for you
 

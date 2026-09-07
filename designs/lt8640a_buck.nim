@@ -1,6 +1,6 @@
 ## The LT8640A front-page reference design: 12 V in, 5 V at 5 A.
 ##
-##   nimcir check designs/lt8640a_buck.nim
+##   verax check designs/lt8640a_buck.nim
 ##
 ## Analog Devices' own typical application for a 42 V, 5 A synchronous
 ## step-down Silent Switcher, built exactly as the datasheet draws it
@@ -56,8 +56,8 @@
 ## part's -- which is not published. A margin measured through either would be
 ## a claim about the model.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 import ./lib/lt8640a
 

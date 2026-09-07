@@ -8,9 +8,9 @@
 
 import std/[math, tables, unittest]
 
-import nimcir/netlist
-import nimcir/contract
-import nimcir/units
+import verax/netlist
+import verax/contract
+import verax/units
 
 import "../designs/lib/xbar_parts"
 

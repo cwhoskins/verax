@@ -41,9 +41,9 @@
 
 import std/math
 
-import nimcir/contract/dsl
-import nimcir/netlist/formats/spice as spiceFormat
-import nimcir/parts
+import verax/contract/dsl
+import verax/netlist/formats/spice as spiceFormat
+import verax/parts
 
 proc sallenKeyLP*(fc: Hertz, r = 10.kohm, q = 0.70710678,
                   gbw = 10.MHz, parts = defaultPolicy()): Netlist =

@@ -6,9 +6,9 @@
 
 import std/[os, strutils, tables, unittest]
 
-import nimcir/contract/dsl
-import nimcir/verify
-import nimcir/netlist/packages
+import verax/contract/dsl
+import verax/verify
+import verax/netlist/packages
 
 # --- fixtures -----------------------------------------------------------
 
@@ -203,15 +203,15 @@ suite "capabilities":
           "constrained-layered"
 
   test "the schematic-layout flag bridges to the archive environment":
-    let had = existsEnv("NIMCIR_SCHEMATIC_LAYOUT")
-    let old = getEnv("NIMCIR_SCHEMATIC_LAYOUT")
+    let had = existsEnv("VERAX_SCHEMATIC_LAYOUT")
+    let old = getEnv("VERAX_SCHEMATIC_LAYOUT")
     try:
       discard verifyMain(claimingNothing(),
         @["--offline", "--schematic-layout=constrained-layered"])
-      check getEnv("NIMCIR_SCHEMATIC_LAYOUT") == "constrained-layered"
+      check getEnv("VERAX_SCHEMATIC_LAYOUT") == "constrained-layered"
     finally:
-      if had: putEnv("NIMCIR_SCHEMATIC_LAYOUT", old)
-      else: delEnv("NIMCIR_SCHEMATIC_LAYOUT")
+      if had: putEnv("VERAX_SCHEMATIC_LAYOUT", old)
+      else: delEnv("VERAX_SCHEMATIC_LAYOUT")
 
   test "an unknown capability is rejected rather than ignored":
     # `dc` used to be the example here, which is what an enum member's

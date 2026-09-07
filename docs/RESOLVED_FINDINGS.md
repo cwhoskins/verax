@@ -242,7 +242,7 @@ guitar-pedal and single-supply sensor front end.
 role parameters, and the custom-role path is documented. Tests in
 `tests/test_cli_discovery.nim`.
 
-**What it was.** `nimcir quantities` listed 26. A design with a bare `require` for all 26 gets
+**What it was.** `verax quantities` listed 26. A design with a bare `require` for all 26 gets
 **10 evaluated and 16 `not evaluable`** — the 16 need topology the assertion
 does not carry (which component drives the rail, which part is the
 amplifier), recovered from the role that expanded the claim.
@@ -263,7 +263,7 @@ using no privileged mechanism, exactly as the design intends. But nothing
 tells a reader that. The error message says "bind a `regulator` part on the
 role that expands this claim" without mentioning that no built-in role does.
 
-Suggested: mark reachability in `nimcir quantities`; add the missing
+Suggested: mark reachability in `verax quantities`; add the missing
 parameters to the built-in roles; document the custom-role path in
 `docs/authoring.md`, since it turned out to be the single most useful
 extension point and is currently undocumented.
@@ -307,12 +307,12 @@ it does not claim that. It claims phase_margin, peaking
 
 ## 8. `deg` and `dB` have no unit literal
 
-**Fixed.** `Degrees` and `Decibels` in `nimcir/units`. Tests in
+**Fixed.** `Degrees` and `Decibels` in `verax/units`. Tests in
 `tests/test_units.nim`.
 
 **What it was.**
-`nimcir role opamp_stage` advertises `minPhaseMargin [deg]` and
-`maxPeaking [dB]`, but `nimcir/units` has no such suffix, so:
+`verax role opamp_stage` advertises `minPhaseMargin [deg]` and
+`maxPeaking [dB]`, but `verax/units` has no such suffix, so:
 
 ```nim
 role "opamp_stage", drive, ..., minPhaseMargin = 50.deg   # compile error
@@ -788,7 +788,7 @@ Three things fell out of making it work end to end:
 - **Importing a code model dragged in the FFI**, which needs ngspice's MIF
   headers — so a design instantiating one could not compile on a machine with
   ngspice but not its sources. The entry point is only ever wanted by
-  `buildCodeModel`; `nimcir check` now passes `-d:xspiceSpecOnly` and gets the
+  `buildCodeModel`; `verax check` now passes `-d:xspiceSpecOnly` and gets the
   `ModelSpec` without the implementation.
 - **`findToolchain` required `$NGSPICE_SRC`** even when a configured tree sat in
   the cache directory. Forgetting the variable did not fail loudly, it made the
@@ -816,7 +816,7 @@ Treating those as fatal declared the TS808's bias-finding `.op` a failure, which
 took its large-signal drive offset to 0 V and its output swing with it. Tests:
 `tests/test_spice_ngspice.nim`, both directions.
 
-Also added while chasing this: `$NIMCIR_KEEP_DECKS` copies each deck handed to
+Also added while chasing this: `$VERAX_KEEP_DECKS` copies each deck handed to
 ngspice into a directory. Every fragment simulated here is *derived* — isolated,
 terminated, model-substituted — so it is not the netlist anyone wrote, and
 reasoning about a surprising number from the design file alone is guesswork.
@@ -946,7 +946,7 @@ part in the module *and* still leave the board guessing at function. A pass that
 annotates the netlist afterwards loses the compile-time checking a `spec:` block
 gives and has to address parts by generated name.
 
-`nimcir/parts` is the answer: the module states a `CapRequest` carrying a value
+`verax/parts` is the answer: the module states a `CapRequest` carrying a value
 and a **use**, the board supplies a `PartPolicy`, `applyChoice` writes the result
 as ordinary registered annotations. Proc-valued like `RoleDef`, so a policy built
 at runtime from a preferred-parts database is not second class.
@@ -1207,7 +1207,7 @@ had to answer before it could be modelled at all.
 Two things deliberately not modelled, stated rather than discovered: a fuse
 **blowing** (an I^2t integral over a fault -- a design check asks whether the
 circuit works, not what it does while failing), and trace inductance (roughly a
-nanohenry a millimetre, and a netlist carries no length; that is `nimcir/pcb`'s
+nanohenry a millimetre, and a netlist carries no length; that is `verax/pcb`'s
 question).
 
 ### The part that matters
@@ -2344,7 +2344,7 @@ were rewritten, and the design gained `fSw = 1.0e6` on its
 ## 26 (part). No coupled inductors, and no switch device model
 
 Two of the seven library gaps `designs/xbar_switch.nim` turned up (§26) were
-device-model holes in `src/nimcir/spice/models/`. Both are now filled.
+device-model holes in `src/verax/spice/models/`. Both are now filled.
 
 ### Coupled inductors — `spice/models/magnetics.nim`
 
@@ -2429,7 +2429,7 @@ gated on ngspice for the runs. `nimble verify` exercises the designs.
 **What it was.** `b385e8b` gave the netlist buses and declared interfaces, but
 only as an *authoring* view: `netlist/interfaces.nim` lowers everything to
 scalar nets and records membership in `Net.attrs`. Nothing in
-`src/nimcir/schematic/` read any of it, so a bus was invisible to the picture.
+`src/verax/schematic/` read any of it, so a bus was invisible to the picture.
 On `designs/lib/spi_memory.nim`'s `SPI_MEMORY` sheet, one SPI link to one chip
 drew as **3 port pennants + 3 thin wires**, with `U1` sized at `rows = 5`
 (`bodyH` 272). `designs/spi_memories.nim`'s top drew its three shared SPI links
@@ -2437,7 +2437,7 @@ as 15 ordinary thin wires among an MCU and six memory instances.
 `docs/buses_and_interfaces.md` had booked this as known-out-of-scope: "a bus
 glyph and a ripper are a schematic-layer feature".
 
-**The fix.** `src/nimcir/schematic/bundles.nim` — a read-only index built in
+**The fix.** `src/verax/schematic/bundles.nim` — a read-only index built in
 `prepare`, before any symbol is sized, reading the `bus.*`/`iface.*` **net**
 attrs directly (never `findBus`/`findInterface`, which rescan, need a process
 registry and mutate `bus.index`; never a *pin* attr, which

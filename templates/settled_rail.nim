@@ -1,6 +1,6 @@
 ## What a rail is still doing once it has stopped arriving.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## A 5 V supply feeding a load that switches on and off at 100 kHz -- an MCU
 ## waking to sample, a converter's input, anything that draws in bursts. The
@@ -26,8 +26,8 @@
 ## settled is a judgement about the circuit, and a detector that guessed
 ## wrong would be confidently wrong.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("settled_rail"):
   net gnd,   kind = ntGround, name = "0"

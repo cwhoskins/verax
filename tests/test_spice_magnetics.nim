@@ -3,11 +3,11 @@
 
 import std/[os, osproc, streams, strutils, tables, unittest]
 
-import nimcir/netlist
-import nimcir/netlist/formats/spice
-import nimcir/netlist/annotations
-import nimcir/spice/models
-import nimcir/spice/isolate
+import verax/netlist
+import verax/netlist/formats/spice
+import verax/netlist/annotations
+import verax/spice/models
+import verax/spice/isolate
 
 proc xfmr(attrs: openArray[(string, string)]): Netlist =
   result = newNetlist("t")
@@ -133,7 +133,7 @@ test "and no DC path across the barrier":
       rlg.attrs["value"] = "1meg"
       discard expandCoupledInductors(nl)
 
-      let dir = getTempDir() / "nimcir_mag_test"
+      let dir = getTempDir() / "verax_mag_test"
       createDir(dir)
       let deck = dir / "t.cir"
       let s = newFileStream(deck, fmWrite)

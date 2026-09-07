@@ -1,6 +1,6 @@
 ## Ibanez TS808 "Tube Screamer" -- the drive stage.
 ##
-##   nimcir check designs/ts808_drive.nim
+##   verax check designs/ts808_drive.nim
 ##
 ## The most-cloned overdrive circuit there is, and a good stress test: a
 ## single-supply op-amp stage running off a 9 V battery with a synthesised
@@ -23,8 +23,8 @@
 ##     The gain measured here is the undistorted gain, which is the correct
 ##     thing to check the bandwidth and stability of.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("ts808_drive"):
   net gnd,  kind = ntGround, name = "0"

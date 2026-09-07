@@ -1,7 +1,7 @@
 import std/[streams, strutils, unittest]
 
-import nimcir/netlist
-import nimcir/ibis
+import verax/netlist
+import verax/ibis
 
 const oneBuf = """
 [IBIS Ver] 3.2

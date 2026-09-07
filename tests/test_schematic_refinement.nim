@@ -11,8 +11,8 @@
 ## meaning if either constant is ever retuned.
 
 import std/unittest
-import nimcir/netlist
-include nimcir/schematic/layout
+import verax/netlist
+include verax/schematic/layout
 
 proc part(designator: string, x, y: float, w = 80.0, h = 80.0): SchematicPart =
   SchematicPart(designator: designator, kind: "resistor", symbol: "resistor",

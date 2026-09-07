@@ -7,8 +7,8 @@
 ## controller rather than strap it high on the sheet.
 
 import std/tables
-import nimcir/netlist/dsl
-import nimcir/netlist/interfaces
+import verax/netlist/dsl
+import verax/netlist/interfaces
 
 let spiMemoryLink = interfaceDef("spi_memory_link"):
   signal sclk

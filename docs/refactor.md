@@ -1,6 +1,6 @@
 Direct observations
 
- - Public entry point is layout*(nl: Netlist): Schematic in src/nimcir/schematic/layout.nim.
+ - Public entry point is layout*(nl: Netlist): Schematic in src/verax/schematic/layout.nim.
  - layout.nim is a compatibility façade that includes implementation units:
      - geometry.nim
      - symbols.nim
@@ -10,7 +10,7 @@ Direct observations
      - labels.nim
      - diagnostics.nim
  - Included units share private symbols and state, so stages are not independently importable or replaceable today.
- - src/nimcir/schematic/scene.nim is the stable renderer-neutral public data contract. SVG and JSON consume Schematic; they do not participate in layout.
+ - src/verax/schematic/scene.nim is the stable renderer-neutral public data contract. SVG and JSON consume Schematic; they do not participate in layout.
  - Existing public overloads include layout, renderSvg(Netlist|Schematic), JSON serialization, and fallback diagnostics.
 
  ### Current stage sequence
@@ -61,7 +61,7 @@ Direct observations
 
  Add an internal module, for example:
 
- src/nimcir/schematic/pipeline_types.nim
+ src/verax/schematic/pipeline_types.nim
 
  Define explicit state/artifact objects:
 

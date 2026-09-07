@@ -1,6 +1,6 @@
 ## The carrier board: USB in, 3.3 V out to a sensor head.
 ##
-##   nimcir check designs/carrier.nim
+##   verax check designs/carrier.nim
 ##
 ## **This file is both a board and a program.** Checked directly it is the
 ## primary circuit: `when isMainModule` below states what is plugged into each
@@ -27,7 +27,7 @@
 ## the same rail's claim against the board that is actually plugged in, and
 ## gets a different answer.
 
-import nimcir/contract/dsl
+import verax/contract/dsl
 import ./lib/parts
 
 proc carrierBoard*(): Netlist =
@@ -94,8 +94,8 @@ proc carrierBoard*(): Netlist =
         voltage_rating = 10.0.V
 
 when isMainModule:
-  import nimcir/verify
-  import nimcir/spice/boundary
+  import verax/verify
+  import verax/spice/boundary
 
   # The board on the bench. Both edges have to be described: a supply at the
   # USB receptacle and a load at the output, because a regulator with nothing

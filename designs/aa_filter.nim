@@ -1,6 +1,6 @@
 ## A 4th-order Butterworth anti-aliasing filter, 20 kHz, split rails.
 ##
-##   nimcir check designs/aa_filter.nim
+##   verax check designs/aa_filter.nim
 ##
 ## Two unity-gain Sallen-Key sections in cascade, the standard front end for
 ## an audio-band ADC. It is here as the deliberate *contrast* to
@@ -23,8 +23,8 @@
 ## across the break. Each stage declines that one claim rather than carrying
 ## it unchecked in every run.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 import ./lib/opamps
 

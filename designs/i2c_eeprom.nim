@@ -1,6 +1,6 @@
 ## An I2C EEPROM on a bus, and a controller that actually talks to it.
 ##
-##   nimcir check designs/i2c_eeprom.nim
+##   verax check designs/i2c_eeprom.nim
 ##
 ## Every other design here asks what a circuit *is*: where a rail sits, what
 ## a stage's gain is, how much impedance a decoupling network presents. This
@@ -13,7 +13,7 @@
 ## Both parts are Nim-authored XSPICE code models
 ## (`designs/lib/m24c64.nim`, `designs/lib/dummy_mcu.nim`), attached to the
 ## real components by `designs/lib/i2c_parts.nim` and never appearing in the
-## design netlist itself -- so a BoM, a layout or `nimcir explain` still sees
+## design netlist itself -- so a BoM, a layout or `verax explain` still sees
 ## an EEPROM and a microcontroller.
 ##
 ## ### What is mixed-signal about it
@@ -70,15 +70,15 @@
 ## violation. No claim about the bus while the write cycle is running, because
 ## the MCU is polling and the line is busy by design rather than settled.
 ##
-## Note this design needs `-d:xspiceSpecOnly` to compile, which `nimcir check`
+## Note this design needs `-d:xspiceSpecOnly` to compile, which `verax check`
 ## passes for you; a bare `nim c -r --path:./src designs/i2c_eeprom.nim` needs
 ## it spelled out, or it tries to build the code models' FFI against ngspice
 ## headers it has no reason to need.
 
-import nimcir/contract/dsl
-import nimcir/verify
-import nimcir/spice/boundary
-import nimcir/netlist/interfaces/std
+import verax/contract/dsl
+import verax/verify
+import verax/spice/boundary
+import verax/netlist/interfaces/std
 
 import ./lib/i2c_parts
 

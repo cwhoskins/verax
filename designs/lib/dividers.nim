@@ -88,10 +88,10 @@
 ## state a resistor's dissipation -- exactly as `filters.nim` cannot state a
 ## bypass capacitor's working voltage. The board knows; the block does not.
 
-import nimcir/contract/dsl
-import nimcir/netlist/formats/spice as spiceFormat
-import nimcir/parts
-import nimcir/eng
+import verax/contract/dsl
+import verax/netlist/formats/spice as spiceFormat
+import verax/parts
+import verax/eng
 
 type
   VoltageDividerLegs* = tuple[top, bot: Ohms]

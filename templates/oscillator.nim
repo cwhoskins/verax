@@ -1,6 +1,6 @@
 ## A Wien-bridge oscillator: a circuit whose intent is instability.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## Every other amplifier template here is judged by how far it is from
 ## oscillating. This one is specified the other way round: the loop gain must
@@ -36,8 +36,8 @@
 ## D1/D2 they shunt Rf2 and pull the gain back down. The circuit settles
 ## where the *cycle-averaged* gain is 3.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 const
   d1N4148 = "1N4148"

@@ -1,6 +1,6 @@
 ## Two boards and the cable between them.
 ##
-##   nimcir check designs/system_sensor_rig.nim
+##   verax check designs/system_sensor_rig.nim
 ##
 ## A USB-powered carrier board regulating 3.3 V, and a small sensor head on
 ## the end of a 300 mm cable. Both boards live in `designs/lib/` as ordinary
@@ -61,9 +61,9 @@
 ## **211 mohm** here, against 9.56 mohm on the bench -- still a factor of 22
 ## between the two contexts, which is the cable and is real.
 
-import nimcir/contract/dsl
-import nimcir/verify
-import nimcir/spice/boundary
+import verax/contract/dsl
+import verax/verify
+import verax/spice/boundary
 
 import ./carrier
 import ./sensor_head

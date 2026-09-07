@@ -1,4 +1,4 @@
-## `$NIMCIR_KEEP_RUNS` -- the run archive -- and `$NIMCIR_SAVE_CURRENTS`.
+## `$VERAX_KEEP_RUNS` -- the run archive -- and `$VERAX_SAVE_CURRENTS`.
 ##
 ## The property worth pinning here is not that files appear. It is that
 ## switching either of them on cannot change what was simulated, and that the
@@ -9,9 +9,9 @@
 
 import std/[math, os, sequtils, strutils, tables, tempfiles, unittest]
 
-import nimcir/netlist
-import nimcir/schematic
-import nimcir/spice/ngspice
+import verax/netlist
+import verax/schematic
+import verax/spice/ngspice
 
 let haveNgspice = findExe("ngspice").len > 0
 
@@ -75,13 +75,13 @@ template withEnv(key, value: string, body: untyped) =
 # --- the card, which needs no simulator -----------------------------------
 
 test "no .save card unless asked for":
-  delEnv("NIMCIR_SAVE_CURRENTS")
+  delEnv("VERAX_SAVE_CURRENTS")
   check saveCurrentsCard(dividerNetlist(), ".op") == ""
 
 test "the .save card leads with `all`":
   # Naming any vector turns the default set off, so a card that said only
   # @r1[i] would archive a resistor current and throw away every node voltage.
-  withEnv("NIMCIR_SAVE_CURRENTS", "1"):
+  withEnv("VERAX_SAVE_CURRENTS", "1"):
     let card = saveCurrentsCard(dividerNetlist(), ".tran 1u 1m")
     check card.startsWith(".save all ")
     check "@R1[i]" in card
@@ -96,7 +96,7 @@ test "no .save card for a complex-plot analysis":
   # The whole reason this is built here rather than asked for with
   # `.options savecurrents`: a real-valued @r1[i] written into a complex
   # rawfile is a malformed value line.
-  withEnv("NIMCIR_SAVE_CURRENTS", "1"):
+  withEnv("VERAX_SAVE_CURRENTS", "1"):
     check saveCurrentsCard(dividerNetlist(), ".ac dec 10 1 1k") == ""
     check saveCurrentsCard(dividerNetlist(), ".noise v(vout) V1 dec 10 1 1k") == ""
     check saveCurrentsCard(dividerNetlist(), ".op").len > 0
@@ -109,7 +109,7 @@ suite "run archive":
     echo "  [skipped: ngspice not found on PATH]"
   else:
     test "nothing is left behind when the archive is off":
-      delEnv("NIMCIR_KEEP_RUNS")
+      delEnv("VERAX_KEEP_RUNS")
       let before = walkDirRec(getTempDir(), yieldFilter = {pcDir}).toSeq.len
       discard run(dividerNetlist(), ".op")
       # The temp directory `run` makes is removed in its own `finally`; all we
@@ -117,9 +117,9 @@ suite "run archive":
       check walkDirRec(getTempDir(), yieldFilter = {pcDir}).toSeq.len <= before
 
     test "deck, rawfile, log and index land in the archive":
-      let dir = createTempDir("nimcir_keeptest_", "")
+      let dir = createTempDir("verax_keeptest_", "")
       defer: removeDir(dir)
-      withEnv("NIMCIR_KEEP_RUNS", dir):
+      withEnv("VERAX_KEEP_RUNS", dir):
         let res = run(dividerNetlist(), ".op", label = "divider:op")
         check abs(res["v(vout)"][0] - 5.0) < 1e-9
 
@@ -154,21 +154,21 @@ suite "run archive":
       check cols[5] == "rc_divider"
 
     test "the archive schematic uses the constrained layout from the environment":
-      let dir = createTempDir("nimcir_keeptest_", "")
+      let dir = createTempDir("verax_keeptest_", "")
       defer: removeDir(dir)
       var options = defaultLayoutOptions()
       options.policy = lpConstrainedLayered
-      withEnv("NIMCIR_KEEP_RUNS", dir):
-        withEnv("NIMCIR_SCHEMATIC_LAYOUT", "constrained-layered"):
+      withEnv("VERAX_KEEP_RUNS", dir):
+        withEnv("VERAX_SCHEMATIC_LAYOUT", "constrained-layered"):
           discard run(dividerNetlist(), ".op")
 
       check readFile(dir / "run000.json") ==
             sceneToJsonString(layout(dividerNetlist(), options))
 
     test "a second run takes the next slot and appends a row":
-      let dir = createTempDir("nimcir_keeptest_", "")
+      let dir = createTempDir("verax_keeptest_", "")
       defer: removeDir(dir)
-      withEnv("NIMCIR_KEEP_RUNS", dir):
+      withEnv("VERAX_KEEP_RUNS", dir):
         discard run(dividerNetlist(), ".op")
         discard run(dividerNetlist(), ".tran 10u 1m", label = "divider:tran")
 
@@ -184,9 +184,9 @@ suite "run archive":
     test "a failed run keeps its deck and log, and says so in the index":
       # This is the run whose artifacts are worth reading, so it must not be
       # the one that gets cleaned up.
-      let dir = createTempDir("nimcir_keeptest_", "")
+      let dir = createTempDir("verax_keeptest_", "")
       defer: removeDir(dir)
-      withEnv("NIMCIR_KEEP_RUNS", dir):
+      withEnv("VERAX_KEEP_RUNS", dir):
         expect(SpiceSimError):
           discard run(floatingNetlist(), ".op")
 
@@ -202,10 +202,10 @@ suite "run archive":
 
     test "an .ac run still parses with save-currents on":
       # The regression this file exists for.
-      let dir = createTempDir("nimcir_keeptest_", "")
+      let dir = createTempDir("verax_keeptest_", "")
       defer: removeDir(dir)
-      withEnv("NIMCIR_KEEP_RUNS", dir):
-        withEnv("NIMCIR_SAVE_CURRENTS", "1"):
+      withEnv("VERAX_KEEP_RUNS", dir):
+        withEnv("VERAX_SAVE_CURRENTS", "1"):
           let ac = run(dividerNetlist(), ".ac dec 10 100 100k")
           check ac.dataKind == sdComplex
           check ac.mag("v(vout)").len > 0
@@ -218,12 +218,12 @@ suite "run archive":
       check "@r1[i]" in readFile(dir / "run001.raw").toLowerAscii
 
     test "archiving does not move a measured number":
-      delEnv("NIMCIR_KEEP_RUNS")
-      delEnv("NIMCIR_SAVE_CURRENTS")
+      delEnv("VERAX_KEEP_RUNS")
+      delEnv("VERAX_SAVE_CURRENTS")
       let plain = run(dividerNetlist(), ".op")["v(vout)"][0]
 
-      let dir = createTempDir("nimcir_keeptest_", "")
+      let dir = createTempDir("verax_keeptest_", "")
       defer: removeDir(dir)
-      withEnv("NIMCIR_KEEP_RUNS", dir):
-        withEnv("NIMCIR_SAVE_CURRENTS", "1"):
+      withEnv("VERAX_KEEP_RUNS", dir):
+        withEnv("VERAX_SAVE_CURRENTS", "1"):
           check run(dividerNetlist(), ".op")["v(vout)"][0] == plain

@@ -3,4 +3,4 @@
 # Each is an ordinary Nim program that states what a circuit must do and
 # ends with `quit(verifyMain(d))`. `nimble verify` checks every one.
 #
-# Start one with:  nimcir new rail designs/vdd.nim
+# Start one with:  verax new rail designs/vdd.nim

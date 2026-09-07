@@ -1,8 +1,8 @@
 import std/[math, strutils, tables, unittest]
 
-import nimcir/contract/dsl
-import nimcir/contract/evaluate
-import nimcir/contract/evaluators/static
+import verax/contract/dsl
+import verax/contract/evaluate
+import verax/contract/evaluators/static
 
 # --- fixtures -----------------------------------------------------------
 

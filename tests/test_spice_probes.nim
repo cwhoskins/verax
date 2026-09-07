@@ -1,7 +1,7 @@
 import std/[tables, unittest]
 
-import nimcir/netlist
-import nimcir/spice/probes
+import verax/netlist
+import verax/spice/probes
 
 test "voltage probe is a pure label/lookup: no graph mutation":
   let nl = newNetlist("t")

@@ -1,7 +1,7 @@
 import std/[tables, unittest, strutils]
 
-import nimcir/netlist/dsl
-import nimcir/analysis
+import verax/netlist/dsl
+import verax/analysis
 
 test "clean netlist: output driving input directly, proper power/ground tags -> no issues":
   let nl = netlist("clean"):

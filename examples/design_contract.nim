@@ -9,9 +9,9 @@
 
 import std/tables
 
-import nimcir/contract/dsl
-import nimcir/netlist/annotations
-import nimcir/verify
+import verax/contract/dsl
+import verax/netlist/annotations
+import verax/verify
 
 # --- the design ---------------------------------------------------------
 
@@ -104,7 +104,7 @@ echo ""
 echo "--- checking the claims ---"
 # Four answers, not two: pass, fail, could-not-check and nothing-can-check.
 #
-# `nimcir/verify` registers the simulation-backed evaluators itself, so a
+# `verax/verify` registers the simulation-backed evaluators itself, so a
 # quantity that reports as unevaluable here really is one nothing produces --
 # rather than one whose evaluator module simply was not imported. What is
 # *offered* is still the caller's choice: pass `offlineCapabilities` and the

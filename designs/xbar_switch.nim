@@ -1,6 +1,6 @@
 ## The Ethernet-controlled 4x4 RF crossbar switch: the whole system.
 ##
-##   nimcir check designs/xbar_switch.nim
+##   verax check designs/xbar_switch.nim
 ##
 ## Five boards wired together: the PoE inlet, the USB-C inlet, the power
 ## OR-ing and regulation, the RF switch matrix, and the MCU/PHY/I2C control.
@@ -91,9 +91,9 @@
 ## rejection. Coupled inductors (`K` card) and a switch device model both
 ## shipped -- `spice/models/magnetics` and `spice/models/switch`.
 
-import nimcir/contract/dsl
-import nimcir/verify
-import nimcir/spice/boundary
+import verax/contract/dsl
+import verax/verify
+import verax/spice/boundary
 
 import ./lib/xbar_parts
 import ./lib/adg904

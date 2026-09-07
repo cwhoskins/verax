@@ -12,9 +12,9 @@
 ## it onto is now a structural error.  The second chip select of each pair is a
 ## software GPIO (`functions = {"cs_1": "GPIO"}`), not a hardware NSS.
 
-import nimcir/contract/dsl
-import nimcir/verify
-import nimcir/netlist/interfaces/std
+import verax/contract/dsl
+import verax/verify
+import verax/netlist/interfaces/std
 
 import ./lib/spi_memory
 import ./lib/stm32h563
@@ -48,12 +48,14 @@ let d = design("spi_memories"):
       pins = {"sclk": "PC10", "mosi": "PC12", "miso": "PC11",
               "cs_0": "PA15", "cs_1": "PF12"},
       functions = {"cs_1": "GPIO"}
+    # PE1 is not bonded out on the non-Q LQFP-144 (pin 141 is PE0, then VCAP),
+    # so the write-protect bus skips it -- PE0, PE2..PE6.
     pin "PE0", wp[0], kind = ptOutput, function = "GPIO"
-    pin "PE1", wp[1], kind = ptOutput, function = "GPIO"
-    pin "PE2", wp[2], kind = ptOutput, function = "GPIO"
-    pin "PE3", wp[3], kind = ptOutput, function = "GPIO"
-    pin "PE4", wp[4], kind = ptOutput, function = "GPIO"
-    pin "PE5", wp[5], kind = ptOutput, function = "GPIO"
+    pin "PE2", wp[1], kind = ptOutput, function = "GPIO"
+    pin "PE3", wp[2], kind = ptOutput, function = "GPIO"
+    pin "PE4", wp[3], kind = ptOutput, function = "GPIO"
+    pin "PE5", wp[4], kind = ptOutput, function = "GPIO"
+    pin "PE6", wp[5], kind = ptOutput, function = "GPIO"
 
   # Every SRAM releases MISO unless selected.  These weak pulls give the MCU
   # a defined idle level and a DC path without changing the shared-bus model.

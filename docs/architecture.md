@@ -1,6 +1,6 @@
-# nimcir architecture
+# verax architecture
 
-How the submodules relate, and what happens between `nimcir check board.nim`
+How the submodules relate, and what happens between `verax check board.nim`
 and the report it prints.
 
 This is the design document. `authoring.md` is the guide for someone *writing*
@@ -47,7 +47,7 @@ Arrows point from a module to what it depends on. There are no cycles and no
 back-edges: nothing below ever learns about anything above it.
 
 ```
-                          cli.nim              (the `nimcir` binary)
+                          cli.nim              (the `verax` binary)
                              |
                           verify.nim           (the runner + the catalog)
                         /            \
@@ -90,9 +90,9 @@ An edge from `contract` to `analysis` would quietly destroy that property.
 with no external toolchain. The backend (`spice/ngspice`), the file formats
 (`netlist/formats/*`, `pcb/formats/*`), the simulation-backed analyses
 (`analysis/analyses/pdn`, `analysis/analyses/opamp`, …) and the XSPICE authoring tools are each
-imported by path. `src/nimcir.nim` is deliberately **not** a re-export hub for
+imported by path. `src/verax.nim` is deliberately **not** a re-export hub for
 the same reason, and the nimble package builds its binary from
-`src/nimcir/cli.nim` so that `import nimcir` in an unrelated program does not
+`src/verax/cli.nim` so that `import verax` in an unrelated program does not
 drag in `osproc` and the whole analysis tree.
 
 ### What each submodule owns, and what it is not allowed to know
@@ -395,7 +395,7 @@ Precedence runs most-fundamental first, so a caller can branch on *why*:
 | 2 | the netlist itself is wrong in a way that makes its numbers untrustworthy |
 | 3 | a claim nothing could check |
 | 4 | a requested capability is unavailable on this machine |
-| 5 | the design did not compile — **only `nimcir check` produces this** |
+| 5 | the design did not compile — **only `verax check` produces this** |
 
 5 is separate on purpose. Told only "it failed", a reader edits the circuit to
 fix what is actually a syntax error. That is also why `cli.nim` compiles and
@@ -752,7 +752,7 @@ convergence`, and the run raises naming the node. The marker list is
 deliberately narrow: `gmin stepping failed` and `source stepping failed` are
 *strategy* notes ngspice usually recovers from.
 
-`NIMCIR_KEEP_DECKS=<dir>` copies every deck handed to ngspice into a directory.
+`VERAX_KEEP_DECKS=<dir>` copies every deck handed to ngspice into a directory.
 This is the primary debugging loop, and it is not a convenience: the fragment
 simulated is *derived* — cloned, flattened, model-substituted, isolated — so it
 is not the netlist anyone wrote, and reasoning about a surprising number from
@@ -760,7 +760,7 @@ the design file alone is guesswork.
 
 ### The run archive
 
-`--keep-runs=<dir>` (or `$NIMCIR_KEEP_RUNS`) keeps the **results** as well as
+`--keep-runs=<dir>` (or `$VERAX_KEEP_RUNS`) keeps the **results** as well as
 the deck. Per simulation it leaves `run000.cir`, `run000.raw` and `run000.log`,
 plus a `run000.svg` -- a self-contained schematic of the *derived* fragment
 that ran, laid out and routed by `schematic/` (see
@@ -802,7 +802,7 @@ The per-run `runNNN.svg`/`runNNN.json` files are the derived fragments —
 isolated, flattened, model-substituted — so none of them is the circuit the
 author wrote; `runFULL.svg` is, drawn once and overwritten every check. It is
 best-effort (a rendering failure cannot fail the check), gated only on
-`$NIMCIR_KEEP_RUNS`, and deliberately absent from `index.txt`: the index names
+`$VERAX_KEEP_RUNS`, and deliberately absent from `index.txt`: the index names
 one analysis run per row, and this picture is not a run, so it takes no
 `runNNN` slot either. A hierarchically-authored design also gets one
 `runFULL.<subckt>.svg`/`runFULL.<subckt>.json` per distinct subcircuit it
@@ -811,7 +811,7 @@ drawn once — each with its interface drawn as Altium-style port symbols
 (direction taken from pin kinds, or from whether anything on the sheet drives
 the net). These are subject to the same gate, best-effort handling and
 index exclusion. `--schematic-layout=constrained-layered` (or
-`$NIMCIR_SCHEMATIC_LAYOUT=constrained-layered`) opts these archived SVG/JSON
+`$VERAX_SCHEMATIC_LAYOUT=constrained-layered`) opts these archived SVG/JSON
 artifacts into the constrained layered policy; the default remains the
 byte-compatible historical policy. This affects no simulation or ordinary
 `layout` call.
@@ -827,7 +827,7 @@ ngspice
 
 ### What ngspice saves, and the one thing it doesn't
 
-Worth knowing before reaching for a knob: **nimcir is not saving a subset.**
+Worth knowing before reaching for a knob: **verax is not saving a subset.**
 With no `save` card at all ngspice's output stage starts at `saveall` and only
 drops to an allowlist once one exists, and `write <path>` with no vector list
 dumps the whole plot — so every rawfile here already carries every node voltage
@@ -836,7 +836,7 @@ category is device *internals* (`@r1[i]`, `@d2[id]`, `@m1[gm]`), which are
 computed from the solution rather than being part of it and never appear unless
 asked for.
 
-`--save-currents` (or `$NIMCIR_SAVE_CURRENTS`) asks, by emitting a `.save` card
+`--save-currents` (or `$VERAX_SAVE_CURRENTS`) asks, by emitting a `.save` card
 built from the netlist. Two things about it are load-bearing:
 
 - **`all` leads the list.** Naming any vector turns the default set off, so a
@@ -908,7 +908,7 @@ evaluator reads back off `Assertion.origin`, beyond the assertion's own
 subjects. Something has to answer "can a bare `require` reach this quantity?"
 *without running anything*, and only the evaluator knows. `overshoot_pct(vdd)`
 names the rail but not the regulator driving it, and nothing in a netlist
-recovers that. This is what `nimcir quantities` reports in its third column,
+recovers that. This is what `verax quantities` reports in its third column,
 and its three answers — `require`, `role: X`, `-- needs a role binding` — are
 genuinely different; conflating any two is how a reader writes a claim nothing
 will check.
@@ -1009,6 +1009,6 @@ legible.
 | how do I write a design? | `docs/authoring.md` |
 | what is still broken or unclaimable? | `docs/findings.md` |
 | what did checking real boards teach us? | `docs/RESOLVED_FINDINGS.md` |
-| what roles/quantities/annotations exist *right now*? | `nimcir roles`, `nimcir quantities`, `nimcir annotations` |
-| what was actually simulated? | `NIMCIR_KEEP_DECKS=<dir> nimcir check <design>` |
-| what did the simulation actually return? | `nimcir check --keep-runs=<dir> <design>`, then `load <dir>/run000.raw` in ngspice |
+| what roles/quantities/annotations exist *right now*? | `verax roles`, `verax quantities`, `verax annotations` |
+| what was actually simulated? | `VERAX_KEEP_DECKS=<dir> verax check <design>` |
+| what did the simulation actually return? | `verax check --keep-runs=<dir> <design>`, then `load <dir>/run000.raw` in ngspice |

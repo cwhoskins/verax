@@ -1,7 +1,7 @@
 ## One amplifier stage, judged the way an amplifier is judged: bandwidth,
 ## peaking, and how far it is from oscillating.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## A non-inverting amplifier of gain 2. `opamp_stage` claims three things
 ## about it, and they come from **two** different simulations:
@@ -24,8 +24,8 @@
 ## passband; they are separate roles rather than one because `peaking_db`
 ## cannot tell an intentional band-pass shape from resonance.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("opamp"):
   net gnd, kind = ntGround, name = "0"

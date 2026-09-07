@@ -1,11 +1,11 @@
 ## A resistive divider: the smallest circuit with a number worth checking.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## Start here if `blank.nim` left you wondering what a claim looks like when
 ## it is actually measured. There is no role in this file -- just two
 ## resistors and a bare `require`, which is the whole point: a quantity
-## marked ``require`` by ``nimcir quantities`` needs nothing but its subjects,
+## marked ``require`` by ``verax quantities`` needs nothing but its subjects,
 ## so `dc_voltage` of a net is reachable without any role at all.
 ##
 ## What it claims: the tap sits at 3.0 V, within 1%. That is measured with a
@@ -15,8 +15,8 @@
 ## voltage the boundary invented, and the check would measure its own
 ## assumption and pass every time.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("divider"):
   net gnd, kind = ntGround, name = "0"

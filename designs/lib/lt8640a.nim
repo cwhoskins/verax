@@ -30,12 +30,12 @@
 
 import std/[os, tables, times]
 
-import nimcir/contract/dsl
-import nimcir/netlist/graph
-import nimcir/spice/xspice/instance
-import nimcir/spice/xspice/build
+import verax/contract/dsl
+import verax/netlist/graph
+import verax/spice/xspice/instance
+import verax/spice/xspice/build
 
-import nimcir/spice/transform
+import verax/spice/transform
 
 import ./lt8640a_avg
 import ./lt8640a_sw
@@ -45,11 +45,11 @@ proc cmPathFor(model: string): string =
   ## path.
   ##
   ## Lazy, and deliberately not done at module init: importing a parts library
-  ## would then run `nim c` and a C compiler, so `nimcir check --offline` on a
+  ## would then run `nim c` and a C compiler, so `verax check --offline` on a
   ## design that never simulates would pay several seconds and fail outright
   ## on a machine with no ngspice source tree. A design must stay inspectable
   ## with no simulator in the build.
-  let cache = getEnv("NIMCIR_CACHE", getCacheDir() / "nimcir") / "codemodels"
+  let cache = getEnv("VERAX_CACHE", getCacheDir() / "verax") / "codemodels"
   createDir(cache)
   # Lowercase: ngspice case-folds the lines it pre-parses, including
   # `pre_codemodel`, so a `.cm` whose path has an uppercase character in it

@@ -1,10 +1,10 @@
 import std/[math, strutils, tables, unittest]
 
-import nimcir/netlist
-import nimcir/netlist/annotations
-import nimcir/netlist/dsl
-import nimcir/netlist/environment
-import nimcir/units
+import verax/netlist
+import verax/netlist/annotations
+import verax/netlist/dsl
+import verax/netlist/environment
+import verax/units
 
 proc board(): Netlist =
   ## An LDO that runs hot and a capacitor beside it that does not.

@@ -1,5 +1,5 @@
 Early components are not fixed during the main placement optimization.
- In src/nimcir/schematic/layout.nim, the 250-step force-layout loop computes displacement for every component, then updates every position. Repulsion, net attraction, and gravity are global; net attraction is
+ In src/verax/schematic/layout.nim, the 250-step force-layout loop computes displacement for every component, then updates every position. Repulsion, net attraction, and gravity are global; net attraction is
  pin-to-pin and considers all component pairs on each net.
 
  - Iterations: 250
@@ -26,7 +26,7 @@ Early components are not fixed during the main placement optimization.
 
  ### 2. Group packing: groups move rigidly, not jointly optimized
 
- groupsOf and packGroups in src/nimcir/schematic/placement.nim form groups as follows:
+ groupsOf and packGroups in src/verax/schematic/placement.nim form groups as follows:
 
  - Components connected by signal nets are unioned into the same group.
  - Ground and rail nets do not create signal groups.
@@ -96,7 +96,7 @@ Early components are not fixed during the main placement optimization.
  - Packing phase: groups are moved together as rigid blocks, but only by a deterministic shelf-packing heuristic—not joint optimization.
  - Later repair/feedback: individual components move sequentially, with bounded deterministic searches.
 
- Relevant code: src/nimcir/schematic/layout.nim, src/nimcir/schematic/placement.nim, and tests/test_schematic.nim (determinism, packing, clearance, and rotation coverage).
+ Relevant code: src/verax/schematic/layout.nim, src/verax/schematic/placement.nim, and tests/test_schematic.nim (determinism, packing, clearance, and rotation coverage).
 
  5 turns ↑65k ↓2.5k R105k $0.0180 ctx:65k openai-codex/gpt-5.6-luna
 
@@ -139,7 +139,7 @@ Early components are not fixed during the main placement optimization.
     Add explicit constraints: keep decouplers near IC rail pins, keep feedback parts near an op-amp, align ports at edges, reserve pin escape corridors, preserve left-to-right signal flow. This is especially
     appropriate for schematics, where visual semantics matter more than raw wirelength.
 
- For nimcir, a practical combination would be:
+ For verax, a practical combination would be:
 
  - multilevel / functional-group initial placement,
  - followed by electrostatic or analytic global refinement,
@@ -159,33 +159,33 @@ Early components are not fixed during the main placement optimization.
  ✓ planner (project)
 
  ─── Task ───
- Act as an independent technical advisor. Evaluate the prior recommendation for improving nimcir schematic global placement: multilevel/functional-group initial placement + electrostatic/analytic global
+ Act as an independent technical advisor. Evaluate the prior recommendation for improving verax schematic global placement: multilevel/functional-group initial placement + electrostatic/analytic global
  refinement + constraint-driven local repair. Identify whether it is suitable given the current deterministic schematic pipeline, and important omitted approaches. Compare methods (e.g. stress majorization,
  constrained graph drawing, min-cut/recursive partitioning, simulated annealing, orthogonal topology-aware placement) with recommendation and give a concise prioritized path. Do not edit or test.
 
  ─── Output ───
  → read CLAUDE.md
- → read src/nimcir/CLAUDE.md
- → find **/* in src/nimcir/schematic
+ → read src/verax/CLAUDE.md
+ → find **/* in src/verax/schematic
  → find *schematic* in tests
  → grep /schematic|placement|layout|route/ in tests
  → read docs/architecture.md
- → read src/nimcir/schematic/CLAUDE.md
- → read src/nimcir/schematic/placement.nim
- → read src/nimcir/schematic/layout.nim
- → read src/nimcir/schematic/router.nim
- → read src/nimcir/schematic/routing.nim
- → read src/nimcir/schematic/scene.nim
- → read src/nimcir/schematic.nim
+ → read src/verax/schematic/CLAUDE.md
+ → read src/verax/schematic/placement.nim
+ → read src/verax/schematic/layout.nim
+ → read src/verax/schematic/router.nim
+ → read src/verax/schematic/routing.nim
+ → read src/verax/schematic/scene.nim
+ → read src/verax/schematic.nim
  → read tests/test_schematic.nim:450-949
  → grep /schematic|placement|force layout|stress major|anneal|min-cut|orthogonal/ in docs
  → read docs/schematic_drawing_improvements.md
  → read docs/netlist-converter-research.md
- → grep /alignAxes|smoothPolylines|crossing|wirelength|bends|fallback/ in src/nimcir/schematic
+ → grep /alignAxes|smoothPolylines|crossing|wirelength|bends|fallback/ in src/verax/schematic
  → grep /exact|fallback|bend|cross|determin|grid|area|compact|chain|feedback|terminal/ in tests/test_schematic.nim
  → find **/*placement* in docs
  → read designs/CLAUDE.md
- → read src/nimcir/schematic/geometry.nim:1-360
+ → read src/verax/schematic/geometry.nim:1-360
  → read tests/test_schematic.nim:1-125
  → read tests/test_schematic.nim:950-1069
  → read tests/test_schematic.nim:1280-1389
@@ -196,7 +196,7 @@ Early components are not fixed during the main placement optimization.
 
  Verdict
 
- The prior recommendation is directionally sound but too generic for nimcir.
+ The prior recommendation is directionally sound but too generic for verax.
 
  A pipeline of:
 
@@ -204,7 +204,7 @@ Early components are not fixed during the main placement optimization.
  2. global refinement;
  3. constraint-driven legalization and routing repair;
 
- fits nimcir’s pure, deterministic architecture. However, electrostatic or generic analytic placement should not be the next priority. The current Fruchterman–Reingold pass already supplies electrostatic
+ fits verax’s pure, deterministic architecture. However, electrostatic or generic analytic placement should not be the next priority. The current Fruchterman–Reingold pass already supplies electrostatic
  repulsion, while the observed defects are mainly caused by missing schematic semantics:
 
  - no left-to-right signal-flow model;
@@ -219,13 +219,13 @@ Early components are not fixed during the main placement optimization.
 
  The proposal must account for functionality that already exists:
 
- - deterministic golden-angle seed and Fruchterman–Reingold refinement in src/nimcir/schematic/layout.nim;
+ - deterministic golden-angle seed and Fruchterman–Reingold refinement in src/verax/schematic/layout.nim;
  - pin-level attraction and co-optimized rotation;
- - signal-connected grouping and guarded shelf packing through groupsOf/packGroups in src/nimcir/schematic/placement.nim;
+ - signal-connected grouping and guarded shelf packing through groupsOf/packGroups in src/verax/schematic/placement.nim;
  - hard grid snapping and inflated-body separation;
  - specialized leafSnap and repairTerminalClearance;
- - routing-aware local repair through recoverRouting in src/nimcir/schematic/routing.nim;
- - bend-aware Hanan-grid routing in src/nimcir/schematic/router.nim.
+ - routing-aware local repair through recoverRouting in src/verax/schematic/routing.nim;
+ - bend-aware Hanan-grid routing in src/verax/schematic/router.nim.
 
  Thus, “constraint-driven local repair” is not new—it should become more unified and objective-driven, rather than adding another isolated repair pass.
 
@@ -346,13 +346,13 @@ Early components are not fixed during the main placement optimization.
 
  Affected areas for a future implementation
 
- - src/nimcir/schematic/layout.nim — pipeline ordering and extraction of the current FR block.
- - src/nimcir/schematic/placement.nim — functional groups, layering, constraints, legalization, scoring.
- - src/nimcir/schematic/routing.nim — unified placement/routing feedback objective.
- - src/nimcir/schematic/router.nim — later trunk/Steiner routing and route-quality reporting.
- - src/nimcir/schematic/geometry.nim — congestion, crossing, and pair-clearance helpers.
+ - src/verax/schematic/layout.nim — pipeline ordering and extraction of the current FR block.
+ - src/verax/schematic/placement.nim — functional groups, layering, constraints, legalization, scoring.
+ - src/verax/schematic/routing.nim — unified placement/routing feedback objective.
+ - src/verax/schematic/router.nim — later trunk/Steiner routing and route-quality reporting.
+ - src/verax/schematic/geometry.nim — congestion, crossing, and pair-clearance helpers.
  - tests/test_schematic.nim — topology-aware placement and metric-based regression cases.
- - src/nimcir/schematic/CLAUDE.md — updated placement invariants and deterministic tie-break rules.
+ - src/verax/schematic/CLAUDE.md — updated placement invariants and deterministic tie-break rules.
  - docs/schematic_drawing_improvements.md — reconcile recommendations with the already-landed bend-aware router.
 
  No scene schema change should be necessary.
@@ -397,7 +397,7 @@ Early components are not fixed during the main placement optimization.
  Targeted:
 
  ```sh
-   nim check --path:./src src/nimcir/schematic/layout.nim
+   nim check --path:./src src/verax/schematic/layout.nim
    nim c -r --path:./src tests/test_schematic.nim
  ```
 
@@ -451,7 +451,7 @@ Early components are not fixed during the main placement optimization.
 
  The advisor agrees with the overall staged approach, but recommends a shift in priority.
 
- For nimcir, the best next approach is:
+ For verax, the best next approach is:
 
  1. Semantic/motif-aware initial placement
     Identify parallel R/C pairs, series chains, feedback networks, decouplers, and hierarchy.

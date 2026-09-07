@@ -1,6 +1,6 @@
 ## A linear regulator coming up at power-on.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## The `power_rail` template asks where a rail *sits*. This one asks how it
 ## *arrives*, which is a different question with a different analysis behind
@@ -40,8 +40,8 @@
 ## nothing the regulator did. That is a real number rather than a refused
 ## one, which makes it the more dangerous of the two.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("regulator"):
   # Where the board has to work. This block is what makes the `delta_t` on U1

@@ -1,6 +1,6 @@
 ## Chunk 3 of the crossbar switch: power OR-ing, regulation, and the RF rail.
 ##
-##   nimcir check designs/xbar_power.nim
+##   verax check designs/xbar_power.nim
 ##
 ## Two 5 V inlets -- PoE and USB-C -- merged by a TPS2116 priority mux, an
 ## LT8640A buck down to 3.3 V, and a ferrite-isolated local bank making
@@ -41,9 +41,9 @@
 
 import std/tables
 
-import nimcir/contract/dsl
-import nimcir/netlist/graph
-import nimcir/netlist/types as ntypes
+import verax/contract/dsl
+import verax/netlist/graph
+import verax/netlist/types as ntypes
 
 import ./lib/lt8640a
 import ./lib/oring
@@ -327,8 +327,8 @@ proc equipXbarPower*(d: Design, prefix = "", withBuckModel = true) =
 
 when isMainModule:
   import std/tables
-  import nimcir/verify
-  import nimcir/netlist/graph
+  import verax/verify
+  import verax/netlist/graph
 
   let nl = xbarPower()
 

@@ -2,8 +2,8 @@
 
 import std/[math, unittest]
 
-import nimcir/units
-import nimcir/parts/series
+import verax/units
+import verax/parts/series
 
 suite "the tables are the standard ones":
   test "each ladder has the count its name states":

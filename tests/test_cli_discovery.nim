@@ -8,7 +8,7 @@
 
 import std/[options, strutils, tables, unittest]
 
-import nimcir/verify
+import verax/verify
 
 suite "role discovery":
   test "every registered role previews without raising":
@@ -29,7 +29,7 @@ suite "role discovery":
     # parameter it insists on.
     #
     # What must hold is that no role is a dead end -- one that can never
-    # claim anything is a name in `nimcir roles` that does nothing.
+    # claim anything is a name in `verax roles` that does nothing.
     for name in registeredRoles():
       let def = roleDef(name)
       var params: seq[(string, string)]
@@ -46,7 +46,7 @@ suite "role discovery":
 
   test "an expander that raises is contained, not propagated":
     # A role registered by someone else is not obliged to tolerate
-    # placeholder bindings; `nimcir roles` must survive one that does not.
+    # placeholder bindings; `verax roles` must survive one that does not.
     registerRole(RoleDef(
       name: "test_hostile",
       doc: "raises when expanded",
@@ -82,7 +82,7 @@ suite "quantity and annotation discovery":
     check didYouMean("xyzzy_quantity_that_is_nothing").len == 0
 
 # Template health -- that every file we hand an author builds and checks
-# clean -- is `nimble verify`'s job: it runs `bin/nimcir check templates/*.nim`,
+# clean -- is `nimble verify`'s job: it runs `bin/verax check templates/*.nim`,
 # which compiles and runs each one. It lived here too, as a per-template
 # `nim c` sweep, but that cost ~42s of every `nimble test` for coverage the
 # verify task already gives with the simulator available rather than `--offline`.

@@ -24,9 +24,9 @@
 
 import std/tables
 
-import nimcir/contract/dsl
-import nimcir/netlist/graph
-import nimcir/netlist/types
+import verax/contract/dsl
+import verax/netlist/graph
+import verax/netlist/types
 
 import ./xbar_parts
 

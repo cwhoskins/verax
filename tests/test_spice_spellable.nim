@@ -23,11 +23,11 @@
 
 import std/[strutils, streams, tables, unittest]
 
-import nimcir/netlist/types
-import nimcir/netlist/graph
-import nimcir/netlist/kinds
-import nimcir/netlist/formats/spice
-import nimcir/spice/models
+import verax/netlist/types
+import verax/netlist/graph
+import verax/netlist/kinds
+import verax/netlist/formats/spice
+import verax/spice/models
 
 proc passiveKinds(): seq[string] =
   for k in conductiveKinds: result.add k

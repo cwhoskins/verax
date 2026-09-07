@@ -1,7 +1,7 @@
 import std/[random, tables, unittest]
 
-import nimcir/netlist
-import nimcir/pcb
+import verax/netlist
+import verax/pcb
 
 proc bruteForce(l: PcbLayer, b: Box): seq[Copper] =
   ## The definition the grid is supposed to accelerate.

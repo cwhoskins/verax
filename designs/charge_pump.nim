@@ -1,6 +1,6 @@
 ## A single-stage Dickson charge pump: 5 V in, about 9.6 V out, no inductor.
 ##
-##   nimcir check designs/charge_pump.nim
+##   verax check designs/charge_pump.nim
 ##
 ## The circuit that generates a gate-drive rail, an EEPROM programming rail
 ## or a bias for an op-amp that needs a little headroom above its supply,
@@ -39,8 +39,8 @@
 ## claim in the library was out of reach, and the .op behind `dc_voltage`
 ## answers a question nobody asked. See the note above the claim.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 import ./lib/parts
 

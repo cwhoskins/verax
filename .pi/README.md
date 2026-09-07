@@ -1,4 +1,4 @@
-# nimcir agent pipeline
+# verax agent pipeline
 
 This project-local Pi setup provides seven agents:
 

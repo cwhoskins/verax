@@ -52,7 +52,7 @@
 ## both are deliberate. A phono stage with response down to DC amplifies
 ## warp and rumble by 20 dB more than it amplifies music.
 
-import nimcir/contract/dsl
+import verax/contract/dsl
 
 proc riaaChannel*(): Netlist =
   ## Ports, in instantiation order: `IN`, `OUT`, `VP`, `VN`, `GND`.

@@ -1,6 +1,6 @@
 import std/[tables, unittest]
 
-import nimcir/fem
+import verax/fem
 
 test "newFemProblem sets the kind and a room-temperature ambient":
   let em = newFemProblem("cap", pkElectrostatic)

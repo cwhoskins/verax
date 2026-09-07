@@ -18,7 +18,7 @@
 ## `LOAD` is declared once under `init`: it is the input capacitance ngspice
 ## uses to work out drive strength on the node.
 
-import nimcir/spice/xspice/dsl
+import verax/spice/xspice/dsl
 
 codeModel "nimdff":
   description "rising-edge D flip-flop, written in nim"

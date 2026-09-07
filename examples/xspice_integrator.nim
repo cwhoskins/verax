@@ -28,7 +28,7 @@
 ## the operating point there is no interval to integrate over.
 
 import std/math
-import nimcir/spice/xspice/dsl
+import verax/spice/xspice/dsl
 
 const stIntegral = 1
 

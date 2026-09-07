@@ -1,6 +1,6 @@
 ## Chunk 5 of the crossbar switch: the MCU, the Ethernet PHY, and the I2C bus.
 ##
-##   nimcir check designs/xbar_control.nim
+##   verax check designs/xbar_control.nim
 ##
 ## An STM32H563 (Ethernet MAC on-die) driving a DP83825I RMII PHY, with a
 ## 25 MHz crystal, an AT24MAC402 EEPROM carrying the board's EUI-48, and two
@@ -36,7 +36,7 @@
 ## controller script, which the plan for this design chose to list here
 ## rather than build.
 
-import nimcir/contract/dsl
+import verax/contract/dsl
 
 proc xbarControl*(): Netlist =
   netlist("xbar_control"):
@@ -255,8 +255,8 @@ proc xbarControl*(): Netlist =
         voltage_rating = 16.0.V
 
 when isMainModule:
-  import nimcir/verify
-  import nimcir/spice/boundary
+  import verax/verify
+  import verax/spice/boundary
   import ./lib/xbar_parts
 
   let d = newDesign(xbarControl())

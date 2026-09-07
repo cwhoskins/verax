@@ -2,10 +2,10 @@
 ## designs/spi_memories.nim.
 
 import std/[tables, unittest]
-import nimcir/netlist
-import nimcir/netlist/interfaces/std
-import nimcir/netlist/pinmux
-import nimcir/analysis/io_check
+import verax/netlist
+import verax/netlist/interfaces/std
+import verax/netlist/pinmux
+import verax/analysis/io_check
 
 import "../designs/lib/spi_memory"
 

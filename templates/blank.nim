@@ -1,15 +1,15 @@
 ## A starting point.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## Discover what you can claim:
-##   nimcir roles            what bundles of claims exist
-##   nimcir role <name>      one role's parts, params and the claims it makes
-##   nimcir quantities       every quantity a `require` can name
-##   nimcir annotations      every key a `spec:` block accepts
+##   verax roles            what bundles of claims exist
+##   verax role <name>      one role's parts, params and the claims it makes
+##   verax quantities       every quantity a `require` can name
+##   verax annotations      every key a `spec:` block accepts
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("untitled"):
   # Where the board has to work, if you know: an `environment:` block states

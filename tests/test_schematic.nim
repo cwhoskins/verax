@@ -10,10 +10,10 @@
 
 import std/[algorithm, json, math, os, sets, streams, strutils, tables, tempfiles, unittest]
 
-import nimcir/netlist
-import nimcir/netlist/formats/spice
-import nimcir/schematic
-import nimcir/spice/ngspice
+import verax/netlist
+import verax/netlist/formats/spice
+import verax/schematic
+import verax/spice/ngspice
 
 import designs/lib/riaa
 
@@ -2759,9 +2759,9 @@ suite "run archive svg":
     echo "  [skipped: ngspice not found on PATH]"
   else:
     test "an svg and its json scene land beside the deck, rawfile and log":
-      let dir = createTempDir("nimcir_svgtests_", "")
+      let dir = createTempDir("verax_svgtests_", "")
       defer: removeDir(dir)
-      withEnv("NIMCIR_KEEP_RUNS", dir):
+      withEnv("VERAX_KEEP_RUNS", dir):
         discard run(plainDivider(), ".op")
 
       check fileExists(dir / "run000.svg")
@@ -2779,9 +2779,9 @@ suite "run archive svg":
     test "a failed run still keeps its svg and json, like its deck and log":
       # `keepSchematic` renders before ngspice runs, so a convergence failure
       # leaves the picture of the fragment that failed -- the one worth reading.
-      let dir = createTempDir("nimcir_svgtests_", "")
+      let dir = createTempDir("verax_svgtests_", "")
       defer: removeDir(dir)
-      withEnv("NIMCIR_KEEP_RUNS", dir):
+      withEnv("VERAX_KEEP_RUNS", dir):
         expect(SpiceSimError):
           discard run(divider(), ".op")
 
@@ -2791,8 +2791,8 @@ suite "run archive svg":
 
 # --- multi-channel package labels -----------------------------------
 
-import nimcir/netlist/dsl as nldsl
-import nimcir/netlist/packages
+import verax/netlist/dsl as nldsl
+import verax/netlist/packages
 
 suite "packaged part labels":
   proc packagedPair(): Netlist =
@@ -2845,8 +2845,8 @@ suite "packaged part labels":
 
 # --- bus- and interface-aware rendering -----------------------------------
 
-import nimcir/netlist/interfaces
-import nimcir/netlist/interfaces/std as nlstd
+import verax/netlist/interfaces
+import verax/netlist/interfaces/std as nlstd
 
 suite "bundle plan (bus/interface grouping)":
   let spiMemLink = block:

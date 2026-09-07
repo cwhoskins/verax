@@ -1,10 +1,10 @@
 import std/[strutils, tables, unittest]
 
-import nimcir/units
-import nimcir/parts
-import nimcir/netlist/dsl
-import nimcir/netlist/graph
-import nimcir/netlist/annotations
+import verax/units
+import verax/parts
+import verax/netlist/dsl
+import verax/netlist/graph
+import verax/netlist/annotations
 
 suite "a module asks by function, a board answers by part":
   # The asymmetry the submodule exists for: the module knows what a part is

@@ -1,7 +1,7 @@
 import std/[math, strutils, tables, unittest]
 
-import nimcir/contract/dsl
-import nimcir/netlist/annotations
+import verax/contract/dsl
+import verax/netlist/annotations
 
 proc board(): Design =
   design("board"):
@@ -210,7 +210,7 @@ import std/[os, osproc, tempfiles]
 let repoSrc = currentSourcePath().parentDir.parentDir / "src"
 
 proc compileFixture(source: string): tuple[ok: bool, output: string] =
-  let bd = createTempDir("nimcir_spectest_", "")
+  let bd = createTempDir("verax_spectest_", "")
   defer: removeDir(bd)
   let f = bd / "fixture.nim"
   writeFile(f, source)
@@ -220,7 +220,7 @@ proc compileFixture(source: string): tuple[ok: bool, output: string] =
   (code == 0, output)
 
 const preamble = """
-import nimcir/contract/dsl
+import verax/contract/dsl
 let d = design("f"):
 """
 

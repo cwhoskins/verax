@@ -1,6 +1,6 @@
 ## Two rails from one adjustable part, with the datasheet doing the sizing.
 ##
-##   nimcir check designs/adj_regulator.nim
+##   verax check designs/adj_regulator.nim
 ##
 ## No resistor value appears below. `designs/lib/adjreg.nim` carries the
 ## LM317 as a *value* -- its reference, its ADJ-pin current, its output
@@ -86,10 +86,10 @@
 ## `lib/adjreg.nim` as limits of the model rather than left to be
 ## discovered.
 
-import nimcir/contract/dsl
-import nimcir/verify
-import nimcir/netlist/formats/spice as spiceFormat
-import nimcir/parts/series          # `e96`, the ladder the 12 V rail rounds to
+import verax/contract/dsl
+import verax/verify
+import verax/netlist/formats/spice as spiceFormat
+import verax/parts/series          # `e96`, the ladder the 12 V rail rounds to
 
 import ./lib/adjreg
 

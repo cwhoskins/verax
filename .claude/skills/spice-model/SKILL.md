@@ -1,6 +1,6 @@
 ---
 name: spice-model
-description: Add a new simulation-only device model to src/nimcir/spice/models/ — a parasitic expansion, a synthesized primitive plus a .MODEL card, or a behavioural stand-in. Use when a Component.kind reaches the deck as itself and ngspice misreads it, when a part with no model needs to keep a signal path, or when a real part's ideal form hides the thing an analysis is run to find. Covers the kinds.nim / formats/spice.nim / annotations.nim edits, the ordering that makes it work, the convergence traps, and the tests and docs it is not done without.
+description: Add a new simulation-only device model to src/verax/spice/models/ — a parasitic expansion, a synthesized primitive plus a .MODEL card, or a behavioural stand-in. Use when a Component.kind reaches the deck as itself and ngspice misreads it, when a part with no model needs to keep a signal path, or when a real part's ideal form hides the thing an analysis is run to find. Covers the kinds.nim / formats/spice.nim / annotations.nim edits, the ordering that makes it work, the convergence traps, and the tests and docs it is not done without.
 ---
 
 # Adding a model to `spice/models/`
@@ -8,7 +8,7 @@ description: Add a new simulation-only device model to src/nimcir/spice/models/ 
 Every file here **invents numbers the netlist does not carry** and returns
 `seq[Assumption]` for them. Every one **mutates the netlist it is given** — it
 runs on a `materializeSimNetlist` / `isolate` / `extract` clone, never the
-design netlist. Read `src/nimcir/spice/CLAUDE.md`'s `models/` bullet and the
+design netlist. Read `src/verax/spice/CLAUDE.md`'s `models/` bullet and the
 closest existing file before writing: `ferrite_bead.nim` (parasitic
 expansion), `switch.nim` (`expandSwitches` = synthesized primitive + `.MODEL`;
 `muxModel` = behavioural), `regulator.nim` / `buffer.nim` (behavioural
@@ -30,7 +30,7 @@ whose stand-in is design-specific (`designs/lib/oring.nim`, `buildIdealBuck`).
 Then, in `models.nim`: `import ./models/foo` and add `foo` to the two
 `export` lines.
 
-## 2. `src/nimcir/netlist/kinds.nim` — is it `isPassive`, and why
+## 2. `src/verax/netlist/kinds.nim` — is it `isPassive`, and why
 
 `isPassive` is the question *"can `spice/isolate` absorb this part wholesale
 without a model for it?"*. Decide deliberately; it is load-bearing in both
@@ -58,7 +58,7 @@ They disagree on purpose (`FB` on a board, `L` in a deck). Deriving one from
 the other is how `FB1` came to be simulated as a current-controlled current
 source.
 
-## 3. `src/nimcir/netlist/formats/spice.nim` — spelling the primitive
+## 3. `src/verax/netlist/formats/spice.nim` — spelling the primitive
 
 Only if the model synthesizes a device SPICE reads by letter:
 
@@ -76,7 +76,7 @@ Only if the model synthesizes a device SPICE reads by letter:
   time**. Never bake a designator string: `flatten` prefixes it and a rename
   moves it, and the baked one rots silently.
 
-## 4. `src/nimcir/netlist/annotations.nim` — the parameters
+## 4. `src/verax/netlist/annotations.nim` — the parameters
 
 - Every **bare** parameter the model reads: an `AnnDef` in the
   `builtinAnnotations` **const** (the const is what the DSL's compile-time
@@ -85,7 +85,7 @@ Only if the model synthesizes a device SPICE reads by letter:
 - **Structural / topology options** (select-pin names, an active-low flag, a
   termination value): namespaced (`foo.select_pins`), never validated, read via
   `attrs.getOrDefault` or `annotationFloat(c, "foo.key")`.
-- Add the bare keys to the vocabulary list in `src/nimcir/netlist/CLAUDE.md`.
+- Add the bare keys to the vocabulary list in `src/verax/netlist/CLAUDE.md`.
 
 Reading: `annotationFloat(c, "key")` → `AnnValue[float]{source, value}`.
 `.has` is `source != annAbsent`. **Never default in the accessor** — inventing
@@ -178,26 +178,26 @@ the load's ground, not to lower the bond.
 ## 9. Verify
 
 ```bash
-nim check --path:./src src/nimcir/spice/models.nim
+nim check --path:./src src/verax/spice/models.nim
 nim c -r --path:./src tests/test_spice_<name>.nim        # read the [OK] lines
 nimble test 2>&1 | grep -cE "FAILED|Error:"              # must print 0 — never the exit code
 nimble verify                                            # if any design uses the kind
 ```
 
-Inspect what actually ran: `NIMCIR_KEEP_RUNS=/tmp/m ./bin/nimcir check
+Inspect what actually ran: `VERAX_KEEP_RUNS=/tmp/m ./bin/verax check
 designs/foo.nim`, then read `/tmp/m/run*.cir` — the derived deck is not the one
 anyone wrote.
 
 ## 10. Docs — the model is not done without them
 
-- `src/nimcir/spice/CLAUDE.md`, `models/` bullet: what the file does, the
+- `src/verax/spice/CLAUDE.md`, `models/` bullet: what the file does, the
   decision you made and the one you rejected, and **a before/after number you
   measured** ("the same rail read 173 mohm nominal and 1.23 ohm derated").
-- `src/nimcir/netlist/CLAUDE.md`: any new `prefixByDeviceKind` letter or
+- `src/verax/netlist/CLAUDE.md`: any new `prefixByDeviceKind` letter or
   `kinds.nim` const, and the annotation keys.
 - `docs/RESOLVED_FINDINGS.md` if it closes a finding; strike the bullet in
   `docs/findings.md`.
 - If it needed a new evaluator/quantity (an isolation-barrier claim, a
   measured property): that is `contract/evaluators/` or `analysis/evaluators/`
-  work with its own registration and `nimcir quantities` reachability — a
+  work with its own registration and `verax quantities` reachability — a
   separate concern from the model.

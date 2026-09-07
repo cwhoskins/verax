@@ -1,6 +1,6 @@
 ## Chunk 4 of the crossbar switch: the 4x4 RF matrix.
 ##
-##   nimcir check designs/xbar_rf.nim
+##   verax check designs/xbar_rf.nim
 ##
 ## Eight ADG904 absorptive SP4T switches in a two-stage arrangement: four
 ## input-side switches fan the four SMA inputs onto a four-wire midplane, four
@@ -40,7 +40,7 @@
 ## capacitors and the SMA connectors are in the netlist for the BoM and the
 ## layout; the routing check reads a DC path, not an RF one.
 
-import nimcir/contract/dsl
+import verax/contract/dsl
 
 proc xbarRf*(): Netlist =
   netlist("xbar_rf"):
@@ -180,9 +180,9 @@ proc rfEnableNets*(): seq[string] =
 
 when isMainModule:
   import std/tables
-  import nimcir/verify
-  import nimcir/netlist/graph
-  import nimcir/spice/boundary
+  import verax/verify
+  import verax/netlist/graph
+  import verax/spice/boundary
   import ./lib/xbar_parts
   import ./lib/adg904
 

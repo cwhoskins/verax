@@ -1,7 +1,7 @@
 import std/[math, strutils, unittest]
 
-import nimcir/analysis/measure
-import nimcir/analysis/report
+import verax/analysis/measure
+import verax/analysis/report
 
 # --- analytically generated curves -------------------------------------
 

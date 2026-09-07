@@ -1,8 +1,8 @@
 import std/[strutils, tables, unittest]
 
-import nimcir/netlist
-import nimcir/netlist/annotations
-import nimcir/units
+import verax/netlist
+import verax/netlist/annotations
+import verax/units
 
 proc board(): Netlist =
   result = newNetlist("t")

@@ -8,7 +8,7 @@
 # `examples/divider.nim` sits next to it.
 /bin/
 /out/
-/mcp/nimcir_mcp
+/mcp/verax_mcp
 nimcache/
 *.exe
 *.dll

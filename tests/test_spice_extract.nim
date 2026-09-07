@@ -1,7 +1,7 @@
 import std/[tables, unittest]
 
-import nimcir/netlist
-import nimcir/spice/extract
+import verax/netlist
+import verax/spice/extract
 
 test "extractInstance clones a hierarchical component's subNetlist, detached from its parent":
   var globalNets: OrderedTable[string, Net]

@@ -49,13 +49,13 @@
 
 import std/[os, tables, times]
 
-import nimcir/contract/dsl
-import nimcir/contract/roles/core
-import nimcir/netlist/graph
-import nimcir/netlist/annotations
-import nimcir/spice/xspice/spec
-import nimcir/spice/xspice/instance
-import nimcir/spice/xspice/build
+import verax/contract/dsl
+import verax/contract/roles/core
+import verax/netlist/graph
+import verax/netlist/annotations
+import verax/spice/xspice/spec
+import verax/spice/xspice/instance
+import verax/spice/xspice/build
 
 import ./m24c64
 import ./dummy_mcu
@@ -65,7 +65,7 @@ export m24c64, dummy_mcu
 # --- the stock ngspice models -----------------------------------------------
 #
 # Described by hand, exactly as `tests/test_xspice_digital.nim` describes
-# `adc_bridge` and `dac_bridge`: nimcir needs a `ModelSpec` only to render and
+# `adc_bridge` and `dac_bridge`: verax needs a `ModelSpec` only to render and
 # check the `A` line, while the models themselves live in ngspice's own
 # `digital.cm`, which `spinit` loads on every run. That is why none of these
 # carries a `cmPath` and only the two Nim models do.
@@ -145,11 +145,11 @@ proc cmPathFor*(model: string): string =
   ## path.
   ##
   ## Lazy, and deliberately not done at module init: importing a parts library
-  ## would then run `nim c` and a C compiler, so `nimcir check --offline` on a
+  ## would then run `nim c` and a C compiler, so `verax check --offline` on a
   ## design that never simulates would pay several seconds and fail outright
   ## on a machine with no ngspice source tree. A design must stay inspectable
   ## with no simulator in the build.
-  let cache = getEnv("NIMCIR_CACHE", getCacheDir() / "nimcir") / "codemodels"
+  let cache = getEnv("VERAX_CACHE", getCacheDir() / "verax") / "codemodels"
   createDir(cache)
   # Lowercase: ngspice case-folds the lines it pre-parses, including
   # `pre_codemodel`, so a `.cm` whose path has an uppercase character in it

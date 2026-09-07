@@ -1,9 +1,9 @@
 import std/[unittest, tables, sequtils]
-import nimcir/netlist/interfaces
-import nimcir/netlist/types
-import nimcir/netlist/graph
-import nimcir/netlist/interfaces/std
-import nimcir/analysis/io_check
+import verax/netlist/interfaces
+import verax/netlist/types
+import verax/netlist/graph
+import verax/netlist/interfaces/std
+import verax/analysis/io_check
 
 suite "interface ERC":
   test "reports no controller and dangling members":

@@ -1,6 +1,6 @@
 ## A single-supply, AC-coupled amplifier, judged by its passband.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## The same op-amp as `opamp.nim`, on one supply instead of two, with the
 ## gain leg capacitively coupled. That one change makes `opamp_stage`'s
@@ -26,8 +26,8 @@
 ## `opamp_stage` on the same parts as well when you want a phase margin too
 ## -- that is the supported way to have both, and `ts808_drive.nim` does it.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("gain_stage"):
   net gnd, kind = ntGround, name = "0"

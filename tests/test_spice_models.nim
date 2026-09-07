@@ -1,10 +1,10 @@
 import std/[math, sequtils, streams, strutils, tables, unittest]
 
-import nimcir/netlist
-import nimcir/netlist/formats/spice
-import nimcir/netlist/annotations
-import nimcir/netlist/kinds
-import nimcir/spice/models
+import verax/netlist
+import verax/netlist/formats/spice
+import verax/netlist/annotations
+import verax/netlist/kinds
+import verax/spice/models
 
 proc oneCap(attrs: openArray[(string, string)]): Netlist =
   result = newNetlist("t")

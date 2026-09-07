@@ -21,7 +21,7 @@ function makeRepo(): string {
 	// would be hidden by that mount. Use $HOME, which stays a read-only bind
 	// of the host filesystem, so the write-boundary assertions see the real
 	// repository tree.
-	const repo = fs.mkdtempSync(path.join(os.homedir(), "nimcir-dbg-sandbox-"));
+	const repo = fs.mkdtempSync(path.join(os.homedir(), "verax-dbg-sandbox-"));
 	fs.mkdirSync(path.join(repo, ".git"));
 	fs.mkdirSync(path.join(repo, ".tmp"));
 	return repo;

@@ -1,7 +1,7 @@
 import std/[strutils, tables, unittest]
 
-import nimcir/netlist
-import nimcir/pcb
+import verax/netlist
+import verax/pcb
 
 proc place(pcb: Pcb, designator, footprint: string,
            attrs: openArray[(string, string)] = [],
@@ -108,7 +108,7 @@ test "rendering a BoM line is human-readable":
 
 # --- multi-channel package rollup ----------------------------------
 
-import nimcir/netlist/packages
+import verax/netlist/packages
 
 test "a dual op-amp collapses to one BoM line with the definition's part number":
   let def = newPackageDef("BOM_NE5532", [

@@ -49,7 +49,7 @@
 ## timing beyond `tpd` -- the model reacts to edges rather than checking that
 ## they were far enough apart.
 
-import nimcir/spice/xspice/dsl
+import verax/spice/xspice/dsl
 
 const
   eeSize* = 8192

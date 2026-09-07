@@ -1,6 +1,6 @@
 ## Chunk 2 of the crossbar switch: the USB-C inlet (power only).
 ##
-##   nimcir check designs/xbar_usbc.nim
+##   verax check designs/xbar_usbc.nim
 ##
 ## A power-only USB-C sink: VBUS in, the two 5.1 k CC pulldowns that
 ## advertise a sink to a source, a filtered CC-sense tap the MCU reads to
@@ -22,7 +22,7 @@
 ## BC1.2, the SuperSpeed lanes (unpopulated), or VBUS sourcing. This is a
 ## sink that takes 5 V and nothing else.
 
-import nimcir/contract/dsl
+import verax/contract/dsl
 
 proc xbarUsbC*(): Netlist =
   netlist("xbar_usbc"):
@@ -118,8 +118,8 @@ proc xbarUsbC*(): Netlist =
 
 when isMainModule:
   import std/strutils
-  import nimcir/verify
-  import nimcir/spice/boundary
+  import verax/verify
+  import verax/spice/boundary
 
   let d = newDesign(xbarUsbC())
 

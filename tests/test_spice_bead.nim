@@ -1,12 +1,12 @@
 import std/[math, os, streams, strutils, tables, unittest]
 
-import nimcir/netlist/dsl
-import nimcir/netlist/graph
-import nimcir/netlist/formats/spice
-import nimcir/units
-import nimcir/spice/models
-import nimcir/spice/ngspice
-import nimcir/spice/probes
+import verax/netlist/dsl
+import verax/netlist/graph
+import verax/netlist/formats/spice
+import verax/units
+import verax/spice/models
+import verax/spice/ngspice
+import verax/spice/probes
 
 let haveNgspice = findExe("ngspice").len > 0
 

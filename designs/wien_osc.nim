@@ -1,6 +1,6 @@
 ## A Wien-bridge oscillator: 1.59 kHz, diode-stabilised, split rails.
 ##
-##   nimcir check designs/wien_osc.nim
+##   verax check designs/wien_osc.nim
 ##
 ## The oldest op-amp circuit worth building -- it is what Hewlett sold to
 ## Disney in 1939 -- and it is here for one reason: **its intent is
@@ -43,8 +43,8 @@
 ## which is also ngspice's own timestep ceiling (`analyzeOscillation` derives
 ## ten times the density `analyzeTransient` does for exactly this reason).
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 import ./lib/parts
 

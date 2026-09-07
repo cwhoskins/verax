@@ -1,6 +1,6 @@
 ## A stereo RIAA phono preamplifier: two identical channels, +-15 V.
 ##
-##   nimcir check designs/riaa_preamp.nim
+##   verax check designs/riaa_preamp.nim
 ##
 ## The first design here that is not one file. The equalisation network lives
 ## in `designs/lib/riaa.nim` as a `subckt` and is instantiated twice, which is
@@ -31,8 +31,8 @@
 ## two instances of one `subckt` are the same circuit, and the two sweeps
 ## agree to the last digit.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 import ./lib/riaa
 import ./lib/opamps

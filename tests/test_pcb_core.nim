@@ -1,7 +1,7 @@
 import std/[tables, unittest]
 
-import nimcir/netlist
-import nimcir/pcb
+import verax/netlist
+import verax/pcb
 
 proc twoLayerBoard(): Pcb =
   ## A minimal but complete board: two copper layers plus mask, a stack-up,
@@ -220,7 +220,7 @@ test "board extent falls back to copper when no outline is stitched yet":
 
 # --- multi-channel packages -----------------------------------------
 
-import nimcir/netlist/packages
+import verax/netlist/packages
 
 proc dualPackDef(): PackageDef =
   result = newPackageDef("PCB_NE5532", [

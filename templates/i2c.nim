@@ -1,6 +1,6 @@
 ## An I2C bus: two open-drain lines, their pull-ups, and the parts on them.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## What it claims comes from the `i2c` role: each line has at least one
 ## pull-up, each line's RC corner clears the clock by ten times, and there is
@@ -8,8 +8,8 @@
 ## capacitance, which the report says out loud -- a netlist carries neither
 ## trace nor device pin capacitance, so state it if you know it.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("i2c_bus"):
   net gnd, kind = ntGround, name = "0"

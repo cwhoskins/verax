@@ -5,8 +5,8 @@
 
 import std/[math, os, strutils, tables, unittest]
 
-import nimcir/contract/dsl
-import nimcir/analysis/evaluators/contract_eval
+import verax/contract/dsl
+import verax/analysis/evaluators/contract_eval
 
 let haveNgspice = findExe("ngspice").len > 0
 

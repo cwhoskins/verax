@@ -1,7 +1,7 @@
 import std/[strutils, tables, unittest]
 
-import nimcir/pcb
-import nimcir/fem
+import verax/pcb
+import verax/fem
 
 proc twoLayerBoard(): Pcb =
   ## Two copper layers with a real stack-up (35 um Cu / 1.51 mm FR-4 / 35 um

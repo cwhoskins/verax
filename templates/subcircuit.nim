@@ -1,6 +1,6 @@
 ## One block, built by a Nim proc, used twice at two different settings.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## Everything else under `templates/` is a flat netlist with its component
 ## values typed in. This one has **no component value anywhere in the design
@@ -30,9 +30,9 @@
 ## interfere -- except for nets marked global, like ground, which are
 ## deliberately reused as the same object at every level.
 
-import nimcir/contract/dsl
-import nimcir/netlist/formats/spice as spiceFormat
-import nimcir/verify
+import verax/contract/dsl
+import verax/netlist/formats/spice as spiceFormat
+import verax/verify
 
 # --- the block ------------------------------------------------------------
 

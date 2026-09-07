@@ -1,8 +1,8 @@
 import std/[strutils, streams, tables, unittest, streams]
 
-import nimcir/netlist/dsl
-import nimcir/netlist/kinds
-import nimcir/netlist/formats/spice
+import verax/netlist/dsl
+import verax/netlist/kinds
+import verax/netlist/formats/spice
 
 test "flat netlist built with the DSL matches hand-built structure":
   let nl = netlist("divider"):
@@ -322,7 +322,7 @@ suite "control flow over DSL statements":
     let nl = netlist("b"):
       net gnd, kind = ntGround, name = "0"
       net vdd, kind = ntPower
-      when defined(nimcirNoSuchDefine):
+      when defined(veraxNoSuchDefine):
         component R1, kind = "resistor", value = "1k":
           pin "1", vdd, kind = ptPassive
           pin "2", gnd, kind = ptPassive
@@ -544,7 +544,7 @@ test "a model may claim several purposes":
 
 # --- multi-channel packaging -----------------------------------------
 
-import nimcir/netlist/packages
+import verax/netlist/packages
 
 test "with = u10.section(...) composes with instance and writes package.*":
   let dual = newPackageDef("DSL_DUAL", [

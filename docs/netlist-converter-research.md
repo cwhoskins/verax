@@ -2,8 +2,8 @@
 
 Notes on `~/Downloads/netlist_converter.html` — a single-file browser app that
 turns a SPICE-style netlist into a schematic — and how its ideas map onto
-nimcir. Phase I (flat scene → self-contained SVG, plus a public JSON API) is
-implemented in `src/nimcir/schematic/`; Phase II (hierarchical HTML renderer,
+verax. Phase I (flat scene → self-contained SVG, plus a public JSON API) is
+implemented in `src/verax/schematic/`; Phase II (hierarchical HTML renderer,
 below) is not.
 
 **What it is:** a heuristic visualizer. You paste a netlist (one component per
@@ -119,37 +119,37 @@ Anything else is a parse error. Ground is recognised by name (`0`, `gnd`,
 
 ---
 
-## What carries over to nimcir
+## What carries over to verax
 
-Two ideas are worth keeping, and one of them nimcir already does better.
+Two ideas are worth keeping, and one of them verax already does better.
 
 **The pure/impure split is exactly right.** `parse · place · route` compute a
 model with no DOM in it; rendering and interaction are a thin adapter over that
-model. That is the same boundary nimcir draws everywhere ("everything expensive
+model. That is the same boundary verax draws everywhere ("everything expensive
 is opt-in per import", analyses that are pure over the design).
 
 **Parse is already solved, and solved more correctly than the reference.**
-nimcir must not port the reference's ad-hoc parser: `netlist/formats/spice.nim`
+verax must not port the reference's ad-hoc parser: `netlist/formats/spice.nim`
 already reads SPICE decks into the format-agnostic `Netlist` graph, with
 hierarchy (`.SUBCKT`/`.ENDS`), `.MODEL` passthrough, directive skipping, and —
 unlike the reference — real value semantics (`parseSpiceMagnitude`,
-`spiceValue`). The reference's shallow parse is precisely the case nimcir's
+`spiceValue`). The reference's shallow parse is precisely the case verax's
 format layer was built to get right.
 
 **Rail detection should be replaced, not copied.** The reference guesses from
-names; nimcir has `netlist/kinds.isGround` / `isRail`, which answer from
+names; verax has `netlist/kinds.isGround` / `isRail`, which answer from
 `Net.kind`, `Pin.kind`, or the SPICE-reserved node `"0"`. Reuse those — the
 annotation-driven answer is the improvement the reference lacks.
 
 **The graph is already the right input.** Placement and routing need exactly
-what nimcir's graph guarantees: enumerate `nl.nets`, walk `net.pins`, find
+what verax's graph guarantees: enumerate `nl.nets`, walk `net.pins`, find
 net-mates through `pin.component`, all without touching name-keyed tables. That
 is the `Net.pins`/`Component.pins`/`Pin.component`/`Pin.net` bidirectionality
 the core was built for.
 
 ---
 
-## A practical Nim implementation for nimcir
+## A practical Nim implementation for verax
 
 In order of building:
 
@@ -157,7 +157,7 @@ In order of building:
    `netlist/formats/spice.readNetlist` (or walk a DSL-built `Netlist`), and
    treat it as read-only input: placement/routing only ever *read* through the
    graph API, never mutate back-references. Symbol selection is keyed by
-   `Component.kind` (nimcir is kind-based, not first-letter-based), with a
+   `Component.kind` (verax is kind-based, not first-letter-based), with a
    small symbol registry; designators come from `kinds.designatorPrefixFor`.
 
 2. **Introduce a renderer-neutral schematic scene.** A pure-data model —
@@ -194,7 +194,7 @@ beside the other format writers.
 
 **Scope, stated plainly:** this would be a *heuristic visualizer* — a fast,
 read-only "does the topology look like I think it does" view of a netlist. It
-is not a SPICE parser (nimcir already has one), not a simulator, and not an EDA
+is not a SPICE parser (verax already has one), not a simulator, and not an EDA
 tool: no signal-flow placement, no DRC, no BoM, no round-trip. Signal routing
 *is* obstacle-aware (it keeps a fixed clearance from component bodies and
 reaches pins directly through short outward stubs), but the placement is still

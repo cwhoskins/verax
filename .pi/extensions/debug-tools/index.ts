@@ -1,7 +1,7 @@
 /**
  * Debug Tools Extension
  *
- * Project-local restricted tools for the nimcir `debugger` agent:
+ * Project-local restricted tools for the verax `debugger` agent:
  *
  * - `debug_write` writes only under the repository `.tmp/` directory, with
  *   component-aware containment and symlink checks.

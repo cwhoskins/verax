@@ -1,9 +1,9 @@
 import std/[os, strutils, unittest]
 
-import nimcir/contract/dsl
-import nimcir/netlist/graph
-import nimcir/analysis/analyses/transient
-import nimcir/spice/xspice/build
+import verax/contract/dsl
+import verax/netlist/graph
+import verax/analysis/analyses/transient
+import verax/spice/xspice/build
 
 import ../designs/lib/i2c_parts
 

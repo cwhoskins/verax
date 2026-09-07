@@ -3,10 +3,10 @@
 
 import std/[os, osproc, streams, strutils, tables, unittest]
 
-import nimcir/netlist
-import nimcir/netlist/formats/spice
-import nimcir/netlist/annotations
-import nimcir/spice/models
+import verax/netlist
+import verax/netlist/formats/spice
+import verax/netlist/annotations
+import verax/spice/models
 
 test "a two-terminal switch becomes an S element and a SW model":
   let nl = newNetlist("t")
@@ -105,7 +105,7 @@ test "an rf_switch decodes its throws and terminates the rest":
     discard expandPinModels(nl)
     check not nl.components.hasKey("U1")
 
-    let dir = getTempDir() / "nimcir_sw_test"
+    let dir = getTempDir() / "verax_sw_test"
     createDir(dir)
     let deck = dir / "m.cir"
     let s = newFileStream(deck, fmWrite)

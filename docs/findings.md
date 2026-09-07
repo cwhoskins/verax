@@ -213,7 +213,7 @@ prerequisites — the dependencies are stated where they exist.
     `explainPlan` renders it, both for the stated reason that an assertion set
     you cannot inspect before it executes is the failure mode this layer
     exists to prevent — and nothing in `cli.nim`, `verify.nim` or any design
-    ever calls it. A `nimcir check --dry-run` printing what would be simulated,
+    ever calls it. A `verax check --dry-run` printing what would be simulated,
     with what setup, for which claims, before any of it is spent. A `.tran`
     through the LT8640A's switching model at fifty timepoints a cycle is not
     free, and the tool already knows the bill before it runs up.
@@ -262,11 +262,11 @@ prerequisites — the dependencies are stated where they exist.
     bindings. Wants §51 to be affordable.
 
 17. **Two missing CLI surfaces** (§56), both small and neither electrical.
-    `nimcir bom <design>` — `pcb/bom.buildBom` exists and the part policy
+    `verax bom <design>` — `pcb/bom.buildBom` exists and the part policy
     computes real choices with real provenance, and there is no way to print
-    any of it without writing a program. And `nimcir netlist <design> [-o
+    any of it without writing a program. And `verax netlist <design> [-o
     out.cir]` — exporting the deck without running a check, which
-    `$NIMCIR_KEEP_DECKS` currently does only as a side effect of checking, and
+    `$VERAX_KEEP_DECKS` currently does only as a side effect of checking, and
     only for the *derived* fragments rather than for the design as authored.
     Both are plumbing over things that already work.
 
@@ -397,7 +397,7 @@ a regulator is asked and not a thing to bind separately.)
       entry and a new evaluator + role; `tests/test_spice_spellable.nim` will
       name a half-done addition.
     - ~~**No coupled inductors** (`K` card).~~ **Shipped.**
-      `src/nimcir/spice/models/magnetics.nim`: `transformer` /
+      `src/verax/spice/models/magnetics.nim`: `transformer` /
       `common_mode_choke` / `coupled_inductor` expand to two windings and a
       `mutual_inductance` component that `formats/spice` renders as a `K`
       card; `mutual_inductance` joins `couplingKinds` (accepted by `isPassive`,
@@ -411,7 +411,7 @@ a regulator is asked and not a thing to bind separately.)
       core saturation, and the MagJack's MDI transformers (nothing drives an
       MDI pair to measure).
     - ~~**No switch or relay device model.**~~ **Shipped.**
-      `src/nimcir/spice/models/switch.nim`: `switch`/`relay`/`load_switch`
+      `src/verax/spice/models/switch.nim`: `switch`/`relay`/`load_switch`
       expand to a `vswitch` `S` element plus a `.MODEL SW` card
       (`prefixByDeviceKind` gained `S`/`W`/`K`); a multi-throw `analog_switch`
       /`rf_switch`/`mux` is a behavioural-registry model (`muxModel`) that
@@ -516,7 +516,7 @@ Both turned up while measuring why `nimble test` takes ~7 minutes (see the
     `lsForcePlacement` (5.7s → 2.3s with it disabled) and the rest in
     `lsRoute`, which cannot be disabled. This is the actual reason the test
     sweep is slow — not test count — and it caps how large a sheet the archive
-    can picture before a `nimcir check` visibly stalls. Fixing it would also
+    can picture before a `verax check` visibly stalls. Fixing it would also
     let `test_verify_keep`'s derived-fragment archive assertion come back off
     `-d:slowTests` (~140s of its ~144s was one `layout()` of the
     op-substituted fragment, not the simulation). `schematic/bundles.nim`

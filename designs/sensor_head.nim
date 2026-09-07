@@ -1,6 +1,6 @@
 ## The sensor head: a small board at the end of a cable.
 ##
-##   nimcir check designs/sensor_head.nim
+##   verax check designs/sensor_head.nim
 ##
 ## **Both a board and a program**, like `designs/carrier.nim`: checked
 ## directly, `when isMainModule` below plugs a supply into its connector and
@@ -17,7 +17,7 @@
 ## because the current it draws is one of the numbers the system claims and a
 ## stood-in impedance would make that a claim about the stand-in.
 
-import nimcir/contract/dsl
+import verax/contract/dsl
 
 proc sensorHead*(): Netlist =
   netlist("sensor_head"):
@@ -78,8 +78,8 @@ proc sensorHead*(): Netlist =
         power_rating = 250.mW
 
 when isMainModule:
-  import nimcir/verify
-  import nimcir/spice/boundary
+  import verax/verify
+  import verax/spice/boundary
 
   let d = newDesign(sensorHead())
 

@@ -1,6 +1,6 @@
 ## Chunk 1 of the crossbar switch: the PoE inlet.
 ##
-##   nimcir check designs/xbar_poe.nim
+##   verax check designs/xbar_poe.nim
 ##
 ## An 802.3af powered-device front end: an RJ45's PoE conductors into a
 ## rectifier bridge, a TVS, the 25.5 k detection signature, a class-2
@@ -48,9 +48,9 @@
 
 import std/tables
 
-import nimcir/contract/dsl
-import nimcir/netlist/graph
-import nimcir/netlist/types as ntypes
+import verax/contract/dsl
+import verax/netlist/graph
+import verax/netlist/types as ntypes
 
 import ./lib/xbar_parts
 
@@ -313,8 +313,8 @@ proc xbarPoe*(): Netlist =
       pin "GND", gnd, kind = ptGround
 
 when isMainModule:
-  import nimcir/verify
-  import nimcir/spice/boundary
+  import verax/verify
+  import verax/spice/boundary
 
   let d = newDesign(xbarPoe())
   equipXbarPoe(d)

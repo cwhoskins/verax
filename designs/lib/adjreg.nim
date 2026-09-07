@@ -44,7 +44,7 @@
 ##
 ## ## Rounding to a part that exists
 ##
-## `series` is a `PreferredSeries` from `nimcir/parts/series` and defaults to
+## `series` is a `PreferredSeries` from `verax/parts/series` and defaults to
 ## `exactSeries`, which rounds nothing -- a builder rounds only when asked.
 ## Pass `e96` and what the design gets back is recomputed from the values that
 ## will be fitted, never reported back as the voltage that was requested; the
@@ -105,10 +105,10 @@
 
 import std/[strutils, tables]
 
-import nimcir/contract/dsl
-import nimcir/netlist/formats/spice as spiceFormat
-import nimcir/eng
-import nimcir/parts
+import verax/contract/dsl
+import verax/netlist/formats/spice as spiceFormat
+import verax/eng
+import verax/parts
 
 type
   AdjRegulator* = object

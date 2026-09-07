@@ -1,6 +1,6 @@
 ## A decoupled power rail, checked against an impedance target.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## What it claims: the rail sits at its nominal voltage, and its decoupling
 ## keeps the supply impedance under target across the band where capacitors
@@ -8,8 +8,8 @@
 ## cut away at the boundary; above ~100 MHz plane capacitance and via
 ## inductance dominate and a netlist carries neither.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("rail"):
   net gnd, kind = ntGround, name = "0"

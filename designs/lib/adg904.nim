@@ -1,7 +1,7 @@
 ## The ADG904 as a set of annotations on a `kind = "rf_switch"` component.
 ##
 ## `designs/xbar_rf.nim` builds eight of these -- an absorptive SP4T RF mux.
-## The library's generic `muxModel` (`src/nimcir/spice/models/switch.nim`)
+## The library's generic `muxModel` (`src/verax/spice/models/switch.nim`)
 ## does the electrical work: one voltage-controlled `S` element per throw,
 ## a smooth decoder from the select pins gated by `EN`, and -- because
 ## `switch.off_termination` is stated -- a second `S` element and a 50 ohm
@@ -19,8 +19,8 @@
 
 import std/tables
 
-import nimcir/netlist/graph
-import nimcir/netlist/types
+import verax/netlist/graph
+import verax/netlist/types
 
 proc equipAdg904*(nl: Netlist, designators: openArray[string]) =
   ## Stamp the ADG904's datasheet numbers onto each named `rf_switch`.

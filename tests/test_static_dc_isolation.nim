@@ -2,9 +2,9 @@
 
 import std/[tables, unittest]
 
-import nimcir/netlist
-import nimcir/contract
-import nimcir/analysis/evaluators/contract_eval
+import verax/netlist
+import verax/contract
+import verax/analysis/evaluators/contract_eval
 
 proc barrierDesign(bridge: bool): Design =
   let nl = newNetlist("t")

@@ -1,7 +1,7 @@
 import std/[streams, strutils, tables, unittest]
 
-import nimcir/netlist
-import nimcir/netlist/formats/spice
+import verax/netlist
+import verax/netlist/formats/spice
 
 proc render(nl: Netlist): string =
   let outStream = newStringStream()
@@ -193,8 +193,8 @@ test "a written deck spells every device from its kind":
   check "LFB1 a 0 600n" in s.data
   check "\nFB1 " notin s.data
 
-import nimcir/netlist/dsl as nldsl
-import nimcir/netlist/packages
+import verax/netlist/dsl as nldsl
+import verax/netlist/packages
 
 test "a SPICE round trip intentionally loses package metadata":
   let def = newPackageDef("SPICE_DUAL", [

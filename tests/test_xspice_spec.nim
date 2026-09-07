@@ -1,6 +1,6 @@
 import std/[unittest]
 
-import nimcir/spice/xspice
+import verax/spice/xspice
 
 proc gainSpec(): ModelSpec =
   ## The `analog/gain` model from ngspice's own icm library, which is the

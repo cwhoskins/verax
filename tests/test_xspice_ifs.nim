@@ -1,6 +1,6 @@
 import std/[strutils, unittest]
 
-import nimcir/spice/xspice
+import verax/spice/xspice
 
 proc minimalSpec(): ModelSpec =
   ## Deliberately the smallest thing that renders every table exactly once,

@@ -1,6 +1,6 @@
 ## A soft-clipping stage, driven hard on purpose.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## Everything else in this library that measures an amplifier is
 ## **small-signal**: `.ac` linearises about the operating point, so a
@@ -22,8 +22,8 @@
 ## swing reads as clean, which is a statement about the model rather than
 ## about the circuit.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 const
   d1N4148 = "1N4148"

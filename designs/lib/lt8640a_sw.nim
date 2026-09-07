@@ -64,7 +64,7 @@
 ##     claim -- the conduction loss is present but the switching loss is not.
 
 import std/math
-import nimcir/spice/xspice/dsl
+import verax/spice/xspice/dsl
 
 const
   ## Analog state slots. Rolled back with the timepoint, which is the whole

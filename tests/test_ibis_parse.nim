@@ -1,6 +1,6 @@
 import std/[streams, unittest]
 
-import nimcir/ibis/parse
+import verax/ibis/parse
 
 test "canonicalKeyword unifies case and space/underscore":
   check canonicalKeyword("GND Clamp") == "gnd_clamp"

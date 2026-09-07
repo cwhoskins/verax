@@ -1,6 +1,6 @@
 import std/[unittest, tables]
-import nimcir/contract/dsl
-import nimcir/netlist/interfaces/std
+import verax/contract/dsl
+import verax/netlist/interfaces/std
 
 suite "interface contracts":
   test "from interface binds matching nets and controller":

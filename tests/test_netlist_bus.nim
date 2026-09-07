@@ -1,6 +1,6 @@
 import std/unittest
-import nimcir/netlist
-import nimcir/netlist/interfaces
+import verax/netlist
+import verax/netlist/interfaces
 
 suite "bus views":
   test "creates ordered scalar members and survives rename":

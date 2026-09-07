@@ -1,9 +1,9 @@
 import std/[math, sequtils, strutils, tables, unittest]
 
-import nimcir/netlist
-import nimcir/netlist/annotations
-import nimcir/contract
-import nimcir/units
+import verax/netlist
+import verax/netlist/annotations
+import verax/contract
+import verax/units
 
 proc board(): Design =
   let nl = newNetlist("board")

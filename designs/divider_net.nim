@@ -1,6 +1,6 @@
 ## Two dividers built from a total and a ratio, and the composition of them.
 ##
-##   nimcir check designs/divider_net.nim
+##   verax check designs/divider_net.nim
 ##
 ## No resistor value appears in this file. `designs/lib/dividers.nim` derives
 ## every leg from a total impedance and a fraction, so what is checked below
@@ -51,8 +51,8 @@
 ## for. The load is a sink the analysis injects; nothing here is a test load,
 ## because a test load is not a part anybody solders.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 import ./lib/dividers
 

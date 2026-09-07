@@ -1,6 +1,6 @@
 ## What a node does as something *moves*, rather than at one bias.
 ##
-##   nimcir check <this file>
+##   verax check <this file>
 ##
 ## A 5.1 V Zener shunt reference off a 12 V rail: one resistor, one diode,
 ## and a specification that is entirely made of slopes. How far the reference
@@ -46,8 +46,8 @@
 ## a *threshold crossing* and is therefore the one quantity here whose
 ## precision is the step size.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 let d = design("dc_sweep"):
   net gnd,  kind = ntGround, name = "0"

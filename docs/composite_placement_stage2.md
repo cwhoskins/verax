@@ -13,7 +13,7 @@ whoever picks Stage 2 back up.
 ## Done: 2.1 + 2.2
 
 `forcePlace`'s repulsion term and `separate`'s legalization search in
-`src/nimcir/schematic/state.nim` now operate over `placementPool(state)` — one
+`src/verax/schematic/state.nim` now operate over `placementPool(state)` — one
 entry per top-level arena item (`state.composites.topLevel` under
 `lpConstrainedLayered`, one entry per raw component under `lpHistorical`) —
 via three new helpers: `placementPool`, `poolMembers`/`poolOffsets` (thin
@@ -220,7 +220,7 @@ like `xbar_rf`/`sensor_node` being added. The captured subset: `aa_filter`,
 `i2c`, `subcircuit` (root + `REFDIV`, composite-free controls) — chosen for
 size (seconds, not the 4-6 minutes each of `xbar_rf`/`xbar_switch`/
 `xbar_control`/`xbar_poe`/`xbar_power`/`xbar_usbc` costs per single
-`bin/nimcir check` invocation) while still spanning both root and subcircuit
+`bin/verax check` invocation) while still spanning both root and subcircuit
 sheets, both design and template files, and collapse ratios from mild
 (`RIAA_CHANNEL`'s 12 raw -> 10 pool, ~83%) to total (`sensor_head`'s 5 raw
 parts -> 1 pool item).
@@ -228,7 +228,7 @@ The larger `xbar_*` sheets were not captured here; they exercise the same
 mechanism at larger scale, and the synthetic stress benchmark below is the
 real scaling signal regardless.
 
-Result, `bin/nimcir check <design> --schematic-only --keep-runs=DIR` before
+Result, `bin/verax check <design> --schematic-only --keep-runs=DIR` before
 (this repo's prior commit) vs after, both policies:
 
 - **`historical`**: zero differences, every sheet in the subset — expected
@@ -416,7 +416,7 @@ SHA-256 sums of the `--schematic-only --keep-runs=DIR` archive
 `templates/*.nim`, for both `--schematic-layout=historical` and
 `constrained-layered`, before and after a change, then diffing. This is slow
 (the corpus takes several minutes per full pass) and **must run with no
-concurrent edits to `src/`** — `bin/nimcir check` recompiles against the live
+concurrent edits to `src/`** — `bin/verax check` recompiles against the live
 on-disk source per invocation, so editing mid-capture silently corrupts the
 baseline (this happened once during Stage 1 and was caught by the corpus
 shrinking from 260 to 206 archive files).

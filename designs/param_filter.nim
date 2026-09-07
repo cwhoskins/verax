@@ -1,6 +1,6 @@
 ## Two filters from one builder, at different corners.
 ##
-##   nimcir check designs/param_filter.nim
+##   verax check designs/param_filter.nim
 ##
 ## The point of this design is not the circuit -- it is that neither section's
 ## component values appear anywhere in this file. `designs/lib/filters.nim`
@@ -11,8 +11,8 @@
 ## claim fails. A hand-typed netlist claimed against hand-typed values checks
 ## only that somebody did the arithmetic twice.
 
-import nimcir/contract/dsl
-import nimcir/verify
+import verax/contract/dsl
+import verax/verify
 
 import ./lib/filters
 

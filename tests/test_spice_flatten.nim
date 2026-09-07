@@ -1,10 +1,10 @@
 import std/[streams, strutils, tables, unittest]
 
-import nimcir/netlist/dsl
-import nimcir/netlist/graph
-import nimcir/netlist/formats/spice as spiceFormat
-import nimcir/netlist/formats/common
-import nimcir/spice/flatten
+import verax/netlist/dsl
+import verax/netlist/graph
+import verax/netlist/formats/spice as spiceFormat
+import verax/netlist/formats/common
+import verax/spice/flatten
 
 proc rcBlock(): Netlist =
   subckt("RC", [IN, OUT, GND]):

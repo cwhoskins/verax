@@ -1,7 +1,7 @@
 import std/[complex, math, os, tables, unittest]
 
-import nimcir/netlist
-import nimcir/spice/ngspice
+import verax/netlist
+import verax/spice/ngspice
 
 let haveNgspice = findExe("ngspice").len > 0
 

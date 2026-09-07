@@ -6,10 +6,10 @@
 ## declared once, so `param(gain)` and `partial(outp, inp)` are resolved
 ## against them at compile time.
 ##
-## Build it into a loadable `.cm` with `nimcir/spice/xspice/build`:
+## Build it into a loadable `.cm` with `verax/spice/xspice/build`:
 ##
 ## ```nim
-## import nimcir/spice/xspice/build
+## import verax/spice/xspice/build
 ## discard buildCodeModel("examples/xspice_gain.nim", "/tmp/gain.cm")
 ## ```
 ##
@@ -24,7 +24,7 @@
 ## .endc
 ## ```
 
-import nimcir/spice/xspice/dsl
+import verax/spice/xspice/dsl
 
 codeModel "nimgain":
   description "a behavioural gain block, written in nim"

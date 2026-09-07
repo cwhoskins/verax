@@ -1,9 +1,9 @@
 import std/[sequtils, streams, strutils, tables, unittest]
 
-import nimcir/netlist/types
-import nimcir/netlist/graph
-import nimcir/netlist/formats/spice as spiceFormat
-import nimcir/spice/xspice
+import verax/netlist/types
+import verax/netlist/graph
+import verax/netlist/formats/spice as spiceFormat
+import verax/spice/xspice
 
 proc gainSpec(): ModelSpec =
   ModelSpec(

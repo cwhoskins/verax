@@ -20,14 +20,14 @@ import {
 } from "./security.ts";
 
 function makeRepo(): string {
-	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "nimcir-dbg-sec-"));
+	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "verax-dbg-sec-"));
 	fs.mkdirSync(path.join(repo, ".git"));
 	fs.mkdirSync(path.join(repo, ".tmp"));
 	return repo;
 }
 
 function makeRepoWithoutTmp(): string {
-	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "nimcir-dbg-sec-"));
+	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "verax-dbg-sec-"));
 	fs.mkdirSync(path.join(repo, ".git"));
 	return repo;
 }
