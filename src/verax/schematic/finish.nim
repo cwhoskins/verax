@@ -14,6 +14,8 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
   let railLabelReqs {.cursor.} = routing.railLabelReqs
   let bundleNets {.cursor.} = routing.bundleNets
   let bundleLabelReqs {.cursor.} = routing.bundleLabelReqs
+  let arrayNets {.cursor.} = routing.arrayNets
+  let arrayLabelReqs {.cursor.} = routing.arrayLabelReqs
 
   # `ownsPin` mirrors the one inside `routeScene`; the label pass needs the
   # same rail/ground reading (`isGroundHere`/`isRailHere`, module-level in
@@ -157,6 +159,7 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
     if net.name in portedNets: continue
     if net.name in fallbackNets: continue
     if net.name in bundleNets: continue     # a merged pin, named once below
+    if net.name in arrayNets: continue      # a collapsed array group/link
     var anchor: Point
     var anchorEsc: Point
     var have = false
@@ -203,7 +206,7 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
 
   # Non-ported collapsed bundle names: one `"spi[3]"` label at the merged pin,
   # searched like a net name with the merged pin's own escape side tried last.
-  for req in bundleLabelReqs:
+  for req in bundleLabelReqs & arrayLabelReqs:
     let escSide =
       if req.esc.x > 0.5: sRight
       elif req.esc.x < -0.5: sLeft

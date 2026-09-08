@@ -228,13 +228,17 @@ proc collinearOverlapT(a, b, c, d: Point): bool =
 proc distinctWiresNeverShareCollinearRuns(s: Schematic): bool =
   ## The within-net routing invariant: two distinct `SchematicWire` objects may
   ## meet at a vertex and may cross perpendicularly, but never overlap along a
-  ## positive-length collinear segment.
+  ## positive-length collinear segment. A `wkChain` arc is a dashed annotation,
+  ## not a routed wire -- it deliberately runs beside its own pin's wire -- so
+  ## it is exempt.
   for i in 0 ..< s.wires.len:
+    if s.wires[i].kind == wkChain: continue
     for k in 0 ..< s.wires[i].points.high:
       let a = s.wires[i].points[k]
       let b = s.wires[i].points[k + 1]
       if abs(a.x - b.x) < 1e-9 and abs(a.y - b.y) < 1e-9: continue
       for j in 0 ..< i:
+        if s.wires[j].kind == wkChain: continue
         for m in 0 ..< s.wires[j].points.high:
           if collinearOverlapT(a, b, s.wires[j].points[m],
                                s.wires[j].points[m + 1]):
@@ -284,6 +288,7 @@ proc differentNetsRespectSeparation(s: Schematic): bool =
   ## overlap.
   var segs: seq[tuple[net: string, a, b: Point]]
   for w in s.wires:
+    if w.kind == wkChain: continue      # a dashed annotation, not a routed net
     for k in 0 ..< w.points.high:
       let a = w.points[k]
       let b = w.points[k + 1]
@@ -2727,7 +2732,7 @@ test "the default pipeline and its reserved no-op stages are byte-stable":
   # The reserved stages are still no-ops: dropping any one changes nothing.
   # `lsConstrainedRefinement` in particular is unfinished, so this is the
   # guard that it stays inert until it is done.
-  for stage in [lsBundles, lsSemanticSeed, lsConstrainedRefinement,
+  for stage in [lsBundles, lsArrays, lsSemanticSeed, lsConstrainedRefinement,
                 lsCompositeOrient, lsRoutingAwareRepair]:
     var options = defaultLayoutOptions()
     options.stages.excl stage
@@ -3361,3 +3366,383 @@ suite "bundle plan (bus/interface grouping)":
     # `const MODEL = ...;` stays one line.
     let ms = html.find("const MODEL = ")
     check html.find(";\n", ms) > ms
+
+# --- repeated-subsheet array collapse ------------------------------------
+
+suite "subsheet arrays":
+  proc cellSubckt(): Netlist =
+    ## One buffer sheet: a power port, a series in/out pair, a per-instance
+    ## tap, and an enable.
+    nldsl.subckt("CELL", [vdd, sin, sout, tap, en]):
+      net vdd, kind = ntPower
+      net gnd, kind = ntGround
+      net sin, kind = ntSignal
+      net sout, kind = ntSignal
+      net tap, kind = ntSignal
+      net en, kind = ntSignal
+      component U1, kind = "buffer":
+        pin "V", vdd, kind = ptPower
+        pin "G", gnd, kind = ptGround
+        pin "A", sin, kind = ptInput
+        pin "Y", sout, kind = ptOutput
+        pin "T", tap, kind = ptOutput
+        pin "E", en, kind = ptInput
+
+  proc chainSheet(): Netlist =
+    ## Four CELLs: `vdd` common, `sin`/`sout` a daisy chain, `tap` distributed,
+    ## `en` irregular (two share, two differ).
+    let CELL = cellSubckt()
+    nldsl.netlist("array_demo"):
+      net vdd, kind = ntPower
+      net cin, kind = ntSignal
+      net l1, kind = ntSignal
+      net l2, kind = ntSignal
+      net l3, kind = ntSignal
+      net cout, kind = ntSignal
+      net t1, kind = ntSignal
+      net t2, kind = ntSignal
+      net t3, kind = ntSignal
+      net t4, kind = ntSignal
+      net ea, kind = ntSignal
+      net eb, kind = ntSignal
+      net ec, kind = ntSignal
+      instance X1, CELL, [vdd, cin, l1, t1, ea]
+      instance X2, CELL, [vdd, l1, l2, t2, ea]
+      instance X3, CELL, [vdd, l2, l3, t3, eb]
+      instance X4, CELL, [vdd, l3, cout, t4, ec]
+      component RT1, kind = "resistor", value = "1k":
+        pin "1", t1
+        pin "2", vdd
+      component RT2, kind = "resistor", value = "1k":
+        pin "1", t2
+        pin "2", vdd
+      component RT3, kind = "resistor", value = "1k":
+        pin "1", t3
+        pin "2", vdd
+      component RT4, kind = "resistor", value = "1k":
+        pin "1", t4
+        pin "2", vdd
+
+  proc twoInstanceSheet(): Netlist =
+    let CELL = cellSubckt()
+    nldsl.netlist("two_demo"):
+      net vdd, kind = ntPower
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      net c, kind = ntSignal
+      net t1, kind = ntSignal
+      net t2, kind = ntSignal
+      net e, kind = ntSignal
+      instance X1, CELL, [vdd, a, b, t1, e]
+      instance X2, CELL, [vdd, b, c, t2, e]
+
+  proc subGroupSheet(): Netlist =
+    ## Six CELLs whose `en` splits them cleanly into two groups of three.
+    let CELL = cellSubckt()
+    nldsl.netlist("subgroup_demo"):
+      net vdd, kind = ntPower
+      net s1, kind = ntSignal
+      net s2, kind = ntSignal
+      net s3, kind = ntSignal
+      net s4, kind = ntSignal
+      net s5, kind = ntSignal
+      net s6, kind = ntSignal
+      net s7, kind = ntSignal
+      net ta, kind = ntSignal
+      net tb, kind = ntSignal
+      net tc, kind = ntSignal
+      net td, kind = ntSignal
+      net te, kind = ntSignal
+      net tf, kind = ntSignal
+      net ga, kind = ntSignal
+      net gb, kind = ntSignal
+      instance X1, CELL, [vdd, s1, s2, ta, ga]
+      instance X2, CELL, [vdd, s2, s3, tb, ga]
+      instance X3, CELL, [vdd, s3, s4, tc, ga]
+      instance X4, CELL, [vdd, s4, s5, td, gb]
+      instance X5, CELL, [vdd, s5, s6, te, gb]
+      instance X6, CELL, [vdd, s6, s7, tf, gb]
+
+  proc disagreeSheet(): Netlist =
+    ## Two splitting ports whose partitions do not align: the intersection is
+    ## all singletons, so nothing collapses.
+    let CELL = cellSubckt()
+    nldsl.netlist("disagree_demo"):
+      net vdd, kind = ntPower
+      net s1, kind = ntSignal
+      net s2, kind = ntSignal
+      net s3, kind = ntSignal
+      net s4, kind = ntSignal
+      net s5, kind = ntSignal
+      net p1, kind = ntSignal
+      net p2, kind = ntSignal
+      net q1, kind = ntSignal
+      net q2, kind = ntSignal
+      # tap pairs {1,2}/{3,4}; en pairs {1,3}/{2,4}
+      instance X1, CELL, [vdd, s1, s2, p1, q1]
+      instance X2, CELL, [vdd, s2, s3, p1, q2]
+      instance X3, CELL, [vdd, s3, s4, p2, q1]
+      instance X4, CELL, [vdd, s4, s5, p2, q2]
+
+  test "arrayReport classifies each port of a collapsed array":
+    let rep = arrayReport(chainSheet())
+    check rep.len == 1
+    check rep[0].subsheet == "CELL"
+    check rep[0].label == "X1..X4"
+    check rep[0].rep == "X1"
+    check rep[0].count == 4
+    check rep[0].members == @["X1", "X2", "X3", "X4"]
+    check rep[0].ports == @["vdd=common", "sin=chained(in)",
+      "sout=chained(out,x3)", "tap=distributed[1:4]", "en=irregular(3*4)"]
+
+  test "two instances of a subsheet do not collapse":
+    check arrayReport(twoInstanceSheet()).len == 0
+
+  test "a splitting port sub-groups an array into collapsible halves":
+    let rep = arrayReport(subGroupSheet())
+    check rep.len == 2
+    check rep[0].count == 3
+    check rep[1].count == 3
+    check rep[0].members == @["X1", "X2", "X3"]
+    check rep[1].members == @["X4", "X5", "X6"]
+
+  test "misaligned splitting ports collapse nothing":
+    check arrayReport(disagreeSheet()).len == 0
+
+  test "a netlist with no repeated subsheet reports no arrays":
+    check arrayReport(divider()).len == 0
+    check arrayReport(plainDivider()).len == 0
+
+  proc busCellSubckt(): Netlist =
+    nldsl.subckt("BCELL", [vdd, io]):
+      net vdd, kind = ntPower
+      net gnd, kind = ntGround
+      bus io, width = 2
+      component U1, kind = "buffer":
+        pin "V", vdd, kind = ptPower
+        pin "G", gnd, kind = ptGround
+        pin "A", io[0], kind = ptInput
+        pin "B", io[1], kind = ptOutput
+
+  test "a member carrying a collapsed bundle vetoes the array":
+    # Each BCELL shares a private 2-wire bus point-to-point with one widget
+    # box, so `bus:a`/`bus:b`/`bus:c` each collapse -- and every array member
+    # is in one, so the array is declined.
+    let BCELL = busCellSubckt()
+    let nl = nldsl.netlist("collapsed_array"):
+      net vdd, kind = ntPower
+      bus a, width = 2
+      bus b, width = 2
+      bus c, width = 2
+      instance X1, BCELL, [vdd, a]
+      instance X2, BCELL, [vdd, b]
+      instance X3, BCELL, [vdd, c]
+      component W1, kind = "widget":
+        pin "1", a[0]
+        pin "2", a[1]
+      component W2, kind = "widget":
+        pin "1", b[0]
+        pin "2", b[1]
+      component W3, kind = "widget":
+        pin "1", c[0]
+        pin "2", c[1]
+    check bundleReport(nl).len == 3            # three collapsed buses
+    check arrayReport(nl).len == 0             # ... so the array declines
+
+  test "a brNetLabel bundle does not veto the array":
+    # Three BCELLs sharing ONE bus fan across four entities -> brNetLabel, not
+    # brCollapsed, so the array still collapses; the io port reads bundled.
+    let BCELL = busCellSubckt()
+    let nl = nldsl.netlist("netlabel_array"):
+      net vdd, kind = ntPower
+      bus shared, width = 2
+      component U9, kind = "mcu":
+        pin "A", shared[0], kind = ptOutput
+        pin "B", shared[1], kind = ptInput
+      instance X1, BCELL, [vdd, shared]
+      instance X2, BCELL, [vdd, shared]
+      instance X3, BCELL, [vdd, shared]
+    let rep = arrayReport(nl)
+    check rep.len == 1
+    check rep[0].count == 3
+    check "io_0=common(bundled)" in rep[0].ports
+    check "io_1=common(bundled)" in rep[0].ports
+
+  test "the scene JSON round-trips wkChain, PinMark, count and members":
+    var s = Schematic(title: "t", minX: 0, minY: 0, maxX: 10, maxY: 10)
+    s.parts.add SchematicPart(designator: "X1", label: "X1..X4", kind: "sub",
+      symbol: "box", isBox: true, bodyW: 40, bodyH: 40, count: 4,
+      members: @["X1", "X2", "X3", "X4"],
+      pins: @[SchematicPin(name: "vdd", x: 0, y: 0, net: "vdd", mark: pmBusBar),
+              SchematicPin(name: "tap", x: 0, y: 10, net: "tap_arr",
+                mark: pmBusSlash, tag: "tap[1:4]",
+                members: @[BundleMember(name: "X1", net: "t1")])])
+    s.wires.add SchematicWire(net: "sout_chain", kind: wkChain,
+      members: @["l1", "l2", "l3"],
+      points: @[Point(x: 0, y: 0), Point(x: 5, y: 0)])
+    let back = jsonToScene(sceneToJsonString(s))
+    check back.parts[0].count == 4
+    check back.parts[0].members == @["X1", "X2", "X3", "X4"]
+    check back.parts[0].pins[0].mark == pmBusBar
+    check back.parts[0].pins[1].mark == pmBusSlash
+    check back.parts[0].pins[1].tag == "tap[1:4]"
+    check back.wires[0].kind == wkChain
+    check back.wires[0].members == @["l1", "l2", "l3"]
+    check sceneToJsonString(back) == sceneToJsonString(s)
+
+  test "an array-free scene's JSON carries none of the new keys":
+    let node = sceneToJson(layout(divider()))
+    for p in node["parts"]:
+      check not p.hasKey("count")
+      for pin in p["pins"]:
+        check not pin.hasKey("mark")
+        check not pin.hasKey("tag")
+  test "the collapsed scene has one box per array with the arc and bus wires":
+    let s = layout(chainSheet())
+    var rep: SchematicPart
+    var haveRep = false
+    for p in s.parts:
+      if p.designator == "X1": rep = p; haveRep = true
+      check p.designator notin ["X2", "X3", "X4"]   # hidden members not drawn
+    check haveRep
+    check rep.count == 4
+    check rep.label == "X1..X4"
+    check rep.members == @["X1", "X2", "X3", "X4"]
+    check rep.isBox
+    # one wkChain wire carrying the three link nets
+    var chainWires = 0
+    for w in s.wires:
+      if w.kind == wkChain:
+        inc chainWires
+        check w.members == @["l1", "l2", "l3"]
+    check chainWires == 1
+    # one wkBus wire for the distributed `tap` port
+    var busWires = 0
+    for w in s.wires:
+      if w.kind == wkBus and w.members.len == 4: inc busWires
+    check busWires >= 1
+    # the marks landed
+    var marks: HashSet[PinMark]
+    for p in s.parts:
+      for pin in p.pins: marks.incl pin.mark
+    check pmBusBar in marks      # vdd
+    check pmBusSlash in marks    # tap
+    check pmForkCap in marks     # en
+
+  test "lsArrays off restores the pre-feature scene byte for byte":
+    let nl = chainSheet()
+    var opts = defaultLayoutOptions()
+    opts.stages.excl lsArrays
+    let off = layout(nl, opts)
+    check off.parts.len == nl.components.len       # every instance drawn
+    for w in off.wires: check w.kind != wkChain
+    for p in off.parts:
+      check p.count == 0
+      for pin in p.pins: check pin.mark == pmNone
+    # and a netlist with no array is identical with the stage on or off
+    let d = divider()
+    check sceneToJsonString(layout(d, opts)) == sceneToJsonString(layout(d))
+
+  test "the collapsed scene keeps the three router invariants":
+    for nl in [chainSheet(), subGroupSheet()]:
+      let s = layout(nl)
+      check distinctWiresNeverShareCollinearRuns(s)
+      check differentNetsRespectSeparation(s)
+      check signalWiresRespectForeignSeeds(s)
+
+  test "a published distributed member net still gets one merged pennant":
+    let CELL = cellSubckt()
+    let nl = nldsl.subckt("BOARD", [o1, o2, o3, o4]):
+      net vdd, kind = ntPower
+      net cin, kind = ntSignal
+      net l1, kind = ntSignal
+      net l2, kind = ntSignal
+      net l3, kind = ntSignal
+      net cout, kind = ntSignal
+      net e, kind = ntSignal
+      net o1, kind = ntSignal
+      net o2, kind = ntSignal
+      net o3, kind = ntSignal
+      net o4, kind = ntSignal
+      instance X1, CELL, [vdd, cin, l1, o1, e]
+      instance X2, CELL, [vdd, l1, l2, o2, e]
+      instance X3, CELL, [vdd, l2, l3, o3, e]
+      instance X4, CELL, [vdd, l3, cout, o4, e]
+    let s = layout(nl)
+    var slashPorts = 0
+    for pt in s.ports:
+      if pt.members.len == 4: inc slashPorts
+    check slashPorts == 1                       # exactly one, never zero
+  test "a pass-through strap keeps both port names, oriented by suffix":
+    # `designs/lib/spi_dev.nim`: an internal net published twice, `clk_in` and
+    # `clk_out`. `portDirection` sees one internal pin and would call both
+    # inputs; the `_in` / `_out` suffix orients them instead, and both keep
+    # their real port name -- the interface is the two ports, not the net.
+    let sd = nldsl.subckt("STRAP_DEV", [vin, vout]):
+      net clk, kind = ntSignal
+      net vin, kind = ntSignal
+      net vout, kind = ntSignal
+      component U1, kind = "buffer":
+        pin "CLK", clk, kind = ptInput
+        pin "A", vin, kind = ptInput
+        pin "Y", vout, kind = ptOutput
+    addPort(sd, "clk_in", sd.nets["clk"])
+    addPort(sd, "clk_out", sd.nets["clk"])
+    let s = layout(sd)
+    var byName: Table[string, SchematicPort]
+    for pt in s.ports: byName[pt.name] = pt
+    check "clk_in" in byName and "clk_out" in byName
+    check byName["clk_in"].dir == pdInput
+    check byName["clk_out"].dir == pdOutput
+    # a published net that will not route degrades to a by-name label, never
+    # an amber "unrouted" marker
+    for fb in s.fallbacks:
+      if fb.net in ["clk", "vin", "vout"]: check fb.kind == fbNetLabel
+
+  test "the collapsed scene SVG carries the array glyphs":
+    let svg = renderSvg(layout(chainSheet()))
+    check ">X1..X4</text>" in svg           # the box label
+    check ">x4</text>" in svg                # the count badge
+    check "#6e7781" in svg                   # the chain arc stroke
+    check "stroke=\"#1f6feb\" stroke-width=\"4\"" in svg   # the bus-bar tick
+
+  test "an irregular pin with an open member draws the amber dashed prong":
+    let CELL = cellSubckt()
+    let nl = nldsl.netlist("open_demo"):
+      net vdd, kind = ntPower
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      net c, kind = ntSignal
+      net d, kind = ntSignal
+      net t1, kind = ntSignal
+      net t2, kind = ntSignal
+      net t3, kind = ntSignal
+      net t4, kind = ntSignal
+      net e1, kind = ntSignal
+      net e2, kind = ntSignal
+      net e3, kind = ntSignal
+      # `en` gets three distinct nets and one nil -> irregular, open
+      instance X1, CELL, [vdd, a, b, t1, e1]
+      instance X2, CELL, [vdd, b, c, t2, e2]
+      instance X3, CELL, [vdd, c, d, t3, e3]
+      instance X4, CELL, {"vdd": vdd, "sin": d, "sout": a, "tap": t4, "en": open}
+    let svg = renderSvg(layout(nl))
+    check "stroke-dasharray=\"4 3\"" in svg
+  test "the explorer makes a collapsed array box click-to-expand":
+    let nl = chainSheet()
+    let s = layout(nl)
+    let sh = explorerSheet(nl, s, "@root")
+    let html = renderExplorerHtml(@[sh])
+    check "src=" notin html
+    let ms = html.find("const MODEL = ")
+    check html.find(";\n", ms) > ms
+    # the representative carries its instance list and count in the model
+    var sawRep = false
+    for p in sh.parts:
+      if p["designator"].getStr == "X1":
+        sawRep = true
+        check p["count"].getInt == 4
+        check p["arrayMembers"].len == 4
+        check p["arrayMembers"][0]["designator"].getStr == "X1"
+    check sawRep
+    check "arrayMembers" in html

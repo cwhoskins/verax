@@ -7,9 +7,9 @@ import std/[os, strutils]
 
 type
   StageId* = enum
-    lsPrepare, lsBundles, lsSemanticSeed, lsForcePlacement, lsConstrainedRefinement,
-    lsCompositeOrient, lsSeparate, lsPack, lsOrient, lsLeafSnap,
-    lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting,
+    lsPrepare, lsBundles, lsArrays, lsSemanticSeed, lsForcePlacement,
+    lsConstrainedRefinement, lsCompositeOrient, lsSeparate, lsPack, lsOrient,
+    lsLeafSnap, lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting,
     lsRoutingAwareRepair, lsLabels, lsBounds
 
   ## An explicit canonical stage description. `LayoutOptions.stages` filters
@@ -39,6 +39,11 @@ const canonicalStages*: array[StageId, StageSpec] = [
   # Consumed inside `prepare` (precedent: `lsSemanticSeed` is too). Off ->
   # a zero-value `BundlePlan` and the pre-feature scene, bit-for-bit.
   StageSpec(id: lsBundles, enabled: true),
+  # Consumed inside `prepare`, like `lsBundles`, and after it (the array plan
+  # reads the bundle plan). Off -> a zero-value `ArrayPlan`: no repeated
+  # subsheet instance is dropped and the scene is the pre-feature one,
+  # bit-for-bit.
+  StageSpec(id: lsArrays, enabled: true),
   # These stages are inert under lpHistorical; lpConstrainedLayered gives
   # them deterministic topology/layer and bounded repair meanings.
   StageSpec(id: lsSemanticSeed, enabled: true),

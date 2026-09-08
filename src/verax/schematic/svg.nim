@@ -98,6 +98,35 @@ proc chamferedWirePoints(wire: SchematicWire,
       result.add b
   result.add wire.points[^1]
 
+proc roundedPath(pts: seq[Point], radius: float): string =
+  ## An SVG path following `pts` with each interior corner rounded to at most
+  ## `radius` (never more than half of either adjacent leg). The `wkChain` arc
+  ## uses it -- a renderer-only smoothing of routed orthogonal points, the same
+  ## treatment `chamferedWirePoints` gives at 4 units, at a larger radius and
+  ## with a curve rather than a bevel.
+  if pts.len < 2: return ""
+  var d = "M " & num(pts[0].x) & " " & num(pts[0].y)
+  if pts.len == 2:
+    return d & " L " & num(pts[1].x) & " " & num(pts[1].y)
+  for i in 1 ..< pts.high:
+    let a = pts[i - 1]
+    let b = pts[i]
+    let c = pts[i + 1]
+    let ab = b - a
+    let bc = c - b
+    let lab = sqrt(ab.x * ab.x + ab.y * ab.y)
+    let lbc = sqrt(bc.x * bc.x + bc.y * bc.y)
+    if lab < 1e-9 or lbc < 1e-9:
+      d.add " L " & num(b.x) & " " & num(b.y)
+      continue
+    let r = min(radius, min(lab, lbc) / 2.0)
+    let p1 = Point(x: b.x - ab.x / lab * r, y: b.y - ab.y / lab * r)
+    let p2 = Point(x: b.x + bc.x / lbc * r, y: b.y + bc.y / lbc * r)
+    d.add " L " & num(p1.x) & " " & num(p1.y)
+    d.add " Q " & num(b.x) & " " & num(b.y) & " " & num(p2.x) & " " & num(p2.y)
+  d.add " L " & num(pts[^1].x) & " " & num(pts[^1].y)
+  d
+
 proc zigzag(cx, cy, hw: float, peaks: int): seq[Point] =
   result.add Point(x: cx - hw, y: cy)
   let dx = 2.0 * hw / float(peaks)
@@ -148,22 +177,74 @@ proc drawPart(p: SchematicPart): seq[string] =
       "\" height=\"" & num(p.bodyH - 2.0 * boxStub) &
       "\" fill=\"#fdfdfd\" stroke=\"#333333\" stroke-width=\"2\"/>"
     for pin in p.pins:
+      # Outward escape unit vector, from which box edge the pin sits on.
+      var ox, oy = 0.0
+      if pin.x < bx + 1e-6: ox = -1.0
+      elif pin.x > cx + hw - boxStub - 1e-6: ox = 1.0
+      elif pin.y < by + 1e-6: oy = -1.0
+      else: oy = 1.0
       if pin.x < bx + 1e-6:                       # left edge
         result.add lineAt(bx, pin.y, pin.x, pin.y)
-        result.add textAt(bx + 5.0, pin.y + 3.0, pin.name, "start", 9)
+        if pin.name.len > 0:
+          result.add textAt(bx + 5.0, pin.y + 3.0, pin.name, "start", 9)
       elif pin.x > cx + hw - boxStub - 1e-6:      # right edge
         result.add lineAt(cx + hw - boxStub, pin.y, pin.x, pin.y)
-        result.add textAt(cx + hw - boxStub - 5.0, pin.y + 3.0, pin.name, "end", 9)
+        if pin.name.len > 0:
+          result.add textAt(cx + hw - boxStub - 5.0, pin.y + 3.0, pin.name, "end", 9)
       elif pin.y < by + 1e-6:                     # top edge
         result.add lineAt(pin.x, by, pin.x, pin.y)
-        result.add textAt(pin.x, by + 12.0, pin.name, "middle", 9)
+        if pin.name.len > 0:
+          result.add textAt(pin.x, by + 12.0, pin.name, "middle", 9)
       else:                                       # bottom edge
         result.add lineAt(pin.x, cy + hh - boxStub, pin.x, pin.y)
-        result.add textAt(pin.x, cy + hh - boxStub - 6.0, pin.name, "middle", 9)
+        if pin.name.len > 0:
+          result.add textAt(pin.x, cy + hh - boxStub - 6.0, pin.name, "middle", 9)
+      # Array-collapse pin decoration: a bus-bar tick (common), a diagonal
+      # slash + range tag (distributed), or a forked cap + count (irregular).
+      if pin.mark != pmNone:
+        let qx = -oy
+        let qy = ox
+        let tip = Point(x: pin.x + ox * 6.0, y: pin.y + oy * 6.0)
+        case pin.mark
+        of pmBusBar:
+          result.add "<line x1=\"" & num(tip.x - qx * 8.0) & "\" y1=\"" &
+            num(tip.y - qy * 8.0) & "\" x2=\"" & num(tip.x + qx * 8.0) &
+            "\" y2=\"" & num(tip.y + qy * 8.0) &
+            "\" stroke=\"#1f6feb\" stroke-width=\"4\"/>"
+        of pmBusSlash:
+          let m = Point(x: pin.x + ox * 12.0, y: pin.y + oy * 12.0)
+          result.add "<line x1=\"" & num(m.x + (qx - ox) * 8.0) & "\" y1=\"" &
+            num(m.y + (qy - oy) * 8.0) & "\" x2=\"" & num(m.x - (qx - ox) * 8.0) &
+            "\" y2=\"" & num(m.y - (qy - oy) * 8.0) &
+            "\" stroke=\"#1f6feb\" stroke-width=\"3\"/>"
+          if pin.tag.len > 0:
+            result.add textAt(m.x + qx * 12.0, m.y + qy * 12.0 + 3.0,
+              pin.tag, "middle", 10)
+        of pmForkCap:
+          for d in [-8.0, 0.0, 8.0]:
+            let e = Point(x: pin.x + ox * 18.0 + qx * d,
+                          y: pin.y + oy * 18.0 + qy * d)
+            let dashed = d > 0.0 and pin.tag.endsWith(" open")
+            result.add "<line x1=\"" & num(tip.x) & "\" y1=\"" & num(tip.y) &
+              "\" x2=\"" & num(e.x) & "\" y2=\"" & num(e.y) & "\" stroke=\"" &
+              (if dashed: "#e67e22" else: "#333333") &
+              "\" stroke-width=\"2\"" &
+              (if dashed: " stroke-dasharray=\"4 3\"" else: "") & "/>"
+            if dashed:
+              result.add "<circle cx=\"" & num(e.x) & "\" cy=\"" & num(e.y) &
+                "\" r=\"3\" fill=\"none\" stroke=\"#e67e22\" stroke-width=\"2\"/>"
+          if pin.tag.len > 0:
+            let label = pin.tag.replace(" open", "")
+            result.add textAt(pin.x + ox * 22.0 + qx * 14.0,
+              pin.y + oy * 22.0 + qy * 14.0 + 3.0, label, "middle", 10)
+        of pmNone: discard
     # Designator and value/name stack at the top-left inside corner, clear of
     # the centred rows and columns of pin labels.
     result.add textAt(bx + 5.0, by + 13.0,
                       (if p.label.len > 0: p.label else: p.designator), "start")
+    if p.count >= 2:
+      result.add textAt(cx + hw - boxStub - 5.0, by + 13.0,
+                        "x" & $p.count, "end")
     let sub = if p.value.len > 0: p.value
               elif p.name.len > 0: p.name
               else: p.kind
@@ -333,6 +414,38 @@ proc drawFallback(f: SchematicFallback): seq[string] =
     else:
       result.add chevronCap(Point(x: f.x, y: f.y), Point(x: f.ex, y: f.ey))
 
+proc drawChainArc(wire: SchematicWire): seq[string] =
+  ## A collapsed array's recirculation arc: a dashed `#6e7781` staple over the
+  ## box body from the OUT pin to its lined-up IN pin, an arrowhead into the IN
+  ## end, and -- when `members` is non-empty (the lead of a parallel-chain
+  ## group) -- an `xN` link-count badge at the midpoint of its longest segment.
+  ## Drawn after the parts so the box fill does not cover it.
+  if wire.points.len < 2: return
+  result.add "<path d=\"" & roundedPath(wire.points, 9.0) &
+    "\" fill=\"none\" stroke=\"#6e7781\" stroke-width=\"2\" stroke-dasharray=\"6 4\"/>"
+  block:
+    let tip = wire.points[^1]
+    let d = tip - wire.points[^2]
+    let n = max(abs(d.x) + abs(d.y), 1e-6)
+    let ux = d.x / n
+    let uy = d.y / n
+    result.add "<polyline fill=\"none\" stroke=\"#6e7781\" stroke-width=\"2\" points=\"" &
+      num(tip.x - ux * 7.0 - uy * 4.0) & "," & num(tip.y - uy * 7.0 + ux * 4.0) & " " &
+      num(tip.x) & "," & num(tip.y) & " " &
+      num(tip.x - ux * 7.0 + uy * 4.0) & "," & num(tip.y - uy * 7.0 - ux * 4.0) & "\"/>"
+  if wire.members.len > 0:
+    var bi = 0
+    var blen = -1.0
+    for k in 0 ..< wire.points.high:
+      let seg = wire.points[k + 1] - wire.points[k]
+      let sl = abs(seg.x) + abs(seg.y)
+      if sl > blen:
+        blen = sl
+        bi = k
+    let mx = (wire.points[bi].x + wire.points[bi + 1].x) / 2.0
+    let my = (wire.points[bi].y + wire.points[bi + 1].y) / 2.0
+    result.add textAt(mx, my - 4.0, "x" & $wire.members.len, "middle", 11)
+
 proc renderSvg*(s: Schematic): string =
   ## The whole scene as one self-contained SVG document.
   let w = s.maxX - s.minX
@@ -373,6 +486,8 @@ proc renderSvg*(s: Schematic): string =
       let col = if wire.kind == wkInterface: "#8250df" else: "#1f6feb"
       let wd = if wire.members.len > 1: "4" else: "2"
       L.add "  " & polyAt(chamferedWirePoints(wire, s.junctions), col, wd)
+    of wkChain:
+      discard   # drawn in a pass after the parts, so the box does not cover it
     of wkGround:
       L.add "  " & polyAt(chamferedWirePoints(wire, s.junctions))
       let p = wire.points[^1]
@@ -407,6 +522,12 @@ proc renderSvg*(s: Schematic): string =
 
   for p in s.ports:
     for e in drawPort(p): L.add "  " & e
+
+  # Recirculation arcs sit on the box body, so they are drawn last -- after the
+  # opaque box fill that would otherwise hide them.
+  for wire in s.wires:
+    if wire.kind == wkChain:
+      for e in drawChainArc(wire): L.add "  " & e
 
   for lb in s.labels:
     let sz = if lb.size > 0.0: int(lb.size.round) else: 12

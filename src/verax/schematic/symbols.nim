@@ -17,6 +17,15 @@ type
       ## When non-empty, pin slots are keyed by pin name instead of position
       ## (the controlled-source symbol, whose input and output pins sit on
       ## opposite edges regardless of declaration order).
+    extraSlots: seq[Point]
+      ## Lane slots that belong to no `Component.pins` entry: today only the
+      ## two endpoints a collapsed array's chain arc needs (see `arrays.nim`).
+      ## Kept out of `slots` on purpose -- `slots` is parallel to `c.pins` and
+      ## `slotOf`/`pinWorldPositions`/`rotationScore`/`terminalClearance` all
+      ## depend on that. Only `routeScene`'s part loop reads these.
+    extraNames: seq[string]
+      ## Parallel to `extraSlots`: the lane id (`arrays.nim` builds it as
+      ## `<array key>:out` / `<array key>:in`).
 
 const boxStub* = 20.0
   ## How far a fallback-box pin sits outside the *drawn* rectangle. `boxSlots`
@@ -25,8 +34,10 @@ const boxStub* = 20.0
   ## by this much and draws a stub from that edge out to the pin.
 
 proc boxSlots(c: Component, groupOf: seq[int] = @[],
-              groupNames: seq[string] = @[], groupSide: seq[int] = @[]):
-    tuple[slots: seq[Point], halfW, halfH: float] =
+              groupNames: seq[string] = @[], groupSide: seq[int] = @[],
+              extraLanes: seq[string] = @[], extraSide: seq[int] = @[],
+              titleWidth = 0.0):
+    tuple[slots, extraSlots: seq[Point], halfW, halfH: float] =
   ## Deterministic fallback-box pin placement, keyed on pin type: declared
   ## power pins leave the top edge, ground pins the bottom, inputs the left and
   ## outputs the right; every other pin fills the left edge then the right.
@@ -50,7 +61,7 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
   proc spread(count, k: int, step: float): float =
     (float(k) - float(count - 1) / 2.0) * step
 
-  if groupOf.len == 0:
+  if groupOf.len == 0 and extraLanes.len == 0 and titleWidth == 0.0:
     var names: seq[string]
     var top, bot, left, right: seq[int]
     var i = 0
@@ -88,13 +99,15 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
     return
 
   # Lane-based: a merged group is one lane; every other pin is its own lane.
+  # Auxiliary array lanes (`extraLanes`) are appended after the pin lanes --
+  # they carry no `c.pins` entry, so they land in `extraSlots`, not `slots`.
   var laneNames: seq[string]
   var laneOfGroup = initTable[int, int]()
   var laneForPin: seq[int]
   var top, bot, left, right: seq[int]
   var i = 0
   for name, p in c.pins:
-    let g = groupOf[i]
+    let g = (if i < groupOf.len: groupOf[i] else: -1)
     if g >= 0 and laneOfGroup.hasKey(g):
       laneForPin.add laneOfGroup[g]
       inc i
@@ -121,12 +134,19 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
     laneForPin.add laneId
     inc i
   let n = i
+  var extraLaneId: seq[int]
+  for k, laneName in extraLanes:
+    let laneId = laneNames.len
+    let forced = (if k < extraSide.len: extraSide[k] else: 1)
+    if forced == 0: left.add laneId else: right.add laneId
+    laneNames.add laneName
+    extraLaneId.add laneId
   let rows = max(left.len, right.len)
   let cols = max(top.len, bot.len)
   var sideChars = 0
   for laneId in left & right: sideChars = max(sideChars, laneNames[laneId].len)
-  let innerW = max(max(float(cols) * endPitch / 2.0 + 16.0, 46.0),
-                   float(sideChars) * 6.0 + 14.0)
+  let innerW = max(max(max(float(cols) * endPitch / 2.0 + 16.0, 46.0),
+                       float(sideChars) * 6.0 + 14.0), titleWidth)
   let innerH = max(float(rows) * pitch / 2.0 + 16.0, 30.0)
   let halfW = innerW + boxStub
   let halfH = innerH + boxStub
@@ -142,6 +162,8 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
   result.slots.setLen(n)
   for pi in 0 ..< n:
     result.slots[pi] = laneSlot[laneForPin[pi]]
+  for laneId in extraLaneId:
+    result.extraSlots.add laneSlot[laneId]
   result.halfW = halfW
   result.halfH = halfH
 
@@ -160,24 +182,28 @@ proc inkExtent(name: string, bodyW, bodyH: float): tuple[w, h: float] =
   else: (bodyW, bodyH)          # source4, box: the drawn shape is the body
 
 proc symbolFor(c: Component, groupOf: seq[int] = @[],
-               groupNames: seq[string] = @[], groupSide: seq[int] = @[]): SymbolDef =
+               groupNames: seq[string] = @[], groupSide: seq[int] = @[],
+               extraLanes: seq[string] = @[], extraSide: seq[int] = @[],
+               titleWidth = 0.0): SymbolDef =
   ## The symbol for `c.kind`, with pin slots relative to the part centre.
   ##
   ## A part is a fallback box when its kind has no registered symbol, when it
   ## instantiates hierarchy (its pins are the child's ports, best drawn as a
   ## box), or when its pin count does not match the symbol's slots.
   ##
-  ## The `group*` params reach only the box branch -- every collapsed-bundle
-  ## carrier is a box (`bundlePlan` declined a non-box carrier), and the fixed
-  ## 2-slot / `byName` symbols have no lane to merge, so confining it there
-  ## keeps `rotatable`/`slotOf` untouched.
+  ## The `group*` / `extra*` / `titleWidth` params reach only the box branch --
+  ## every collapsed-bundle carrier and every collapsed-array representative is
+  ## a box, and the fixed 2-slot / `byName` symbols have no lane to merge, so
+  ## confining it there keeps `rotatable`/`slotOf` untouched.
   let n = c.pins.len
   proc box(): SymbolDef =
-    let b = boxSlots(c, groupOf, groupNames, groupSide)
+    let b = boxSlots(c, groupOf, groupNames, groupSide,
+                     extraLanes, extraSide, titleWidth)
     SymbolDef(name: "box", isBox: true, bodyW: b.halfW * 2.0,
               bodyH: b.halfH * 2.0,
               inkW: b.halfW * 2.0 - 2.0 * boxStub,
-              inkH: b.halfH * 2.0 - 2.0 * boxStub, slots: b.slots)
+              inkH: b.halfH * 2.0 - 2.0 * boxStub, slots: b.slots,
+              extraSlots: b.extraSlots, extraNames: extraLanes)
 
   if c.subNetlist != nil:
     return box()

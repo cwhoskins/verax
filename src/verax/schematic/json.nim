@@ -39,6 +39,7 @@ proc wireKindName(k: WireKind): string =
   of wkSupply: "supply"
   of wkBus: "bus"
   of wkInterface: "interface"
+  of wkChain: "chain"
 
 proc wireKindFromName(s: string): WireKind =
   case s
@@ -47,7 +48,23 @@ proc wireKindFromName(s: string): WireKind =
   of "supply": wkSupply
   of "bus": wkBus
   of "interface": wkInterface
+  of "chain": wkChain
   else: fail("scene JSON: field \"kind\" has unknown wire kind \"" & s & "\"")
+
+proc pinMarkName(m: PinMark): string =
+  case m
+  of pmNone: "none"
+  of pmBusBar: "busbar"
+  of pmBusSlash: "busslash"
+  of pmForkCap: "forkcap"
+
+proc pinMarkFromName(s: string): PinMark =
+  case s
+  of "none": pmNone
+  of "busbar": pmBusBar
+  of "busslash": pmBusSlash
+  of "forkcap": pmForkCap
+  else: fail("scene JSON: field \"mark\" has unknown pin mark \"" & s & "\"")
 
 proc fallbackKindName(k: FallbackKind): string =
   case k
@@ -137,6 +154,11 @@ proc sceneToJson*(s: Schematic): JsonNode =
     o["x"] = %p.x
     o["y"] = %p.y
     o["rotation"] = %p.rotation
+    if p.count > 0: o["count"] = %p.count
+    if p.members.len > 0:
+      var ms = newJArray()
+      for m in p.members: ms.add %m
+      o["members"] = ms
     var pins = newJArray()
     for pin in p.pins:
       var po = newJObject()
@@ -145,6 +167,8 @@ proc sceneToJson*(s: Schematic): JsonNode =
       po["x"] = %pin.x
       po["y"] = %pin.y
       if pin.members.len > 0: po["members"] = membersJson(pin.members)
+      if pin.mark != pmNone: po["mark"] = %pinMarkName(pin.mark)
+      if pin.tag.len > 0: po["tag"] = %pin.tag
       pins.add po
     o["pins"] = pins
     parts.add o
@@ -263,6 +287,16 @@ proc optStr(n: JsonNode, key: string): string =
     fail("scene JSON: field \"" & key & "\" must be a string")
   n[key].str
 
+proc optInt(n: JsonNode, key: string): int =
+  ## An additive integer field: 0 when absent (so an archive written before
+  ## the field existed still parses), type-checked when present. Beside
+  ## `optStr`/`optArr` -- the same additive contract, for the subsheet-array
+  ## instance count.
+  if not n.hasKey(key): return 0
+  if n[key].kind != JInt:
+    fail("scene JSON: field \"" & key & "\" must be an integer")
+  int(n[key].num)
+
 proc optArr(n: JsonNode, key: string): JsonNode =
   ## An additive array field: an empty `JArray` when absent (so an archive
   ## written before the field existed still parses), but type-checked when
@@ -348,7 +382,11 @@ proc jsonToScene*(node: JsonNode): Schematic =
       inkH: reqFloat(pn, "inkH"),
       x: reqFloat(pn, "x"),
       y: reqFloat(pn, "y"),
-      rotation: reqFloat(pn, "rotation"))
+      rotation: reqFloat(pn, "rotation"),
+      count: optInt(pn, "count"))
+    for m in optArr(pn, "members"):
+      if m.kind != JString: fail("scene JSON: part member must be a string")
+      p.members.add m.str
     for pin in reqArr(pn, "pins"):
       if pin.kind != JObject: fail("scene JSON: pin must be an object")
       p.pins.add SchematicPin(
@@ -356,7 +394,10 @@ proc jsonToScene*(node: JsonNode): Schematic =
         net: reqStr(pin, "net"),
         x: reqFloat(pin, "x"),
         y: reqFloat(pin, "y"),
-        members: optBundleMembers(pin, "members"))
+        members: optBundleMembers(pin, "members"),
+        mark: (if pin.hasKey("mark"): pinMarkFromName(reqStr(pin, "mark"))
+               else: pmNone),
+        tag: optStr(pin, "tag"))
     result.parts.add p
 
   for wn in reqArr(node, "wires"):

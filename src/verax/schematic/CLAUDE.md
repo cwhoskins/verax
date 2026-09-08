@@ -49,7 +49,16 @@ implements.
   stands for). Width (`members.len > 1`) means one wire carries more than one
   net; colour (`wkBus` blue / `wkInterface` purple) means membership, and
   applies whether or not anything collapsed.
-- **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, `finish.nim`, `diagnostics.nim`, and (see below) `composites/composite.nim`, `composites/passive.nim` and `constrained.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary. The include order is load-bearing: `composites/composite` and `composites/passive` sit after `placement.nim` (they use `rotationChoices`/`slotOf`/`rotatedSlot`/`axisUnit`/`pinWorldPositions`) and before `constrained.nim` (which pools placement over the arena they define), and `state.nim`'s include must stay between `constrained.nim` (uses its procs) and `routing.nim` (defines `RoutingState`). `bundles.nim` (bus/interface grouping) is included after `./placement` and before `./composites/composite` — see its own bullet; the two rail predicates `isGroundHere`/`isRailHere` were hoisted to module level in `geometry.nim` (the first include) once `bundlePlan` became the third consumer, deleting the verbatim-duplicate local closures that had sat in `routing.nim` and `finish.nim`. The pipeline stage list gained `lsBundles` between `lsPrepare` and `lsSemanticSeed` (also consumed inside `prepare`); off ⇒ a zero-value `BundlePlan` and byte-identical historical output. Private included `state.nim` holds `LayoutState`/`RoutingState`: component-symbol-position state and label-only routing metadata must never be added to public `Schematic`. `state.nim` also carries the placement-stage bodies (`prepare`, `forcePlace`, `snapToGrid`, `separate`) and the thin `*(state: var LayoutState)` forwarders, so `layout` itself is just the ordered stage list — the historical policy's serialized output stays byte-identical, so those bodies are a verbatim move, not a rewrite. `finish.nim` consumes the completed scene plus that state while preserving label order and bounds behavior. `LayoutOptions.policy` defaults to `lpHistorical`, whose output must remain byte-identical. `parseLayoutPolicy` and `archiveLayoutOptions` centralize the CLI/environment spelling used only by archive writers; ordinary `layout(nl)` remains historical. The opt-in `lpConstrainedLayered` policy gives `lsSemanticSeed` (after the deterministic golden-angle seed), `lsConstrainedRefinement` (after force placement and before existing legalization) and `lsCompositeOrient` (right after refinement, before separation — picks each orientable composite's rigid `unitRot`, see the `composites/` bullet) their bounded deterministic meaning; it uses the existing bounded routing recovery as `lsRoutingAwareRepair`. It is for ordinary sheets (at most 64 *placement units*, and at most 256 raw parts), not a general graph-drawing solver: output-pin arcs seed left-to-right columns, while bounded deterministic stage placement folds each semantic layer across at most three adjacent columns (grouping parallel flat two-terminal parts by the same unordered net pair) rather than making a passive-heavy layer arbitrarily vertical; a same-component return has the adjacent-stage freedom on either side of its source, not an output-side-only rule. A bounded semantic walk follows every flat device with exactly two connected terminals (regardless of kind) until an input endpoint, stopping at rails, ground, hierarchy and inputs. It uses the existing `portDirection(net) == pdInput` result, including its no-driver fallback, for input interfaces. A traversal step is keyed on `(pool item, exit net)`, not the pool item alone: a recognized composite is one *placement unit* but its members are still distinct signal edges, so a pi's grounded shunt must not consume the pool position its series member needs to be walked through (the bug that put `RIAA_CHANNEL`'s `RL`–`CIN`–`RB` pi right of the op-amp it feeds). Both members of a parallel pair share both nets, so from either they yield the same `(pool, exit)` step and still collapse to one; `seen` stays raw so path length is bounded by the raw part count. A same-component return keeps its traversed parts in the source column; a genuine return to an earlier component keeps its path passives right of the driving output. Insertion order otherwise breaks feedback arcs, and existing legalization remains authoritative for non-overlap. Its signal trees are atomic trunk-and-tap attempts: a failed net restores occupancy and becomes marker-only fallbacks. Do not attach heuristics, reorder existing passes, or reinterpret terminal/recovery safeguards.
+  Subsheet-array additions follow the same discipline (`sceneSchemaVersion`
+  stays **1**): `wkChain` *appended* to `WireKind` (the collapsed link chain
+  of a repeated subsheet array — `svg` draws it as a curve, `members` holds
+  the N−1 link nets); `PinMark` (`pmNone` is ordinal **0** and the zero
+  value — a bus-bar tick, a diagonal slash or a forked cap at a collapsed
+  array's representative pin); `mark`/`tag` on `SchematicPin`; `count` (`>= 2`
+  only on a representative — the drawn text is `label`, `"X1..X8"`) and
+  `members` (the collapsed instance designators) on `SchematicPart`. See
+  `arrays.nim`'s bullet and `docs/subsheet_arrays.md`.
+- **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, `finish.nim`, `diagnostics.nim`, and (see below) `composites/composite.nim`, `composites/passive.nim` and `constrained.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary. The include order is load-bearing: `composites/composite` and `composites/passive` sit after `placement.nim` (they use `rotationChoices`/`slotOf`/`rotatedSlot`/`axisUnit`/`pinWorldPositions`) and before `constrained.nim` (which pools placement over the arena they define), and `state.nim`'s include must stay between `constrained.nim` (uses its procs) and `routing.nim` (defines `RoutingState`). `bundles.nim` (bus/interface grouping) is included after `./placement` and before `./composites/composite` — see its own bullet; `arrays.nim` (repeated-subsheet grouping) is included right after `./bundles` and reads its plan; the two rail predicates `isGroundHere`/`isRailHere` were hoisted to module level in `geometry.nim` (the first include) once `bundlePlan` became the third consumer, deleting the verbatim-duplicate local closures that had sat in `routing.nim` and `finish.nim`. The pipeline stage list gained `lsBundles` between `lsPrepare` and `lsSemanticSeed`, then `lsArrays` between `lsBundles` and `lsSemanticSeed` (both consumed inside `prepare`, `lsArrays` after `lsBundles`); off ⇒ a zero-value plan and byte-identical historical output. Private included `state.nim` holds `LayoutState`/`RoutingState`: component-symbol-position state and label-only routing metadata must never be added to public `Schematic`. `state.nim` also carries the placement-stage bodies (`prepare`, `forcePlace`, `snapToGrid`, `separate`) and the thin `*(state: var LayoutState)` forwarders, so `layout` itself is just the ordered stage list — the historical policy's serialized output stays byte-identical, so those bodies are a verbatim move, not a rewrite. `finish.nim` consumes the completed scene plus that state while preserving label order and bounds behavior. `LayoutOptions.policy` defaults to `lpHistorical`, whose output must remain byte-identical. `parseLayoutPolicy` and `archiveLayoutOptions` centralize the CLI/environment spelling used only by archive writers; ordinary `layout(nl)` remains historical. The opt-in `lpConstrainedLayered` policy gives `lsSemanticSeed` (after the deterministic golden-angle seed), `lsConstrainedRefinement` (after force placement and before existing legalization) and `lsCompositeOrient` (right after refinement, before separation — picks each orientable composite's rigid `unitRot`, see the `composites/` bullet) their bounded deterministic meaning; it uses the existing bounded routing recovery as `lsRoutingAwareRepair`. It is for ordinary sheets (at most 64 *placement units*, and at most 256 raw parts), not a general graph-drawing solver: output-pin arcs seed left-to-right columns, while bounded deterministic stage placement folds each semantic layer across at most three adjacent columns (grouping parallel flat two-terminal parts by the same unordered net pair) rather than making a passive-heavy layer arbitrarily vertical; a same-component return has the adjacent-stage freedom on either side of its source, not an output-side-only rule. A bounded semantic walk follows every flat device with exactly two connected terminals (regardless of kind) until an input endpoint, stopping at rails, ground, hierarchy and inputs. It uses the existing `portDirection(net) == pdInput` result, including its no-driver fallback, for input interfaces. A traversal step is keyed on `(pool item, exit net)`, not the pool item alone: a recognized composite is one *placement unit* but its members are still distinct signal edges, so a pi's grounded shunt must not consume the pool position its series member needs to be walked through (the bug that put `RIAA_CHANNEL`'s `RL`–`CIN`–`RB` pi right of the op-amp it feeds). Both members of a parallel pair share both nets, so from either they yield the same `(pool, exit)` step and still collapse to one; `seen` stays raw so path length is bounded by the raw part count. A same-component return keeps its traversed parts in the source column; a genuine return to an earlier component keeps its path passives right of the driving output. Insertion order otherwise breaks feedback arcs, and existing legalization remains authoritative for non-overlap. Its signal trees are atomic trunk-and-tap attempts: a failed net restores occupancy and becomes marker-only fallbacks. Do not attach heuristics, reorder existing passes, or reinterpret terminal/recovery safeguards.
   A placement unit is a raw singleton or a whole recognized composite
   (`constrainedEligible`, `constrained.nim`): the semantic layering
   (`constrainedTopology`/`constrainedTargets`) and the per-candidate route
@@ -239,6 +248,15 @@ implements.
   connection point is fed to `routeNet` as an extra net pin with an explicit
   inward escape, so the connecting wire is a normal net branch that never
   crosses a body; the plain text label for a ported net is suppressed.
+  A **pass-through strap** — one internal net published under two plain port
+  names, `<x>_in` and `<x>_out` (`designs/lib/spi_dev.nim`) — keeps both
+  pennants but is oriented by the `_in` / `_out` suffix (`portDirection` sees
+  one internal pin and calls both inputs). `strapNets` (a `CountTable` over the
+  plain ported nets) is the test; `portConn` is a `seq` per net so both
+  pennants route. A **published** net that will not route degrades to a
+  by-name `fbNetLabel` (teal), not an amber `fbUnrouted` marker — the port
+  pennant already says where it goes. Interface / bus ports never count —
+  `bundles.byPort` owns them.
   One trap this pass has to handle: rendering a subcircuit **instance's
   cloned child** directly (what `verify`'s per-subckt sheets do) means its
   shared global net `"0"` carries pins from every sibling clone, and siblings
@@ -395,6 +413,69 @@ implements.
     from geometry. Its `labels` field renders each `brNetLabel` group's
     merged tag (`"U1=spi1"` / `"X1=spi1(cs0)"` / `"R1="` for an unmerged
     carrier), so `groupText` is testable without laying anything out.
+- **`arrays.nim`** — the repeated-subsheet grouping index, `include`d
+  **after `./bundles`** (it reads `BundlePlan`/`BundleRole`, `pinKey`,
+  `portDirection`, `isGroundHere`/`isRailHere`) and **before
+  `./composites/composite`** (the arena is built over the already-filtered
+  `state.comps`). Spliced after `symbols.nim`, so every hand-off is plain
+  data, the `bundleGroupsFor`/`laneOf` pattern. Full design note:
+  `docs/subsheet_arrays.md`.
+  * `arrayPlan(nl, bundles): ArrayPlan` groups `Component`s that instantiate
+    one subcircuit (`subNetlist.name` + the pin-key sequence — `graph.instantiate`
+    fixes both). **Zero-value early return under three instances** is the
+    byte-identity guarantee. `prepare` drops the N−1 non-representative
+    members of each collapsed array from `state.comps` **before `syms` is
+    sized**; the filter is the sibling-clone shape
+    (`pinPos.hasKey && partIdxByDesig.hasKey`, `ownsPin`) every layout site
+    already tolerates, so `groupOf.len == 0`-style inertness is not needed —
+    an empty `hidden` set makes the comps loop verbatim.
+  * **Totality is an invariant, not a hope.** Every distinct net named by a
+    hidden member's pin must be suppressed, in `groupOf`, still on the
+    representative's own pin, on an irregular port, or owned by a bundle — a
+    `doAssert` at the end of `arrayPlan`. A net every pin of which sits on a
+    hidden member and is in none of these disappears with no marker
+    (`routing.nim` only marks a single-pin net), which is a path-integrity
+    bug, hence an assertion.
+  * **Four port classes.** *common* (one shared net → one wire + a bus-bar
+    tick), *distributed* (N distinct nets → one `wkBus` wire, `[1:N]` tag),
+    *chained* (`out(i) == in(i+1)`, linear and complete → a recirculation
+    arc), *irregular* (a forked-cap glyph + `n·m` count, click-to-expand).
+    Rail/ground ports are out of the vote; `N < 3` never collapses; a
+    non-linear or branched chain degrades to *distributed*.
+  * **Sub-grouping** splits an array by every *splitting* port (its nets
+    partition the members into ≥2 groups of ≥2, none open) before
+    classifying, so `spi_memories`'s nine memories draw as three `x3` boxes.
+  * **The `brCollapsed`-only decline**, and **bundle-wins-at-the-pin,
+    array-wins-at-the-box**: a `brNetLabel`/`brScalar` bundle keeps its own
+    drawing and that port reads `bundled`; only a `brCollapsed` bundle
+    (whose far end would vanish) vetoes the array.
+  * **The escape-seed dedupe** is keyed on the **point**, not the part
+    (unlike `seededBundle`): a distributed group's endpoints sit at
+    *different* points on a foreign part (eight CS pins on an MCU), each
+    needing its own seed.
+  * **The port-folding trap**: a distributed member net that is also an
+    `nl.ports` key folds to one pennant, first-wins with in-place `prefY`
+    refinement, a mirror of `planForBundle`. Without it a member net whose
+    only on-sheet owner is hidden finds no placed pin and the port silently
+    disappears.
+  * **Each chained pair gets its own recirculation arc** — a dashed
+    annotation, a **fixed polyline** drawn as a tight staple on the box
+    interior between that pair's IN and OUT pins (same row by construction).
+    It never leaves the box, so it cannot conflict with the sheet or the
+    box-top title; `svg` draws it dashed + arrowhead into the IN pin. It is
+    never an `nl.nets` entry and is **exempt** from the routed-wire collinear /
+    separation invariants (`distinctWiresNeverShareCollinearRuns` /
+    `differentNetsRespectSeparation` skip `wkChain`). A parallel-chain group
+    (`chainKey`) draws one arc per pair, stacked; only the lead carries the
+    `xN` link-count badge (`SchematicWire.members` empty on the others). No aux
+    lane, box keeps its historical size.
+  * **The zero-value invariant.** No ≥3-instance subsheet ⇒ a zero-value
+    `ArrayPlan` ⇒ byte-identical historical output; every downstream path
+    (`prepare`'s filter, `symbols`' extra lanes, `routing`'s
+    skip/group/arc branches, `finish`'s `arrayNets`) is guarded on it.
+  * Public `arrayReport*(nl)` beside `bundleReport`: `"vdd=common"`,
+    `"sclk_out=chained(out,x7)"`, `"wp=distributed[1:6]"`,
+    `"nc=irregular(2*6,open=4)"`.
 - **`composites/composite.nim`**, **`composites/passive.nim`**,
   **`composites/pi.nim`** and **`composites/tee.nim`** — the composite arena
   `constrained.nim` pools placement over, and the four motifs registered into

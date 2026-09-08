@@ -33,6 +33,15 @@ type
       ## One request per **non-ported** collapsed bundle: `finish` places a
       ## single `lrNet` label (`"spi[3]"`) at the merged pin. A ported bundle
       ## emits none -- its port pennant already reads the name.
+    arrayNets: HashSet[string]
+      ## Every net a collapsed array's group wire drew, plus its display tag
+      ## and every chain link. `finish` skips these in the ordinary net-name
+      ## pass -- one label per member stacked on the merged pin is what it
+      ## prevents.
+    arrayLabelReqs: seq[tuple[text: string, at, esc: Point]]
+      ## One request per drawn distributed group (`"cs[1:8]"` at the merged
+      ## pin) and per non-ported chain arc (`"x7"` at an aux lane). `finish`
+      ## places each as a single `lrNet` label.
 
   LayoutState = object
     ## All transient placement/routing state. `Schematic` remains solely the
@@ -50,9 +59,15 @@ type
     bundles: BundlePlan
       ## Bus/interface grouping, a function of netlist topology alone (see
       ## `bundles.nim`). Built at the top of `prepare` when `lsBundles` is on,
-      ## before `state.syms` is sized -- a merged pin takes `SPI_MEMORY`'s
-      ## `U1` from `rows = 5` to `rows = 4`. `recoverRouting`'s candidate
-      ## moves never rebuild it.
+      ## before `state.syms` is sized -- a merged pin changes `SPI_MEMORY`'s
+      ## `U1` box height. `recoverRouting`'s candidate moves never rebuild it.
+    arrays: ArrayPlan
+      ## Repeated-subsheet grouping (see `arrays.nim`), a function of netlist
+      ## topology and the bundle plan. Built in `prepare` when `lsArrays` is
+      ## on, **after** `bundles` and **before** `state.comps` is filled -- the
+      ## N-1 non-representative members of each collapsed array are never
+      ## placed, routed or drawn, so every index-parallel array below is one
+      ## entry shorter per hidden member. `recoverRouting` never rebuilds it.
     semanticAnchors: seq[Point]
     routing: RoutingState
 
@@ -165,22 +180,36 @@ proc prepare(state: var LayoutState) =
   ## and the semantic seed / anchors. The historical golden-angle seed is
   ## deliberately left alone -- changing even the first position changes the
   ## established serialized SVG / JSON output.
-  for _, c in state.nl.components: state.comps.add c
-  let n = state.comps.len
-
   # Bus/interface grouping first: a merged pin changes `symbolFor`'s box
-  # sizing (`SPI_MEMORY`'s `U1`, `rows = 5` -> `rows = 4`), so the plan must
-  # exist before the symbols are built. A zero-value plan when nothing groups.
+  # sizing, so the plan must exist before the symbols are built. A zero-value
+  # plan when nothing groups.
   if state.options.stageEnabled(lsBundles):
     state.bundles = bundlePlan(state.nl)
+  # Repeated-subsheet arrays next, and **before `state.comps` is filled**: the
+  # plan decides which components are drawn at all. The N-1 non-representative
+  # members of every collapsed array are dropped here and never placed, routed
+  # or drawn -- the filter is the sibling-clone shape (`ownsPin` /
+  # `partIdxByDesig.hasKey`) that every layout site already tolerates. A
+  # zero-value plan when fewer than three components share a subsheet, and then
+  # this loop is `for _, c in state.nl.components: state.comps.add c` verbatim.
+  if state.options.stageEnabled(lsArrays):
+    state.arrays = arrayPlan(state.nl, state.bundles)
+
+  for _, c in state.nl.components:
+    if c.designator in state.arrays.hidden: continue
+    state.comps.add c
+  let n = state.comps.len
 
   state.syms = newSeq[SymbolDef](n)
   for i, c in state.comps:
+    let lanes = arrayLanesFor(state.arrays, c)
+    let tw = arrayTitleWidth(state.arrays, c)
     if c.designator in state.bundles.bundled:
-      let g = bundleGroupsFor(state.bundles, c)
-      state.syms[i] = symbolFor(c, g.groupOf, g.groupNames, g.groupSide)
+      let bg = bundleGroupsFor(state.bundles, c)
+      state.syms[i] = symbolFor(c, bg.groupOf, bg.groupNames, bg.groupSide,
+                                lanes.names, lanes.side, tw)
     else:
-      state.syms[i] = symbolFor(c)
+      state.syms[i] = symbolFor(c, @[], @[], @[], lanes.names, lanes.side, tw)
   # The constrained plan is made before placement and remains the sole source
   # of member offsets and external composite geometry for the whole pipeline.
   if state.options.policy == lpConstrainedLayered:

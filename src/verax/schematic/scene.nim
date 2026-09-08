@@ -19,6 +19,17 @@ type
     ## everywhere except on a collapsed bus/interface (`schematic/bundles.nim`).
     name*, net*: string
 
+  PinMark* = enum
+    ## What a renderer draws *at* a pin beyond the wire. `pmNone` is ordinal 0
+    ## and the zero value on purpose: every pre-field `SchematicPin` and every
+    ## archive written before this field are unchanged, and the writer emits
+    ## `mark` only when it is not this. Set only on a collapsed subsheet
+    ## array's representative pin (`schematic/arrays.nim`).
+    pmNone
+    pmBusBar    ## a short thick perpendicular tick: N members, one shared net
+    pmBusSlash  ## a diagonal slash: N members, N distinct nets, one drawn wire
+    pmForkCap   ## 2-3 diverging prongs: an irregular binding across members
+
   SchematicPin* = object
     ## One pin of a placed part, at an absolute world position, carrying the
     ## net name it connects to ("" when unconnected).
@@ -26,15 +37,30 @@ type
     x*, y*: float
     net*: string
     members*: seq[BundleMember]
-      ## Non-empty only on a merged bundle pin: the N declared member
-      ## (name, net) pairs the one drawn pin collapses. `net` above is then
-      ## the bundle's scene identity (`Bundle.display`), not any member net.
+      ## Non-empty only on a merged bundle pin or a collapsed subsheet array's
+      ## representative pin. For a bundle: the N declared member (name, net)
+      ## pairs the one drawn pin collapses, `net` above then the bundle's
+      ## scene identity (`Bundle.display`). For an array pin: one entry per
+      ## array member, `name` the member *designator* and `net` its binding
+      ## ("" when that member leaves the port open).
+    mark*: PinMark
+      ## A glyph drawn at the pin beyond its wire; `pmNone` (the zero value)
+      ## for every ordinary pin. See `schematic/arrays.nim`.
+    tag*: string
+      ## Text drawn beside a marked array pin: `"cs[1:8]"` for `pmBusSlash`,
+      ## `"3*8"` for `pmForkCap`; "" otherwise.
 
   WireKind* = enum
-    ## `wkBus`/`wkInterface` are appended so existing ordinals -- and every
-    ## archived scene -- are unchanged. Width (`SchematicWire.members.len`)
+    ## `wkBus`/`wkInterface`/`wkChain` are appended so existing ordinals -- and
+    ## every archived scene -- are unchanged. Width (`SchematicWire.members.len`)
     ## says a wire collapses more than one net; kind says what the net *is*.
-    wkSignal, wkGround, wkSupply, wkBus, wkInterface
+    ## `wkChain` is the collapsed link chain of a repeated subsheet array: its
+    ## two endpoints are two pins of the *same* representative part and
+    ## `members` carries the N-1 link net names it stands for -- the same "one
+    ## wire, several nets" reading a collapsed bundle has. `svg` draws it as a
+    ## smooth curve; scene, routing and JSON keep the routed orthogonal points,
+    ## exactly as the 4-unit chamfer does.
+    wkSignal, wkGround, wkSupply, wkBus, wkInterface, wkChain
 
   SchematicPart* = object
     designator*: string
@@ -76,6 +102,16 @@ type
       ## placed by `layout` outside the rotated group and stay upright.
       ## Always 0 for boxes and for non-two-terminal symbols.
     pins*: seq[SchematicPin]
+    count*: int
+      ## `>= 2` only on the representative of a collapsed subsheet array: how
+      ## many instances this one box stands for. 0 (the zero value)
+      ## everywhere else. `designator` stays the representative's own -- it is
+      ## a join key `finish`/`routing`/`placement` all key on and is never
+      ## rewritten; the *drawn* text is `label` ("X1..X8"), exactly as a
+      ## package section's "U10A" is. See `schematic/arrays.nim`.
+    members*: seq[string]
+      ## The collapsed instances' designators, in graph insertion order; empty
+      ## on every other part. `members[0] == designator`.
 
   SchematicWire* = object
     net*: string

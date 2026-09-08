@@ -59,10 +59,17 @@ proc explorerSheet*(n: Netlist, s: Schematic, id: string,
       var members = newJArray()
       for m in pin.members: members.add %*{"name": m.name, "net": m.net}
       pins.add %*{"name": pin.name, "net": pin.net, "x": pin.x, "y": pin.y,
-                  "members": members}
+                  "members": members, "tag": pin.tag}
+    # A collapsed subsheet array's representative carries `members` (the
+    # instance designators) and `count`; each links to its own child sheet.
+    var arrMembers = newJArray()
+    for d in p.members:
+      arrMembers.add %*{"designator": d,
+        "child": (if d in childOf: %childOf[d] else: newJNull())}
     parts.add %*{
       "designator": p.designator, "label": p.label, "kind": p.kind, "name": p.name,
-      "value": p.value, "x": p.x, "y": p.y,
+      "value": p.value, "x": p.x, "y": p.y, "count": p.count,
+      "arrayMembers": arrMembers,
       "bodyW": p.bodyW, "bodyH": p.bodyH, "pins": pins,
       "child": (if p.designator in childOf: %childOf[p.designator]
                 else: newJNull())}
@@ -179,9 +186,11 @@ function render() {
     r.setAttribute("height", p.bodyH);
     r.setAttribute("class", p.child ? "hit nav" : "hit");
     const tip = document.createElementNS(SVGNS, "title");
-    tip.textContent = p.child
-      ? `${p.label || p.designator || p.kind} — double-click to open ${p.child}`
-      : (p.label || p.designator || p.kind || "");
+    tip.textContent = p.count >= 2
+      ? `${p.label} — ${p.count} instances, double-click to open ${p.child || "the sheet"}`
+      : p.child
+        ? `${p.label || p.designator || p.kind} — double-click to open ${p.child}`
+        : (p.label || p.designator || p.kind || "");
     r.appendChild(tip);
     let timer = null;
     r.addEventListener("click", () => {
@@ -216,12 +225,12 @@ function render() {
 }
 
 function showPinProps(pin) {
-  document.getElementById("pname").textContent = pin.name;
-  document.getElementById("pkind").textContent = `${pin.members.length} nets`;
+  document.getElementById("pname").textContent = pin.tag || pin.name;
+  document.getElementById("pkind").textContent = `${pin.members.length} members`;
   document.getElementById("pbody").innerHTML =
-    "<table><thead><tr><th>Pin</th><th>Net</th></tr></thead><tbody>" +
+    "<table><thead><tr><th>Member</th><th>Net</th></tr></thead><tbody>" +
     pin.members.map(m =>
-      `<tr><td>${esc(m.name)}</td><td>${esc(m.net)}</td></tr>`).join("") +
+      `<tr><td>${esc(m.name)}</td><td>${esc(m.net) || "(open)"}</td></tr>`).join("") +
     "</tbody></table>";
   document.getElementById("props").classList.add("open");
 }
@@ -241,7 +250,20 @@ function showProps(p) {
         `<tr><td>${esc(pin.name)}</td><td>${esc(pin.net)}</td></tr>`).join("") +
       "</tbody></table>";
   }
+  if (p.arrayMembers && p.arrayMembers.length) {
+    html += "<table class=\"members\"><thead><tr><th>Instance</th><th>Sheet</th>" +
+      "</tr></thead><tbody>" + p.arrayMembers.map(m =>
+        `<tr data-sheet="${esc(m.child || "")}"><td>${esc(m.designator)}</td>` +
+        `<td>${esc(m.child || "—")}</td></tr>`).join("") + "</tbody></table>";
+  }
   document.getElementById("pbody").innerHTML = html;
+  const mt = document.querySelector("#pbody table.members");
+  if (mt) mt.addEventListener("click", e => {
+    const row = e.target.closest("tr[data-sheet]");
+    if (row && row.dataset.sheet && MODEL.sheets[row.dataset.sheet]) {
+      stack.push(row.dataset.sheet); render();
+    }
+  });
   document.getElementById("props").classList.add("open");
 }
 
