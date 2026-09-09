@@ -130,7 +130,7 @@ proc pathsFrom(nl: Netlist, start: Net, skip: int,
   result = found
 
 proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
-                         plan: CompositePlan): ConstrainedTopology =
+                         plan: CompositePlan, arrays: ArrayPlan): ConstrainedTopology =
   ## Longest-path relaxation on semantic output arcs, run over the
   ## composite-collapsed *pool* -- `layers` and `sameColumn` are indexed by
   ## pool position (0 ..< `plan.topLevel.len`), not raw component index, so a
@@ -187,6 +187,42 @@ proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
             # as an output-side path.
             for part in path.parts: feedback.add (i, part)
 
+  # A collapsed array hides every non-representative member (`arrays.hidden`),
+  # so a chain's true tail -- an output pin that physically belongs to the
+  # *hidden* last member -- is invisible to the scan above, which only walks
+  # `comps`' own real pins. `arrays.extraPins` re-homes that external net onto
+  # the representative's own same-named pin (every member shares the same
+  # port names by construction), exactly as `routing.nim` reads it to draw
+  # the box's pin there. Direction cannot be read off that pin's `kind`: a
+  # positional `instance` never sets one, so every chained port's instance
+  # pin is `ptUnknown` -- `outward` (computed once, from the port's name
+  # suffix / hierarchy direction, the same signal `arrays.nim`'s chain-pairing
+  # itself trusts) is what tells the tail entry (the array's real external
+  # output) apart from the head entry, which is deliberately skipped: it
+  # re-homes onto a pin the representative already owns directly (it *is*
+  # the first member), so the main scans above already see that arc.
+  let nl = comps[0].netlist
+  for netName, homes in arrays.extraPins:
+    if not nl.nets.hasKey(netName): continue
+    let net = nl.nets[netName]
+    for home in homes:
+      if not home.outward or not idxOf.hasKey(home.desig): continue
+      let i = idxOf[home.desig]
+      for mate in net.pins:
+        if mate.component == nil or mate.component.netlist != nl or
+           mate.component.designator == home.desig or
+           not idxOf.hasKey(mate.component.designator): continue
+        let dst = idxOf[mate.component.designator]
+        if i < dst: rawArcs.add (i, dst)
+      for path in pathsFrom(nl, net, i, idxOf, plan):
+        for dst in path.inputs:
+          if dst == i:
+            for part in path.parts: sameColumnRaw.add (i, part)
+          elif i < dst:
+            addPathArcs(i, path.parts, dst)
+          else:
+            for part in path.parts: feedback.add (i, part)
+
   # An input interface is a virtual layer-zero source. `portDirection` is the
   # shared implementation used by routing, so explicit pin direction and its
   # no-driver fallback have exactly the same meaning here.
@@ -238,7 +274,7 @@ proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
 
 proc constrainedTargets(comps: seq[Component], pos: seq[Point],
                         idxOf: Table[string, int],
-                        plan: CompositePlan): seq[Point] =
+                        plan: CompositePlan, arrays: ArrayPlan): seq[Point] =
   ## Stable, bounded stage placement over the composite-collapsed pool. A pool
   ## item -- a raw singleton or a whole recognized composite -- is one
   ## placement unit; units fill at most three adjacent stages before adding
@@ -263,7 +299,7 @@ proc constrainedTargets(comps: seq[Component], pos: seq[Point],
   ## this reduces to the pre-pooling stacking exactly, one unit apart -- the
   ## identity case that is provably unchanged.
   if not constrainedEligible(comps, plan): return pos
-  var topology = constrainedTopology(comps, idxOf, plan)
+  var topology = constrainedTopology(comps, idxOf, plan, arrays)
   let poolLen = plan.topLevel.len
   # A local return is allowed one semantic stage either side of its source;
   # reserve a second stage even for the minimal source-plus-feedback case.
@@ -335,18 +371,19 @@ proc constrainedTargets(comps: seq[Component], pos: seq[Point],
     p.y -= yShift
 
 proc constrainedSemanticSeed(comps: seq[Component], pos: var seq[Point],
-                             idxOf: Table[string, int], plan: CompositePlan) =
+                             idxOf: Table[string, int], plan: CompositePlan,
+                             arrays: ArrayPlan) =
   if constrainedEligible(comps, plan):
-    pos = constrainedTargets(comps, pos, idxOf, plan)
+    pos = constrainedTargets(comps, pos, idxOf, plan, arrays)
 
 proc constrainedAnchors(comps: seq[Component], seed: seq[Point],
                         idxOf: Table[string, int],
-                        plan: CompositePlan): seq[Point] =
+                        plan: CompositePlan, arrays: ArrayPlan): seq[Point] =
   ## Semantic columns are deliberately *soft* anchors.  The constrained policy
   ## must retain the topology hint without overwriting the force solution (and
   ## without turning a feedback sheet into a rigid template).
   if constrainedEligible(comps, plan):
-    constrainedTargets(comps, seed, idxOf, plan)
+    constrainedTargets(comps, seed, idxOf, plan, arrays)
   else:
     seed
 

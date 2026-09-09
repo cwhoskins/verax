@@ -2731,9 +2731,10 @@ test "the default pipeline and its reserved no-op stages are byte-stable":
 
   # The reserved stages are still no-ops: dropping any one changes nothing.
   # `lsConstrainedRefinement` in particular is unfinished, so this is the
-  # guard that it stays inert until it is done.
+  # guard that it stays inert until it is done. `lsPortRefine` is a real pass
+  # but `divider` has no interface ports, so it too is a no-op here.
   for stage in [lsBundles, lsArrays, lsSemanticSeed, lsConstrainedRefinement,
-                lsCompositeOrient, lsRoutingAwareRepair]:
+                lsCompositeOrient, lsRoutingAwareRepair, lsPortRefine]:
     var options = defaultLayoutOptions()
     options.stages.excl stage
     let scene = layout(nl, options)

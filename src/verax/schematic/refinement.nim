@@ -1,65 +1,134 @@
-# import std/[algorithm, math, sets, strutils, tables]
-# import ../netlist/types
-# import ../netlist/kinds
-# import ../netlist/annotations
-# import ./scene
-# import ./pipeline
-#
-# include ./geometry
-# include ./symbols
-# include ./router
-# include ./labels
-# include ./placement
-# include ./constrained
-# include ./state
-# include ./routing
-# include ./finish
+# Post-route refinement passes. Included by `layout.nim` after `./finish`, so
+# every layout type, geometry constant and `routeScene` overload is in scope.
 
-type
-  LayoutError = enum
-    NO_ERROR = 0
-    ERROR = -1
+# --- routed-scene scoring ------------------------------------------------------
 
-proc countbends(x: seq[SchematicWire]): int =
-  return foldl(x,a+b.points.len()-2,0) + x.len()-1
+proc wireBends(poly: seq[Point]): int =
+  ## Direction changes along a rectilinear polyline. Collinear interior points
+  ## and zero-length segments do not count -- only a real corner does. This is
+  ## the library form of `tests/test_schematic.nim`'s `visualBends`, hardened
+  ## against the redundant collinear vertices the router sometimes emits.
+  var prevDir = -1                       ## 0 horizontal, 1 vertical, -1 none
+  for k in 1 ..< poly.len:
+    let a = poly[k - 1]
+    let b = poly[k]
+    let horiz = abs(a.y - b.y) < 1e-9
+    let vert = abs(a.x - b.x) < 1e-9
+    let dir =
+      if horiz and vert: -1              ## zero length
+      elif horiz: 0
+      else: 1
+    if dir < 0: continue
+    if prevDir >= 0 and dir != prevDir: inc result
+    prevDir = dir
 
-proc refineRouting(state: var LayoutState) =
-  var wires = state.routing.wires.filterIt(it.kind == wkSignal)
-  var netwires = initOrderedTable[string,seq[SchematicWire]]()
-  const MovableComponents = ["resistor", "capacitor"]
-  for w in mitems(wires):
-    if w.points.len() >= 3:
-      # Sometimes there is an additional point on a line, just filter them out for now
-      for idx in countdown(len(w.points)-2,1):
-        if (w.points[idx].x == w.points[idx+1].x and w.points[idx].x == w.points[idx-1].x) or
-            (w.points[idx].y == w.points[idx+1].y and w.points[idx].y == w.points[idx-1].y):
-          w.points.delete(idx)
-          
-    if w.net in netwires:
-      netwires[w.net].add(w)
-    else:
-      netwires[w.net] = @[w]
-  netwires.sort(proc (x, y: (string, seq[SchematicWire])): int =
-    cmp(x[1].countbends(), y[1].countbends())
-  )
-  # Create an initial list of anchored parts that shouldn't be moved
-  var anchors = newSeqOfCap[SchematicPart](state.routing.parts.len())
-  for p in state.routing.parts:
-    if p.kind notin MovableComponents:
-      anchors.add(p)
-  # Get the non-power/ground nets connected to the anchored parts
-  # and add them to the list of nets to straighten
-  for a in anchors:
-    for p in a.pins:
-      discard
-  # Loop through the nets and try to straighten them
-  # Regardless of the result add the moved components to the anchored list
-  # and add their nets to the next iteration
-  discard netwires
-  # NOTE: this pass is a WIP stub -- it computes `netwires`/`anchors` and does
-  # nothing with them. It used to `echo` every routed wire on every `layout`
-  # call (megabytes of stdout across the test corpus); that debug output is
-  # removed here. Finishing or deleting the pass is tracked separately.
+proc wireLength(poly: seq[Point]): float =
+  ## Total rectilinear length of a polyline.
+  for k in 1 ..< poly.len:
+    result += abs(poly[k].x - poly[k - 1].x) + abs(poly[k].y - poly[k - 1].y)
+
+proc sceneScore(rs: RoutingState): tuple[fallbacks, bends: int, length: float] =
+  ## Lexicographic route-quality reading of a routed scene: how many nets fell
+  ## back, then total corners, then total wire length. `wkChain` recirculation
+  ## arcs are fixed annotation polylines, not routed connectivity, so they are
+  ## excluded.
+  result.fallbacks = rs.fallbacks.len
+  for w in rs.wires:
+    if w.kind == wkChain: continue
+    result.bends += wireBends(w.points)
+    result.length += wireLength(w.points)
+
+proc betterThan(a, b: tuple[fallbacks, bends: int, length: float]): bool =
+  ## Strict lexicographic improvement: fewer fallbacks, then fewer bends, then
+  ## shorter. Length ties inside 1e-6 are not an improvement.
+  if a.fallbacks != b.fallbacks: return a.fallbacks < b.fallbacks
+  if a.bends != b.bends: return a.bends < b.bends
+  b.length - a.length > 1e-6
+
+# --- post-route port placement -----------------------------------------------
+
+proc portTargets(rs: RoutingState): OrderedTable[string, seq[float]] =
+  ## For every net that carries an interface port, the y coordinates its routed
+  ## wire spends the most horizontal length on -- the tracks tension would pull
+  ## the ports onto -- best first, at most `portRefineCandidates` of them, and
+  ## never a y a port on that net already sits at. Keyed and ordered by net tag
+  ## in `rs.ports` order so the caller is deterministic.
+  var portYs = initTable[string, seq[float]]()
+  var order: seq[string]
+  for p in rs.ports:
+    if p.net notin portYs:
+      portYs[p.net] = @[]
+      order.add p.net
+    portYs[p.net].add p.y
+
+  for net in order:
+    var runs = initOrderedTable[float, float]()   ## y -> summed |dx|
+    for w in rs.wires:
+      if w.net != net or w.kind == wkChain: continue
+      for k in 1 ..< w.points.len:
+        let a = w.points[k - 1]
+        let b = w.points[k]
+        if abs(a.y - b.y) < 1e-9 and abs(a.x - b.x) > 1e-9:
+          runs[a.y] = runs.getOrDefault(a.y) + abs(b.x - a.x)
+
+    var cands: seq[tuple[y, run: float]]
+    for y, run in runs:
+      var atPort = false
+      for py in portYs[net]:
+        if abs(py - y) < grid / 2.0: atPort = true
+      if not atPort: cands.add (y: y, run: run)
+    cands.sort(proc(x, z: tuple[y, run: float]): int =
+      result = cmp(z.run, x.run)               ## longer run first
+      if result == 0: result = cmp(x.y, z.y))  ## then y ascending
+
+    var picked: seq[float]
+    for c in cands:
+      if picked.len >= portRefineCandidates: break
+      picked.add c.y
+    if picked.len > 0: result[net] = picked
+
+proc refinePortPlacement(state: var LayoutState) =
+  ## Pull each ported net's ports onto the y its routed wire already runs
+  ## along, whenever a full re-route then scores strictly better
+  ## (`betterThan`: fallbacks, then bends, then length). A port's column and x
+  ## are never touched -- only its y, and only through `state.portY`, which
+  ## `routeScene` applies as the column relaxation's spring target so
+  ## `portMinGap` still holds. Bounded by `portRefineRounds` sweeps and
+  ## `portRefineMaxAttempts` re-routes; a sheet that never improves is left
+  ## exactly as routing produced it. Deterministic: fixed budgets, ordered
+  ## iteration, no clock or RNG.
+  if state.routing.ports.len == 0: return
+  # The same raw-size ceiling `recoverRouting` gates its per-candidate re-route
+  # cost on -- a post-route pass is the same shape of work.
+  if state.comps.len > 4 * state.options.feedbackMaxParts: return
+
+  var best = sceneScore(state.routing)
+  var attempts = 0
+  for _ in 1 .. portRefineRounds:
+    var improved = false
+    let targets = portTargets(state.routing)
+    for net, ys in targets:
+      if attempts >= portRefineMaxAttempts: break
+      var names: seq[string]
+      for p in state.routing.ports:
+        if p.net == net: names.add p.name
+      if names.len == 0: continue
+      for ty in ys:
+        if attempts >= portRefineMaxAttempts: break
+        inc attempts
+        let saved = state.portY
+        for nm in names: state.portY[nm] = ty
+        let cand = routeScene(state, withFallbacks = true)
+        if betterThan(sceneScore(cand), best):
+          state.routing = cand
+          best = sceneScore(cand)
+          improved = true
+          break                       ## first improving y wins for this net
+        else:
+          state.portY = saved
+    if not improved: break
+
+# --- manual-move validators (used by tests and future passes) ----------------
 
 proc portObstacle(p: SchematicPort): Obstacle =
   let hw = p.bodyW / 2.0 + routingClearance
@@ -175,4 +244,3 @@ proc translateRoutedComponent(state: var LayoutState, designator: string,
   state.pos[idx] = savedPos
   state.routing = savedRouting
   false
-

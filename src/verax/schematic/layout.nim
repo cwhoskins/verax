@@ -127,6 +127,13 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
       # scene for an unrouteable net rather than raising.
       routeScene(ctx, withFallbacks = true)
 
+  # Post-route interface-port refinement: pull a ported net's ports onto the y
+  # its routed wire already runs along when a full re-route scores strictly
+  # better. Must precede the scene copy-out so `finishLabels`/`finishBounds`
+  # see the final port geometry.
+  if options.stageEnabled(lsPortRefine):
+    refinePortPlacement(ctx)
+
   result.parts = ctx.routing.parts
   result.ports = ctx.routing.ports
   result.wires = ctx.routing.wires
@@ -134,6 +141,5 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   result.fallbacks = ctx.routing.fallbacks
   finishLabels(ctx, result)
   finishBounds(result, ctx.options.stageEnabled(lsBounds))
-  refineRouting(ctx)
 
 include ./diagnostics

@@ -492,7 +492,9 @@ proc ufUnion(parent: var seq[int], a, b: int) =
   if ra < rb: parent[rb] = ra else: parent[ra] = rb
 
 proc groupsOf(nl: Netlist, comps: seq[Component], pos: seq[Point],
-              idxOf: Table[string, int]): seq[int] =
+              idxOf: Table[string, int],
+              extraMembers: Table[string, seq[string]] =
+                initTable[string, seq[string]]()): seq[int] =
   ## A group id per part. Parts joined by a *signal* net (ground and rails
   ## excluded -- neither is routed as a tree) are one group; then every group
   ## of at most `mergeMaxParts` parts is folded into the group holding its
@@ -500,6 +502,19 @@ proc groupsOf(nl: Netlist, comps: seq[Component], pos: seq[Point],
   ## stranded away from the IC it serves. Ids are renumbered by ascending
   ## lowest-member index. Fully deterministic: union-find over a fixed edge
   ## set, merge decisions taken against a snapshot of the pre-merge partition.
+  ##
+  ## `extraMembers` is a plain-data escape hatch, not `ArrayPlan` itself --
+  ## `arrays.nim` (which owns that type) is `include`d *after* this file (it
+  ## needs `pinKey`/`portDirection` from here), so a forward reference to it
+  ## cannot compile. `state.nim`'s wrapper, included after both, is what
+  ## turns `state.arrays.extraPins` into this by designator name: a collapsed
+  ## array's chain head/tail physically sits on a *hidden* member, invisible
+  ## to the raw pin scan below, so without this a net like a chain's tail
+  ## reads as connecting to nothing in `comps` and the whole array is
+  ## partitioned away from a part that is genuinely wired to it (the bug that
+  ## stranded `spi_daisy_chain`'s R1/R2 terminations in their own singleton
+  ## group, undoing the semantic layering that had already placed them to
+  ## the array's right).
   let n = comps.len
   var parent = newSeq[int](n)
   for i in 0 ..< n: parent[i] = i
@@ -508,6 +523,10 @@ proc groupsOf(nl: Netlist, comps: seq[Component], pos: seq[Point],
     for p in net.pins:
       if p.component != nil and idxOf.hasKey(p.component.designator):
         let i = idxOf[p.component.designator]
+        if result.len == 0 or i notin result: result.add i
+    for d in extraMembers.getOrDefault(net.name, @[]):
+      if idxOf.hasKey(d):
+        let i = idxOf[d]
         if result.len == 0 or i notin result: result.add i
 
   for _, net in nl.nets:

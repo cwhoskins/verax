@@ -10,7 +10,7 @@ type
     lsPrepare, lsBundles, lsArrays, lsSemanticSeed, lsForcePlacement,
     lsConstrainedRefinement, lsCompositeOrient, lsSeparate, lsPack, lsOrient,
     lsLeafSnap, lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting,
-    lsRoutingAwareRepair, lsLabels, lsBounds
+    lsRoutingAwareRepair, lsPortRefine, lsLabels, lsBounds
 
   ## An explicit canonical stage description. `LayoutOptions.stages` filters
   ## this sequence; it cannot reorder it.
@@ -62,6 +62,10 @@ const canonicalStages*: array[StageId, StageSpec] = [
   StageSpec(id: lsRoute, enabled: true),
   StageSpec(id: lsRecoverRouting, enabled: true),
   StageSpec(id: lsRoutingAwareRepair, enabled: true),
+  # Post-route: pull interface ports onto the y their routed wire runs along,
+  # accepting a re-route only when it scores strictly better. Off -> ports keep
+  # the pre-route relaxation's guess.
+  StageSpec(id: lsPortRefine, enabled: true),
   StageSpec(id: lsLabels, enabled: true),
   StageSpec(id: lsBounds, enabled: true)]
 

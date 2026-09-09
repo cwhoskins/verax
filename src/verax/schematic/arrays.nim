@@ -69,8 +69,18 @@ type
                                            ## (chain links; distributed members
                                            ## after the first)
     groupOf: Table[string, tuple[a, p: int]]  ## distributed member net -> port
-    extraPins: Table[string, seq[tuple[desig, pin: string]]]  ## chain head/tail
-                                           ## re-homed onto the representative
+    extraPins: Table[string, seq[tuple[desig, pin: string, outward: bool]]]
+                                           ## chain head/tail re-homed onto the
+                                           ## representative; `outward` is true
+                                           ## only for the tail entry -- the
+                                           ## array's real external output,
+                                           ## physically on the hidden last
+                                           ## member -- so a consumer that
+                                           ## cares about signal direction
+                                           ## (`constrained.nim`'s semantic
+                                           ## layering) does not have to ask a
+                                           ## positional instance pin, which is
+                                           ## always `ptUnknown`
     arrayNets: HashSet[string]             ## what finish skips in the net-name
                                            ## pass (drawn group members + tags)
 
@@ -399,8 +409,8 @@ proc arrayPlan(nl: Netlist, bundles: BundlePlan): ArrayPlan =
                 plan.arrayNets.incl lnk
               plan.arrayNets.incl ap.display
               plan.extraPins.mgetOrPut(ap.head, @[]).add (sub.rep,
-                sub.ports[ap.partner].name)
-              plan.extraPins.mgetOrPut(ap.tail, @[]).add (sub.rep, ap.name)
+                sub.ports[ap.partner].name, false)
+              plan.extraPins.mgetOrPut(ap.tail, @[]).add (sub.rep, ap.name, true)
           else: discard
 
         plan.arrays.add sub

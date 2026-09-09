@@ -144,7 +144,13 @@ implements.
   point through a Hanan free-space grid built from the inflated obstacle
   boundaries and signal-terminal escape coordinates, so an off-centre pin can
   turn directly after its outward stub while no segment enters an inflated body; a wire
-  reaches each pin directly through a short outward stub. The path search is
+  reaches each pin directly through a short outward stub. `buildFreeGrid` also
+  adds a `freeGridMargin` (5) `grid`-step ring of axes just outside the extreme
+  obstacle/terminal coordinates on every side: without it the grid stops
+  exactly at the outermost obstacle edge or rail/ground glyph bar, so a route
+  that must wrap a part -- a pass-through strap wired to ports on *both* sides
+  (`SPI_DEV`'s `sclk`/`cs`) -- has no track to turn on past the glyph blocking
+  the centreline, and the net needlessly falls back. The path search is
   **bend-aware**: state is `(node, incoming axis)` and cost is the
   lexicographic pair (Manhattan length, then bend count), so among all
   shortest obstacle-avoiding paths the fewest-bend one is chosen. Each source
@@ -243,8 +249,29 @@ implements.
   directional claim. Ports live in a **fixed column** just outside the parts —
   the left edge for `pdInput`/`pdUnspecified`, the right edge for
   `pdOutput`/`pdBidir`, so signal reads left to right — and `layout` picks each
-  port's `y` from its net-mate pin, pushed down only to clear a port already
-  placed in that column. The port body is a routing obstacle and its
+  port's `y` by a **wire-tension relaxation** of its column: every port is
+  pulled toward its net's anchor-pin `y` (`portSpringRate` per sweep,
+  `portSpringIters` sweeps) while a symmetric min-gap projection keeps
+  `portMinGap` (`1 * grid`) between bodies, so a jammed column settles centred
+  on the mean of its targets instead of cascading downward from the topmost pin
+  (the old greedy `yCursor` stack). A column with room to spare leaves every
+  port exactly on its target, so a sheet with no port collision is unchanged.
+  That pre-route target is only a guess (no wire exists yet), so a **post-route
+  pass** follows: `refinePortPlacement` (`refinement.nim`, stage `lsPortRefine`,
+  after `lsRoutingAwareRepair`, on by default). For each ported net it reads the
+  `y` its routed wire spends the most horizontal length on, sets **every** port
+  on that net to that `y` through `LayoutState.portY` (an override the column
+  relaxation reads as its spring target, so `portMinGap` still holds), and
+  re-routes. A candidate commits only when the fresh scene scores strictly
+  better — fewer fallbacks, then fewer `wireBends`, then less total length
+  (`betterThan`) — so it can never worsen a sheet. Bounded by
+  `portRefineRounds` sweeps and `portRefineMaxAttempts` re-routes, and gated off
+  above `4 * feedbackMaxParts` raw parts like `recoverRouting`. This is what
+  straightens `SPI_DEV`'s `sclk`/`cs` strap climb-outs (the pre-route
+  relaxation is a no-op there). Column and `x` are never touched by either
+  pass. `docs/port_placement.md` has the method survey and why `lpHistorical`
+  no longer holds port coordinates byte-identical. The port body is a routing
+  obstacle and its
   connection point is fed to `routeNet` as an extra net pin with an explicit
   inward escape, so the connecting wire is a normal net branch that never
   crosses a body; the plain text label for a ported net is suppressed.

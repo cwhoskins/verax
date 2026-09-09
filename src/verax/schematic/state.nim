@@ -69,25 +69,36 @@ type
       ## placed, routed or drawn, so every index-parallel array below is one
       ## entry shorter per hidden member. `recoverRouting` never rebuilds it.
     semanticAnchors: seq[Point]
+    portY: Table[string, float]
+      ## Post-route interface-port y overrides, keyed by `SchematicPort.name`.
+      ## Empty on the first route; `refinePortPlacement` (stage `lsPortRefine`)
+      ## fills it from the routed wire geometry and re-routes. `routeScene`
+      ## reads it as the column relaxation's *spring target*, not a hard
+      ## position, so `portMinGap` still legalises the column.
     routing: RoutingState
 
 proc planComposites(state: var LayoutState) =
   state.composites = compositePlan(state.comps, state.syms, state.bundles.bundled)
 
 proc constrainedSemanticSeed(state: var LayoutState) =
-  constrainedSemanticSeed(state.comps, state.pos, state.idxOf, state.composites)
+  constrainedSemanticSeed(state.comps, state.pos, state.idxOf, state.composites,
+    state.arrays)
 
 proc restoreCompositeOffsets(state: var LayoutState) =
   restoreCompositeOffsets(state.composites, state.pos)
 
 proc constrainedAnchors(state: LayoutState): seq[Point] =
-  constrainedAnchors(state.comps, state.pos, state.idxOf, state.composites)
+  constrainedAnchors(state.comps, state.pos, state.idxOf, state.composites,
+    state.arrays)
 
 proc constrainedRefine(state: var LayoutState) =
   constrainedRefine(state.comps, state.pos, state.idxOf)
 
 proc groupsOf(state: LayoutState): seq[int] =
-  groupsOf(state.nl, state.comps, state.pos, state.idxOf)
+  var extra: Table[string, seq[string]]
+  for netName, homes in state.arrays.extraPins:
+    for home in homes: extra.mgetOrPut(netName, @[]).add home.desig
+  groupsOf(state.nl, state.comps, state.pos, state.idxOf, extra)
 
 proc packGroups(state: var LayoutState, group: seq[int]) =
   packGroups(state.pos, state.ohw, state.ohh, group)
@@ -339,6 +350,49 @@ proc forcePlace(state: var LayoutState) =
           disp[i].y -= fy
           disp[j].x += fx
           disp[j].y += fy
+
+      # A collapsed array's chain head/tail physically sits on a *hidden*
+      # member, so the pair loop above -- both ends read from `net.pins`
+      # directly -- can never see it: the hidden end fails
+      # `state.idxOf.hasKey`. Without a pull toward whatever this net's other
+      # real pin is, a part wired only to a chain's tail (`spi_daisy_chain`'s
+      # R1/R2 terminations) gets no electrical force at all and drifts on
+      # repulsion and the semantic anchor's weak 8% y-pull alone, landing far
+      # off the array's row rather than snug against it. `arrays.extraPins`
+      # re-homes the net onto the representative's own same-named pin, so the
+      # pull is anchored there -- the same point routing later draws the wire
+      # to.
+      #
+      # Y-only, deliberately: the ordinary pin-to-pin spring below pulls along
+      # both axes, which is right when the anchor and the electrical target
+      # agree, but here they can genuinely disagree -- the semantic column
+      # (`constrainedTargets`) puts this pool item a whole layer pitch past
+      # the array, while the real re-homed pin sits right at the array box's
+      # own edge. A 2-D pull toward that near point drags the part's *x* back
+      # into the array's own column (the box is wide enough that its edge
+      # already reaches partway into the next semantic column), fighting the
+      # anchor's 70% x-pull and undoing the layering `constrainedTopology`
+      # just computed. Only the part's row within its layer is left for this
+      # force to settle -- it has no claim on which layer that is.
+      if state.arrays.extraPins.hasKey(net.name):
+        for home in state.arrays.extraPins[net.name]:
+          if not state.idxOf.hasKey(home.desig): continue
+          let i = state.idxOf[home.desig]
+          let repComp = state.comps[i]
+          let pa = pinWorld.getOrDefault(pinKey(repComp, home.pin), state.pos[i])
+          for p in net.pins:
+            let cb = p.component
+            if cb == nil or cb.netlist != nl or cb.designator == home.desig: continue
+            if not state.idxOf.hasKey(cb.designator): continue
+            let j = state.idxOf[cb.designator]
+            let pb = pinWorld.getOrDefault(pinKey(cb, p.name), state.pos[j])
+            let dy = pa.y - pb.y
+            var ady = abs(dy)
+            if ady < 0.01: ady = 0.01
+            let f = ady * ady / k * w
+            let fy = (dy / ady) * f
+            disp[i].y -= fy
+            disp[j].y += fy
 
     for i in 0 ..< n:
       disp[i].x -= state.pos[i].x * 0.08

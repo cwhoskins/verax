@@ -4,6 +4,37 @@ const
   routingClearance = 12.0
     ## Minimum distance a signal wire keeps from a component body. Routing
     ## obstacles are component bodies inflated by this amount on every side.
+  freeGridMargin = 5
+    ## How many `grid`-step axes the Hanan free grid (`buildFreeGrid`) adds
+    ## outside the extreme obstacle/terminal coordinates on each side. The bare
+    ## grid stops at the outermost obstacle edge or rail/ground glyph bar, so a
+    ## route that must wrap a part -- a pass-through strap wired to ports on
+    ## both sides -- has no track to turn on past the glyph blocking the
+    ## centreline. Five steps clears any single glyph plus a detour lane.
+  portMinGap = 1.0 * grid
+    ## Minimum vertical centre-to-centre distance between two interface-port
+    ## bodies stacked in one edge column. A port body is `bodyH` (24) tall, so
+    ## one `grid` step leaves a clear gap. This is the collision distance the
+    ## port spring relaxation (`routeScene`) may never violate.
+  portSpringIters = 96
+    ## Fixed relaxation sweeps for the port-column spring model: each sweep is
+    ## a spring pull toward the target y followed by a symmetric forward /
+    ## backward min-gap projection. A hard cap that keeps `routeScene` pure and
+    ## O(ports); a handful of ports converge in far fewer.
+  portSpringRate = 0.4
+    ## Fraction of the way each port moves toward its target y per relaxation
+    ## sweep. Below 1 so a column of ports coupled by the min-gap settles
+    ## together rather than one port overshooting and bouncing.
+  portRefineRounds = 2
+    ## Measure/move sweeps the post-route port pass (`refinePortPlacement`)
+    ## makes over the sheet. A second round exists because moving one net's
+    ## ports re-routes the sheet the next net is then measured against.
+  portRefineMaxAttempts = 24
+    ## Hard cap on the `routeScene` re-routes `refinePortPlacement` may run,
+    ## the post-route analogue of `feedbackAttemptBudget`.
+  portRefineCandidates = 2
+    ## Ranked horizontal-run y's tried per net by `refinePortPlacement`,
+    ## besides the port's current y.
   wireMinSeparation = 8.0
     ## Minimum centreline distance between two parallel, projection-overlapping
     ## segments of *different* nets. Two different nets may still cross
@@ -443,6 +474,13 @@ proc buildFreeGrid(obstacles: seq[Obstacle], terminals: openArray[Point]):
   ## orthogonal paths among these rectangles. Adjacent visible nodes on an
   ## axis are enough: an intervening collinear node has the same length and
   ## introduces no bend.
+  ##
+  ## A `freeGridMargin`-step ring of extra axes is added just outside the
+  ## extreme obstacle/terminal coordinates on every side. Without it the grid
+  ## stops exactly at the outermost obstacle edge or rail/ground glyph bar, so
+  ## a wire that must route *around* a part (a pass-through strap reaching ports
+  ## on both sides, say) has no track to turn on beyond the glyph that blocks
+  ## the centreline -- and the net needlessly falls back.
   var xs: seq[float]
   var ys: seq[float]
   for o in obstacles:
@@ -459,6 +497,20 @@ proc buildFreeGrid(obstacles: seq[Obstacle], terminals: openArray[Point]):
     if uxs.len == 0 or not sameCoord(uxs[^1], x): uxs.add x
   for y in ys:
     if uys.len == 0 or not sameCoord(uys[^1], y): uys.add y
+
+  # Extend both axes with a ring of margin tracks so a route can escape past
+  # the outermost obstacle/glyph and turn back. Prepend/append keeps each
+  # sequence sorted, which the adjacency sweeps below rely on.
+  if uxs.len > 0:
+    var lo, hi: seq[float]
+    for k in countdown(freeGridMargin, 1): lo.add uxs[0] - float(k) * grid
+    for k in 1 .. freeGridMargin: hi.add uxs[^1] + float(k) * grid
+    uxs = lo & uxs & hi
+  if uys.len > 0:
+    var lo, hi: seq[float]
+    for k in countdown(freeGridMargin, 1): lo.add uys[0] - float(k) * grid
+    for k in 1 .. freeGridMargin: hi.add uys[^1] + float(k) * grid
+    uys = lo & uys & hi
 
   for x in uxs:
     for y in uys:

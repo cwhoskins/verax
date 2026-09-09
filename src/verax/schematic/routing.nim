@@ -21,7 +21,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                 withFallbacks = false, constrained = false,
                 composites = CompositePlan(),
                 bundles = BundlePlan(),
-                arrays = ArrayPlan()): RoutingState =
+                arrays = ArrayPlan(),
+                portY = initTable[string, float]()): RoutingState =
   ## Build the routed scene for the given centres/rotations. Pure and
   ## deterministic. `ok` is false only when `routeNet` reports an unreachable
   ## pin and `withFallbacks` is false -- the one recoverable routing failure,
@@ -32,6 +33,12 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   ## instead of raising. Attempt zero (`layout`'s first call) passes through
   ## this proc unchanged, so a netlist that already routes produces exactly
   ## the scene it did before the feedback loop existed.
+  ##
+  ## `portY` is the post-route override channel (`refinePortPlacement`): an
+  ## entry replaces a port's pre-route anchor-pin target in the column
+  ## relaxation. It is a spring target, not a hard y -- the min-gap projection
+  ## still runs, so two ports pulled to the same target stay `portMinGap`
+  ## apart.
   var pinPos = initTable[string, Point]()
   var partIdxByDesig = initTable[string, int]()
   for i, c in comps:
@@ -294,20 +301,42 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       prefY: anchorY, bodyH: 24.0,
       bodyW: max(60.0, float(portName.len) * 8.0 + 28.0))
 
-  # Stack each column: preferred y first (name breaks a tie), then a fixed
-  # gap so two ports never overlap.
+  # Stack each column with a wire-tension relaxation: every port is a bead on
+  # its edge column pulled toward its target y like a wire end under tension,
+  # and two ports in one column keep `portMinGap` between bodies. The target is
+  # the port's net anchor pin, or -- once `refinePortPlacement` has run -- a
+  # `portY` override read off the routed wire. Each sweep is a spring pull then
+  # a symmetric forward / backward min-gap projection, so a jammed column
+  # settles centred on the mean of its targets instead of cascading downward
+  # from the topmost pin the way a greedy stack does; a column with room to
+  # spare leaves every port on its target. Column order is target y, then name
+  # for a tie.
+  proc portTarget(pl: PortPlan): float =
+    portY.getOrDefault(pl.name, pl.prefY)
   for onRight in [false, true]:
     var col: seq[int]
     for i, pl in plans:
       if pl.toRight == onRight: col.add i
+    if col.len == 0: continue
     col.sort(proc(a, b: int): int =
-      result = cmp(plans[a].prefY, plans[b].prefY)
+      result = cmp(portTarget(plans[a]), portTarget(plans[b]))
       if result == 0: result = cmp(plans[a].name, plans[b].name))
+    var ys = newSeq[float](col.len)
+    for k, i in col: ys[k] = portTarget(plans[i])
+    for _ in 1 .. portSpringIters:
+      for k in 0 ..< col.len:
+        ys[k] += portSpringRate * (portTarget(plans[col[k]]) - ys[k])
+      for k in 1 ..< col.len:
+        let lo = ys[k - 1] + portMinGap
+        if ys[k] < lo: ys[k] = lo
+      for k in countdown(col.len - 2, 0):
+        let hi = ys[k + 1] - portMinGap
+        if ys[k] > hi: ys[k] = hi
     var yCursor = NegInf
-    for i in col:
+    for k, i in col:
       let pl = plans[i]
-      var y = round(pl.prefY / grid) * grid
-      if y < yCursor + 3.0 * grid: y = yCursor + 3.0 * grid
+      var y = round(ys[k] / grid) * grid
+      if y < yCursor + portMinGap: y = yCursor + portMinGap
       yCursor = y
       let edgeX = (if onRight: rightColX else: leftColX)
       var px = edgeX + (if onRight: pl.bodyW / 2.0 else: -pl.bodyW / 2.0)
@@ -748,7 +777,8 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                     idxOf: Table[string, int], options: LayoutOptions,
                     composites: CompositePlan,
                     bundles = BundlePlan(),
-                    arrays = ArrayPlan()): RoutingState =
+                    arrays = ArrayPlan(),
+                    portY = initTable[string, float]()): RoutingState =
   ## The placement-routing feedback loop. When `routeScene` cannot route a
   ## signal net it tries deterministic single-part moves and keeps any move
   ## that routes strictly further than the best layout so far, up to
@@ -767,7 +797,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   let constrained = options.policy == lpConstrainedLayered
   var best = routeScene(nl, comps, syms, pos, rots, idxOf,
                         constrained = constrained, composites = composites,
-                        bundles = bundles, arrays = arrays)
+                        bundles = bundles, arrays = arrays, portY = portY)
   if best.ok: return best
 
   # Pool length, not raw count, is what should gate the recovery loop: its
@@ -790,7 +820,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
      comps.len > 4 * options.feedbackMaxParts:
     return routeScene(nl, comps, syms, pos, rots, idxOf,
                       withFallbacks = true, constrained = constrained,
-                      composites = composites, bundles = bundles)
+                      composites = composites, bundles = bundles, portY = portY)
 
   var bestPos = pos
   var bestRots = rots
@@ -850,14 +880,14 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
             let candRots =
               if constrained:
                 constrainedRecomputeRotations(nl, comps, syms, candPos, bestRots,
-                  constrainedAnchors(comps, bestPos, idxOf, composites), composites)
+                  constrainedAnchors(comps, bestPos, idxOf, composites, arrays), composites)
               else:
                 recomputeRotations(comps, syms, candPos, bestRots)
             if terminalClearance(comps, syms, candPos, candRots).coincidences > 0:
               continue
             let cand = routeScene(nl, comps, syms, candPos, candRots, idxOf,
                                   constrained = constrained, composites = composites,
-                                  bundles = bundles, arrays = arrays)
+                                  bundles = bundles, arrays = arrays, portY = portY)
             if cand.ok or cand.failOrd > best.failOrd:
               best = cand
               bestPos = candPos
@@ -874,7 +904,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     return routeScene(nl, comps, syms, bestPos, bestRots, idxOf,
                       withFallbacks = true, constrained = constrained,
                       composites = composites, bundles = bundles,
-                      arrays = arrays)
+                      arrays = arrays, portY = portY)
   best
 
 proc recomputeRotations(state: LayoutState): seq[float] =
@@ -885,9 +915,10 @@ proc routeScene(state: LayoutState, withFallbacks = false): RoutingState =
     state.idxOf, withFallbacks = withFallbacks,
     constrained = state.options.policy == lpConstrainedLayered,
     composites = state.composites, bundles = state.bundles,
-    arrays = state.arrays)
+    arrays = state.arrays, portY = state.portY)
 
 proc recoverRouting(state: LayoutState): RoutingState =
   recoverRouting(state.nl, state.comps, state.syms, state.pos, state.rots,
-    state.idxOf, state.options, state.composites, state.bundles, state.arrays)
+    state.idxOf, state.options, state.composites, state.bundles, state.arrays,
+    portY = state.portY)
 

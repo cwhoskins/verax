@@ -13,6 +13,7 @@
 import std/unittest
 import verax/netlist
 include verax/schematic/layout
+import designs/lib/spi_dev
 
 proc part(designator: string, x, y: float, w = 80.0, h = 80.0): SchematicPart =
   SchematicPart(designator: designator, kind: "resistor", symbol: "resistor",
@@ -232,5 +233,98 @@ test "constrainedTopology walks through a pi composite to the sink it feeds":
   let pCIN = plan.poolOf[st.idxOf["CIN"]]
   let pRB = plan.poolOf[st.idxOf["RB"]]
   check pRL == pCIN and pCIN == pRB
-  let topo = constrainedTopology(st.comps, st.idxOf, plan)
+  let topo = constrainedTopology(st.comps, st.idxOf, plan, ArrayPlan())
   check topo.layers[pCIN] < topo.layers[plan.poolOf[st.idxOf["UIN"]]]
+
+# --- post-route port refinement (refinement.nim) ----------------------------
+
+proc strapSheet(): Netlist =
+  ## A sub-sheet whose whole interface lands in the edge columns: `clk` is a
+  ## pass-through strap (two ports on one net, `spi_dev.nim`'s shape), plus a
+  ## plain input and a plain output.
+  result = newNetlist("STRAP")
+  let clk = addNet(result, newNet("clk"))
+  let a = addNet(result, newNet("a"))
+  let y = addNet(result, newNet("y"))
+  let gnd = addNet(result, newNet("0", ntGround))
+  let u = addComponent(result, newComponent("U1", kind = "buffer"))
+  discard connect(u, "CLK", clk, ptInput)
+  discard connect(u, "A", a, ptInput)
+  discard connect(u, "Y", y, ptOutput)
+  discard connect(u, "GND", gnd, ptGround)
+  addPort(result, "clk_in", clk)
+  addPort(result, "clk_out", clk)
+  addPort(result, "a_in", a)
+  addPort(result, "y_out", y)
+
+proc sceneScoreOf(s: Schematic): tuple[fallbacks, bends: int, length: float] =
+  result.fallbacks = s.fallbacks.len
+  for w in s.wires:
+    if w.kind == wkChain: continue
+    result.bends += wireBends(w.points)
+    result.length += wireLength(w.points)
+
+test "wireBends ignores collinear interior points and zero-length hops":
+  check wireBends(@[Point(x: 0.0, y: 0.0), Point(x: 20.0, y: 0.0),
+                    Point(x: 40.0, y: 0.0)]) == 0
+  check wireBends(@[Point(x: 0.0, y: 0.0), Point(x: 40.0, y: 0.0),
+                    Point(x: 40.0, y: 40.0)]) == 1
+  check wireBends(@[Point(x: 0.0, y: 0.0), Point(x: 40.0, y: 0.0),
+                    Point(x: 40.0, y: 0.0), Point(x: 80.0, y: 0.0)]) == 0
+
+test "betterThan is strict lexicographic: fallbacks, then bends, then length":
+  check betterThan((fallbacks: 0, bends: 5, length: 100.0),
+                   (fallbacks: 1, bends: 0, length: 10.0))
+  check betterThan((fallbacks: 0, bends: 3, length: 999.0),
+                   (fallbacks: 0, bends: 4, length: 10.0))
+  check betterThan((fallbacks: 0, bends: 3, length: 100.0),
+                   (fallbacks: 0, bends: 3, length: 101.0))
+  check not betterThan((fallbacks: 0, bends: 3, length: 100.0),
+                       (fallbacks: 0, bends: 3, length: 100.0))
+
+test "portTargets ranks a net's long horizontal run above a short one":
+  var rs: RoutingState
+  rs.ports = @[SchematicPort(name: "P_IN", net: "sig", dir: pdInput,
+    x: -100.0, y: 0.0, bodyW: 60.0, bodyH: 24.0)]
+  rs.wires = @[
+    SchematicWire(net: "sig", kind: wkSignal, points: @[
+      Point(x: -70.0, y: 0.0), Point(x: -70.0, y: -160.0),
+      Point(x: 200.0, y: -160.0), Point(x: 200.0, y: 240.0),
+      Point(x: 240.0, y: 240.0)]),
+    SchematicWire(net: "other", kind: wkSignal, points: @[
+      Point(x: 0.0, y: 320.0), Point(x: 400.0, y: 320.0)])]
+  let t = portTargets(rs)
+  check "sig" in t
+  check t["sig"][0] == -160.0     # 270-unit run beats the 40-unit run
+  check t["sig"].len <= portRefineCandidates
+
+test "refinePortPlacement straightens SPI_DEV's strap wires":
+  var off = defaultLayoutOptions()
+  off.stages.excl lsPortRefine
+  let before = sceneScoreOf(layout(spiDev(), off))
+  let after = sceneScoreOf(layout(spiDev()))       # default: lsPortRefine on
+  check after.fallbacks == 0
+  check after.bends < before.bends
+  check after.length <= before.length + 1e-6
+
+test "refinePortPlacement never worsens a scene it touches":
+  for nl in [strapSheet(), piInputNetlist(), spiDev()]:
+    var off = defaultLayoutOptions()
+    off.stages.excl lsPortRefine
+    let a = sceneScoreOf(layout(nl, off))
+    let b = sceneScoreOf(layout(nl))
+    check b.fallbacks <= a.fallbacks
+    check not betterThan(a, b)          # b is at least as good as a
+
+test "refinePortPlacement is deterministic":
+  check layout(spiDev()) == layout(spiDev())
+  check layout(strapSheet()) == layout(strapSheet())
+
+test "refinePortPlacement respects the raw-size ceiling":
+  # feedbackMaxParts 0 -> 4*0 = 0, so any part count trips the gate and the
+  # pass is a no-op: the scene must equal the lsPortRefine-off scene.
+  var gated = defaultLayoutOptions()
+  gated.feedbackMaxParts = 0
+  var off = gated
+  off.stages.excl lsPortRefine
+  check layout(spiDev(), gated) == layout(spiDev(), off)
