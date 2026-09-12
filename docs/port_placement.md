@@ -185,9 +185,11 @@ never touched.
 Each strap wire becomes one straight run at the port y plus a single 2-bend tap
 down to U1.
 
-`lpHistorical`'s byte-identical guarantee no longer applies to schematic port
-coordinates (the policy is being retired); coordinate-exact tests in
-`tests/test_schematic.nim` were re-baselined.
+Port-refine's re-routes already broke the old `lpHistorical` policy's
+byte-identical guarantee for schematic port coordinates before that policy
+was retired outright (`lpConstrainedLayered` is now the only, default,
+policy); coordinate-exact tests in `tests/test_schematic.nim` were
+re-baselined both times.
 
 **Still open**: the target is the longest horizontal run, not a true wire
 attach point, and there is no per-bend force in the target selection itself

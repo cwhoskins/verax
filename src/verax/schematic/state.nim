@@ -119,42 +119,21 @@ proc constrainedRecomputeRotations(state: var LayoutState) =
   state.rots = constrainedRecomputeRotations(state.nl, state.comps, state.syms,
     state.pos, state.rots, state.semanticAnchors, state.composites)
 
-proc leafSnap(state: var LayoutState) =
-  leafSnap(state.comps, state.syms, state.pos, state.rots, state.ohw,
-    state.ohh, state.idxOf)
-
 proc placementPool(state: LayoutState): seq[int] =
-  ## The items placement actually reasons about: `state.composites.topLevel`
-  ## under `lpConstrainedLayered` (a mix of leaf and composite arena indices,
-  ## ascending first-raw-member order), or one entry per raw component under
-  ## `lpHistorical`, in raw order. `state.composites` is never built under
-  ## historical (`prepare` gates `planComposites` on the policy), so this must
-  ## not read it there. This -- not `comps.len` -- is the count that actually
-  ## bounds `forcePlace`/`separate`'s cost, and under historical it degenerates
-  ## to `0 ..< comps.len` exactly, so every pool-based loop below reduces to
-  ## its pre-Stage-2 raw-indexed form there, bit-for-bit.
-  if state.options.policy == lpConstrainedLayered:
-    result = state.composites.topLevel
-  else:
-    result = newSeq[int](state.comps.len)
-    for i in 0 ..< state.comps.len: result[i] = i
+  ## The items placement actually reasons about: `state.composites.topLevel`,
+  ## a mix of leaf and composite arena indices in ascending first-raw-member
+  ## order. This -- not `comps.len` -- is the count that actually bounds
+  ## `forcePlace`/`separate`'s cost.
+  state.composites.topLevel
 
 proc poolMembers(state: LayoutState, item: int): seq[int] =
-  ## Every raw component `item` (a `placementPool` entry) stands for: a
-  ## composite's members under `lpConstrainedLayered` (`item` is an arena
-  ## index there), or just itself under `lpHistorical` (`item` is already the
-  ## raw index).
-  if state.options.policy == lpConstrainedLayered:
-    rawMembers(state.composites, item)
-  else:
-    @[item]
+  ## Every raw component a `placementPool` entry stands for: a composite's
+  ## members (`item` is an arena index).
+  rawMembers(state.composites, item)
 
 proc poolOffsets(state: LayoutState, item: int): seq[Point] =
   ## Parallel to `poolMembers(state, item)`.
-  if state.options.policy == lpConstrainedLayered:
-    rawOffsets(state.composites, item)
-  else:
-    @[Point()]
+  rawOffsets(state.composites, item)
 
 proc poolOrigin(state: LayoutState, members: seq[int],
                offsets: seq[Point]): Point =
@@ -165,17 +144,13 @@ proc poolOrigin(state: LayoutState, members: seq[int],
   ## where composites are already exactly rigid (`prepare` rigidifies the
   ## seed before `forcePlace` ever runs; `forcePlace` re-rigidifies at the end
   ## of every iteration), so this is a stable representative position, not an
-  ## approximation. Under historical a single member with a zero offset makes
-  ## this exactly `pos[item]`.
+  ## approximation. A singleton with a zero offset makes this exactly
+  ## `pos[item]`.
   for at, m in members: result += state.pos[m] - offsets[at]
   result = result * (1.0 / float(members.len))
 
 proc repairTerminalClearance(state: var LayoutState) =
-  let locked =
-    if state.options.policy == lpConstrainedLayered:
-      compositeMembers(state.composites, state.comps.len)
-    else:
-      @[]
+  let locked = compositeMembers(state.composites, state.comps.len)
   repairTerminalClearance(state.comps, state.syms, state.pos, state.rots,
     state.ohw, state.ohh, locked)
 
@@ -186,11 +161,8 @@ proc repairTerminalClearance(state: var LayoutState) =
 # a rewrite.
 
 proc prepare(state: var LayoutState) =
-  ## Build the component / symbol arrays, the golden-angle seed and the
-  ## designator index; under the constrained policy also the composite plan
-  ## and the semantic seed / anchors. The historical golden-angle seed is
-  ## deliberately left alone -- changing even the first position changes the
-  ## established serialized SVG / JSON output.
+  ## Build the component / symbol arrays, the composite plan, the
+  ## golden-angle seed, the designator index and the semantic seed / anchors.
   # Bus/interface grouping first: a merged pin changes `symbolFor`'s box
   # sizing, so the plan must exist before the symbols are built. A zero-value
   # plan when nothing groups.
@@ -235,8 +207,8 @@ proc prepare(state: var LayoutState) =
   state.idxOf = initTable[string, int]()
   for i, c in state.comps: state.idxOf[c.designator] = i
 
-  # Layer columns are opt-in because changing even this first position changes
-  # the established serialized output.
+  # Layer columns are gated on their own stage so a caller may still disable
+  # just this pass.
   if state.options.policy == lpConstrainedLayered and
      state.options.stageEnabled(lsSemanticSeed):
     constrainedSemanticSeed(state)
@@ -272,10 +244,9 @@ proc forcePlace(state: var LayoutState) =
   # `iterations`, is the single most expensive computation in the whole
   # pipeline). Membership is static across iterations (composites don't
   # change during force placement), so it is computed once here rather than
-  # once per iteration; only each item's `repPos` moves. Under `lpHistorical`
-  # every item is its own singleton member with a zero offset, so `repPos`
-  # is exactly `state.pos[i]` and this reduces to the pre-Stage-2 `n^2`
-  # raw-pairwise loop, bit-for-bit -- see `placementPool`.
+  # once per iteration; only each item's `repPos` moves. A raw singleton is
+  # its own pool item with a zero offset, so `repPos` is exactly
+  # `state.pos[i]` for it -- see `placementPool`.
   let pool = placementPool(state)
   var poolMemberLists = newSeq[seq[int]](pool.len)
   var poolOffsetLists = newSeq[seq[Point]](pool.len)
@@ -397,8 +368,8 @@ proc forcePlace(state: var LayoutState) =
     for i in 0 ..< n:
       disp[i].x -= state.pos[i].x * 0.08
       disp[i].y -= state.pos[i].y * 0.08
-      # Semantic layers are bounded soft anchors under the opt-in policy.
-      # They guide the search but never overwrite obstacle-driven placement.
+      # Semantic layers are bounded soft anchors: they guide the search but
+      # never overwrite obstacle-driven placement.
       if state.options.policy == lpConstrainedLayered:
         disp[i].x += (state.semanticAnchors[i].x - state.pos[i].x) * 0.70
         disp[i].y += (state.semanticAnchors[i].y - state.pos[i].y) * 0.08
@@ -435,9 +406,6 @@ proc separationRects(state: LayoutState, i: int): seq[Obstacle] =
   ## The inflated body (or, for a composite member, its whole unit footprint)
   ## the separation search tests for overlap. A free proc rather than a nested
   ## one: a closure may not capture the `var LayoutState` the search threads.
-  ## Only ever called under `lpConstrainedLayered`, where `state.composites`
-  ## (and hence `ownerOf`) is populated; the historical branch of `separate`
-  ## never reaches this proc.
   let owner = state.composites.ownerOf[i]
   if owner != i:
     compositeFootprint(state.composites, owner, state.syms, state.pos,
@@ -460,65 +428,35 @@ proc separate(state: var LayoutState) =
     state.ohh[i] = state.syms[i].bodyH / 2.0 + placementPad
 
   let maxR = max(64, 4 * n)
-  if state.options.policy == lpConstrainedLayered:
-    # Legalize the early units, not their individual members.  The footprint
-    # carries placementPad externally while the canonical internal offsets are
-    # raw-body touching, so another part cannot occupy the composite gap.
-    var placed: seq[int]
-    # Visits `placementPool(state)` directly rather than every raw index with
-    # a skip-if-not-first-member guard: the item processed and the order
-    # processed are unchanged (`placementPool` under this policy *is*
-    # `state.composites.topLevel`, built from the same `parallelRecognize`
-    # interleave the raw-index scan implicitly walked), so this is a
-    # simplification, not a behavior change -- unlike `forcePlace`'s
-    # repulsion, output here is unaffected either way.
-    for item in placementPool(state):
-      let members = poolMembers(state, item)
-      let offsets = poolOffsets(state, item)
-      let origin = poolOrigin(state, members, offsets)
-      var done = false
-      for r in 0 .. maxR:
-        for dy in -r .. r:
-          for dx in -r .. r:
-            if max(abs(dx), abs(dy)) != r: continue
-            let delta = Point(x: float(dx) * grid, y: float(dy) * grid)
-            for at, m in members:
-              state.pos[m] = origin + delta + offsets[at]
-            let here = separationRects(state, members[0])
-            var clear = true
-            for j in placed:
-              let other = separationRects(state, j)
-              if anyOverlap(here, other):
-                clear = false
-                break
-            if clear:
-              done = true
+  # Legalize the early units, not their individual members. The footprint
+  # carries placementPad externally while the canonical internal offsets are
+  # raw-body touching, so another part cannot occupy the composite gap.
+  var placed: seq[int]
+  for item in placementPool(state):
+    let members = poolMembers(state, item)
+    let offsets = poolOffsets(state, item)
+    let origin = poolOrigin(state, members, offsets)
+    var done = false
+    for r in 0 .. maxR:
+      for dy in -r .. r:
+        for dx in -r .. r:
+          if max(abs(dx), abs(dy)) != r: continue
+          let delta = Point(x: float(dx) * grid, y: float(dy) * grid)
+          for at, m in members:
+            state.pos[m] = origin + delta + offsets[at]
+          let here = separationRects(state, members[0])
+          var clear = true
+          for j in placed:
+            let other = separationRects(state, j)
+            if anyOverlap(here, other):
+              clear = false
               break
-          if done: break
+          if clear:
+            done = true
+            break
         if done: break
-      doAssert done,
-        "schematic placement could not separate component " &
-        state.comps[members[0]].designator
-      placed.add members[0]
-  else:
-    var placed: seq[int]
-    for i in 0 ..< n:
-      let cx = state.pos[i].x
-      let cy = state.pos[i].y
-      var done = false
-      for r in 0 .. maxR:
-        for dy in -r .. r:
-          for dx in -r .. r:
-            if max(abs(dx), abs(dy)) != r: continue
-            let x = cx + float(dx) * grid
-            let y = cy + float(dy) * grid
-            if not overlapsAny(i, x, y, state.pos, state.ohw, state.ohh, placed):
-              state.pos[i] = Point(x: x, y: y)
-              done = true
-              break
-          if done: break
-        if done: break
-      doAssert done,
-        "schematic placement could not separate component " &
-        state.comps[i].designator
-      placed.add i
+      if done: break
+    doAssert done,
+      "schematic placement could not separate component " &
+      state.comps[members[0]].designator
+    placed.add members[0]

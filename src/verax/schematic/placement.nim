@@ -183,117 +183,6 @@ proc axisUnit(p: Point): Point {.inline.} =
   else:
     Point(x: 0.0, y: 0.0)
 
-proc leafSnap(comps: seq[Component], syms: seq[SymbolDef], pos: var seq[Point],
-              rots: var seq[float], ohw, ohh: seq[float],
-              idxOf: Table[string, int], locked: seq[bool] = @[]) =
-  ## A square two-terminal part with exactly one non-ground / non-rail net has a
-  ## single attraction spring: the force layout fixes its distance from that one
-  ## net-mate but neither the direction nor the alignment, so it drifts off with
-  ## its connected pin facing away. Move each such leaf to the nearest free grid
-  ## cell out along its net-mate pin's escape axis -- so the wire between them is
-  ## a short straight stub -- and turn it so its connected pin faces back at that
-  ## mate. Position is only ever moved *closer* to the mate pin than it already
-  ## was, so the pass can only help.
-  ##
-  ## Runs after the definitive rotation pass, and owns a leaf's orientation
-  ## outright: for a part with one real connection "point the pin at it" beats
-  ## any wirelength score, and the score's four-way ties (a shunt element sits
-  ## symmetrically between its neighbours) were being broken by nothing better
-  ## than the smaller angle.
-  ##
-  ## Deterministic: parts visited in insertion order, each placed and turned
-  ## against the others' current centres/rotations, the mate chosen as the
-  ## nearest pin with a `pinKey` tie-break.
-  let n = comps.len
-  var against = newSeq[int](n)
-  for i in 0 ..< n: against[i] = i
-  for i in 0 ..< n:
-    if (locked.len == n and locked[i]) or not rotatable(syms[i]): continue
-    var theNet: Net = nil
-    var myPin = ""
-    var myOrd = 0
-    var multi = false
-    block:
-      var ord = 0
-      for pinName, p in comps[i].pins:
-        if p.net != nil and not isGroundForOrientation(p.net) and
-           not isRailForOrientation(p.net):
-          if theNet == nil:
-            theNet = p.net; myPin = pinName; myOrd = ord
-          elif p.net != theNet: multi = true
-        inc ord
-    if multi or theNet == nil: continue
-
-    let pw = pinWorldPositions(comps, syms, pos, rots)
-    var mate: Pin = nil
-    var mateKey = ""
-    var mateD = Inf
-    for other in theNet.pins:
-      if other.component == nil or
-         other.component.designator == comps[i].designator: continue
-      if other.component.netlist != comps[i].netlist: continue
-      if not idxOf.hasKey(other.component.designator): continue
-      let key = pinKey(other.component, other.name)
-      if not pw.hasKey(key): continue
-      let d = manhattan(pw[key], pos[i])
-      if d < mateD - 1e-9 or
-         (abs(d - mateD) <= 1e-9 and (mate == nil or key < mateKey)):
-        mateD = d
-        mate = other
-        mateKey = key
-    if mate == nil: continue
-
-    let j = idxOf[mate.component.designator]
-    var ord = 0
-    var mslot = Point()
-    for pinName, _ in comps[j].pins:
-      if pinName == mate.name:
-        mslot = rotatedSlot(slotOf(syms[j], pinName, ord), rots[j])
-        break
-      inc ord
-    let m = pos[j] + mslot
-    var dir = slotEscape(mslot, syms[j].bodyW, syms[j].bodyH)
-    var powerAngle = 0.0
-    let powerDirected = hasPowerDirection(comps[i])
-    if powerDirected:
-      # Put the leaf on the side implied by its power-aware orientation, then
-      # its sole signal pin still faces back to the mate after the turn.
-      powerAngle = bestRotation(syms[i], comps[i], pos[i], rots[i], pw, 0.0)
-      dir = axisUnit(rotatedSlot(slotOf(syms[i], myPin, myOrd), powerAngle)) * -1.0
-    let reach = ohw[i] + ohw[j]
-    let target = Point(x: round((m.x + dir.x * reach) / grid) * grid,
-                       y: round((m.y + dir.y * reach) / grid) * grid)
-
-    var best = pos[i]
-    var bestD = manhattan(pos[i], m)
-    var found = false
-    for r in 0 .. 6:
-      for dy in -r .. r:
-        for dx in -r .. r:
-          if max(abs(dx), abs(dy)) != r: continue
-          let x = target.x + float(dx) * grid
-          let y = target.y + float(dy) * grid
-          if overlapsAny(i, x, y, pos, ohw, ohh, against): continue
-          let d = manhattan(Point(x: x, y: y), m)
-          if d < bestD - 1e-9:
-            bestD = d
-            best = Point(x: x, y: y)
-            found = true
-      if found: break
-    if not found: continue
-    pos[i] = best
-
-    if powerDirected:
-      rots[i] = powerAngle
-    else:
-      # Turn the leaf so its connected pin points back at the mate (along -dir).
-      let wantSlot = Point(x: -dir.x, y: -dir.y)
-      let baseSlot = slotOf(syms[i], myPin, myOrd)
-      for angle in rotationChoices:
-        if axisUnit(rotatedSlot(baseSlot, angle)) == wantSlot:
-          rots[i] = angle
-          break
-
 type
   TerminalPlan = object
     owner: int
@@ -379,9 +268,10 @@ proc terminalClearance(comps: seq[Component], syms: seq[SymbolDef],
       result.involved[t.owner] = true
 
 proc protectedLeaf(c: Component, sd: SymbolDef): bool =
-  ## `leafSnap` owns a square passive leaf's final close, aligned placement.
-  ## Prefer a different implicated part when possible rather than undoing that
-  ## established cleanup; the leaf remains available if it is the only choice.
+  ## A power-directed part with exactly one real (non-ground/rail) signal net:
+  ## its orientation is already pinned by that power direction, so prefer a
+  ## different implicated part when possible rather than disturbing it; the
+  ## leaf remains available if it is the only choice.
   if not rotatable(sd) or not hasPowerDirection(c): return false
   var signals = 0
   for _, p in c.pins:
@@ -414,10 +304,9 @@ proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
   ## grid move that strictly reduces full-glyph conflicts, preserving the
   ## ordinary placement separation invariant and leaving routing as the final
   ## safeguard. The small-sheet glyph shortcut never bypasses a coincidence.
-  # A two-part sheet is the canonical powered-leaf presentation: leafSnap has
-  # already selected its one useful alignment, while no third part can release
-  # a corridor. Keep that established minimal layout and let stem shortening
-  # handle its glyph overlap, but not a distinct-net terminal coincidence.
+  # A two-part sheet has no third part that could release a corridor by
+  # moving. Keep its minimal layout and let stem shortening handle a glyph
+  # overlap, but not a distinct-net terminal coincidence.
   let initial = terminalClearance(comps, syms, pos, rots)
   if comps.len < 3 and initial.coincidences == 0: return
   var state = initial

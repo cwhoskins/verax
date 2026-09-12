@@ -9,7 +9,7 @@ type
   StageId* = enum
     lsPrepare, lsBundles, lsArrays, lsSemanticSeed, lsForcePlacement,
     lsConstrainedRefinement, lsCompositeOrient, lsSeparate, lsPack, lsOrient,
-    lsLeafSnap, lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting,
+    lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting,
     lsRoutingAwareRepair, lsPortRefine, lsLabels, lsBounds
 
   ## An explicit canonical stage description. `LayoutOptions.stages` filters
@@ -19,9 +19,11 @@ type
     enabled*: bool
 
   LayoutPolicy* = enum
-    ## Historical output remains the default. `lpConstrainedLayered` is an
-    ## explicit, deterministic opt-in for ordinary (tens-of-parts) sheets.
-    lpHistorical, lpConstrainedLayered
+    ## `lpConstrainedLayered` is the only policy and the default. The type
+    ## stays an enum, rather than being deleted along with `lpHistorical`,
+    ## so a future second policy has somewhere to land without every
+    ## `options.policy == lpConstrainedLayered` call site changing shape.
+    lpConstrainedLayered
 
   LayoutOptions* = object
     ## Enabled stages from the built-in, canonical pipeline. A set configures
@@ -44,19 +46,15 @@ const canonicalStages*: array[StageId, StageSpec] = [
   # subsheet instance is dropped and the scene is the pre-feature one,
   # bit-for-bit.
   StageSpec(id: lsArrays, enabled: true),
-  # These stages are inert under lpHistorical; lpConstrainedLayered gives
-  # them deterministic topology/layer and bounded repair meanings.
   StageSpec(id: lsSemanticSeed, enabled: true),
   StageSpec(id: lsForcePlacement, enabled: true),
   StageSpec(id: lsConstrainedRefinement, enabled: true),
-  # Also inert under lpHistorical (no CompositePlan is built): picks each
-  # orientable composite's rigid quarter-turn before separation legalizes it.
+  # Picks each orientable composite's rigid quarter-turn before separation
+  # legalizes it. A no-op with no orientable composite on the sheet.
   StageSpec(id: lsCompositeOrient, enabled: true),
   StageSpec(id: lsSeparate, enabled: true),
   StageSpec(id: lsPack, enabled: true),
   StageSpec(id: lsOrient, enabled: true),
-  # Leaf snap is historical-only; constrained layered layout always skips it.
-  StageSpec(id: lsLeafSnap, enabled: true),
   StageSpec(id: lsTerminalRepair, enabled: true),
   StageSpec(id: lsPrepareRouting, enabled: true),
   StageSpec(id: lsRoute, enabled: true),
@@ -76,29 +74,29 @@ proc stageSpecs*(options: LayoutOptions): seq[StageSpec] =
       result.add StageSpec(id: spec.id, enabled: true)
 
 proc defaultLayoutOptions*(): LayoutOptions =
-  ## The historical layout policy and budgets.
-  LayoutOptions(policy: lpHistorical, stages: allLayoutStages,
+  ## `lpConstrainedLayered`, the default and only policy, with the default
+  ## stage set and budgets.
+  LayoutOptions(policy: lpConstrainedLayered, stages: allLayoutStages,
                 feedbackAcceptedBudget: 4, feedbackAttemptBudget: 30,
                 feedbackMaxParts: 24)
 
 proc layoutPolicyName*(policy: LayoutPolicy): string =
   case policy
-  of lpHistorical: "historical"
   of lpConstrainedLayered: "constrained-layered"
 
 proc parseLayoutPolicy*(text: string): LayoutPolicy =
   ## Parses the one public spelling used by the CLI and archive environment.
   case text.strip().toLowerAscii()
-  of "historical": lpHistorical
   of "constrained-layered": lpConstrainedLayered
   else:
     raise newException(ValueError,
-      "unknown schematic layout '" & text &
-      "'; expected historical or constrained-layered")
+      "unknown schematic layout '" & text & "'; expected constrained-layered")
 
 proc archiveLayoutOptions*(): LayoutOptions =
-  ## Archive rendering is historical unless explicitly selected through the
-  ## environment bridge. Layout calls outside archive writers stay unchanged.
+  ## Archive rendering uses the same default policy as ordinary `layout`
+  ## calls unless the environment bridge names one explicitly -- a no-op
+  ## today (there is only one policy), kept so a future second policy needs
+  ## no new selection mechanism.
   result = defaultLayoutOptions()
   let configured = getEnv("VERAX_SCHEMATIC_LAYOUT")
   if configured.len > 0:

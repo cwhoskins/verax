@@ -530,15 +530,37 @@ Both turned up while measuring why `nimble test` takes ~7 minutes (see the
     §2.7). The stage picks each orientable composite's rigid frame *before*
     separation, so a turn reshapes the unit (a vertical 80×160 decoupling
     bank becomes a horizontal 160×80 one) and the separator then packs the
-    whole sheet around the new shape. On `designs/ts808_drive.nim` under
-    `--schematic-layout=constrained-layered` this pushes `C2` far enough from
-    its `vamp` net-mates that the net degrades to 3 fallback markers (0 on the
-    base commit). Only the opt-in constrained archive is affected — the
-    default historical layout is byte-identical, and `nimble verify` +
-    `nimble test` are clean. `revisitCompositeFrames` (the post-separation
-    pass) cannot undo it: it re-scores the composite's own frame, not the
-    collateral displacement. A real fix needs separation to be
-    orientation-aware, or the frame choice deferred until after it.
+    whole sheet around the new shape. On `designs/ts808_drive.nim` this
+    pushes `C2` far enough from its `vamp` net-mates that the net degrades to
+    3 fallback markers (0 before `lsCompositeOrient` existed). Now that
+    `lpConstrainedLayered` is the only and default layout policy (the old
+    `lpHistorical` byte-identical baseline is gone), this affects every
+    ordinary `layout()` call on that design, not just an opt-in archive
+    rendering; `nimble verify` + `nimble test` should be re-checked against
+    it. `revisitCompositeFrames` (the post-separation pass) cannot undo it:
+    it re-scores the composite's own frame, not the collateral displacement.
+    A real fix needs separation to be orientation-aware, or the frame choice
+    deferred until after it.
+
+30. **Composite-locked terminal repair can leave a prospective glyph
+    collision unrepaired**. On the real RIAA channel (`designs/lib/riaa.nim`,
+    `tests/test_schematic.nim`'s `riaaChannelScene`), `RL`'s prospective
+    40-unit ground glyph crosses `CG`'s body. `repairTerminalClearance`
+    (`placement.nim`) is handed every composite member as `locked` -- moving
+    one alone would break the pi/tee's rigid internal offsets -- and here no
+    *unlocked* part is available to release the corridor instead, so the
+    bounded repair gives up with the collision still standing. This is not a
+    correctness bug: routing's own defensive stem-shortening is the fallback
+    safeguard for exactly this case and does resolve it (the routed scene
+    passes "signal wires clear complete ground and supply terminal glyphs"),
+    but it means placement settled for a corridor routing had to rescue
+    rather than one it left clean. Surfaced by making `lpConstrainedLayered`
+    the default layout policy (`riaaChannelScene` previously used the
+    now-removed `lpHistorical` policy, under which `RL`/`CG` were placed
+    without composite grouping and did not collide). A real fix needs
+    `repairTerminalClearance` to move a whole composite unit as one rigid
+    body when every member is otherwise locked, the way `recoverRouting`'s
+    candidate search already does.
 
 ---
 

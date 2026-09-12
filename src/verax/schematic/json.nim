@@ -40,6 +40,7 @@ proc wireKindName(k: WireKind): string =
   of wkBus: "bus"
   of wkInterface: "interface"
   of wkChain: "chain"
+  of wkPowerLink: "powerlink"
 
 proc wireKindFromName(s: string): WireKind =
   case s
@@ -49,6 +50,7 @@ proc wireKindFromName(s: string): WireKind =
   of "bus": wkBus
   of "interface": wkInterface
   of "chain": wkChain
+  of "powerlink": wkPowerLink
   else: fail("scene JSON: field \"kind\" has unknown wire kind \"" & s & "\"")
 
 proc pinMarkName(m: PinMark): string =

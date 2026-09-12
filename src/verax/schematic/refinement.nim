@@ -220,8 +220,7 @@ proc translateRoutedComponent(state: var LayoutState, designator: string,
   ## Moving a whole composite is outside this proc's scope.
   if designator notin state.idxOf: return false
   let idx = state.idxOf[designator]
-  if state.options.policy == lpConstrainedLayered and
-     state.composites.ownerOf[idx] != idx:
+  if state.composites.ownerOf[idx] != idx:
     return false
   let savedPos = state.pos[idx]
   let savedRouting = state.routing

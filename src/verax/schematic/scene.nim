@@ -51,16 +51,24 @@ type
       ## `"3*8"` for `pmForkCap`; "" otherwise.
 
   WireKind* = enum
-    ## `wkBus`/`wkInterface`/`wkChain` are appended so existing ordinals -- and
-    ## every archived scene -- are unchanged. Width (`SchematicWire.members.len`)
-    ## says a wire collapses more than one net; kind says what the net *is*.
+    ## `wkBus`/`wkInterface`/`wkChain`/`wkPowerLink` are appended so existing
+    ## ordinals -- and every archived scene -- are unchanged. Width
+    ## (`SchematicWire.members.len`) says a wire collapses more than one net;
+    ## kind says what the net *is*.
     ## `wkChain` is the collapsed link chain of a repeated subsheet array: its
     ## two endpoints are two pins of the *same* representative part and
     ## `members` carries the N-1 link net names it stands for -- the same "one
     ## wire, several nets" reading a collapsed bundle has. `svg` draws it as a
     ## smooth curve; scene, routing and JSON keep the routed orthogonal points,
     ## exactly as the 4-unit chamfer does.
-    wkSignal, wkGround, wkSupply, wkBus, wkInterface, wkChain
+    ## `wkPowerLink` is a ground/rail composite's internal fanout: the plain
+    ## conductor `compositeInternalRoutes` draws from a non-representative
+    ## member's own pin to the member that owns the shared glyph. It is drawn
+    ## like `wkSignal` (a plain line, no glyph bars) and is deliberately not
+    ## `wkGround`/`wkSupply` -- neither endpoint is a glyph location, so
+    ## treating it as one would draw a second, misplaced bar at the shared
+    ## member's bare pin and reserve a bogus glyph footprint there.
+    wkSignal, wkGround, wkSupply, wkBus, wkInterface, wkChain, wkPowerLink
 
   SchematicPart* = object
     designator*: string

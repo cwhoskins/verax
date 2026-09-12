@@ -432,8 +432,18 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         if net.name.len > 0:
           railLabelReqs.add (text: net.name, at: e, dir: dir)
     if constrained and (isGroundHere(net) or isRailHere(net)):
-      # Append the physical composite fanout after its shared glyph.
-      result.wires.add compositeInternalRoutes(composites, result.parts, net.name)
+      # Append the physical composite fanout after its shared glyph. The
+      # `internalRoute` hook is shared with genuine signal nets (a pi/tee's
+      # private mid node, a parallel stack's real trunk-and-tap) and always
+      # emits `wkSignal`; re-tag it `wkPowerLink` so it is neither mistaken
+      # for a routed signal (the "ground/rail nets are never routed" reading
+      # `wkSignal` would otherwise satisfy) nor for the glyph-owning stub
+      # itself (`wkGround`/`wkSupply` would draw a second bar, and reserve a
+      # second glyph footprint, at the shared member's bare pin).
+      for w in compositeInternalRoutes(composites, result.parts, net.name):
+        var w = w
+        w.kind = wkPowerLink
+        result.wires.add w
 
   # A rail/ground terminal is more than its wire stem: SVG caps it with one
   # supply bar or three ground bars. Signals may cross ordinary wires, but not
@@ -742,22 +752,10 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   result.portedNets = portedNets
   result.railLabelReqs = railLabelReqs
 
-proc recomputeRotations(comps: seq[Component], syms: seq[SymbolDef],
-                        pos: seq[Point], rots: seq[float]): seq[float] =
-  ## The same definitive rotation pass `layout` runs after separation: one
-  ## snapshot-read, fresh-write sweep with no hysteresis. Used after a
-  ## feedback move so a moved part's neighbours may re-orient; `leafSnap` is
-  ## deliberately not rerun.
-  let pw = pinWorldPositions(comps, syms, pos, rots)
-  result = rots
-  for i in 0 ..< comps.len:
-    result[i] = bestRotation(syms[i], comps[i], pos[i], rots[i], pw, 0.0)
-
 proc feedbackCandidateParts(comps: seq[Component]): seq[int] =
   ## Parts the feedback loop may move, in insertion order: only parts with at
-  ## least two non-ground / non-rail nets. A leaf (one signal net) has already
-  ## been snapped by `leafSnap`, and a rail-only part has no tree route to
-  ## unblock; moving either would not be followed by `leafSnap`, so the loop
+  ## least two non-ground / non-rail nets. A rail-only part, or a leaf with a
+  ## single signal net, has no tree route a move would unblock, so the loop
   ## leaves both alone.
   for i, c in comps:
     var signal = 0
@@ -790,10 +788,10 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   ## another part's *raw* body, or when its final recomputed rotations leave
   ## exact terminal pins on distinct nets coincident. The placement separation
   ## clearance is allowed to relax during recovery, but symbols never overlap.
-  ## `leafSnap` is not rerun. When no move fixes the sheet -- or the sheet is
-  ## too large for the loop to be attempted -- the best positions are re-routed
-  ## with fallbacks enabled: an unrouteable net becomes a dashed marker per
-  ## pin instead of an assertion.
+  ## When no move fixes the sheet -- or the sheet is too large for the loop to
+  ## be attempted -- the best positions are re-routed with fallbacks enabled:
+  ## an unrouteable net becomes a dashed marker per pin instead of an
+  ## assertion.
   let constrained = options.policy == lpConstrainedLayered
   var best = routeScene(nl, comps, syms, pos, rots, idxOf,
                         constrained = constrained, composites = composites,
@@ -802,20 +800,16 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
 
   # Pool length, not raw count, is what should gate the recovery loop: its
   # candidate-move search already iterates `units` built from the arena
-  # (composites moved as one rigid body, below), so the search *space* was
-  # already pool-sized before this change. What is not yet pool-sized is the
-  # *cost of evaluating* each candidate -- `constrainedRecomputeRotations`
-  # still rebuilds `pinWorldPositions` from every singleton raw component, and
+  # (composites moved as one rigid body, below), so the search *space* is
+  # already pool-sized. What is not yet pool-sized is the *cost of evaluating*
+  # each candidate -- `constrainedRecomputeRotations` still rebuilds
+  # `pinWorldPositions` from every singleton raw component, and
   # `constrainedRouteScore` inside it is still O(raw pins * raw comps) per
   # candidate rotation -- so a sheet that pools down to a small `poolLen` but
   # carries a very large raw part count would still pay that raw-sized cost on
   # every attempt. The `4 * feedbackMaxParts` raw ceiling is the guard for
-  # exactly that: it is slack above the historical all-raw limit (four
-  # two-member parallel pairs collapse to one pool item), not a relaxation of
-  # it. Under `lpHistorical`, `poolLen` is `comps.len` and the raw ceiling
-  # cannot bind below it, so the branch fires on exactly the same sheets as
-  # before this change.
-  let poolLen = if constrained: composites.topLevel.len else: comps.len
+  # exactly that (four two-member parallel pairs collapse to one pool item).
+  let poolLen = composites.topLevel.len
   if poolLen > options.feedbackMaxParts or
      comps.len > 4 * options.feedbackMaxParts:
     return routeScene(nl, comps, syms, pos, rots, idxOf,
@@ -836,10 +830,10 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
 
   var order = feedbackCandidateParts(comps)
   var units: seq[seq[int]]
-  if constrained:
-    # Recovery moves a composite as one rigid body.  Singleton candidates keep
-    # the historical search order; a parallel unit is represented once at its
-    # first member.
+  # Recovery moves a composite as one rigid body. Singleton candidates keep
+  # `order`'s insertion order; a parallel unit is represented once at its
+  # first member.
+  block:
     var grouped = newSeq[bool](comps.len)
     for idx in composites.topLevel:
       if composites.items[idx].raw >= 0: continue
@@ -848,8 +842,6 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       if members[0] in order: units.add members
     for i in order:
       if not grouped[i]: units.add @[i]
-  else:
-    for i in order: units.add @[i]
 
   while accepted < options.feedbackAcceptedBudget and
         attempts < options.feedbackAttemptBudget and not best.ok:
@@ -877,12 +869,10 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
             for i in unit:
               candPos[i] = Point(x: bestPos[i].x + float(dx) * grid,
                                  y: bestPos[i].y + float(dy) * grid)
-            let candRots =
-              if constrained:
-                constrainedRecomputeRotations(nl, comps, syms, candPos, bestRots,
-                  constrainedAnchors(comps, bestPos, idxOf, composites, arrays), composites)
-              else:
-                recomputeRotations(comps, syms, candPos, bestRots)
+            let candRots = constrainedRecomputeRotations(nl, comps, syms,
+              candPos, bestRots,
+              constrainedAnchors(comps, bestPos, idxOf, composites, arrays),
+              composites)
             if terminalClearance(comps, syms, candPos, candRots).coincidences > 0:
               continue
             let cand = routeScene(nl, comps, syms, candPos, candRots, idxOf,
@@ -906,9 +896,6 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                       composites = composites, bundles = bundles,
                       arrays = arrays, portY = portY)
   best
-
-proc recomputeRotations(state: LayoutState): seq[float] =
-  recomputeRotations(state.comps, state.syms, state.pos, state.rots)
 
 proc routeScene(state: LayoutState, withFallbacks = false): RoutingState =
   routeScene(state.nl, state.comps, state.syms, state.pos, state.rots,

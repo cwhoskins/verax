@@ -477,7 +477,7 @@ proc renderSvg*(s: Schematic): string =
     proc bar(c, q: Point, hw: float): string =
       lineAt(c.x - q.x * hw, c.y - q.y * hw, c.x + q.x * hw, c.y + q.y * hw)
     case wire.kind
-    of wkSignal:
+    of wkSignal, wkPowerLink:
       L.add "  " & polyAt(chamferedWirePoints(wire, s.junctions))
     of wkBus, wkInterface:
       # Colour is membership (blue bus / purple interface), width is collapse

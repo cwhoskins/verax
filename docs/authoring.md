@@ -382,10 +382,10 @@ Three parts, and each answers a different question:
   the number and what it does and does not cover. (`VERAX_KEEP_DECKS=<dir>`
   writes out the decks themselves; `--keep-runs=<dir>` writes out the decks,
   the raw results, ngspice's log, and an SVG schematic with its JSON scene,
-  with an `index.txt` saying which run is which — see below. Use
-  `--schematic-layout=constrained-layered` to opt those archived schematic
-  artifacts into the constrained layered layout; the historical layout is the
-  default.)
+  with an `index.txt` saying which run is which — see below.
+  `--schematic-layout=constrained-layered` names the same layout policy those
+  archived schematic artifacts already use by default; it exists for a future
+  second policy, not to opt into anything today.)
 - **`assuming:`** — numbers the design does not contain and the tool invented
   anyway: a package-typical ESR, an assumed pin capacitance, a leak resistor
   on an open net. They sit **under the run that rests on them**, because which
@@ -441,9 +441,8 @@ The `run002.svg` is the same fragment as a schematic: a fast, read-only
 "does the topology look like I think it does" view. It is heuristic -- parts are
 force-placed, wires are orthogonal spanning trees, and anything the symbol
 library does not recognise is drawn as a labelled box -- so it is for eyeballing
-connectivity, not for publication. Library callers can explicitly select
-a `LayoutOptions` copied from `defaultLayoutOptions()` with `policy` set to
-`lpConstrainedLayered` for a bounded topology-layered alternative on ordinary
+connectivity, not for publication. `defaultLayoutOptions()`'s `policy`,
+`lpConstrainedLayered`, is a bounded topology-layered layout for ordinary
 sheets (tens of components): output-pin flow seeds left-to-right columns,
 while passive-heavy layers use at most three deterministic adjacent stages and
 parallel two-terminal parts sharing an unordered net pair are private,
@@ -456,8 +455,8 @@ trunk-and-tap internal fanout. It does not infer a special rail-decoupler,
 PI, or RIAA relationship. The existing orthogonal router builds each net as
 an atomic trunk-and-tap tree, and its bounded repair falls back to markers for
 every physical pin covered by a failed composite endpoint if a complete tree
-cannot be made. The default
-`lpHistorical` policy remains byte-identical for existing archives. The
+cannot be made. `LayoutPolicy` stays an enum with this one value rather than
+being collapsed away, so a future second policy has somewhere to land. The
 `run002.json` beside it is the same
 routed scene through the public JSON API, for tools that would rather read
 geometry than parse SVG. Both are rendered from the derived netlist *before*
@@ -1137,10 +1136,11 @@ one that passed.
 `--offline` (graph walks only, no simulator), `--caps=op,dc,ac,tran` (offer a
 specific subset), `--verbose` (show the full plan and the passing assertions),
 `--strict` (promote warnings and un-evaluated claims to failures), and
-`--schematic-layout=historical|constrained-layered` (choose the layout used
-only for SVG/JSON artifacts in a run archive; `historical` is the default).
-The same archive-only selection can be supplied as
-`VERAX_SCHEMATIC_LAYOUT=historical|constrained-layered`.
+`--schematic-layout=constrained-layered` (names the layout used for SVG/JSON
+artifacts in a run archive -- the only policy, and the same one an ordinary
+`layout()` call uses; the flag exists for a future second policy, not to
+choose anything today). The same archive-only selection can be supplied as
+`VERAX_SCHEMATIC_LAYOUT=constrained-layered`.
 
 ## Numbers the tool invents for you
 

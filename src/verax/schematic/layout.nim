@@ -32,7 +32,7 @@ include ./refinement
 proc layout*(nl: Netlist, options: LayoutOptions): Schematic
 
 proc layout*(nl: Netlist): Schematic =
-  ## Places and routes `nl` with the historical pipeline configuration.
+  ## Places and routes `nl` with the default pipeline configuration.
   layout(nl, defaultLayoutOptions())
 
 proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
@@ -49,7 +49,7 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   forcePlace(ctx)
 
   # Reassert deterministic left-to-right layers before the existing
-  # legalization pass. It is policy-gated so lpHistorical remains unchanged.
+  # legalization pass.
   if options.policy == lpConstrainedLayered and
      options.stageEnabled(lsConstrainedRefinement):
     constrainedRefine(ctx)
@@ -57,8 +57,7 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
 
   # Pick each orientable composite's rigid quarter-turn while there is still
   # room to move it, before separation legalizes whatever frame it lands in.
-  # Policy-gated and a no-op with no orientable composite, so lpHistorical is
-  # untouched.
+  # A no-op with no orientable composite on the sheet.
   if options.policy == lpConstrainedLayered and
      options.stageEnabled(lsCompositeOrient):
     chooseCompositeOrientation(ctx)
@@ -87,18 +86,8 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   # re-pick every one from the settled centres. One pass, snapshot-read and
   # fresh-write like the loop, and with no hysteresis -- this is the answer,
   # not an increment toward it.
-  if options.stageEnabled(lsOrient):
-    if options.policy == lpConstrainedLayered:
-      constrainedRecomputeRotations(ctx)
-    else:
-      ctx.rots = recomputeRotations(ctx)
-
-  # --- leaf cleanup: a one-signal-net part snapped beside its net-mate ----
-  # Historical layout pulls each leaf up against the pin it connects to and
-  # turns it to face there, so the router draws a short straight stub rather
-  # than a long detour. Constrained layered layout always skips this heuristic.
-  if options.policy != lpConstrainedLayered and options.stageEnabled(lsLeafSnap):
-    leafSnap(ctx)
+  if options.stageEnabled(lsOrient) and options.policy == lpConstrainedLayered:
+    constrainedRecomputeRotations(ctx)
 
   # Reserve complete, unshortened rail/ground glyphs before routing, and
   # repair exact distinct-net terminal-pin coincidences as a hard condition.
@@ -106,16 +95,16 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   # still owns the defensive shortening/blocking path for irreducible crowding.
   if options.stageEnabled(lsTerminalRepair):
     repairTerminalClearance(ctx)
-  # Terminal repair and leaf cleanup are allowed to move a member; restore the
+  # Terminal repair is allowed to move a composite member; restore the
   # parallel placement unit before routing/recovery sees the final geometry.
   if options.policy == lpConstrainedLayered:
     restoreCompositeOffsets(ctx)
     constrainedRecomputeRotations(ctx)
 
   # `recoverRouting` is the bounded routing-aware repair: candidates are
-  # accepted only when they route strictly further. Its dedicated stage is an
-  # opt-in alias for constrained policy callers; historical stage semantics
-  # remain exactly as before.
+  # accepted only when they route strictly further. `lsRoutingAwareRepair` is
+  # its dedicated stage name for constrained policy callers; `lsRecoverRouting`
+  # is the older stage name and either enables the same pass.
   let useRecovery = options.stageEnabled(lsRecoverRouting) or
     (options.policy == lpConstrainedLayered and
      options.stageEnabled(lsRoutingAwareRepair))
@@ -123,7 +112,7 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
     if useRecovery:
       recoverRouting(ctx)
     else:
-      # A disabled recovery policy still produces the ordinary typed fallback
+      # A disabled recovery stage still produces the ordinary typed fallback
       # scene for an unrouteable net rather than raising.
       routeScene(ctx, withFallbacks = true)
 

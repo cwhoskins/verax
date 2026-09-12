@@ -233,9 +233,9 @@ check flags (forwarded to the design file):
                      is which
   --save-currents    with --keep-runs, also save device terminal currents
                      (.op/.tran/.dc only; node voltages are saved anyway)
-  --schematic-layout=historical|constrained-layered
-                     choose the layout of archived SVG and JSON schematics
-                     (historical is the default)
+  --schematic-layout=constrained-layered
+                     the layout of archived SVG and JSON schematics
+                     (constrained-layered is the only policy and the default)
   --schematic-only   with --keep-runs, draw the runFULL.* archive and stop --
                      no simulation runs
   --path:<dir>       where verax's sources live (usually found automatically)
