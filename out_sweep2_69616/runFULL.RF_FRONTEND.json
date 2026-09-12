@@ -1,0 +1,846 @@
+{
+  "schemaVersion": 1,
+  "title": "RF_FRONTEND",
+  "minX": -436.0,
+  "minY": -406.0,
+  "maxX": 338.0,
+  "maxY": 332.0,
+  "parts": [
+    {
+      "designator": "U1",
+      "label": "",
+      "kind": "rf_switch",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 152.0,
+      "bodyH": 192.0,
+      "inkW": 112.0,
+      "inkH": 152.0,
+      "x": -80.0,
+      "y": -120.0,
+      "rotation": 0.0,
+      "pins": [
+        {
+          "name": "VCC",
+          "net": "vcc",
+          "x": -80.0,
+          "y": -216.0
+        },
+        {
+          "name": "GND",
+          "net": "0",
+          "x": -80.0,
+          "y": -24.0
+        },
+        {
+          "name": "RFC",
+          "net": "ant",
+          "x": -156.0,
+          "y": -160.0
+        },
+        {
+          "name": "RF1",
+          "net": "pa_out",
+          "x": -4.0,
+          "y": -120.0
+        },
+        {
+          "name": "RF2",
+          "net": "sw_rx",
+          "x": -156.0,
+          "y": -120.0
+        },
+        {
+          "name": "CTRL",
+          "net": "rfc_trx",
+          "x": -156.0,
+          "y": -80.0
+        }
+      ]
+    },
+    {
+      "designator": "U2",
+      "label": "",
+      "kind": "power_amplifier",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 152.0,
+      "bodyH": 152.0,
+      "inkW": 112.0,
+      "inkH": 112.0,
+      "x": -160.0,
+      "y": 120.0,
+      "rotation": 0.0,
+      "pins": [
+        {
+          "name": "VCC",
+          "net": "vcc",
+          "x": -160.0,
+          "y": 44.0
+        },
+        {
+          "name": "GND",
+          "net": "0",
+          "x": -160.0,
+          "y": 196.0
+        },
+        {
+          "name": "RFIN",
+          "net": "rf_tx",
+          "x": -236.0,
+          "y": 100.0
+        },
+        {
+          "name": "RFOUT",
+          "net": "pa_out",
+          "x": -84.0,
+          "y": 120.0
+        },
+        {
+          "name": "EN",
+          "net": "rfc_rf_en",
+          "x": -236.0,
+          "y": 140.0
+        }
+      ]
+    },
+    {
+      "designator": "U3",
+      "label": "",
+      "kind": "lna",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 152.0,
+      "bodyH": 152.0,
+      "inkW": 112.0,
+      "inkH": 112.0,
+      "x": 120.0,
+      "y": -240.0,
+      "rotation": 0.0,
+      "pins": [
+        {
+          "name": "VCC",
+          "net": "vcc",
+          "x": 120.0,
+          "y": -316.0
+        },
+        {
+          "name": "GND",
+          "net": "0",
+          "x": 120.0,
+          "y": -164.0
+        },
+        {
+          "name": "RFIN",
+          "net": "sw_rx",
+          "x": 44.0,
+          "y": -260.0
+        },
+        {
+          "name": "RFOUT",
+          "net": "lna_out",
+          "x": 196.0,
+          "y": -240.0
+        },
+        {
+          "name": "EN",
+          "net": "rfc_rf_en",
+          "x": 44.0,
+          "y": -220.0
+        }
+      ]
+    },
+    {
+      "designator": "U4",
+      "label": "",
+      "kind": "vga",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 176.0,
+      "bodyH": 152.0,
+      "inkW": 136.0,
+      "inkH": 112.0,
+      "x": 160.0,
+      "y": 0.0,
+      "rotation": 0.0,
+      "pins": [
+        {
+          "name": "VCC",
+          "net": "vcc",
+          "x": 160.0,
+          "y": -76.0
+        },
+        {
+          "name": "GND",
+          "net": "0",
+          "x": 160.0,
+          "y": 76.0
+        },
+        {
+          "name": "RFIN",
+          "net": "lna_out",
+          "x": 72.0,
+          "y": -20.0
+        },
+        {
+          "name": "RFOUT",
+          "net": "rf_rx",
+          "x": 248.0,
+          "y": 0.0
+        },
+        {
+          "name": "rfc(gain)",
+          "net": "rfc",
+          "x": 72.0,
+          "y": 20.0,
+          "members": [
+            {
+              "name": "gain_0",
+              "net": "rfc_gain_0"
+            },
+            {
+              "name": "gain_1",
+              "net": "rfc_gain_1"
+            },
+            {
+              "name": "gain_2",
+              "net": "rfc_gain_2"
+            },
+            {
+              "name": "gain_3",
+              "net": "rfc_gain_3"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "wires": [
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": -80.0,
+          "y": -24.0
+        },
+        {
+          "x": -80.0,
+          "y": 16.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": -160.0,
+          "y": 196.0
+        },
+        {
+          "x": -160.0,
+          "y": 236.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 120.0,
+          "y": -164.0
+        },
+        {
+          "x": 120.0,
+          "y": -124.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 160.0,
+          "y": 76.0
+        },
+        {
+          "x": 160.0,
+          "y": 116.0
+        }
+      ]
+    },
+    {
+      "net": "vcc",
+      "kind": "supply",
+      "points": [
+        {
+          "x": -80.0,
+          "y": -216.0
+        },
+        {
+          "x": -80.0,
+          "y": -256.0
+        }
+      ]
+    },
+    {
+      "net": "vcc",
+      "kind": "supply",
+      "points": [
+        {
+          "x": -160.0,
+          "y": 44.0
+        },
+        {
+          "x": -160.0,
+          "y": 4.0
+        }
+      ]
+    },
+    {
+      "net": "vcc",
+      "kind": "supply",
+      "points": [
+        {
+          "x": 120.0,
+          "y": -316.0
+        },
+        {
+          "x": 120.0,
+          "y": -356.0
+        }
+      ]
+    },
+    {
+      "net": "vcc",
+      "kind": "supply",
+      "points": [
+        {
+          "x": 160.0,
+          "y": -76.0
+        },
+        {
+          "x": 160.0,
+          "y": -116.0
+        }
+      ]
+    },
+    {
+      "net": "ant",
+      "kind": "signal",
+      "points": [
+        {
+          "x": -156.0,
+          "y": -160.0
+        },
+        {
+          "x": -168.0,
+          "y": -160.0
+        },
+        {
+          "x": -308.0,
+          "y": -160.0
+        },
+        {
+          "x": -320.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "net": "rf_tx",
+      "kind": "signal",
+      "points": [
+        {
+          "x": -236.0,
+          "y": 100.0
+        },
+        {
+          "x": -248.0,
+          "y": 100.0
+        },
+        {
+          "x": -248.0,
+          "y": 120.0
+        },
+        {
+          "x": -308.0,
+          "y": 120.0
+        },
+        {
+          "x": -320.0,
+          "y": 120.0
+        }
+      ]
+    },
+    {
+      "net": "rf_rx",
+      "kind": "signal",
+      "points": [
+        {
+          "x": 248.0,
+          "y": 0.0
+        },
+        {
+          "x": 260.0,
+          "y": 0.0
+        },
+        {
+          "x": 260.0,
+          "y": 280.0
+        },
+        {
+          "x": -308.0,
+          "y": 280.0
+        },
+        {
+          "x": -320.0,
+          "y": 280.0
+        }
+      ]
+    },
+    {
+      "net": "pa_out",
+      "kind": "signal",
+      "points": [
+        {
+          "x": -4.0,
+          "y": -120.0
+        },
+        {
+          "x": 8.0,
+          "y": -120.0
+        },
+        {
+          "x": 8.0,
+          "y": 120.0
+        },
+        {
+          "x": -72.0,
+          "y": 120.0
+        },
+        {
+          "x": -84.0,
+          "y": 120.0
+        }
+      ]
+    },
+    {
+      "net": "sw_rx",
+      "kind": "signal",
+      "points": [
+        {
+          "x": -156.0,
+          "y": -120.0
+        },
+        {
+          "x": -168.0,
+          "y": -120.0
+        },
+        {
+          "x": -168.0,
+          "y": -260.0
+        },
+        {
+          "x": 32.0,
+          "y": -260.0
+        },
+        {
+          "x": 44.0,
+          "y": -260.0
+        }
+      ]
+    },
+    {
+      "net": "lna_out",
+      "kind": "signal",
+      "points": [
+        {
+          "x": 196.0,
+          "y": -240.0
+        },
+        {
+          "x": 208.0,
+          "y": -240.0
+        },
+        {
+          "x": 208.0,
+          "y": -120.0
+        },
+        {
+          "x": 170.0,
+          "y": -120.0
+        },
+        {
+          "x": 166.0,
+          "y": -120.0
+        },
+        {
+          "x": 162.0,
+          "y": -120.0
+        },
+        {
+          "x": 160.0,
+          "y": -120.0
+        },
+        {
+          "x": 158.0,
+          "y": -120.0
+        },
+        {
+          "x": 154.0,
+          "y": -120.0
+        },
+        {
+          "x": 150.0,
+          "y": -120.0
+        },
+        {
+          "x": 130.0,
+          "y": -120.0
+        },
+        {
+          "x": 130.0,
+          "y": -116.0
+        },
+        {
+          "x": 130.0,
+          "y": -88.0
+        },
+        {
+          "x": 126.0,
+          "y": -88.0
+        },
+        {
+          "x": 122.0,
+          "y": -88.0
+        },
+        {
+          "x": 120.0,
+          "y": -88.0
+        },
+        {
+          "x": 118.0,
+          "y": -88.0
+        },
+        {
+          "x": 114.0,
+          "y": -88.0
+        },
+        {
+          "x": 110.0,
+          "y": -88.0
+        },
+        {
+          "x": 60.0,
+          "y": -88.0
+        },
+        {
+          "x": 60.0,
+          "y": -20.0
+        },
+        {
+          "x": 72.0,
+          "y": -20.0
+        }
+      ]
+    }
+  ],
+  "junctions": [],
+  "labels": [
+    {
+      "text": "pa_out",
+      "x": -78.0,
+      "y": 111.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "sw_rx",
+      "x": -156.0,
+      "y": -104.4,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "lna_out",
+      "x": 66.0,
+      "y": -4.399999999999999,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rfc_rf_en",
+      "x": -242.0,
+      "y": 131.6,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rfc_rf_en",
+      "x": 38.0,
+      "y": -228.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rfc_trx",
+      "x": -162.0,
+      "y": -88.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rfc(gain)",
+      "x": 72.0,
+      "y": 11.600000000000001,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rfc",
+      "x": -314.0,
+      "y": 151.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "vcc",
+      "x": -80.0,
+      "y": -274.4,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "vcc",
+      "x": -144.0,
+      "y": 7.600000000000001,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "vcc",
+      "x": 136.0,
+      "y": -352.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "vcc",
+      "x": 160.0,
+      "y": -134.4,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    }
+  ],
+  "ports": [
+    {
+      "name": "ant",
+      "net": "ant",
+      "dir": "unspecified",
+      "x": -350.0,
+      "y": -160.0,
+      "bodyW": 60.0,
+      "bodyH": 24.0,
+      "rotation": 180.0
+    },
+    {
+      "name": "rf_tx",
+      "net": "rf_tx",
+      "dir": "unspecified",
+      "x": -354.0,
+      "y": 120.0,
+      "bodyW": 68.0,
+      "bodyH": 24.0,
+      "rotation": 180.0
+    },
+    {
+      "name": "rfc[6]",
+      "net": "rfc",
+      "dir": "input",
+      "x": -358.0,
+      "y": 160.0,
+      "bodyW": 76.0,
+      "bodyH": 24.0,
+      "rotation": 180.0,
+      "members": [
+        {
+          "name": "rf_en",
+          "net": "rfc_rf_en"
+        },
+        {
+          "name": "trx",
+          "net": "rfc_trx"
+        },
+        {
+          "name": "gain_0",
+          "net": "rfc_gain_0"
+        },
+        {
+          "name": "gain_1",
+          "net": "rfc_gain_1"
+        },
+        {
+          "name": "gain_2",
+          "net": "rfc_gain_2"
+        },
+        {
+          "name": "gain_3",
+          "net": "rfc_gain_3"
+        }
+      ]
+    },
+    {
+      "name": "rf_rx",
+      "net": "rf_rx",
+      "dir": "unspecified",
+      "x": -354.0,
+      "y": 280.0,
+      "bodyW": 68.0,
+      "bodyH": 24.0,
+      "rotation": 180.0
+    }
+  ],
+  "fallbacks": [
+    {
+      "kind": "netlabel",
+      "bundle": "rfc",
+      "net": "rfc_rf_en",
+      "part": "U2",
+      "pin": "EN",
+      "x": -236.0,
+      "y": 140.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -236.0,
+          "y": 140.0
+        },
+        {
+          "x": -248.0,
+          "y": 140.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "rfc",
+      "net": "rfc_rf_en",
+      "part": "U3",
+      "pin": "EN",
+      "x": 44.0,
+      "y": -220.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": 44.0,
+          "y": -220.0
+        },
+        {
+          "x": 32.0,
+          "y": -220.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "rfc",
+      "net": "rfc_trx",
+      "part": "U1",
+      "pin": "CTRL",
+      "x": -156.0,
+      "y": -80.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -156.0,
+          "y": -80.0
+        },
+        {
+          "x": -168.0,
+          "y": -80.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "rfc",
+      "net": "rfc(gain)",
+      "part": "U4",
+      "pin": "rfc(gain)",
+      "x": 72.0,
+      "y": 20.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": 72.0,
+          "y": 20.0
+        },
+        {
+          "x": 60.0,
+          "y": 20.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "rfc",
+      "net": "rfc",
+      "part": "",
+      "pin": "",
+      "x": -320.0,
+      "y": 160.0,
+      "ex": 1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -320.0,
+          "y": 160.0
+        },
+        {
+          "x": -308.0,
+          "y": 160.0
+        }
+      ]
+    }
+  ]
+}

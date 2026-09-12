@@ -1,0 +1,290 @@
+{
+  "schemaVersion": 1,
+  "title": "SENSOR_HEAD",
+  "minX": -250.0,
+  "minY": -130.0,
+  "maxX": 250.0,
+  "maxY": 130.0,
+  "parts": [
+    {
+      "designator": "C5",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "1u",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": 120.0,
+      "y": 0.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "vin",
+          "x": 120.0,
+          "y": -40.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": 120.0,
+          "y": 40.0
+        }
+      ]
+    },
+    {
+      "designator": "C6",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": 40.0,
+      "y": 0.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "vin",
+          "x": 40.0,
+          "y": -40.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": 40.0,
+          "y": 40.0
+        }
+      ]
+    },
+    {
+      "designator": "C7",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "22u",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": -40.0,
+      "y": 0.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "vin",
+          "x": -40.0,
+          "y": -40.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -40.0,
+          "y": 40.0
+        }
+      ]
+    },
+    {
+      "designator": "R1",
+      "label": "",
+      "kind": "resistor",
+      "name": "",
+      "value": "33",
+      "symbol": "resistor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 20.0,
+      "x": -120.0,
+      "y": 0.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "vin",
+          "x": -120.0,
+          "y": -40.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -120.0,
+          "y": 40.0
+        }
+      ]
+    }
+  ],
+  "wires": [
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 120.0,
+          "y": 40.0
+        },
+        {
+          "x": 120.0,
+          "y": 80.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -120.0,
+          "y": 40.0
+        },
+        {
+          "x": -40.0,
+          "y": 40.0
+        },
+        {
+          "x": 40.0,
+          "y": 40.0
+        },
+        {
+          "x": 120.0,
+          "y": 40.0
+        }
+      ]
+    },
+    {
+      "net": "vin",
+      "kind": "supply",
+      "points": [
+        {
+          "x": 120.0,
+          "y": -40.0
+        },
+        {
+          "x": 120.0,
+          "y": -80.0
+        }
+      ]
+    },
+    {
+      "net": "vin",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -120.0,
+          "y": -40.0
+        },
+        {
+          "x": -40.0,
+          "y": -40.0
+        },
+        {
+          "x": 40.0,
+          "y": -40.0
+        },
+        {
+          "x": 120.0,
+          "y": -40.0
+        }
+      ]
+    }
+  ],
+  "junctions": [],
+  "labels": [
+    {
+      "text": "C5",
+      "x": 138.0,
+      "y": -2.3999999999999986,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "C5"
+    },
+    {
+      "text": "1u",
+      "x": 138.0,
+      "y": 10.000000000000002,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "C5"
+    },
+    {
+      "text": "C6",
+      "x": 58.0,
+      "y": -2.3999999999999986,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "C6"
+    },
+    {
+      "text": "100n",
+      "x": 58.0,
+      "y": 10.000000000000002,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "C6"
+    },
+    {
+      "text": "C7",
+      "x": -22.0,
+      "y": -2.3999999999999986,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "C7"
+    },
+    {
+      "text": "22u",
+      "x": -22.0,
+      "y": 10.000000000000002,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "C7"
+    },
+    {
+      "text": "R1",
+      "x": -104.0,
+      "y": -2.3999999999999986,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "R1"
+    },
+    {
+      "text": "33",
+      "x": -104.0,
+      "y": 10.000000000000002,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "R1"
+    },
+    {
+      "text": "vin",
+      "x": 136.0,
+      "y": -76.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    }
+  ],
+  "ports": [],
+  "fallbacks": []
+}

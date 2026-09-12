@@ -2736,7 +2736,7 @@ test "the default pipeline and its reserved no-op stages are byte-stable":
   # `lsSemanticSeed` is deliberately excluded: it is the constrained pipeline's
   # real left-to-right layering pass, and `divider`'s R1-R2-C1/U1 sheet gives
   # it something to do.
-  for stage in [lsBundles, lsArrays, lsConstrainedRefinement,
+  for stage in [lsBundles, lsArrays, lsPartArrays, lsConstrainedRefinement,
                 lsCompositeOrient, lsRoutingAwareRepair, lsPortRefine]:
     var options = defaultLayoutOptions()
     options.stages.excl stage
@@ -3128,6 +3128,7 @@ suite "bundle plan (bus/interface grouping)":
     check rep.len == 1
     check rep[0].role == "collapsed"
     check rep[0].entities == @["U1", "U2"]
+    check rep[0].port == ""       # nothing published -- no pennant to name
     let s = layout(twoBoxBundleSheet())
     var thick = 0
     for w in s.wires:
@@ -3136,6 +3137,42 @@ suite "bundle plan (bus/interface grouping)":
     check s.ports.len == 0
     check distinctWiresNeverShareCollinearRuns(s)
     check differentNetsRespectSeparation(s)
+
+  proc wideEnableBusSheet(published: openArray[int]): Netlist =
+    ## An 8-wide bus, one member per distinct box -> fails uniform collapse
+    ## -> `brNetLabel`, exactly the shape `designs/xbar_rf.nim`'s `en` bus
+    ## takes. `published` names which members reach the sheet boundary.
+    result = nldsl.netlist("wide_en_bus"):
+      net gnd, kind = ntGround, name = "0"
+      bus en, width = 8
+      for i in 0 ..< 8:
+        component U, designator = "U" & $i, kind = "mcu":
+          pin "G", gnd, kind = ptGround
+          pin "EN", en[i], kind = ptInput
+    for i in published:
+      addPort(result, "en_" & $i, findNet(result, "en_" & $i))
+
+  test "a fully published bus renders Verilog-style":
+    let rep = bundleReport(wideEnableBusSheet([0, 1, 2, 3, 4, 5, 6, 7]))
+    check rep.len == 1
+    check rep[0].role == "netlabel"
+    check rep[0].port == "en[7:0]"
+    # An interface's own merged tag keeps the shipped count form instead --
+    # see "a ported interface broken out ..." below (`rep[0].port == "spi[3]"`):
+    # its members are heterogeneous named signals, not bus bits.
+
+  test "a partially published bus renders its published subset compactly":
+    check bundleReport(wideEnableBusSheet([7, 6, 5, 2]))[0].port == "en[7:5,2]"
+    check bundleReport(wideEnableBusSheet([3]))[0].port == "en[3]"
+
+  test "a fully published wide bus lays out as one pennant carrying every member":
+    let s = layout(wideEnableBusSheet([0, 1, 2, 3, 4, 5, 6, 7]))
+    check s.ports.len == 1
+    check s.ports[0].name == "en[7:0]"
+    check s.ports[0].members.len == 8
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
+    check signalWiresRespectForeignSeeds(s)
 
   test "a bundled sheet still upholds the occupancy invariants":
     for nl in [spiPeripheralSheet(), twoBoxBundleSheet(),
@@ -3257,17 +3294,22 @@ suite "bundle plan (bus/interface grouping)":
     check rep.len == 1
     check rep[0].role == "netlabel"
     check rep[0].labels == @["U1=spi", "U2=spi"]     # both carry all 3 -> merged
+    check rep[0].port == "spi[3]"                    # interface -> count form
     let s = layout(nl)
+    # The three published members fold to ONE pennant, not three.
+    check s.ports.len == 1
+    check s.ports[0].name == "spi[3]"
+    check s.ports[0].net == rep[0].display
+    check s.ports[0].dir == pdBidir     # sclk/mosi in, miso inout -> mixed
+    check s.ports[0].members.len == 3
     var labelNets: seq[string]
     for f in s.fallbacks:
       check f.kind == fbNetLabel
       check f.bundle == rep[0].display
       if f.net notin labelNets: labelNets.add f.net
-    # 3 member names from the port connection tags + "spi" from the two merged
-    # part tags.
-    check labelNets.len == 4
-    for name in ["spi_sclk", "spi_mosi", "spi_miso", "spi"]:
-      check name in labelNets
+    # One tag identity now: the two merged part tags and the one merged port
+    # tag all read the bundle's own occupancy name, never a member net name.
+    check labelNets == @[rep[0].display]
     for w in s.wires:
       check w.net notin ["spi_sclk", "spi_mosi", "spi_miso"]
       check w.net != rep[0].display
@@ -3303,13 +3345,15 @@ suite "bundle plan (bus/interface grouping)":
     var fbCount = initCountTable[string]()
     for f in s.fallbacks:
       if f.kind == fbNetLabel: fbCount.inc f.net
-    # The two merged part tags: one label each, none added by the net-name pass.
-    check fbCount["spi"] == 2
-    check labelCount["spi"] == 2
-    # The three port connection tags: one label per member name.
+    # The two merged part tags plus the one merged port tag: three labels,
+    # none added by the net-name pass, none doubled.
+    check fbCount["spi"] == 3
+    check labelCount["spi"] == 3
+    # The member names are never drawn as free text -- they survive only
+    # inside the merged port's `members` (asserted in the previous test).
     for name in ["spi_sclk", "spi_mosi", "spi_miso"]:
-      check fbCount[name] == 1
-      check labelCount[name] == fbCount[name]
+      check fbCount[name] == 0
+      check labelCount[name] == 0
 
   test "the strict json reader round-trips a collapsed and a net-label scene":
     for s in [layout(spiPeripheralSheet()), layout(twoBoxBundleSheet()),
@@ -3393,9 +3437,37 @@ suite "subsheet arrays":
         pin "E", en, kind = ptInput
 
   proc chainSheet(): Netlist =
-    ## Four CELLs: `vdd` common, `sin`/`sout` a daisy chain, `tap` distributed,
-    ## `en` irregular (two share, two differ).
-    let CELL = cellSubckt()
+    ## Four CELLs: `vdd` common but a **rail**, `sin`/`sout` a daisy chain,
+    ## `tap` distributed, `en` irregular (two share, two differ), and `sel` a
+    ## common **signal** port bound identically across every member -- once a
+    ## rail-bound common port suppresses `pmBusBar` (a glyph-drawing pin
+    ## already says "shared rail"; see the "component arrays" suite), `vdd`
+    ## alone would leave that mark with no coverage here.
+    ##
+    ## Each termination resistor gets a **different** value (1k/2k/3k/4k):
+    ## four otherwise-identical `resistor`s each wired one distributed `t*`
+    ## pin to the shared `vdd` rail would themselves now qualify as a
+    ## *component* array (exactly the both-ends-distributed shape the
+    ## "component arrays" suite's dedicated fixture tests) -- differing
+    ## values keep that a separate, deliberately-constructed test case rather
+    ## than an accidental side effect landing on every subsheet-array
+    ## assertion below.
+    let CELL = nldsl.subckt("CELL", [vdd, sin, sout, tap, en, sel]):
+      net vdd, kind = ntPower
+      net gnd, kind = ntGround
+      net sin, kind = ntSignal
+      net sout, kind = ntSignal
+      net tap, kind = ntSignal
+      net en, kind = ntSignal
+      net sel, kind = ntSignal
+      component U1, kind = "buffer":
+        pin "V", vdd, kind = ptPower
+        pin "G", gnd, kind = ptGround
+        pin "A", sin, kind = ptInput
+        pin "Y", sout, kind = ptOutput
+        pin "T", tap, kind = ptOutput
+        pin "E", en, kind = ptInput
+        pin "S", sel, kind = ptInput
     nldsl.netlist("array_demo"):
       net vdd, kind = ntPower
       net cin, kind = ntSignal
@@ -3410,20 +3482,21 @@ suite "subsheet arrays":
       net ea, kind = ntSignal
       net eb, kind = ntSignal
       net ec, kind = ntSignal
-      instance X1, CELL, [vdd, cin, l1, t1, ea]
-      instance X2, CELL, [vdd, l1, l2, t2, ea]
-      instance X3, CELL, [vdd, l2, l3, t3, eb]
-      instance X4, CELL, [vdd, l3, cout, t4, ec]
+      net sel, kind = ntSignal
+      instance X1, CELL, [vdd, cin, l1, t1, ea, sel]
+      instance X2, CELL, [vdd, l1, l2, t2, ea, sel]
+      instance X3, CELL, [vdd, l2, l3, t3, eb, sel]
+      instance X4, CELL, [vdd, l3, cout, t4, ec, sel]
       component RT1, kind = "resistor", value = "1k":
         pin "1", t1
         pin "2", vdd
-      component RT2, kind = "resistor", value = "1k":
+      component RT2, kind = "resistor", value = "2k":
         pin "1", t2
         pin "2", vdd
-      component RT3, kind = "resistor", value = "1k":
+      component RT3, kind = "resistor", value = "3k":
         pin "1", t3
         pin "2", vdd
-      component RT4, kind = "resistor", value = "1k":
+      component RT4, kind = "resistor", value = "4k":
         pin "1", t4
         pin "2", vdd
 
@@ -3491,13 +3564,15 @@ suite "subsheet arrays":
   test "arrayReport classifies each port of a collapsed array":
     let rep = arrayReport(chainSheet())
     check rep.len == 1
-    check rep[0].subsheet == "CELL"
+    check rep[0].source == "CELL"
+    check rep[0].origin == "subsheet"
     check rep[0].label == "X1..X4"
     check rep[0].rep == "X1"
     check rep[0].count == 4
     check rep[0].members == @["X1", "X2", "X3", "X4"]
     check rep[0].ports == @["vdd=common", "sin=chained(in)",
-      "sout=chained(out,x3)", "tap=distributed[1:4]", "en=irregular(3*4)"]
+      "sout=chained(out,x3)", "tap=distributed[1:4]", "en=irregular(3*4)",
+      "sel=common"]
 
   test "two instances of a subsheet do not collapse":
     check arrayReport(twoInstanceSheet()).len == 0
@@ -3629,7 +3704,9 @@ suite "subsheet arrays":
     var marks: HashSet[PinMark]
     for p in s.parts:
       for pin in p.pins: marks.incl pin.mark
-    check pmBusBar in marks      # vdd
+    check pmBusBar in marks      # sel (a common *signal* port; vdd is a
+                                 # common rail, and a rail-bound common port
+                                 # never gets this mark -- see arrayPinFor)
     check pmBusSlash in marks    # tap
     check pmForkCap in marks     # en
 
@@ -3750,3 +3827,369 @@ suite "subsheet arrays":
         check p["arrayMembers"][0]["designator"].getStr == "X1"
     check sawRep
     check "arrayMembers" in html
+
+# --- repeated-component array collapse ------------------------------------
+
+suite "component arrays":
+  proc terminationBank(n: int): Netlist =
+    ## `n` identical 50-ohm terminations, one per channel -- `xbar_rf.nim`'s
+    ## own `RT_*` bench resistors in miniature: distinct nets on port "1"
+    ## (per-channel), one shared ground on port "2".
+    result = newNetlist("termination_bank")
+    let gnd = addNet(result, newNet("0", ntGround))
+    for i in 1 .. n:
+      let ch = addNet(result, newNet("ch" & $i))
+      let r = addComponent(result, newComponent("RT" & $i, kind = "resistor"))
+      r.attrs["value"] = "50"
+      discard connect(r, "1", ch, ptPassive)
+      discard connect(r, "2", gnd, ptPassive)
+
+  test "classification: an 8x termination bank reports as one component array":
+    let rep = arrayReport(terminationBank(8))
+    check rep.len == 1
+    check rep[0].origin == "component"
+    check rep[0].source == "resistor"
+    check rep[0].count == 8
+    check rep[0].ports == @["1=distributed[1:8]", "2=common"]
+
+  test "the N<3 floor and zero-value inertness":
+    # Two identical resistors never collapse -- N < 3 -- however alike.
+    let nl2 = newNetlist("two_only")
+    let gnd2 = addNet(nl2, newNet("0", ntGround))
+    for i in 1 .. 2:
+      let n = addNet(nl2, newNet("t" & $i))
+      let r = addComponent(nl2, newComponent("R" & $i, kind = "resistor"))
+      r.attrs["value"] = "1k"
+      discard connect(r, "1", n, ptPassive)
+      discard connect(r, "2", gnd2, ptPassive)
+    check arrayReport(nl2).len == 0
+    let s2 = layout(nl2)
+    check s2.parts.len == 2
+    for p in s2.parts: check p.count == 0
+
+    # An array-free netlist's scene is byte-identical whether `lsPartArrays`
+    # is on or off -- the zero-value guarantee at the pipeline-stage level.
+    var opts = defaultLayoutOptions()
+    opts.stages.excl lsPartArrays
+    let d = divider()
+    check sceneToJsonString(layout(d, opts)) == sceneToJsonString(layout(d))
+
+  test "lsPartArrays off restores the pre-feature scene byte for byte":
+    let nl = terminationBank(8)
+    var opts = defaultLayoutOptions()
+    opts.stages.excl lsPartArrays          # lsArrays (irrelevant here) stays on
+    let off = layout(nl, opts)
+    check off.parts.len == nl.components.len     # every termination drawn
+    for p in off.parts:
+      check p.count == 0
+      for pin in p.pins: check pin.mark == pmNone
+
+  proc railBank(n: int): Netlist =
+    ## `n` decoupling caps across one rail pair -- every port `apCommon`, the
+    ## shape `composites/passive.parallelStackKind` already draws as a
+    ## visible stack. Without the all-common decline this would be stolen
+    ## and hidden behind an `xN` badge instead of N visible bodies.
+    result = newNetlist("rail_bank")
+    let vdd = addNet(result, newNet("VDD", ntPower))
+    let gnd = addNet(result, newNet("0", ntGround))
+    let v1 = addComponent(result, newComponent("V1", kind = "voltage_source"))
+    discard connect(v1, "+", vdd, ptPower)
+    discard connect(v1, "-", gnd, ptGround)
+    for i in 1 .. n:
+      let c = addComponent(result, newComponent("C" & $i, kind = "capacitor"))
+      c.attrs["value"] = "100n"
+      discard connect(c, "1", vdd, ptPassive)
+      discard connect(c, "2", gnd, ptPassive)
+
+  test "the all-common decline keeps a decoupling bank a visible stack, not xN":
+    let nl = railBank(8)
+    check arrayReport(nl).len == 0     # both ports apCommon -> declined
+    let s = layout(nl)
+    check s.parts.len == 9             # V1 + eight visible caps, none hidden
+    for p in s.parts: check p.count == 0
+    # still one parallelStackKind composite: every cap lands on a shared y,
+    # evenly spaced along x, exactly as the 2-cap case already covered above
+    # ("a rail decoupling bank turns its caps upright, side by side").
+    var ys: HashSet[float]
+    for i in 1 .. 8: ys.incl partOf(s, "C" & $i).y
+    check ys.len == 1
+
+  proc filterBank(n: int): Netlist =
+    ## `n` independent RC low-pass channels, `in_i -[R_i]- mid_i -[C_i]- gnd`.
+    ## Every `mid_i` sits on the R array's port "2" *and* the C array's port
+    ## "1" -- the both-ends-distributed shape `finalizeArrayPlan` exists for.
+    result = newNetlist("filter_bank")
+    discard addNet(result, newNet("0", ntGround))
+    for i in 1 .. n:
+      let inNet = addNet(result, newNet("in" & $i))
+      let mid = addNet(result, newNet("mid" & $i))
+      let r = addComponent(result, newComponent("R" & $i, kind = "resistor"))
+      r.attrs["value"] = "1k"
+      discard connect(r, "1", inNet, ptPassive)
+      discard connect(r, "2", mid, ptPassive)
+      let c = addComponent(result, newComponent("C" & $i, kind = "capacitor"))
+      c.attrs["value"] = "100n"
+      discard connect(c, "1", mid, ptPassive)
+      discard connect(c, "2", result.nets["0"], ptPassive)
+
+  test "both-ends-distributed: an 8x(R+C) filter bank suppresses a consistent subset":
+    let nl = filterBank(8)
+    let rep = arrayReport(nl)
+    check rep.len == 2
+    for r in rep:
+      check r.origin == "component"
+      check r.count == 8
+    let s = layout(nl)
+    var drawn: seq[string]
+    for p in s.parts: drawn.add p.designator
+    check drawn.len == 2                 # only the two representatives
+    check "R1" in drawn
+    check "C1" in drawn                  # R1.2 == C1.1 == mid1, nl.nets-first
+    var busWires = 0
+    for w in s.wires:
+      if w.kind == wkBus and w.members.len == 8: inc busWires
+    check busWires == 1                  # one bus, not zero, not two partial ones
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
+    check signalWiresRespectForeignSeeds(s)
+    check labelsClearOfGeometry(s)
+
+  proc splitByValueBank(): Netlist =
+    ## Four 10k and four 2k resistors, otherwise identical: `value` is in the
+    ## identity key precisely so these two groups never merge into one.
+    result = newNetlist("split_by_value")
+    let gnd = addNet(result, newNet("0", ntGround))
+    for i in 1 .. 4:
+      let n = addNet(result, newNet("a" & $i))
+      let r = addComponent(result, newComponent("RA" & $i, kind = "resistor"))
+      r.attrs["value"] = "10k"
+      discard connect(r, "1", n, ptPassive)
+      discard connect(r, "2", gnd, ptPassive)
+    for i in 1 .. 4:
+      let n = addNet(result, newNet("b" & $i))
+      let r = addComponent(result, newComponent("RB" & $i, kind = "resistor"))
+      r.attrs["value"] = "2k"
+      discard connect(r, "1", n, ptPassive)
+      discard connect(r, "2", gnd, ptPassive)
+
+  test "value splits the group: four 10k and four 2k resistors give two arrays":
+    let rep = arrayReport(splitByValueBank())
+    check rep.len == 2
+    var counts: seq[int]
+    for r in rep: counts.add r.count
+    counts.sort()
+    check counts == @[4, 4]
+
+  proc packagedTriple(): Netlist =
+    ## Three sections of one physical package, otherwise identical enough to
+    ## qualify -- `isPackaged` must exclude them before the identity key is
+    ## even built, or their own "U9A"/"U9B"/"U9C" labels would fight the
+    ## array's "X1..X3" label for the same box.
+    let tri = newPackageDef("SCH_TRIPLE", [
+      (id: "1", section: "A", logical: "OUT"),
+      (id: "2", section: "B", logical: "OUT"),
+      (id: "3", section: "C", logical: "OUT")], partNumber = "SCH_TRIPLE")
+    try: registerPackage(tri)
+    except CatchableError: discard
+    let u9 = packageInstance("SCH_TRIPLE", "U9")
+    result = nldsl.netlist("packaged_triple"):
+      net gnd, kind = ntGround, name = "0"
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      net c, kind = ntSignal
+      component IC1, kind = "opamp", value = "TL074":
+        pin "OUT", a
+        pin "IN", gnd
+      component IC2, kind = "opamp", value = "TL074":
+        pin "OUT", b
+        pin "IN", gnd
+      component IC3, kind = "opamp", value = "TL074":
+        pin "OUT", c
+        pin "IN", gnd
+    u9.assign(result, "A", "IC1")
+    u9.assign(result, "B", "IC2")
+    u9.assign(result, "C", "IC3")
+
+  test "isPackaged exclusion: three sections of one package keep their own labels":
+    let nl = packagedTriple()
+    check arrayReport(nl).len == 0
+    let s = layout(nl)
+    var byDesig: Table[string, SchematicPart]
+    for p in s.parts: byDesig[p.designator] = p
+    check byDesig["IC1"].label == "U9A"
+    check byDesig["IC2"].label == "U9B"
+    check byDesig["IC3"].label == "U9C"
+
+  proc resistorLadder(n: int): Netlist =
+    ## `n` resistors in series -- `out(i) == in(i+1)`, exactly the chain
+    ## shape a subsheet array would recirculate. A resistor symbol has no box
+    ## interior for that arc, so it must degrade to distributed instead.
+    result = newNetlist("resistor_ladder")
+    var prev = addNet(result, newNet("n0"))
+    for i in 1 .. n:
+      let net = addNet(result, newNet("n" & $i))
+      let r = addComponent(result, newComponent("R" & $i, kind = "resistor"))
+      r.attrs["value"] = "1k"
+      discard connect(r, "1", prev, ptPassive)
+      discard connect(r, "2", net, ptPassive)
+      prev = net
+
+  test "chain pairing is skipped for a non-box representative: a ladder degrades to distributed":
+    let nl = resistorLadder(4)
+    let rep = arrayReport(nl)
+    check rep.len == 1
+    check rep[0].origin == "component"
+    for p in rep[0].ports:
+      check "chained" notin p
+      check "distributed" in p
+    let s = layout(nl)
+    for w in s.wires: check w.kind != wkChain
+
+  test "the collapsed-symbol invariants and labels hold on every new fixture":
+    for nl in [terminationBank(8), filterBank(8), splitByValueBank(),
+               resistorLadder(4), railBank(8)]:
+      let s = layout(nl)
+      check distinctWiresNeverShareCollinearRuns(s)
+      check differentNetsRespectSeparation(s)
+      check signalWiresRespectForeignSeeds(s)
+      check labelsClearOfGeometry(s)
+
+  test "a collapsed symbol scene round-trips through JSON and the SVG carries its glyphs":
+    let nl = terminationBank(8)
+    let s = layout(nl)
+    let back = jsonToScene(sceneToJsonString(s))
+    check sceneToJsonString(back) == sceneToJsonString(s)
+    var rep: SchematicPart
+    var have = false
+    for p in back.parts:
+      if p.count >= 2: rep = p; have = true
+    check have
+    check rep.count == 8
+    check not rep.isBox
+    let svgText = renderSvg(s)
+    check ">x8</text>" in svgText                                # the badge
+    check "stroke=\"#1f6feb\" stroke-width=\"3\"" in svgText     # the slash
+
+  proc bundledTerminationBank(): Netlist =
+    ## Three resistors each on their own net, all three plus a reading MCU
+    ## forming a >= 3-entity bus -- a `brNetLabel` bundle, which keeps its
+    ## own drawing at the pin but does not veto the array (only a
+    ## `brCollapsed` bundle, whose far endpoint would vanish, does that).
+    result = newNetlist("bundled_bank")
+    let gnd = addNet(result, newNet("0", ntGround))
+    let u1 = addComponent(result, newComponent("U1", kind = "mcu"))
+    for i in 1 .. 3:
+      let a = addNet(result, newNet("a" & $i))
+      a.attrs["bus.name"] = "grp"
+      a.attrs["bus.index"] = $(i - 1)
+      a.attrs["bus.width"] = "3"
+      discard connect(u1, "P" & $i, a, ptInput)
+      let r = addComponent(result, newComponent("R" & $i, kind = "resistor"))
+      r.attrs["value"] = "1k"
+      discard connect(r, "1", a, ptPassive)
+      discard connect(r, "2", gnd, ptPassive)
+
+  test "a brNetLabel bundle does not veto a component array; that port reads bundled":
+    let nl = bundledTerminationBank()
+    check bundleReport(nl).len == 1
+    let rep = arrayReport(nl)
+    check rep.len == 1
+    check rep[0].origin == "component"
+    check rep[0].count == 3
+    check "1=distributed[1:3](bundled)" in rep[0].ports
+
+  test "a bundled distributed array pin draws the bus name, not one member's net":
+    # `bundledTerminationBank`'s R1/R2/R3 each sit on port "1", every one
+    # bound to a distinct member of `bus grp` -- the same shape `xbar_rf`'s
+    # eight `rf_switch` instances hit on `rin`/`rout`. The array's own
+    # mark/tag is suppressed (bundle wins at the pin), but the
+    # representative's own raw binding ("a1") must not leak through either:
+    # once the array collapses, this one pin stands for every hidden
+    # member's binding on the bus, so its identity is the bus itself.
+    let nl = bundledTerminationBank()
+    let s = layout(nl)
+    let rep = partOf(s, "R1")
+    var found = false
+    for pin in rep.pins:
+      if pin.name == "1":
+        found = true
+        check pin.net == "grp"
+        check pin.mark == pmNone           # bundle wins the mark too
+    check found
+    # The one visible net-label tag the representative still draws (its two
+    # hidden siblings' own tags vanished along with their pins) reads the
+    # same bus name, not the pre-collapse index ("a1") the representative
+    # happened to keep.
+    var sawFallback = false
+    for f in s.fallbacks:
+      if f.part == "R1" and f.pin == "1":
+        sawFallback = true
+        check f.net == "grp"
+    check sawFallback
+
+  proc twoBusBank(): Netlist =
+    ## Eight resistors, each on its own net -- four members of `bus fam1`,
+    ## four of `bus fam2` -- the exact shape `xbar_rf`'s `rin`/`rout` split
+    ## hits: a distributed port whose members never share a single net (so
+    ## raw-identity sub-grouping saw no split at all, before `splitKeyOf`)
+    ## but which visibly falls into two families through declared bus
+    ## membership. No net here has more than one pin, so this also becomes a
+    ## `>= 3`-entity `brNetLabel` bundle on each half -- the realistic
+    ## shape, since a bus fanning out to distinct single-pin entities is
+    ## exactly what makes a bundle in the first place.
+    result = newNetlist("two_bus_bank")
+    let gnd = addNet(result, newNet("0", ntGround))
+    for i in 1 .. 8:
+      let busName = if i <= 4: "fam1" else: "fam2"
+      let idx = if i <= 4: i - 1 else: i - 5
+      let n = addNet(result, newNet("m" & $i))
+      n.attrs["bus.name"] = busName
+      n.attrs["bus.index"] = $idx
+      n.attrs["bus.width"] = "4"
+      let r = addComponent(result, newComponent("R" & $i, kind = "resistor"))
+      r.attrs["value"] = "50"
+      discard connect(r, "1", n, ptPassive)
+      discard connect(r, "2", gnd, ptPassive)
+
+  test "a distributed port with no shared net still splits by declared bus family":
+    let rep = arrayReport(twoBusBank())
+    check rep.len == 2
+    var counts: seq[int]
+    for a in rep:
+      counts.add a.count
+      check a.origin == "component"
+      check "1=distributed[1:4](bundled)" in a.ports
+    counts.sort()
+    check counts == @[4, 4]
+
+  proc collapsedBundleVetoBank(): Netlist =
+    ## Three otherwise-identical "gadget" parts, each with a private two-wire
+    ## bus to its own widget -- a `brCollapsed` bundle, whose far endpoint
+    ## would vanish were the gadget hidden as a non-representative array
+    ## member. This is the one decline the array respects.
+    result = newNetlist("veto_bank")
+    let gnd = addNet(result, newNet("0", ntGround))
+    for i in 1 .. 3:
+      let sel = addNet(result, newNet("s" & $i))
+      let g = addComponent(result, newComponent("G" & $i, kind = "gadget"))
+      g.attrs["value"] = "v1"
+      discard connect(g, "sel", sel, ptInput)
+      discard connect(g, "gnd", gnd, ptGround)
+      let b0 = addNet(result, newNet("g" & $i & "_b0"))
+      let b1 = addNet(result, newNet("g" & $i & "_b1"))
+      b0.attrs["bus.name"] = "priv" & $i
+      b0.attrs["bus.index"] = "0"
+      b0.attrs["bus.width"] = "2"
+      b1.attrs["bus.name"] = "priv" & $i
+      b1.attrs["bus.index"] = "1"
+      b1.attrs["bus.width"] = "2"
+      discard connect(g, "b0", b0, ptPassive)
+      discard connect(g, "b1", b1, ptPassive)
+      let w = addComponent(result, newComponent("W" & $i, kind = "widget"))
+      discard connect(w, "0", b0, ptPassive)
+      discard connect(w, "1", b1, ptPassive)
+
+  test "a brCollapsed bundle declines the component array":
+    let nl = collapsedBundleVetoBank()
+    check bundleReport(nl).len == 3      # three private point-to-point buses
+    check arrayReport(nl).len == 0       # ... so the component array declines

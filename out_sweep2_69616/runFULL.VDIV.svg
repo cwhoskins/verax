@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="366" height="420" viewBox="-220 -210 366 420">
+  <title>VDIV</title>
+  <rect x="-220" y="-210" width="366" height="420" fill="#ffffff"/>
+  <line x1="-240" y1="-210" x2="-240" y2="210" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-200" y1="-210" x2="-200" y2="210" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-160" y1="-210" x2="-160" y2="210" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-120" y1="-210" x2="-120" y2="210" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-80" y1="-210" x2="-80" y2="210" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-40" y1="-210" x2="-40" y2="210" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="0" y1="-210" x2="0" y2="210" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="40" y1="-210" x2="40" y2="210" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="80" y1="-210" x2="80" y2="210" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="120" y1="-210" x2="120" y2="210" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="-240" x2="146" y2="-240" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="-200" x2="146" y2="-200" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="-160" x2="146" y2="-160" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="-120" x2="146" y2="-120" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="-80" x2="146" y2="-80" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="-40" x2="146" y2="-40" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="0" x2="146" y2="0" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="40" x2="146" y2="40" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="80" x2="146" y2="80" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="120" x2="146" y2="120" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="160" x2="146" y2="160" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-220" y1="200" x2="146" y2="200" stroke="#eef0f3" stroke-width="1"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="0,120 0,128 -4,132 -104,132 -108,128 -108,124 -112,120 -120,120"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="0,40 0,28 0,-28 0,-40"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="0,28 -104,28 -108,32 -108,36 -112,40 -120,40"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="0,-120 0,-128 -4,-132 -104,-132 -108,-128 -108,-124 -112,-120 -120,-120"/>
+  <circle cx="0" cy="28" r="3" fill="#333333"/>
+  <g transform="rotate(270 0 80)">
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="-40,80 -26.667,70 -13.333,90 0,70 13.333,90 26.667,70 40,80"/>
+  </g>
+  <g transform="rotate(270 0 -80)">
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="-40,-80 -26.667,-90 -13.333,-70 0,-90 13.333,-70 26.667,-90 40,-80"/>
+  </g>
+  <polygon points="-180,-132 -128,-132 -120,-120 -128,-108 -180,-108" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <text x="-150" y="-116" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">BOT</text>
+  <polygon points="-180,28 -128,28 -120,40 -128,52 -180,52" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <text x="-150" y="44" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">TAP</text>
+  <polygon points="-180,108 -128,108 -120,120 -128,132 -180,132" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <text x="-150" y="124" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">IN</text>
+  <text x="16" y="77.6" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">RTOP</text>
+  <text x="16" y="90" font-family="monospace" font-size="10" fill="#333333" text-anchor="start">7.500000000e+04</text>
+  <text x="16" y="-82.4" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">RBOT</text>
+  <text x="16" y="-70" font-family="monospace" font-size="10" fill="#333333" text-anchor="start">2.500000000e+04</text>
+</svg>

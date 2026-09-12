@@ -1,0 +1,455 @@
+{
+  "schemaVersion": 1,
+  "title": "ADJREG",
+  "minX": -346.0,
+  "minY": -370.0,
+  "maxX": 210.0,
+  "maxY": 250.0,
+  "parts": [
+    {
+      "designator": "U1",
+      "label": "",
+      "kind": "regulator",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 232.0,
+      "bodyH": 112.0,
+      "inkW": 192.0,
+      "inkH": 72.0,
+      "x": 0.0,
+      "y": -40.0,
+      "rotation": 0.0,
+      "pins": [
+        {
+          "name": "IN",
+          "net": "VIN",
+          "x": -40.0,
+          "y": -96.0
+        },
+        {
+          "name": "OUT",
+          "net": "VOUT",
+          "x": 40.0,
+          "y": -96.0
+        },
+        {
+          "name": "ADJ",
+          "net": "adj",
+          "x": -116.0,
+          "y": -40.0
+        }
+      ]
+    },
+    {
+      "designator": "RSET",
+      "label": "",
+      "kind": "resistor",
+      "name": "",
+      "value": "2.400000000e+02",
+      "symbol": "resistor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 20.0,
+      "x": -160.0,
+      "y": -200.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "VOUT",
+          "x": -160.0,
+          "y": -240.0
+        },
+        {
+          "name": "2",
+          "net": "adj",
+          "x": -160.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "designator": "RADJ",
+      "label": "",
+      "kind": "resistor",
+      "name": "",
+      "value": "7.131537242e+02",
+      "symbol": "resistor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 20.0,
+      "x": -200.0,
+      "y": 0.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "adj",
+          "x": -200.0,
+          "y": -40.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -200.0,
+          "y": 40.0
+        }
+      ]
+    },
+    {
+      "designator": "COUT",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "10u",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": 0.0,
+      "y": -240.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "VOUT",
+          "x": 0.0,
+          "y": -280.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": 0.0,
+          "y": -200.0
+        }
+      ]
+    },
+    {
+      "designator": "CIN",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": 80.0,
+      "y": 120.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "VIN",
+          "x": 80.0,
+          "y": 80.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": 80.0,
+          "y": 160.0
+        }
+      ]
+    }
+  ],
+  "wires": [
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": -200.0,
+          "y": 40.0
+        },
+        {
+          "x": -200.0,
+          "y": 80.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 0.0,
+          "y": -200.0
+        },
+        {
+          "x": 0.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 80.0,
+          "y": 160.0
+        },
+        {
+          "x": 80.0,
+          "y": 200.0
+        }
+      ]
+    },
+    {
+      "net": "VIN",
+      "kind": "supply",
+      "points": [
+        {
+          "x": -40.0,
+          "y": -96.0
+        },
+        {
+          "x": -40.0,
+          "y": -136.0
+        }
+      ]
+    },
+    {
+      "net": "VIN",
+      "kind": "supply",
+      "points": [
+        {
+          "x": 80.0,
+          "y": 80.0
+        },
+        {
+          "x": 80.0,
+          "y": 40.0
+        }
+      ]
+    },
+    {
+      "net": "VOUT",
+      "kind": "supply",
+      "points": [
+        {
+          "x": 40.0,
+          "y": -96.0
+        },
+        {
+          "x": 40.0,
+          "y": -136.0
+        }
+      ]
+    },
+    {
+      "net": "VOUT",
+      "kind": "supply",
+      "points": [
+        {
+          "x": -160.0,
+          "y": -240.0
+        },
+        {
+          "x": -160.0,
+          "y": -280.0
+        }
+      ]
+    },
+    {
+      "net": "VOUT",
+      "kind": "supply",
+      "points": [
+        {
+          "x": 0.0,
+          "y": -280.0
+        },
+        {
+          "x": 0.0,
+          "y": -320.0
+        }
+      ]
+    },
+    {
+      "net": "adj",
+      "kind": "signal",
+      "points": [
+        {
+          "x": -116.0,
+          "y": -40.0
+        },
+        {
+          "x": -128.0,
+          "y": -40.0
+        },
+        {
+          "x": -128.0,
+          "y": -52.0
+        },
+        {
+          "x": -200.0,
+          "y": -52.0
+        },
+        {
+          "x": -200.0,
+          "y": -40.0
+        }
+      ]
+    },
+    {
+      "net": "adj",
+      "kind": "signal",
+      "points": [
+        {
+          "x": -160.0,
+          "y": -52.0
+        },
+        {
+          "x": -160.0,
+          "y": -148.0
+        },
+        {
+          "x": -160.0,
+          "y": -160.0
+        }
+      ]
+    }
+  ],
+  "junctions": [],
+  "labels": [
+    {
+      "text": "RSET",
+      "x": -144.0,
+      "y": -202.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "RSET"
+    },
+    {
+      "text": "2.400000000e+02",
+      "x": -144.0,
+      "y": -190.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "RSET"
+    },
+    {
+      "text": "RADJ",
+      "x": -216.0,
+      "y": -2.3999999999999986,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "RADJ"
+    },
+    {
+      "text": "7.131537242e+02",
+      "x": -216.0,
+      "y": 10.000000000000002,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "RADJ"
+    },
+    {
+      "text": "COUT",
+      "x": 18.0,
+      "y": -242.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "COUT"
+    },
+    {
+      "text": "10u",
+      "x": 18.0,
+      "y": -230.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "COUT"
+    },
+    {
+      "text": "CIN",
+      "x": 98.0,
+      "y": 117.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "CIN"
+    },
+    {
+      "text": "100n",
+      "x": 98.0,
+      "y": 130.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "CIN"
+    },
+    {
+      "text": "adj",
+      "x": -206.0,
+      "y": -48.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "VIN",
+      "x": -24.0,
+      "y": -132.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "VIN",
+      "x": 96.0,
+      "y": 43.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "VOUT",
+      "x": 56.0,
+      "y": -132.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "VOUT",
+      "x": -144.0,
+      "y": -276.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "VOUT",
+      "x": 16.0,
+      "y": -316.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    }
+  ],
+  "ports": [],
+  "fallbacks": []
+}

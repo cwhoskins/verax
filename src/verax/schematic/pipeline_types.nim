@@ -7,7 +7,7 @@ import std/[os, strutils]
 
 type
   StageId* = enum
-    lsPrepare, lsBundles, lsArrays, lsSemanticSeed, lsForcePlacement,
+    lsPrepare, lsBundles, lsArrays, lsPartArrays, lsSemanticSeed, lsForcePlacement,
     lsConstrainedRefinement, lsCompositeOrient, lsSeparate, lsPack, lsOrient,
     lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting,
     lsRoutingAwareRepair, lsPortRefine, lsLabels, lsBounds
@@ -46,6 +46,13 @@ const canonicalStages*: array[StageId, StageSpec] = [
   # subsheet instance is dropped and the scene is the pre-feature one,
   # bit-for-bit.
   StageSpec(id: lsArrays, enabled: true),
+  # Consumed inside `prepare`, right after `lsArrays` (component arrays read
+  # both the bundle plan and the already-built subsheet-array plan, so a net
+  # distributed at both ends -- an 8x(R+C) filter bank -- suppresses a
+  # consistent subset regardless of which pass claims it last). Off -> the
+  # subsheet-only plan `lsArrays` alone produces, no repeated raw component
+  # collapses, bit-for-bit.
+  StageSpec(id: lsPartArrays, enabled: true),
   StageSpec(id: lsSemanticSeed, enabled: true),
   StageSpec(id: lsForcePlacement, enabled: true),
   StageSpec(id: lsConstrainedRefinement, enabled: true),

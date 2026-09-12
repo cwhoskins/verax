@@ -78,7 +78,19 @@ type
     routing: RoutingState
 
 proc planComposites(state: var LayoutState) =
-  state.composites = compositePlan(state.comps, state.syms, state.bundles.bundled)
+  ## A collapsed array's representative is excluded exactly like a bundle
+  ## carrier, and for a component array this is no longer free: a subsheet
+  ## representative is always a box (`isTraversable` wants `subNetlist ==
+  ## nil`, so it was never composite-eligible to begin with), but a component
+  ## array's representative is a flat two-terminal part still fully visible --
+  ## exactly the shape `parallelStackKind`/`seriesChainKind`/pi/tee recognize.
+  ## Without this exclusion a termination resistor badged `x8` could be
+  ## claimed as a member of a composite it does not belong to, and the
+  ## composite's internal fanout would run to a symbol that stands for eight
+  ## different physical resistors, not one.
+  var excluded = state.bundles.bundled
+  for rep in state.arrays.byRep.keys: excluded.incl rep
+  state.composites = compositePlan(state.comps, state.syms, excluded)
 
 proc constrainedSemanticSeed(state: var LayoutState) =
   constrainedSemanticSeed(state.comps, state.pos, state.idxOf, state.composites,
@@ -175,8 +187,21 @@ proc prepare(state: var LayoutState) =
   # `partIdxByDesig.hasKey`) that every layout site already tolerates. A
   # zero-value plan when fewer than three components share a subsheet, and then
   # this loop is `for _, c in state.nl.components: state.comps.add c` verbatim.
+  #
+  # `lsPartArrays` (repeated raw components -- a termination bank, one rank of
+  # an 8x(R+C) filter) is built into the *same* `ArrayPlan`, right after, and
+  # `finalizeArrayPlan` runs exactly once, over their union, whichever subset
+  # of the two stages is on: it derives `suppressed` from the final `groupOf`
+  # (a net distributed at both ends must suppress a consistent subset
+  # regardless of which array claims it last -- see `arrays.nim`'s doc
+  # comment) and only then can safely run the totality assertion.
   if state.options.stageEnabled(lsArrays):
-    state.arrays = arrayPlan(state.nl, state.bundles)
+    buildSubsheetArrays(state.nl, state.bundles, state.arrays)
+  if state.options.stageEnabled(lsPartArrays):
+    buildComponentArrays(state.nl, state.bundles, state.arrays)
+  if state.options.stageEnabled(lsArrays) or
+     state.options.stageEnabled(lsPartArrays):
+    finalizeArrayPlan(state.nl, state.bundles, state.arrays)
 
   for _, c in state.nl.components:
     if c.designator in state.arrays.hidden: continue

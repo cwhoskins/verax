@@ -1,0 +1,3300 @@
+{
+  "schemaVersion": 1,
+  "title": "xbar_rf",
+  "minX": -836.0,
+  "minY": -650.0,
+  "maxX": 570.0,
+  "maxY": 650.0,
+  "parts": [
+    {
+      "designator": "J0",
+      "label": "",
+      "kind": "connector",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 152.0,
+      "bodyH": 100.0,
+      "inkW": 112.0,
+      "inkH": 60.0,
+      "x": 280.0,
+      "y": -200.0,
+      "rotation": 0.0,
+      "pins": [
+        {
+          "name": "VRF",
+          "net": "v3v3rf",
+          "x": 280.0,
+          "y": -250.0
+        },
+        {
+          "name": "GND",
+          "net": "0",
+          "x": 280.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "designator": "JIN1",
+      "label": "JIN1..JIN4",
+      "kind": "connector",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 304.0,
+      "bodyH": 112.0,
+      "inkW": 264.0,
+      "inkH": 72.0,
+      "x": -320.0,
+      "y": -40.0,
+      "rotation": 0.0,
+      "count": 4,
+      "members": [
+        "JIN1",
+        "JIN2",
+        "JIN3",
+        "JIN4"
+      ],
+      "pins": [
+        {
+          "name": "RF",
+          "net": "rin",
+          "x": -472.0,
+          "y": -40.0,
+          "members": [
+            {
+              "name": "JIN1",
+              "net": "rin_0"
+            },
+            {
+              "name": "JIN2",
+              "net": "rin_1"
+            },
+            {
+              "name": "JIN3",
+              "net": "rin_2"
+            },
+            {
+              "name": "JIN4",
+              "net": "rin_3"
+            }
+          ]
+        },
+        {
+          "name": "GND",
+          "net": "0",
+          "x": -320.0,
+          "y": 16.0,
+          "members": [
+            {
+              "name": "JIN1",
+              "net": "0"
+            },
+            {
+              "name": "JIN2",
+              "net": "0"
+            },
+            {
+              "name": "JIN3",
+              "net": "0"
+            },
+            {
+              "name": "JIN4",
+              "net": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "designator": "JOUT1",
+      "label": "JOUT1..JOUT4",
+      "kind": "connector",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 332.8,
+      "bodyH": 112.0,
+      "inkW": 292.8,
+      "inkH": 72.0,
+      "x": 80.0,
+      "y": -360.0,
+      "rotation": 0.0,
+      "count": 4,
+      "members": [
+        "JOUT1",
+        "JOUT2",
+        "JOUT3",
+        "JOUT4"
+      ],
+      "pins": [
+        {
+          "name": "RF",
+          "net": "rout",
+          "x": -86.4,
+          "y": -360.0,
+          "members": [
+            {
+              "name": "JOUT1",
+              "net": "rout_0"
+            },
+            {
+              "name": "JOUT2",
+              "net": "rout_1"
+            },
+            {
+              "name": "JOUT3",
+              "net": "rout_2"
+            },
+            {
+              "name": "JOUT4",
+              "net": "rout_3"
+            }
+          ]
+        },
+        {
+          "name": "GND",
+          "net": "0",
+          "x": 80.0,
+          "y": -304.0,
+          "members": [
+            {
+              "name": "JOUT1",
+              "net": "0"
+            },
+            {
+              "name": "JOUT2",
+              "net": "0"
+            },
+            {
+              "name": "JOUT3",
+              "net": "0"
+            },
+            {
+              "name": "JOUT4",
+              "net": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "designator": "XSW1",
+      "label": "XSW1..XSW4",
+      "kind": "rf_switch",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 304.0,
+      "bodyH": 232.0,
+      "inkW": 264.0,
+      "inkH": 192.0,
+      "x": 40.0,
+      "y": 40.0,
+      "rotation": 0.0,
+      "count": 4,
+      "members": [
+        "XSW1",
+        "XSW2",
+        "XSW3",
+        "XSW4"
+      ],
+      "pins": [
+        {
+          "name": "RFC",
+          "net": "rin",
+          "x": -112.0,
+          "y": -20.0,
+          "members": [
+            {
+              "name": "XSW1",
+              "net": "rin_0"
+            },
+            {
+              "name": "XSW2",
+              "net": "rin_1"
+            },
+            {
+              "name": "XSW3",
+              "net": "rin_2"
+            },
+            {
+              "name": "XSW4",
+              "net": "rin_3"
+            }
+          ]
+        },
+        {
+          "name": "m",
+          "net": "m",
+          "x": -112.0,
+          "y": 20.0,
+          "members": [
+            {
+              "name": "m_0",
+              "net": "m_0"
+            },
+            {
+              "name": "m_1",
+              "net": "m_1"
+            },
+            {
+              "name": "m_2",
+              "net": "m_2"
+            },
+            {
+              "name": "m_3",
+              "net": "m_3"
+            }
+          ]
+        },
+        {
+          "name": "a(0, 1)",
+          "net": "a",
+          "x": -112.0,
+          "y": 60.0,
+          "members": [
+            {
+              "name": "a_0_0",
+              "net": "a_0_0"
+            },
+            {
+              "name": "a_0_1",
+              "net": "a_0_1"
+            }
+          ]
+        },
+        {
+          "name": "EN",
+          "net": "en",
+          "x": -112.0,
+          "y": 100.0,
+          "members": [
+            {
+              "name": "XSW1",
+              "net": "en_0"
+            },
+            {
+              "name": "XSW2",
+              "net": "en_1"
+            },
+            {
+              "name": "XSW3",
+              "net": "en_2"
+            },
+            {
+              "name": "XSW4",
+              "net": "en_3"
+            }
+          ]
+        },
+        {
+          "name": "VDD",
+          "net": "v3v3rf",
+          "x": 40.0,
+          "y": -76.0,
+          "members": [
+            {
+              "name": "XSW1",
+              "net": "v3v3rf"
+            },
+            {
+              "name": "XSW2",
+              "net": "v3v3rf"
+            },
+            {
+              "name": "XSW3",
+              "net": "v3v3rf"
+            },
+            {
+              "name": "XSW4",
+              "net": "v3v3rf"
+            }
+          ]
+        },
+        {
+          "name": "GND",
+          "net": "0",
+          "x": 40.0,
+          "y": 156.0,
+          "members": [
+            {
+              "name": "XSW1",
+              "net": "0"
+            },
+            {
+              "name": "XSW2",
+              "net": "0"
+            },
+            {
+              "name": "XSW3",
+              "net": "0"
+            },
+            {
+              "name": "XSW4",
+              "net": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "designator": "XSW5",
+      "label": "XSW5..XSW8",
+      "kind": "rf_switch",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 304.0,
+      "bodyH": 232.0,
+      "inkW": 264.0,
+      "inkH": 192.0,
+      "x": -320.0,
+      "y": -440.0,
+      "rotation": 0.0,
+      "count": 4,
+      "members": [
+        "XSW5",
+        "XSW6",
+        "XSW7",
+        "XSW8"
+      ],
+      "pins": [
+        {
+          "name": "RFC",
+          "net": "rout",
+          "x": -472.0,
+          "y": -500.0,
+          "members": [
+            {
+              "name": "XSW5",
+              "net": "rout_0"
+            },
+            {
+              "name": "XSW6",
+              "net": "rout_1"
+            },
+            {
+              "name": "XSW7",
+              "net": "rout_2"
+            },
+            {
+              "name": "XSW8",
+              "net": "rout_3"
+            }
+          ]
+        },
+        {
+          "name": "m",
+          "net": "m",
+          "x": -472.0,
+          "y": -460.0,
+          "members": [
+            {
+              "name": "m_0",
+              "net": "m_0"
+            },
+            {
+              "name": "m_1",
+              "net": "m_1"
+            },
+            {
+              "name": "m_2",
+              "net": "m_2"
+            },
+            {
+              "name": "m_3",
+              "net": "m_3"
+            }
+          ]
+        },
+        {
+          "name": "a(8, 9)",
+          "net": "a",
+          "x": -472.0,
+          "y": -420.0,
+          "members": [
+            {
+              "name": "a_4_0",
+              "net": "a_4_0"
+            },
+            {
+              "name": "a_4_1",
+              "net": "a_4_1"
+            }
+          ]
+        },
+        {
+          "name": "EN",
+          "net": "en",
+          "x": -472.0,
+          "y": -380.0,
+          "members": [
+            {
+              "name": "XSW5",
+              "net": "en_4"
+            },
+            {
+              "name": "XSW6",
+              "net": "en_5"
+            },
+            {
+              "name": "XSW7",
+              "net": "en_6"
+            },
+            {
+              "name": "XSW8",
+              "net": "en_7"
+            }
+          ]
+        },
+        {
+          "name": "VDD",
+          "net": "v3v3rf",
+          "x": -320.0,
+          "y": -556.0,
+          "members": [
+            {
+              "name": "XSW5",
+              "net": "v3v3rf"
+            },
+            {
+              "name": "XSW6",
+              "net": "v3v3rf"
+            },
+            {
+              "name": "XSW7",
+              "net": "v3v3rf"
+            },
+            {
+              "name": "XSW8",
+              "net": "v3v3rf"
+            }
+          ]
+        },
+        {
+          "name": "GND",
+          "net": "0",
+          "x": -320.0,
+          "y": -324.0,
+          "members": [
+            {
+              "name": "XSW5",
+              "net": "0"
+            },
+            {
+              "name": "XSW6",
+              "net": "0"
+            },
+            {
+              "name": "XSW7",
+              "net": "0"
+            },
+            {
+              "name": "XSW8",
+              "net": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "designator": "CBY1",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": 200.0,
+      "y": -200.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "v3v3rf",
+          "x": 200.0,
+          "y": -240.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": 200.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "designator": "CBY2",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": 120.0,
+      "y": -200.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "v3v3rf",
+          "x": 120.0,
+          "y": -240.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": 120.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "designator": "CBY3",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": 40.0,
+      "y": -200.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "v3v3rf",
+          "x": 40.0,
+          "y": -240.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": 40.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "designator": "CBY4",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": -40.0,
+      "y": -200.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "v3v3rf",
+          "x": -40.0,
+          "y": -240.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -40.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "designator": "CBY5",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": -120.0,
+      "y": -200.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "v3v3rf",
+          "x": -120.0,
+          "y": -240.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -120.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "designator": "CBY6",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": -200.0,
+      "y": -200.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "v3v3rf",
+          "x": -200.0,
+          "y": -240.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -200.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "designator": "CBY7",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": -280.0,
+      "y": -200.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "v3v3rf",
+          "x": -280.0,
+          "y": -240.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -280.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "designator": "CBY8",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": -360.0,
+      "y": -200.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "v3v3rf",
+          "x": -360.0,
+          "y": -240.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -360.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "designator": "CRFBULK",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "10u",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": -440.0,
+      "y": -200.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "v3v3rf",
+          "x": -440.0,
+          "y": -240.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -440.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "designator": "CRFBULK2",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "1u",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": -520.0,
+      "y": -200.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "v3v3rf",
+          "x": -520.0,
+          "y": -240.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -520.0,
+          "y": -160.0
+        }
+      ]
+    },
+    {
+      "designator": "RPD_en_0",
+      "label": "RPD_en_0..RPD_en_7",
+      "kind": "resistor",
+      "name": "",
+      "value": "100k",
+      "symbol": "resistor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 20.0,
+      "x": -280.0,
+      "y": 240.0,
+      "rotation": 90.0,
+      "count": 8,
+      "members": [
+        "RPD_en_0",
+        "RPD_en_1",
+        "RPD_en_2",
+        "RPD_en_3",
+        "RPD_en_4",
+        "RPD_en_5",
+        "RPD_en_6",
+        "RPD_en_7"
+      ],
+      "pins": [
+        {
+          "name": "1",
+          "net": "en",
+          "x": -280.0,
+          "y": 200.0,
+          "members": [
+            {
+              "name": "RPD_en_0",
+              "net": "en_0"
+            },
+            {
+              "name": "RPD_en_1",
+              "net": "en_1"
+            },
+            {
+              "name": "RPD_en_2",
+              "net": "en_2"
+            },
+            {
+              "name": "RPD_en_3",
+              "net": "en_3"
+            },
+            {
+              "name": "RPD_en_4",
+              "net": "en_4"
+            },
+            {
+              "name": "RPD_en_5",
+              "net": "en_5"
+            },
+            {
+              "name": "RPD_en_6",
+              "net": "en_6"
+            },
+            {
+              "name": "RPD_en_7",
+              "net": "en_7"
+            }
+          ]
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -280.0,
+          "y": 280.0,
+          "members": [
+            {
+              "name": "RPD_en_0",
+              "net": "0"
+            },
+            {
+              "name": "RPD_en_1",
+              "net": "0"
+            },
+            {
+              "name": "RPD_en_2",
+              "net": "0"
+            },
+            {
+              "name": "RPD_en_3",
+              "net": "0"
+            },
+            {
+              "name": "RPD_en_4",
+              "net": "0"
+            },
+            {
+              "name": "RPD_en_5",
+              "net": "0"
+            },
+            {
+              "name": "RPD_en_6",
+              "net": "0"
+            },
+            {
+              "name": "RPD_en_7",
+              "net": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "designator": "RPD_a_0_0",
+      "label": "RPD_a_0_0..RPD_a_7_1",
+      "kind": "resistor",
+      "name": "",
+      "value": "100k",
+      "symbol": "resistor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 20.0,
+      "x": -200.0,
+      "y": 120.0,
+      "rotation": 90.0,
+      "count": 16,
+      "members": [
+        "RPD_a_0_0",
+        "RPD_a_0_1",
+        "RPD_a_1_0",
+        "RPD_a_1_1",
+        "RPD_a_2_0",
+        "RPD_a_2_1",
+        "RPD_a_3_0",
+        "RPD_a_3_1",
+        "RPD_a_4_0",
+        "RPD_a_4_1",
+        "RPD_a_5_0",
+        "RPD_a_5_1",
+        "RPD_a_6_0",
+        "RPD_a_6_1",
+        "RPD_a_7_0",
+        "RPD_a_7_1"
+      ],
+      "pins": [
+        {
+          "name": "1",
+          "net": "a",
+          "x": -200.0,
+          "y": 80.0,
+          "members": [
+            {
+              "name": "RPD_a_0_0",
+              "net": "a_0_0"
+            },
+            {
+              "name": "RPD_a_0_1",
+              "net": "a_0_1"
+            },
+            {
+              "name": "RPD_a_1_0",
+              "net": "a_1_0"
+            },
+            {
+              "name": "RPD_a_1_1",
+              "net": "a_1_1"
+            },
+            {
+              "name": "RPD_a_2_0",
+              "net": "a_2_0"
+            },
+            {
+              "name": "RPD_a_2_1",
+              "net": "a_2_1"
+            },
+            {
+              "name": "RPD_a_3_0",
+              "net": "a_3_0"
+            },
+            {
+              "name": "RPD_a_3_1",
+              "net": "a_3_1"
+            },
+            {
+              "name": "RPD_a_4_0",
+              "net": "a_4_0"
+            },
+            {
+              "name": "RPD_a_4_1",
+              "net": "a_4_1"
+            },
+            {
+              "name": "RPD_a_5_0",
+              "net": "a_5_0"
+            },
+            {
+              "name": "RPD_a_5_1",
+              "net": "a_5_1"
+            },
+            {
+              "name": "RPD_a_6_0",
+              "net": "a_6_0"
+            },
+            {
+              "name": "RPD_a_6_1",
+              "net": "a_6_1"
+            },
+            {
+              "name": "RPD_a_7_0",
+              "net": "a_7_0"
+            },
+            {
+              "name": "RPD_a_7_1",
+              "net": "a_7_1"
+            }
+          ]
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -200.0,
+          "y": 160.0,
+          "members": [
+            {
+              "name": "RPD_a_0_0",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_0_1",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_1_0",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_1_1",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_2_0",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_2_1",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_3_0",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_3_1",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_4_0",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_4_1",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_5_0",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_5_1",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_6_0",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_6_1",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_7_0",
+              "net": "0"
+            },
+            {
+              "name": "RPD_a_7_1",
+              "net": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "designator": "RT_IN1",
+      "label": "RT_IN1..RT_IN4",
+      "kind": "resistor",
+      "name": "",
+      "value": "50",
+      "symbol": "resistor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 20.0,
+      "x": -440.0,
+      "y": 120.0,
+      "rotation": 90.0,
+      "count": 4,
+      "members": [
+        "RT_IN1",
+        "RT_IN2",
+        "RT_IN3",
+        "RT_IN4"
+      ],
+      "pins": [
+        {
+          "name": "1",
+          "net": "rin",
+          "x": -440.0,
+          "y": 80.0,
+          "members": [
+            {
+              "name": "RT_IN1",
+              "net": "rin_0"
+            },
+            {
+              "name": "RT_IN2",
+              "net": "rin_1"
+            },
+            {
+              "name": "RT_IN3",
+              "net": "rin_2"
+            },
+            {
+              "name": "RT_IN4",
+              "net": "rin_3"
+            }
+          ]
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -440.0,
+          "y": 160.0,
+          "members": [
+            {
+              "name": "RT_IN1",
+              "net": "0"
+            },
+            {
+              "name": "RT_IN2",
+              "net": "0"
+            },
+            {
+              "name": "RT_IN3",
+              "net": "0"
+            },
+            {
+              "name": "RT_IN4",
+              "net": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "designator": "RT_OUT1",
+      "label": "RT_OUT1..RT_OUT4",
+      "kind": "resistor",
+      "name": "",
+      "value": "50",
+      "symbol": "resistor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 20.0,
+      "x": -80.0,
+      "y": -520.0,
+      "rotation": 90.0,
+      "count": 4,
+      "members": [
+        "RT_OUT1",
+        "RT_OUT2",
+        "RT_OUT3",
+        "RT_OUT4"
+      ],
+      "pins": [
+        {
+          "name": "1",
+          "net": "rout",
+          "x": -80.0,
+          "y": -560.0,
+          "members": [
+            {
+              "name": "RT_OUT1",
+              "net": "rout_0"
+            },
+            {
+              "name": "RT_OUT2",
+              "net": "rout_1"
+            },
+            {
+              "name": "RT_OUT3",
+              "net": "rout_2"
+            },
+            {
+              "name": "RT_OUT4",
+              "net": "rout_3"
+            }
+          ]
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -80.0,
+          "y": -480.0,
+          "members": [
+            {
+              "name": "RT_OUT1",
+              "net": "0"
+            },
+            {
+              "name": "RT_OUT2",
+              "net": "0"
+            },
+            {
+              "name": "RT_OUT3",
+              "net": "0"
+            },
+            {
+              "name": "RT_OUT4",
+              "net": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "designator": "V_EXT_en_0",
+      "label": "",
+      "kind": "voltage_source",
+      "name": "",
+      "value": "DC 3.297000000e+00",
+      "symbol": "voltage_source",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 32.0,
+      "inkH": 80.0,
+      "x": 0.0,
+      "y": 520.0,
+      "rotation": 0.0,
+      "pins": [
+        {
+          "name": "+",
+          "net": "en_0_EXT_S",
+          "x": 0.0,
+          "y": 480.0
+        },
+        {
+          "name": "-",
+          "net": "0",
+          "x": 0.0,
+          "y": 560.0
+        }
+      ]
+    },
+    {
+      "designator": "R_EXT_en_0",
+      "label": "",
+      "kind": "resistor",
+      "name": "",
+      "value": "3.000000000e-02",
+      "symbol": "resistor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 20.0,
+      "x": -80.0,
+      "y": 240.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "en_0_EXT_S",
+          "x": -80.0,
+          "y": 200.0
+        },
+        {
+          "name": "2",
+          "net": "en_0_EXT_L",
+          "x": -80.0,
+          "y": 280.0
+        }
+      ]
+    },
+    {
+      "designator": "L_EXT_en_0",
+      "label": "",
+      "kind": "inductor",
+      "name": "",
+      "value": "1.000000000e-15",
+      "symbol": "inductor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 16.0,
+      "x": -80.0,
+      "y": 400.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "en_0_EXT_L",
+          "x": -80.0,
+          "y": 360.0
+        },
+        {
+          "name": "2",
+          "net": "en_0",
+          "x": -80.0,
+          "y": 440.0
+        }
+      ]
+    },
+    {
+      "designator": "V_EXT_en_4",
+      "label": "",
+      "kind": "voltage_source",
+      "name": "",
+      "value": "DC 3.297000000e+00",
+      "symbol": "voltage_source",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 32.0,
+      "inkH": 80.0,
+      "x": 360.0,
+      "y": 200.0,
+      "rotation": 0.0,
+      "pins": [
+        {
+          "name": "+",
+          "net": "en_4_EXT_S",
+          "x": 360.0,
+          "y": 160.0
+        },
+        {
+          "name": "-",
+          "net": "0",
+          "x": 360.0,
+          "y": 240.0
+        }
+      ]
+    },
+    {
+      "designator": "R_EXT_en_4",
+      "label": "",
+      "kind": "resistor",
+      "name": "",
+      "value": "3.000000000e-02",
+      "symbol": "resistor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 20.0,
+      "x": 440.0,
+      "y": -40.0,
+      "rotation": 180.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "en_4_EXT_S",
+          "x": 480.0,
+          "y": -40.0
+        },
+        {
+          "name": "2",
+          "net": "en_4_EXT_L",
+          "x": 400.0,
+          "y": -40.0
+        }
+      ]
+    },
+    {
+      "designator": "L_EXT_en_4",
+      "label": "",
+      "kind": "inductor",
+      "name": "",
+      "value": "1.000000000e-15",
+      "symbol": "inductor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 16.0,
+      "x": 280.0,
+      "y": -40.0,
+      "rotation": 180.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "en_4_EXT_L",
+          "x": 320.0,
+          "y": -40.0
+        },
+        {
+          "name": "2",
+          "net": "en_4",
+          "x": 240.0,
+          "y": -40.0
+        }
+      ]
+    },
+    {
+      "designator": "VRIN1",
+      "label": "",
+      "kind": "voltage_source",
+      "name": "",
+      "value": "DC 1",
+      "symbol": "voltage_source",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 32.0,
+      "inkH": 80.0,
+      "x": -560.0,
+      "y": -40.0,
+      "rotation": 0.0,
+      "pins": [
+        {
+          "name": "+",
+          "net": "rin_0",
+          "x": -560.0,
+          "y": -80.0
+        },
+        {
+          "name": "-",
+          "net": "0",
+          "x": -560.0,
+          "y": 0.0
+        }
+      ]
+    }
+  ],
+  "wires": [
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 280.0,
+          "y": -150.0
+        },
+        {
+          "x": 280.0,
+          "y": -110.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": -320.0,
+          "y": 16.0
+        },
+        {
+          "x": -320.0,
+          "y": 56.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 80.0,
+          "y": -304.0
+        },
+        {
+          "x": 80.0,
+          "y": -264.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 40.0,
+          "y": 156.0
+        },
+        {
+          "x": 40.0,
+          "y": 196.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": -320.0,
+          "y": -324.0
+        },
+        {
+          "x": -320.0,
+          "y": -284.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": -280.0,
+          "y": 280.0
+        },
+        {
+          "x": -280.0,
+          "y": 320.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": -200.0,
+          "y": 160.0
+        },
+        {
+          "x": -200.0,
+          "y": 200.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": -440.0,
+          "y": 160.0
+        },
+        {
+          "x": -440.0,
+          "y": 200.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": -80.0,
+          "y": -480.0
+        },
+        {
+          "x": -80.0,
+          "y": -440.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 0.0,
+          "y": 560.0
+        },
+        {
+          "x": 0.0,
+          "y": 600.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 360.0,
+          "y": 240.0
+        },
+        {
+          "x": 360.0,
+          "y": 280.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": -560.0,
+          "y": 0.0
+        },
+        {
+          "x": -560.0,
+          "y": 40.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": 200.0,
+          "y": -160.0
+        },
+        {
+          "x": 200.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": 120.0,
+          "y": -160.0
+        },
+        {
+          "x": 120.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": 40.0,
+          "y": -160.0
+        },
+        {
+          "x": 40.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -40.0,
+          "y": -160.0
+        },
+        {
+          "x": -40.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -120.0,
+          "y": -160.0
+        },
+        {
+          "x": -120.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -200.0,
+          "y": -160.0
+        },
+        {
+          "x": -200.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -280.0,
+          "y": -160.0
+        },
+        {
+          "x": -280.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -360.0,
+          "y": -160.0
+        },
+        {
+          "x": -360.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -440.0,
+          "y": -160.0
+        },
+        {
+          "x": -440.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -520.0,
+          "y": -160.0
+        },
+        {
+          "x": -520.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -520.0,
+          "y": -150.0
+        },
+        {
+          "x": -440.0,
+          "y": -150.0
+        },
+        {
+          "x": -360.0,
+          "y": -150.0
+        },
+        {
+          "x": -280.0,
+          "y": -150.0
+        },
+        {
+          "x": -200.0,
+          "y": -150.0
+        },
+        {
+          "x": -120.0,
+          "y": -150.0
+        },
+        {
+          "x": -40.0,
+          "y": -150.0
+        },
+        {
+          "x": 40.0,
+          "y": -150.0
+        },
+        {
+          "x": 120.0,
+          "y": -150.0
+        },
+        {
+          "x": 200.0,
+          "y": -150.0
+        },
+        {
+          "x": 280.0,
+          "y": -150.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "supply",
+      "points": [
+        {
+          "x": 280.0,
+          "y": -250.0
+        },
+        {
+          "x": 280.0,
+          "y": -290.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "supply",
+      "points": [
+        {
+          "x": 40.0,
+          "y": -76.0
+        },
+        {
+          "x": 40.0,
+          "y": -116.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "supply",
+      "points": [
+        {
+          "x": -320.0,
+          "y": -556.0
+        },
+        {
+          "x": -320.0,
+          "y": -596.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": 200.0,
+          "y": -240.0
+        },
+        {
+          "x": 200.0,
+          "y": -250.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": 120.0,
+          "y": -240.0
+        },
+        {
+          "x": 120.0,
+          "y": -250.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": 40.0,
+          "y": -240.0
+        },
+        {
+          "x": 40.0,
+          "y": -250.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -40.0,
+          "y": -240.0
+        },
+        {
+          "x": -40.0,
+          "y": -250.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -120.0,
+          "y": -240.0
+        },
+        {
+          "x": -120.0,
+          "y": -250.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -200.0,
+          "y": -240.0
+        },
+        {
+          "x": -200.0,
+          "y": -250.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -280.0,
+          "y": -240.0
+        },
+        {
+          "x": -280.0,
+          "y": -250.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -360.0,
+          "y": -240.0
+        },
+        {
+          "x": -360.0,
+          "y": -250.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -440.0,
+          "y": -240.0
+        },
+        {
+          "x": -440.0,
+          "y": -250.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -520.0,
+          "y": -240.0
+        },
+        {
+          "x": -520.0,
+          "y": -250.0
+        }
+      ]
+    },
+    {
+      "net": "v3v3rf",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -520.0,
+          "y": -250.0
+        },
+        {
+          "x": -440.0,
+          "y": -250.0
+        },
+        {
+          "x": -360.0,
+          "y": -250.0
+        },
+        {
+          "x": -280.0,
+          "y": -250.0
+        },
+        {
+          "x": -200.0,
+          "y": -250.0
+        },
+        {
+          "x": -120.0,
+          "y": -250.0
+        },
+        {
+          "x": -40.0,
+          "y": -250.0
+        },
+        {
+          "x": 40.0,
+          "y": -250.0
+        },
+        {
+          "x": 120.0,
+          "y": -250.0
+        },
+        {
+          "x": 200.0,
+          "y": -250.0
+        },
+        {
+          "x": 280.0,
+          "y": -250.0
+        }
+      ]
+    },
+    {
+      "net": "en_0_EXT_S",
+      "kind": "signal",
+      "points": [
+        {
+          "x": 0.0,
+          "y": 480.0
+        },
+        {
+          "x": 0.0,
+          "y": 468.0
+        },
+        {
+          "x": 0.0,
+          "y": 188.0
+        },
+        {
+          "x": -80.0,
+          "y": 188.0
+        },
+        {
+          "x": -80.0,
+          "y": 200.0
+        }
+      ]
+    },
+    {
+      "net": "en_0_EXT_L",
+      "kind": "signal",
+      "points": [
+        {
+          "x": -80.0,
+          "y": 360.0
+        },
+        {
+          "x": -80.0,
+          "y": 280.0
+        }
+      ]
+    },
+    {
+      "net": "en_4_EXT_S",
+      "kind": "signal",
+      "points": [
+        {
+          "x": 360.0,
+          "y": 160.0
+        },
+        {
+          "x": 360.0,
+          "y": 148.0
+        },
+        {
+          "x": 492.0,
+          "y": 148.0
+        },
+        {
+          "x": 492.0,
+          "y": -40.0
+        },
+        {
+          "x": 480.0,
+          "y": -40.0
+        }
+      ]
+    },
+    {
+      "net": "en_4_EXT_L",
+      "kind": "signal",
+      "points": [
+        {
+          "x": 320.0,
+          "y": -40.0
+        },
+        {
+          "x": 400.0,
+          "y": -40.0
+        }
+      ]
+    }
+  ],
+  "junctions": [],
+  "labels": [
+    {
+      "text": "CBY1",
+      "x": 182.0,
+      "y": -202.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "CBY1"
+    },
+    {
+      "text": "100n",
+      "x": 182.0,
+      "y": -190.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "CBY1"
+    },
+    {
+      "text": "CBY2",
+      "x": 102.0,
+      "y": -202.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "CBY2"
+    },
+    {
+      "text": "100n",
+      "x": 102.0,
+      "y": -190.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "CBY2"
+    },
+    {
+      "text": "CBY3",
+      "x": 22.0,
+      "y": -202.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "CBY3"
+    },
+    {
+      "text": "100n",
+      "x": 22.0,
+      "y": -190.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "CBY3"
+    },
+    {
+      "text": "CBY4",
+      "x": -58.0,
+      "y": -202.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "CBY4"
+    },
+    {
+      "text": "100n",
+      "x": -58.0,
+      "y": -190.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "CBY4"
+    },
+    {
+      "text": "CBY5",
+      "x": -138.0,
+      "y": -202.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "CBY5"
+    },
+    {
+      "text": "100n",
+      "x": -138.0,
+      "y": -190.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "CBY5"
+    },
+    {
+      "text": "CBY6",
+      "x": -218.0,
+      "y": -202.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "CBY6"
+    },
+    {
+      "text": "100n",
+      "x": -218.0,
+      "y": -190.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "CBY6"
+    },
+    {
+      "text": "CBY7",
+      "x": -298.0,
+      "y": -202.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "CBY7"
+    },
+    {
+      "text": "100n",
+      "x": -298.0,
+      "y": -190.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "CBY7"
+    },
+    {
+      "text": "CBY8",
+      "x": -378.0,
+      "y": -202.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "CBY8"
+    },
+    {
+      "text": "100n",
+      "x": -378.0,
+      "y": -190.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "CBY8"
+    },
+    {
+      "text": "CRFBULK",
+      "x": -458.0,
+      "y": -202.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "CRFBULK"
+    },
+    {
+      "text": "10u",
+      "x": -458.0,
+      "y": -190.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "CRFBULK"
+    },
+    {
+      "text": "CRFBULK2",
+      "x": -538.0,
+      "y": -202.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "CRFBULK2"
+    },
+    {
+      "text": "1u",
+      "x": -538.0,
+      "y": -190.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "CRFBULK2"
+    },
+    {
+      "text": "RPD_en_0..RPD_en_7",
+      "x": -264.0,
+      "y": 230.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "RPD_en_0"
+    },
+    {
+      "text": "100k",
+      "x": -264.0,
+      "y": 243.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "RPD_en_0"
+    },
+    {
+      "text": "x8",
+      "x": -264.0,
+      "y": 256.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "RPD_en_0"
+    },
+    {
+      "text": "RPD_a_0_0..RPD_a_7_1",
+      "x": -216.0,
+      "y": 110.6,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "RPD_a_0_0"
+    },
+    {
+      "text": "100k",
+      "x": -216.0,
+      "y": 123.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "RPD_a_0_0"
+    },
+    {
+      "text": "x16",
+      "x": -216.0,
+      "y": 136.6,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "RPD_a_0_0"
+    },
+    {
+      "text": "RT_IN1..RT_IN4",
+      "x": -456.0,
+      "y": 110.6,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "RT_IN1"
+    },
+    {
+      "text": "50",
+      "x": -456.0,
+      "y": 123.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "RT_IN1"
+    },
+    {
+      "text": "x4",
+      "x": -456.0,
+      "y": 136.6,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "RT_IN1"
+    },
+    {
+      "text": "RT_OUT1..RT_OUT4",
+      "x": -64.0,
+      "y": -529.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "RT_OUT1"
+    },
+    {
+      "text": "50",
+      "x": -64.0,
+      "y": -517.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "RT_OUT1"
+    },
+    {
+      "text": "x4",
+      "x": -64.0,
+      "y": -503.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "RT_OUT1"
+    },
+    {
+      "text": "V_EXT_en_0",
+      "x": 22.0,
+      "y": 517.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "V_EXT_en_0"
+    },
+    {
+      "text": "DC 3.297000000e+00",
+      "x": 22.0,
+      "y": 530.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "V_EXT_en_0"
+    },
+    {
+      "text": "R_EXT_en_0",
+      "x": -96.0,
+      "y": 179.6,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "R_EXT_en_0"
+    },
+    {
+      "text": "3.000000000e-02",
+      "x": -96.0,
+      "y": 192.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "R_EXT_en_0"
+    },
+    {
+      "text": "L_EXT_en_0",
+      "x": -94.0,
+      "y": 397.6,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "L_EXT_en_0"
+    },
+    {
+      "text": "1.000000000e-15",
+      "x": -94.0,
+      "y": 410.0,
+      "anchor": "end",
+      "size": 10.0,
+      "role": "value",
+      "owner": "L_EXT_en_0"
+    },
+    {
+      "text": "V_EXT_en_4",
+      "x": 382.0,
+      "y": 197.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "V_EXT_en_4"
+    },
+    {
+      "text": "DC 3.297000000e+00",
+      "x": 382.0,
+      "y": 210.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "V_EXT_en_4"
+    },
+    {
+      "text": "R_EXT_en_4",
+      "x": 440.0,
+      "y": -70.4,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "R_EXT_en_4"
+    },
+    {
+      "text": "3.000000000e-02",
+      "x": 440.0,
+      "y": -58.0,
+      "anchor": "middle",
+      "size": 10.0,
+      "role": "value",
+      "owner": "R_EXT_en_4"
+    },
+    {
+      "text": "L_EXT_en_4",
+      "x": 280.0,
+      "y": -68.4,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "L_EXT_en_4"
+    },
+    {
+      "text": "1.000000000e-15",
+      "x": 280.0,
+      "y": -56.0,
+      "anchor": "middle",
+      "size": 10.0,
+      "role": "value",
+      "owner": "L_EXT_en_4"
+    },
+    {
+      "text": "VRIN1",
+      "x": -538.0,
+      "y": -42.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "VRIN1"
+    },
+    {
+      "text": "DC 1",
+      "x": -538.0,
+      "y": -30.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "VRIN1"
+    },
+    {
+      "text": "en_0_EXT_S",
+      "x": -74.0,
+      "y": 203.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "en_0_EXT_L",
+      "x": -74.0,
+      "y": 295.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "en_4_EXT_S",
+      "x": 354.0,
+      "y": 151.6,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "en_4_EXT_L",
+      "x": 326.0,
+      "y": -24.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "m",
+      "x": -112.0,
+      "y": 11.600000000000001,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "m",
+      "x": -472.0,
+      "y": -468.4,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rin",
+      "x": -472.0,
+      "y": -48.4,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rin",
+      "x": -112.0,
+      "y": -28.4,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rin",
+      "x": -434.0,
+      "y": 71.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rin_0",
+      "x": -554.0,
+      "y": -88.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rout",
+      "x": -86.4,
+      "y": -368.4,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rout",
+      "x": -472.0,
+      "y": -508.4,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "rout",
+      "x": -74.0,
+      "y": -568.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "en",
+      "x": -112.0,
+      "y": 91.6,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "en",
+      "x": -274.0,
+      "y": 191.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "en_0",
+      "x": -74.0,
+      "y": 455.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "en",
+      "x": -472.0,
+      "y": -388.4,
+      "anchor": "middle",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "en_4",
+      "x": 234.0,
+      "y": -48.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "en",
+      "x": -674.0,
+      "y": -408.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "a(0, 1)",
+      "x": -118.0,
+      "y": 51.6,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "a",
+      "x": -194.0,
+      "y": 71.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "a(8, 9)",
+      "x": -478.0,
+      "y": -428.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "a",
+      "x": -674.0,
+      "y": -448.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "net",
+      "owner": ""
+    },
+    {
+      "text": "v3v3rf",
+      "x": 296.0,
+      "y": -286.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "v3v3rf",
+      "x": 56.0,
+      "y": -112.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "v3v3rf",
+      "x": -304.0,
+      "y": -592.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    }
+  ],
+  "ports": [
+    {
+      "name": "a[7:0][1:0]",
+      "net": "a",
+      "dir": "input",
+      "x": -738.0,
+      "y": -440.0,
+      "bodyW": 116.0,
+      "bodyH": 24.0,
+      "rotation": 180.0,
+      "members": [
+        {
+          "name": "a_0_0",
+          "net": "a_0_0"
+        },
+        {
+          "name": "a_0_1",
+          "net": "a_0_1"
+        },
+        {
+          "name": "a_1_0",
+          "net": "a_1_0"
+        },
+        {
+          "name": "a_1_1",
+          "net": "a_1_1"
+        },
+        {
+          "name": "a_2_0",
+          "net": "a_2_0"
+        },
+        {
+          "name": "a_2_1",
+          "net": "a_2_1"
+        },
+        {
+          "name": "a_3_0",
+          "net": "a_3_0"
+        },
+        {
+          "name": "a_3_1",
+          "net": "a_3_1"
+        },
+        {
+          "name": "a_4_0",
+          "net": "a_4_0"
+        },
+        {
+          "name": "a_4_1",
+          "net": "a_4_1"
+        },
+        {
+          "name": "a_5_0",
+          "net": "a_5_0"
+        },
+        {
+          "name": "a_5_1",
+          "net": "a_5_1"
+        },
+        {
+          "name": "a_6_0",
+          "net": "a_6_0"
+        },
+        {
+          "name": "a_6_1",
+          "net": "a_6_1"
+        },
+        {
+          "name": "a_7_0",
+          "net": "a_7_0"
+        },
+        {
+          "name": "a_7_1",
+          "net": "a_7_1"
+        }
+      ]
+    },
+    {
+      "name": "en[7:0]",
+      "net": "en",
+      "dir": "input",
+      "x": -722.0,
+      "y": -400.0,
+      "bodyW": 84.0,
+      "bodyH": 24.0,
+      "rotation": 180.0,
+      "members": [
+        {
+          "name": "en_0",
+          "net": "en_0"
+        },
+        {
+          "name": "en_1",
+          "net": "en_1"
+        },
+        {
+          "name": "en_2",
+          "net": "en_2"
+        },
+        {
+          "name": "en_3",
+          "net": "en_3"
+        },
+        {
+          "name": "en_4",
+          "net": "en_4"
+        },
+        {
+          "name": "en_5",
+          "net": "en_5"
+        },
+        {
+          "name": "en_6",
+          "net": "en_6"
+        },
+        {
+          "name": "en_7",
+          "net": "en_7"
+        }
+      ]
+    }
+  ],
+  "fallbacks": [
+    {
+      "kind": "netlabel",
+      "bundle": "m",
+      "net": "m",
+      "part": "XSW1",
+      "pin": "m",
+      "x": -112.0,
+      "y": 20.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -112.0,
+          "y": 20.0
+        },
+        {
+          "x": -124.0,
+          "y": 20.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "m",
+      "net": "m",
+      "part": "XSW5",
+      "pin": "m",
+      "x": -472.0,
+      "y": -460.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -472.0,
+          "y": -460.0
+        },
+        {
+          "x": -484.0,
+          "y": -460.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "rin",
+      "net": "rin",
+      "part": "JIN1",
+      "pin": "RF",
+      "x": -472.0,
+      "y": -40.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -472.0,
+          "y": -40.0
+        },
+        {
+          "x": -484.0,
+          "y": -40.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "rin",
+      "net": "rin",
+      "part": "XSW1",
+      "pin": "RFC",
+      "x": -112.0,
+      "y": -20.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -112.0,
+          "y": -20.0
+        },
+        {
+          "x": -124.0,
+          "y": -20.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "rin",
+      "net": "rin",
+      "part": "RT_IN1",
+      "pin": "1",
+      "x": -440.0,
+      "y": 80.0,
+      "ex": 0.0,
+      "ey": -1.0,
+      "points": [
+        {
+          "x": -440.0,
+          "y": 80.0
+        },
+        {
+          "x": -440.0,
+          "y": 68.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "rin",
+      "net": "rin_0",
+      "part": "VRIN1",
+      "pin": "+",
+      "x": -560.0,
+      "y": -80.0,
+      "ex": 0.0,
+      "ey": -1.0,
+      "points": [
+        {
+          "x": -560.0,
+          "y": -80.0
+        },
+        {
+          "x": -560.0,
+          "y": -92.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "rout",
+      "net": "rout",
+      "part": "JOUT1",
+      "pin": "RF",
+      "x": -86.4,
+      "y": -360.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -86.4,
+          "y": -360.0
+        },
+        {
+          "x": -98.4,
+          "y": -360.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "rout",
+      "net": "rout",
+      "part": "XSW5",
+      "pin": "RFC",
+      "x": -472.0,
+      "y": -500.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -472.0,
+          "y": -500.0
+        },
+        {
+          "x": -484.0,
+          "y": -500.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "rout",
+      "net": "rout",
+      "part": "RT_OUT1",
+      "pin": "1",
+      "x": -80.0,
+      "y": -560.0,
+      "ex": 0.0,
+      "ey": -1.0,
+      "points": [
+        {
+          "x": -80.0,
+          "y": -560.0
+        },
+        {
+          "x": -80.0,
+          "y": -572.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "en",
+      "net": "en",
+      "part": "XSW1",
+      "pin": "EN",
+      "x": -112.0,
+      "y": 100.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -112.0,
+          "y": 100.0
+        },
+        {
+          "x": -124.0,
+          "y": 100.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "en",
+      "net": "en",
+      "part": "RPD_en_0",
+      "pin": "1",
+      "x": -280.0,
+      "y": 200.0,
+      "ex": 0.0,
+      "ey": -1.0,
+      "points": [
+        {
+          "x": -280.0,
+          "y": 200.0
+        },
+        {
+          "x": -280.0,
+          "y": 188.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "en",
+      "net": "en_0",
+      "part": "L_EXT_en_0",
+      "pin": "2",
+      "x": -80.0,
+      "y": 440.0,
+      "ex": 0.0,
+      "ey": 1.0,
+      "points": [
+        {
+          "x": -80.0,
+          "y": 440.0
+        },
+        {
+          "x": -80.0,
+          "y": 452.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "en",
+      "net": "en",
+      "part": "XSW5",
+      "pin": "EN",
+      "x": -472.0,
+      "y": -380.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -472.0,
+          "y": -380.0
+        },
+        {
+          "x": -484.0,
+          "y": -380.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "en",
+      "net": "en_4",
+      "part": "L_EXT_en_4",
+      "pin": "2",
+      "x": 240.0,
+      "y": -40.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": 240.0,
+          "y": -40.0
+        },
+        {
+          "x": 228.0,
+          "y": -40.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "en",
+      "net": "en",
+      "part": "",
+      "pin": "",
+      "x": -680.0,
+      "y": -400.0,
+      "ex": 1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -680.0,
+          "y": -400.0
+        },
+        {
+          "x": -668.0,
+          "y": -400.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "a",
+      "net": "a(0, 1)",
+      "part": "XSW1",
+      "pin": "a(0, 1)",
+      "x": -112.0,
+      "y": 60.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -112.0,
+          "y": 60.0
+        },
+        {
+          "x": -124.0,
+          "y": 60.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "a",
+      "net": "a",
+      "part": "RPD_a_0_0",
+      "pin": "1",
+      "x": -200.0,
+      "y": 80.0,
+      "ex": 0.0,
+      "ey": -1.0,
+      "points": [
+        {
+          "x": -200.0,
+          "y": 80.0
+        },
+        {
+          "x": -200.0,
+          "y": 68.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "a",
+      "net": "a(8, 9)",
+      "part": "XSW5",
+      "pin": "a(8, 9)",
+      "x": -472.0,
+      "y": -420.0,
+      "ex": -1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -472.0,
+          "y": -420.0
+        },
+        {
+          "x": -484.0,
+          "y": -420.0
+        }
+      ]
+    },
+    {
+      "kind": "netlabel",
+      "bundle": "a",
+      "net": "a",
+      "part": "",
+      "pin": "",
+      "x": -680.0,
+      "y": -440.0,
+      "ex": 1.0,
+      "ey": 0.0,
+      "points": [
+        {
+          "x": -680.0,
+          "y": -440.0
+        },
+        {
+          "x": -668.0,
+          "y": -440.0
+        }
+      ]
+    }
+  ]
+}

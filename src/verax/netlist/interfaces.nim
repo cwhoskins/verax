@@ -10,6 +10,14 @@ type
   Bus* = object
     name*: string
     nets*: seq[Net]
+    dims*: seq[int]
+      ## The shape a multi-dimensional bus was declared with, outermost first
+      ## (`[8, 2]` for `bus a, width = [8, 2]`). Empty means "1-D of
+      ## `nets.len`" -- the zero value, so every existing `Bus` literal and
+      ## every consumer that never heard of `dims` keeps working unchanged.
+      ## `nets` stays flat and row-major regardless of `dims.len`; `dims` is
+      ## only ever consulted by the multi-index accessors, `sub`, and
+      ## `schematic/bundles.nim`'s range-notation label.
   SignalDef* = object
     name*: string
     width*: int
@@ -75,6 +83,32 @@ proc describeInterfaceDef*(def: InterfaceDef): string =
 
 proc memberName(name: string, index, width: int): string =
   if width == 1: name else: name & "_" & $index
+proc intsJoin(xs: openArray[int]): string =
+  ## `[8, 2]` -> `"8,2"`. The wire format for `bus.dims`/`bus.coord`; there is
+  ## no `strutils.join` for `openArray[int]`.
+  for i, x in xs:
+    if i > 0: result &= ","
+    result &= $x
+proc intsSplit(s: string): seq[int] =
+  if s.len == 0: return
+  for part in s.split(','): result.add parseInt(part)
+proc coordsOf(flat: int, dims: openArray[int]): seq[int] =
+  ## The row-major multi-index of flat position `flat` in a `dims`-shaped
+  ## bus -- the inverse of the flat index `addBus`/`sub` compute.
+  result = newSeq[int](dims.len)
+  var rem = flat
+  for k in countdown(dims.len - 1, 0):
+    result[k] = rem mod dims[k]
+    rem = rem div dims[k]
+proc coordSuffix(coords: openArray[int]): string =
+  for c in coords: result &= "_" & $c
+proc memberName(name: string, coords, dims: openArray[int]): string =
+  ## Row-major multi-index naming: `a_0_0, a_0_1, .. a_7_1` for
+  ## `dims = [8, 2]`. A single dimension defers to the 1-D form above, so a
+  ## width-1 1-D bus keeps naming its one net bluntly `name` -- `dims = [1]`
+  ## and `dims = @[]` (the 1-D `addBus(width: int)` path) agree.
+  if dims.len == 1: return memberName(name, coords[0], dims[0])
+  name & coordSuffix(coords)
 proc addBus*(nl: Netlist, name: string, width: int, kind = ntSignal): Bus =
   if width <= 0: raise newException(NetlistError, "bus '" & name & "' width must be positive")
   result.name = name
@@ -82,15 +116,74 @@ proc addBus*(nl: Netlist, name: string, width: int, kind = ntSignal): Bus =
     let n = addNet(nl, newNet(memberName(name, i, width), kind))
     n.attrs["bus.name"] = name; n.attrs["bus.index"] = $i; n.attrs["bus.width"] = $width
     result.nets.add n
+proc addBus*(nl: Netlist, name: string, dims: openArray[int], kind = ntSignal): Bus =
+  ## A multi-dimensional bus: `width = [8, 2]` is drawn `a[7:0][1:0]`
+  ## (`schematic/bundles.nim`) and indexed `a[i, j]` / sliced `a.sub(i)`.
+  ## `nets` stays flat and row-major -- every existing consumer of a `Bus`
+  ## (`connectPort`, `addPorts`, `wiringOf`, `bundles.nim`'s per-`bus.name`
+  ## grouping) keeps working off `nets`/`bus.index`/`bus.width` exactly as it
+  ## does for a 1-D bus; only `dims` is new, carried alongside for the
+  ## multi-index accessors and the range-notation label.
+  if dims.len == 0:
+    raise newException(NetlistError, "bus '" & name & "' dims must not be empty")
+  for d in dims:
+    if d <= 0: raise newException(NetlistError, "bus '" & name & "' width must be positive")
+  result.name = name
+  result.dims = @dims
+  var total = 1
+  for d in dims: total *= d
+  let dimsStr = intsJoin(dims)
+  for flat in 0 ..< total:
+    let coords = coordsOf(flat, dims)
+    let n = addNet(nl, newNet(memberName(name, coords, dims), kind))
+    n.attrs["bus.name"] = name; n.attrs["bus.index"] = $flat; n.attrs["bus.width"] = $total
+    n.attrs["bus.dims"] = dimsStr; n.attrs["bus.coord"] = intsJoin(coords)
+    result.nets.add n
 proc busOf*(nl: Netlist, name: string, nets: openArray[Net]): Bus =
+  ## 1-D only: grouping pre-existing nets by hand has no shape to infer. If a
+  ## member was previously part of a multi-dimensional bus, its stale
+  ## `bus.dims`/`bus.coord` are deleted along with the `bus.index` this proc
+  ## rewrites -- left behind, they would report a shape the flat index no
+  ## longer means.
   if nets.len == 0: raise newException(NetlistError, "bus '" & name & "' width must be positive")
   result.name = name; result.nets = @nets
   for i, n in result.nets:
     if n.netlist != nl: raise newException(NetlistError, "bus member does not belong to netlist")
     n.attrs["bus.name"] = name; n.attrs["bus.index"] = $i; n.attrs["bus.width"] = $nets.len
+    n.attrs.del "bus.dims"; n.attrs.del "bus.coord"
 proc len*(b: Bus): int = b.nets.len
-proc `[]`*(b: Bus, i: int): Net = b.nets[i]
-proc `[]`*(b: Bus, s: HSlice[int, int]): seq[Net] = b.nets[s]
+proc `[]`*(b: Bus, i: int): Net =
+  if b.dims.len > 1:
+    raise newException(NetlistError, "bus '" & b.name & "' is " & $b.dims.len &
+      "-D: index it with `" & b.name & "[i, j]` or take a slice with `" &
+      b.name & ".sub(i)`, not a single index")
+  b.nets[i]
+proc `[]`*(b: Bus, i, j: int): Net =
+  if b.dims.len != 2:
+    raise newException(NetlistError, "bus '" & b.name & "' is not 2-D (dims=" &
+      intsJoin(b.dims) & "); use `[i]`/`.sub(i)` matching its actual shape")
+  b.nets[i * b.dims[1] + j]
+proc sub*(b: Bus, i: int): Bus =
+  ## The inner bus at outer index `i`, dropping the leading dimension --
+  ## `a.sub(3)` on an `[8, 2]` bus is a plain width-2 1-D bus over the same
+  ## `Net` objects. Pure value-space, like `narrow` below: it writes nothing
+  ## to the netlist and cannot desync `bus.index`, which `busOf` rewrites
+  ## from table order.
+  if b.dims.len < 2:
+    raise newException(NetlistError, "bus '" & b.name & "' has no inner dimension to take (dims=" &
+      intsJoin(b.dims) & ")")
+  let innerDims = b.dims[1 ..^ 1]
+  var innerLen = 1
+  for d in innerDims: innerLen *= d
+  result.name = b.name & "_" & $i
+  result.dims = innerDims
+  result.nets = b.nets[i * innerLen ..< (i + 1) * innerLen]
+proc `[]`*(b: Bus, s: HSlice[int, int]): seq[Net] =
+  if b.dims.len > 1:
+    raise newException(NetlistError, "bus '" & b.name & "' is " & $b.dims.len &
+      "-D: a flat slice does not follow its shape -- use `" & b.name &
+      "[i, j]` or `" & b.name & ".sub(i)`")
+  b.nets[s]
 proc findBus*(nl: Netlist, name: string): Bus =
   var indexed: seq[(int, Net)]
   for _, n in nl.nets:
@@ -102,6 +195,7 @@ proc findBus*(nl: Netlist, name: string): Bus =
   let width = parseInt(indexed[0][1].attrs.getOrDefault("bus.width", "0"))
   if width != indexed.len: raise newException(NetlistError, "incomplete bus metadata for '" & name & "'")
   result.name = name
+  result.dims = intsSplit(indexed[0][1].attrs.getOrDefault("bus.dims"))
   for i, pair in indexed:
     if pair[0] != i: raise newException(NetlistError, "incomplete bus metadata for '" & name & "'")
     result.nets.add pair[1]
@@ -227,7 +321,15 @@ proc wiringOf*(label: string, ns: seq[Net]): seq[(string, Net)] =
   ## `templates/`).
   if ns.len == 1: return @[(label, ns[0])]
   for i, n in ns: result.add (label & "_" & $i, n)
-proc wiringOf*(label: string, b: Bus): seq[(string, Net)] = wiringOf(label, b.nets)
+proc wiringOf*(label: string, b: Bus): seq[(string, Net)] =
+  ## `dims.len <= 1` forwards to the plain-seq form above (its width-1 bare
+  ## label collapse). A multi-dim bus does not forward -- forwarding to
+  ## `wiringOf(label, b.nets)` would drop `dims` and wire `a_0_0..a_7_1`
+  ## instead of following `b`'s own shape -- so it names each member
+  ## `label_<i0>_<i1>..` directly off `coordsOf`, matching `addPorts` below.
+  if b.dims.len <= 1: return wiringOf(label, b.nets)
+  for flat, n in b.nets:
+    result.add (label & coordSuffix(coordsOf(flat, b.dims)), n)
 proc wiringOf*(label: string, i: Interface): seq[(string, Net)] =
   ## Member-suffix a wide signal the same way `addPorts(_, _, InterfaceView)`
   ## does (`label_signal` for width 1, `label_signal_k` for a wide one), so a
@@ -276,7 +378,11 @@ proc instantiateByPortOpen*(parent: Netlist, instanceDesignator: string,
 
 proc addPorts*(nl: Netlist, label: string, n: Net) = addPort(nl, label, n)
 proc addPorts*(nl: Netlist, label: string, b: Bus) =
-  for i, n in b.nets: addPort(nl, if b.len == 1: label else: label & "_" & $i, n)
+  if b.dims.len <= 1:
+    for i, n in b.nets: addPort(nl, if b.len == 1: label else: label & "_" & $i, n)
+    return
+  for flat, n in b.nets:
+    addPort(nl, label & coordSuffix(coordsOf(flat, b.dims)), n)
 proc addPorts*(nl: Netlist, label: string, v: InterfaceView) =
   let mp = v.iface.def.modports[v.modport]
   for s in v.iface.def.signals:

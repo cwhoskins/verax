@@ -14,20 +14,21 @@
 ##
 ## ### What is checked here
 ##
-## * **the power-on state.** Every ADG904's `EN` line carries a 100 k
-##   pulldown (`controlPulldowns`), and the I2C expanders that drive `EN`
-##   come out of reset as high-impedance inputs -- so `EN` is low, and an
-##   ADG904 with `EN` low has *every* RF port internally terminated in
-##   50 ohm. `safe_default` on the six enables not driven for the routing
-##   check is the claim that the pulldown is there and wins against the
-##   leakage on the line -- a `.op` measurement, not a statement about
-##   firmware.
+## * **the power-on state.** Every ADG904's `EN` and `A0`/`A1` line carries a
+##   100 k pulldown (`controlPulldowns`), and the I2C expanders that drive
+##   them come out of reset as high-impedance inputs -- so `EN` is low and
+##   the address lines read `00`, and an ADG904 with `EN` low has *every* RF
+##   port internally terminated in 50 ohm regardless of address. `safe_default`
+##   on the six enables not driven for the routing check is the claim that
+##   the pulldown is there and wins against the leakage on the line -- a
+##   `.op` measurement, not a statement about firmware.
 ## * **routing and isolation.** `kind = "rf_switch"` gives each ADG904 a real
 ##   model (`spice/models` builds four voltage-controlled switches decoded
 ##   from A1/A0, gated by EN, every open throw terminated in 50 ohm). With
-##   EN1 and EN5 driven and A1/A0 grounded, a 1 V tone on RIN1 reaches m1 and
-##   ROUT1 through the routed path, while m2 and ROUT2 -- selected by nobody
-##   -- sit at ground in their terminations. Four `.op` claims.
+##   EN1 and EN5 driven high and A1/A0 left on their pulldowns (`00`), a 1 V
+##   tone on RIN1 reaches m1 and ROUT1 through the routed path, while m2 and
+##   ROUT2 -- selected by nobody -- sit at ground in their terminations.
+##   Four `.op` claims.
 ## * **the RF rail's decoupling**, behind eight parts.
 ## * **derating** on the rail's capacitors.
 ##
@@ -40,110 +41,76 @@
 ## capacitors and the SMA connectors are in the netlist for the BoM and the
 ## layout; the routing check reads a DC path, not an RF one.
 
+import std/tables
 import verax/contract/dsl
 
 proc xbarRf*(): Netlist =
-  netlist("xbar_rf"):
+  result = netlist("xbar_rf"):
     net gnd, kind = ntGround, name = "0"
     net v3v3rf, kind = ntPower:
       spec:
         voltage = 3.297.V
 
     # midplane
-    net m1, kind = ntSignal
-    net m2, kind = ntSignal
-    net m3, kind = ntSignal
-    net m4, kind = ntSignal
+    bus m, width = 4
     # SMA input / output nets
-    net rin1, kind = ntSignal
-    net rin2, kind = ntSignal
-    net rin3, kind = ntSignal
-    net rin4, kind = ntSignal
-    net rout1, kind = ntSignal
-    net rout2, kind = ntSignal
-    net rout3, kind = ntSignal
-    net rout4, kind = ntSignal
+    bus rin, width = 4
+    bus rout, width = 4
     # switch enables -- the lines the safety claim is about
-    net en1, kind = ntSignal
-    net en2, kind = ntSignal
-    net en3, kind = ntSignal
-    net en4, kind = ntSignal
-    net en5, kind = ntSignal
-    net en6, kind = ntSignal
-    net en7, kind = ntSignal
-    net en8, kind = ntSignal
+    bus en, width = 8
+    # switch address selects -- one two-dimensional bus, dimension 0 the
+    # switch (0..7), dimension 1 the address bit (0 = A0, 1 = A1). Drawn
+    # `a[7:0][1:0]` on the schematic.
+    bus a, width = [8, 2]
 
-    # --- power entry and the control header -----------------------------
+    # --- power entry ----------------------------------------------------
     component J0, kind = "connector", partNumber = "hdr-2":
       pin "VRF", v3v3rf, kind = ptPower
       pin "GND", gnd, kind = ptGround
-    component JCTL, kind = "connector", partNumber = "hdr-8":
-      pin "EN1", en1, kind = ptInput
-      pin "EN2", en2, kind = ptInput
-      pin "EN3", en3, kind = ptInput
-      pin "EN4", en4, kind = ptInput
-      pin "EN5", en5, kind = ptInput
-      pin "EN6", en6, kind = ptInput
-      pin "EN7", en7, kind = ptInput
-      pin "EN8", en8, kind = ptInput
 
     # --- the eight SMA edges -------------------------------------------
-    for (nm, rn) in [("JIN1", rin1), ("JIN2", rin2), ("JIN3", rin3),
-                     ("JIN4", rin4), ("JOUT1", rout1), ("JOUT2", rout2),
-                     ("JOUT3", rout3), ("JOUT4", rout4)]:
+    for (nm, rn) in [("JIN1", rin[0]), ("JIN2", rin[1]), ("JIN3", rin[2]),
+                     ("JIN4", rin[3]), ("JOUT1", rout[0]), ("JOUT2", rout[1]),
+                     ("JOUT3", rout[2]), ("JOUT4", rout[3])]:
       component J, designator = nm, kind = "connector", partNumber = "SMA-50":
         pin "RF", rn, kind = ptPassive
         pin "GND", gnd, kind = ptGround
-
-    # --- DC blocks on every RF port ----------------------------------
-    # C0G so the corner does not walk under bias. One at each SMA and one on
-    # each midplane rail -- 12 in all, built in a loop.
-    for (cn, a) in [("CBIN1", rin1), ("CBIN2", rin2), ("CBIN3", rin3),
-                    ("CBIN4", rin4), ("CBOUT1", rout1), ("CBOUT2", rout2),
-                    ("CBOUT3", rout3), ("CBOUT4", rout4),
-                    ("CBM1", m1), ("CBM2", m2), ("CBM3", m3), ("CBM4", m4)]:
-      component C, designator = cn, kind = "capacitor", value = "100n":
-        pin "1", a, kind = ptPassive
-        pin "2", gnd, kind = ptPassive
-        spec:
-          package = "0402"
-          dielectric = "C0G"
-          voltage_rating = 16.0.V
 
     # --- the eight switches -----------------------------------------
     # ADG904 absorptive SP4T. `kind = "rf_switch"`, so `spice/models`'
     # `muxModel` stands each one up as four voltage-controlled switches
     # decoded from A1/A0 and gated by EN, with every open throw terminated in
     # 50 ohm -- the datasheet numbers land via `equipAdg904` in the bench and
-    # the system. A0/A1 to ground selects RF1 (`00`); firmware drives them
-    # through the expanders in the real board.
+    # the system. The address lines are real ports now: one two-dimensional
+    # bus `a[switch, bit]`, drawn `a[7:0][1:0]`; firmware drives them through
+    # the expanders in the real board.
     #
     # Input side: RFC on the SMA input, RF1..4 onto the midplane.
-    for (nm, rfc, en) in [("XSW1", rin1, en1), ("XSW2", rin2, en2),
-                          ("XSW3", rin3, en3), ("XSW4", rin4, en4)]:
+    for (nm, rfc, en, sel) in [("XSW1", rin[0], en[0], 0), ("XSW2", rin[1], en[1], 1),
+                               ("XSW3", rin[2], en[2], 2), ("XSW4", rin[3], en[3], 3)]:
       component U, designator = nm, kind = "rf_switch", partNumber = "ADG904":
         pin "RFC", rfc, kind = ptPassive
-        pin "RF1", m1, kind = ptPassive
-        pin "RF2", m2, kind = ptPassive
-        pin "RF3", m3, kind = ptPassive
-        pin "RF4", m4, kind = ptPassive
-        pin "A0", gnd, kind = ptInput
-        pin "A1", gnd, kind = ptInput
+        pin "RF1", m[0], kind = ptPassive
+        pin "RF2", m[1], kind = ptPassive
+        pin "RF3", m[2], kind = ptPassive
+        pin "RF4", m[3], kind = ptPassive
+        pin "A0", a[sel, 0], kind = ptInput
+        pin "A1", a[sel, 1], kind = ptInput
         pin "EN", en, kind = ptInput
         pin "VDD", v3v3rf, kind = ptPower, zin = "3300"
         pin "GND", gnd, kind = ptGround
 
     # Output side: RF1..4 from the midplane, RFC on the SMA output.
-    for (nm, rfc, en) in [("XSW5", rout1, en5), ("XSW6", rout2, en6),
-                          ("XSW7", rout3, en7), ("XSW8", rout4, en8)]:
+    for (nm, rfc, en, sel) in [("XSW5", rout[0], en[4], 4), ("XSW6", rout[1], en[5], 5),
+                               ("XSW7", rout[2], en[6], 6), ("XSW8", rout[3], en[7], 7)]:
       component U, designator = nm, kind = "rf_switch", partNumber = "ADG904":
         pin "RFC", rfc, kind = ptPassive
-        pin "RF1", m1, kind = ptPassive
-        pin "RF2", m2, kind = ptPassive
-        pin "RF3", m3, kind = ptPassive
-        pin "RF4", m4, kind = ptPassive
-        pin "A0", gnd, kind = ptInput
-        pin "A1", gnd, kind = ptInput
+        pin "RF1", m[0], kind = ptPassive
+        pin "RF2", m[1], kind = ptPassive
+        pin "RF3", m[2], kind = ptPassive
+        pin "RF4", m[3], kind = ptPassive
+        pin "A0", a[sel, 0], kind = ptInput
+        pin "A1", a[sel, 1], kind = ptInput
         pin "EN", en, kind = ptInput
         pin "VDD", v3v3rf, kind = ptPower, zin = "3300"
         pin "GND", gnd, kind = ptGround
@@ -173,13 +140,35 @@ proc xbarRf*(): Netlist =
         dielectric = "X7R"
         voltage_rating = 10.0.V
 
+  # Enable and address are exposed as ports directly rather than through a
+  # header connector: nothing on this board plugs into them, they arrive
+  # over the control-board wiring `designs/xbar_switch.nim` provides, so
+  # there is no physical part standing between the ADG904 select pins and
+  # the sheet boundary for a connector to model. `addPorts` takes a whole
+  # `Bus` and ports every member in one call, named `<label>_<i>` (or
+  # `<label>_<i0>_<i1>` for `a`'s two dimensions) -- the same expansion
+  # `subckt`'s own port list does for a bus identifier. The `en`/`a` `let`s
+  # the block above bound are scoped to that block, so `findBus` recovers
+  # each one from the net attrs it left behind.
+  addPorts(result, "en", findBus(result, "en"))
+  addPorts(result, "a", findBus(result, "a"))
+
 proc rfEnableNets*(): seq[string] =
   ## The eight ADG904 enable nets, by name -- for `controlPulldowns` and the
   ## `safe_default` claims, in both this file's bench and the system.
-  @["en1", "en2", "en3", "en4", "en5", "en6", "en7", "en8"]
+  @["en_0", "en_1", "en_2", "en_3", "en_4", "en_5", "en_6", "en_7"]
+
+proc rfAddressNets*(): seq[string] =
+  ## The sixteen ADG904 address-select nets (A0 then A1, one pair per
+  ## switch), by name -- for `controlPulldowns` in both this file's bench
+  ## and the system. Needed for simulation, not just safety: `muxModel`'s
+  ## decoder reads each select net without loading it, so an address net
+  ## with nothing else on it is a floating node and the `.op` solve is
+  ## singular. Row-major over `bus a, width = [8, 2]`: `a_<switch>_<bit>`.
+  @["a_0_0", "a_0_1", "a_1_0", "a_1_1", "a_2_0", "a_2_1", "a_3_0", "a_3_1",
+    "a_4_0", "a_4_1", "a_5_0", "a_5_1", "a_6_0", "a_6_1", "a_7_0", "a_7_1"]
 
 when isMainModule:
-  import std/tables
   import verax/verify
   import verax/netlist/graph
   import verax/spice/boundary
@@ -191,6 +180,14 @@ when isMainModule:
   # Every EN line pulled to ground, as the board is.
   controlPulldowns(d.netlist, rfEnableNets())
 
+  # Every address line pulled to ground too: the expanders that drive A0/A1
+  # come out of reset the same way EN does, and unlike EN an undriven select
+  # net has nothing else touching it at all -- `muxModel`'s decoder reads it
+  # without loading it, so with no pulldown the `.op` solve is singular.
+  # Pulled low, every switch defaults to A1,A0 = 00 -> RF1, same as the old
+  # hard-wire to ground.
+  controlPulldowns(d.netlist, rfAddressNets())
+
   # The eight ADG904s, with their datasheet numbers.
   equipAdg904(d.netlist,
     ["XSW1", "XSW2", "XSW3", "XSW4", "XSW5", "XSW6", "XSW7", "XSW8"])
@@ -199,34 +196,23 @@ when isMainModule:
   driveConnector(findComponent(d.netlist, "J0"),
                  {"VRF": driveSource(3.297.V, rout = 30.mohm)})
 
-  # A 50 ohm cable-and-load on every SMA port, the same terminations
-  # `designs/xbar_switch.nim` puts on the system's ports.
-  for (rn, netv) in [("RT_IN1", "rin1"), ("RT_IN2", "rin2"), ("RT_IN3", "rin3"),
-                     ("RT_IN4", "rin4"), ("RT_OUT1", "rout1"),
-                     ("RT_OUT2", "rout2"), ("RT_OUT3", "rout3"),
-                     ("RT_OUT4", "rout4")]:
-    let r = addComponent(d.netlist, Component(designator: rn, kind: "resistor"))
-    r.attrs["value"] = "50"
-    discard connect(r, "1", findNet(d.netlist, netv), ptPassive)
-    discard connect(r, "2", findNet(d.netlist, "0"), ptPassive)
 
-  # Route input 1 to output 1: EN1 and EN5 driven high, A1/A0 grounded, so
-  # RIN1 -> m1 -> ROUT1. A 1 V DC tone on RIN1 stands in for an RF carrier
-  # (this bench has no transmission lines -- it measures the routed path's
-  # DC continuity, not its S-parameters). The other six enables stay on
-  # their pulldowns.
-  for (nm, netn) in [("VEN1", "en1"), ("VEN5", "en5")]:
-    let v = addComponent(d.netlist, Component(designator: nm,
-                                              kind: "voltage_source"))
-    v.attrs["value"] = "DC 3.297"
-    discard connect(v, "+", findNet(d.netlist, netn), ptPower)
-    discard connect(v, "-", findNet(d.netlist, "0"), ptGround)
+  # Route input 1 to output 1: EN1 (en_0) and EN5 (en_4) driven high, A1/A0
+  # left on their pulldowns (= 00), so RIN1 -> m1 -> ROUT1. A 1 V DC tone on
+  # RIN1 stands in for an RF carrier (this bench has no transmission lines
+  # -- it measures the routed path's DC continuity, not its S-parameters).
+  # The other six enables stay on their pulldowns too. `attachDrives` is
+  # `driveConnector`'s underlying mechanism, applied straight to the port
+  # nets since there is no connector here to hang a drive on.
+  discard attachDrives(d.netlist,
+                       {"en_0": driveSource(3.297.V, rout = 30.mohm),
+                        "en_4": driveSource(3.297.V, rout = 30.mohm)})
   block:
     let v = addComponent(d.netlist, Component(designator: "VRIN1",
                                               kind: "voltage_source"))
     v.attrs["value"] = "DC 1"
     v.attrs["rout"] = "0.05"
-    discard connect(v, "+", findNet(d.netlist, "rin1"), ptPassive)
+    discard connect(v, "+", findNet(d.netlist, "rin_0"), ptPassive)
     discard connect(v, "-", findNet(d.netlist, "0"), ptGround)
 
   discard d.addRole("power_rail", "rfrail",
@@ -237,7 +223,7 @@ when isMainModule:
 
   # The power-on safe default, on the six enables still held only by their
   # pulldowns. en1 and en5 are driven for the routing check above.
-  for en in ["en2", "en3", "en4", "en6", "en7", "en8"]:
+  for en in ["en_1", "en_2", "en_3", "en_5", "en_6", "en_7"]:
     discard d.addRole("safe_default", en,
                       {"control": Subject(kind: skNet, name: en)},
                       {"rail": "3.297", "maxFraction": "0.1"})
@@ -245,7 +231,7 @@ when isMainModule:
   # Routing: the selected path carries the tone.
   d.assertThat(Assertion(
     id: "REQ-RF-ROUTE-MID",
-    subjects: @[Subject(kind: skNet, name: "m1")],
+    subjects: @[Subject(kind: skNet, name: "m_0")],
     quantity: "dc_voltage", expect: atLeast(0.3), unit: "V",
     severity: sevError,
     rationale: "with EN1 high and A1/A0 = 00 the ADG904 connects RFC to RF1, " &
@@ -255,7 +241,7 @@ when isMainModule:
     origin: "authored"))
   d.assertThat(Assertion(
     id: "REQ-RF-ROUTE-OUT",
-    subjects: @[Subject(kind: skNet, name: "rout1")],
+    subjects: @[Subject(kind: skNet, name: "rout_0")],
     quantity: "dc_voltage", expect: atLeast(0.3), unit: "V",
     severity: sevError,
     rationale: "and the output switch XSW5 carries it on from m1 to ROUT1 -- " &
@@ -265,7 +251,7 @@ when isMainModule:
   # Isolation: an unselected path stays terminated near ground.
   d.assertThat(Assertion(
     id: "REQ-RF-ISO-MID",
-    subjects: @[Subject(kind: skNet, name: "m2")],
+    subjects: @[Subject(kind: skNet, name: "m_1")],
     quantity: "dc_voltage", expect: atMost(0.05), unit: "V",
     severity: sevError,
     rationale: "the m2 midplane rail is selected by nobody, and every ADG904 " &
@@ -275,7 +261,7 @@ when isMainModule:
     origin: "authored"))
   d.assertThat(Assertion(
     id: "REQ-RF-ISO-OUT",
-    subjects: @[Subject(kind: skNet, name: "rout2")],
+    subjects: @[Subject(kind: skNet, name: "rout_1")],
     quantity: "dc_voltage", expect: atMost(0.05), unit: "V",
     severity: sevError,
     rationale: "output 2 is not routed to anything, so its SMA port sees only " &

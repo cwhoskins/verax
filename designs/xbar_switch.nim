@@ -136,23 +136,15 @@ let d = design("xbar_switch"):
   net mdiRp, kind = ntSignal
   net mdiRn, kind = ntSignal
 
-  net en1, kind = ntSignal
-  net en2, kind = ntSignal
-  net en3, kind = ntSignal
-  net en4, kind = ntSignal
-  net en5, kind = ntSignal
-  net en6, kind = ntSignal
-  net en7, kind = ntSignal
-  net en8, kind = ntSignal
-
-  net rin1, kind = ntSignal
-  net rin2, kind = ntSignal
-  net rin3, kind = ntSignal
-  net rin4, kind = ntSignal
-  net rout1, kind = ntSignal
-  net rout2, kind = ntSignal
-  net rout3, kind = ntSignal
-  net rout4, kind = ntSignal
+  # `xbar_rf`'s enable/address/SMA nets are buses now (its own sheet ports
+  # merge into one pennant each); declaring the parent side as the matching
+  # buses lets `instance`'s `{"en": en, ...}` wiring expand through
+  # `wiringOf` to the child's scalar ports in one entry per bus, instead of
+  # eight/sixteen/four scalar `net`s and as many wiring-table entries.
+  bus en, width = 8
+  bus a, width = [8, 2]
+  bus rin, width = 4
+  bus rout, width = 4
 
   # --- the five boards, wired by name --------------------------------
   instance XPOE, asSubcircuit(xbarPoe(), "XBAR_POE"),
@@ -162,15 +154,15 @@ let d = design("xbar_switch"):
   instance XPWR, asSubcircuit(xbarPower(), "XBAR_POWER"),
            {"poein": poe5v, "usbin": usb5v, "v3v3": v3v3, "v3v3rf": v3v3rf}
   instance XRF, asSubcircuit(xbarRf(), "XBAR_RF"),
-           {"v3v3rf": v3v3rf,
-            "en1": en1, "en2": en2, "en3": en3, "en4": en4,
-            "en5": en5, "en6": en6, "en7": en7, "en8": en8,
-            "rin1": rin1, "rin2": rin2, "rin3": rin3, "rin4": rin4,
-            "rout1": rout1, "rout2": rout2, "rout3": rout3, "rout4": rout4}
+           {"v3v3rf": v3v3rf, "en": en, "a": a, "rin": rin, "rout": rout}
+  # `xbarControl`'s own ports are unchanged (`en1".."en8"`, via its `JCTL`
+  # header connector) -- only the parent-side nets they land on moved from
+  # eight scalars to `en`'s eight members, so the child-side keys stay as
+  # they were and only the values change.
   instance XCTL, asSubcircuit(xbarControl(), "XBAR_CTL"),
            {"v3v3": v3v3, "sda": sda, "scl": scl,
-            "en1": en1, "en2": en2, "en3": en3, "en4": en4,
-            "en5": en5, "en6": en6, "en7": en7, "en8": en8,
+            "en1": en[0], "en2": en[1], "en3": en[2], "en4": en[3],
+            "en5": en[4], "en6": en[5], "en7": en[6], "en8": en[7],
             "mdi_tp": mdiTp, "mdi_tn": mdiTn, "mdi_rp": mdiRp, "mdi_rn": mdiRn}
 
   # --- the RJ45, the SMA cable loads, and the MDI terminations -------
@@ -195,9 +187,9 @@ let d = design("xbar_switch"):
     pin "CC2",  cc2,     kind = ptPassive
 
   # Each SMA carries a cable to a 50 ohm load. Built in a loop.
-  for (rn, netv) in [("RT_IN1", rin1), ("RT_IN2", rin2), ("RT_IN3", rin3),
-                     ("RT_IN4", rin4), ("RT_OUT1", rout1), ("RT_OUT2", rout2),
-                     ("RT_OUT3", rout3), ("RT_OUT4", rout4)]:
+  for (rn, netv) in [("RT_IN1", rin[0]), ("RT_IN2", rin[1]), ("RT_IN3", rin[2]),
+                     ("RT_IN4", rin[3]), ("RT_OUT1", rout[0]), ("RT_OUT2", rout[1]),
+                     ("RT_OUT3", rout[2]), ("RT_OUT4", rout[3])]:
     component R, designator = rn, kind = "resistor", value = "50":
       pin "1", netv, kind = ptPassive
       pin "2", gnd, kind = ptPassive
@@ -229,7 +221,7 @@ let d = design("xbar_switch"):
           because = "the 5 V inlet rail must stay well above the 3.3 V rail " &
                     "the buck makes from it, clear of the converter's dropout"
 
-let ens = ["en1", "en2", "en3", "en4", "en5", "en6", "en7", "en8"]
+let ens = rfEnableNets()
 for i, en in ens:
   d.assertThat(Assertion(
     id: "REQ-SYS-SAFE-" & $(i + 1),
@@ -263,8 +255,15 @@ equipAdg904(d.netlist,
 # The pulldowns that hold every ADG904 enable low at power-up, at both ends
 # of the nets. The chunks add their own in their benches; imported, those
 # `when isMainModule` blocks do not run, so the system adds them here.
-controlPulldowns(d.netlist,
-  ["en1", "en2", "en3", "en4", "en5", "en6", "en7", "en8"])
+controlPulldowns(d.netlist, rfEnableNets())
+
+# The address lines need the same treatment, for a different reason: unlike
+# EN, an undriven select net has nothing else touching it at all --
+# `muxModel`'s decoder reads it without loading it, so with no pulldown the
+# whole-system `.op` solve is singular (`xbar_rf.nim` documents this for its
+# own bench; the system is the only place these sixteen nets get it, since
+# `xbar_rf`'s `when isMainModule` block does not run when imported).
+controlPulldowns(d.netlist, rfAddressNets())
 
 driveConnector(findComponent(d.netlist, "J_USB"),
                {"VBUS": driveSource(5.0.V, rout = 50.mohm),

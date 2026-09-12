@@ -251,8 +251,13 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         have = true
     if not have: continue
     if bi >= 0:
-      # A collapsed bundle's member ports fold to one pennant. Keep the same
-      # "better" anchor test across every member's best pin.
+      # A bundle's published member ports fold to one pennant -- a collapsed
+      # bundle's member ports (all-or-nothing published, by the collapse
+      # precondition) or a net-label bundle's published subset alike. Keep
+      # the same "better" anchor test across every member's best pin. Named
+      # off `portText`/`portSceneMembers` (the *published* subset), not
+      # `pinName`/`sceneMembers` (every member) -- a `brNetLabel` bundle can
+      # publish fewer than all its members.
       let b = bundles.bundles[bi]
       portedNets.incl net.name
       portedNets.incl b.display
@@ -266,10 +271,10 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         continue
       planForBundle[bi] = plans.len
       bundleAnchorX[bi] = anchorX
-      plans.add PortPlan(name: b.pinName, net: b.display, dir: dir,
+      plans.add PortPlan(name: b.portText, net: b.display, dir: dir,
         toRight: toRight, prefY: anchorY, bodyH: 24.0,
-        bodyW: max(60.0, float(b.pinName.len) * 8.0 + 28.0),
-        members: b.sceneMembers)
+        bodyW: max(60.0, float(b.portText.len) * 8.0 + 28.0),
+        members: b.portSceneMembers)
       continue
     if ag.a >= 0:
       # A distributed array group whose member nets are published ports folds
@@ -492,8 +497,13 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     # `lg.text` must equal that group's merged `SchematicPin.name` so
     # `fallbackFor` sets `part` and `fallbackEscapeDir` can match. An
     # *unmerged* group keeps one tag per pin under the real member net name.
-    # Port connection points always get one tag per member under the member
-    # net name -- retagging them breaks the shipped port assertion.
+    # The published members now fold to ONE pennant (`byPort` covers a
+    # net-label bundle too) sharing ONE `portConn` entry keyed by `b.display`
+    # -- so the port side gets one merged tag, not one per member. It is
+    # tagged `b.display`, not `b.portText`: `fallbackEscapeDir` recovers a
+    # port-point fallback's escape direction by matching
+    # `SchematicPort.net == f.net`, and a port's `net` field is the
+    # occupancy tag, never the drawn range/count text.
     if bi >= 0 and bundles.bundles[bi].role == brNetLabel:
       let b = bundles.bundles[bi]
       if net.name != b.members[0]:
@@ -515,15 +525,23 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
           for pr in lg.pins:
             let key = pinKey(comp, pr.pin)
             if not pinPos.hasKey(key): continue
+            # `lg` was built over the pre-collapse netlist, so an unmerged
+            # carrier that is now an array representative still tags with
+            # its own single bound net ("rin_0") -- the one specific index
+            # it happened to sit on before every hidden member's pin
+            # vanished into this one box. `arrayBundleLabelFor` substitutes
+            # the bus/interface family name ("rin") for exactly that case;
+            # "" for every other pin, so its own net name is used unchanged.
+            let famText = arrayBundleLabelFor(arrays, comp, pr.pin)
+            let labelText = if famText.len > 0: famText else: pr.net
             pendingFallbacks.add (
               pin: (pt: pinPos[key], partIdx: pIdx,
                     esc: Point(x: 0.0, y: 0.0), pinName: pr.pin),
-              netName: pr.net, kind: fbNetLabel, bundle: b.display)
-      for m in b.members:
-        for pc in portConn.getOrDefault(m):
-          pendingFallbacks.add (
-            pin: (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: ""),
-            netName: m, kind: fbNetLabel, bundle: b.display)
+              netName: labelText, kind: fbNetLabel, bundle: b.display)
+      for pc in portConn.getOrDefault(b.display):
+        pendingFallbacks.add (
+          pin: (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: ""),
+          netName: b.display, kind: fbNetLabel, bundle: b.display)
       inc sigOrd
       continue
 

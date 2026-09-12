@@ -1,0 +1,435 @@
+{
+  "schemaVersion": 1,
+  "title": "CARRIER",
+  "minX": -246.0,
+  "minY": -290.0,
+  "maxX": 210.0,
+  "maxY": 290.0,
+  "parts": [
+    {
+      "designator": "C1",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "10u",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": 40.0,
+      "y": 160.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "vbus",
+          "x": 40.0,
+          "y": 120.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": 40.0,
+          "y": 200.0
+        }
+      ]
+    },
+    {
+      "designator": "C2",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": -40.0,
+      "y": 160.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "vbus",
+          "x": -40.0,
+          "y": 120.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": -40.0,
+          "y": 200.0
+        }
+      ]
+    },
+    {
+      "designator": "U1",
+      "label": "",
+      "kind": "ldo",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 152.0,
+      "bodyH": 112.0,
+      "inkW": 112.0,
+      "inkH": 72.0,
+      "x": -80.0,
+      "y": 0.0,
+      "rotation": 0.0,
+      "pins": [
+        {
+          "name": "IN",
+          "net": "vbus",
+          "x": -80.0,
+          "y": -56.0
+        },
+        {
+          "name": "OUT",
+          "net": "vout",
+          "x": -4.0,
+          "y": 0.0
+        },
+        {
+          "name": "GND",
+          "net": "0",
+          "x": -80.0,
+          "y": 56.0
+        }
+      ]
+    },
+    {
+      "designator": "C3",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "22u",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": 80.0,
+      "y": -160.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "vout",
+          "x": 80.0,
+          "y": -200.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": 80.0,
+          "y": -120.0
+        }
+      ]
+    },
+    {
+      "designator": "C4",
+      "label": "",
+      "kind": "capacitor",
+      "name": "",
+      "value": "100n",
+      "symbol": "capacitor",
+      "isBox": false,
+      "bodyW": 80.0,
+      "bodyH": 80.0,
+      "inkW": 80.0,
+      "inkH": 24.0,
+      "x": 0.0,
+      "y": -160.0,
+      "rotation": 90.0,
+      "pins": [
+        {
+          "name": "1",
+          "net": "vout",
+          "x": 0.0,
+          "y": -200.0
+        },
+        {
+          "name": "2",
+          "net": "0",
+          "x": 0.0,
+          "y": -120.0
+        }
+      ]
+    }
+  ],
+  "wires": [
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 40.0,
+          "y": 200.0
+        },
+        {
+          "x": 40.0,
+          "y": 240.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": -80.0,
+          "y": 56.0
+        },
+        {
+          "x": -80.0,
+          "y": 96.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 80.0,
+          "y": -120.0
+        },
+        {
+          "x": 80.0,
+          "y": -80.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -40.0,
+          "y": 200.0
+        },
+        {
+          "x": 40.0,
+          "y": 200.0
+        }
+      ]
+    },
+    {
+      "net": "0",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": 0.0,
+          "y": -120.0
+        },
+        {
+          "x": 80.0,
+          "y": -120.0
+        }
+      ]
+    },
+    {
+      "net": "vbus",
+      "kind": "supply",
+      "points": [
+        {
+          "x": 40.0,
+          "y": 120.0
+        },
+        {
+          "x": 40.0,
+          "y": 80.0
+        }
+      ]
+    },
+    {
+      "net": "vbus",
+      "kind": "supply",
+      "points": [
+        {
+          "x": -80.0,
+          "y": -56.0
+        },
+        {
+          "x": -80.0,
+          "y": -96.0
+        }
+      ]
+    },
+    {
+      "net": "vbus",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": -40.0,
+          "y": 120.0
+        },
+        {
+          "x": 40.0,
+          "y": 120.0
+        }
+      ]
+    },
+    {
+      "net": "vout",
+      "kind": "supply",
+      "points": [
+        {
+          "x": -4.0,
+          "y": 0.0
+        },
+        {
+          "x": 36.0,
+          "y": 0.0
+        }
+      ]
+    },
+    {
+      "net": "vout",
+      "kind": "supply",
+      "points": [
+        {
+          "x": 80.0,
+          "y": -200.0
+        },
+        {
+          "x": 80.0,
+          "y": -240.0
+        }
+      ]
+    },
+    {
+      "net": "vout",
+      "kind": "powerlink",
+      "points": [
+        {
+          "x": 0.0,
+          "y": -200.0
+        },
+        {
+          "x": 80.0,
+          "y": -200.0
+        }
+      ]
+    }
+  ],
+  "junctions": [],
+  "labels": [
+    {
+      "text": "C1",
+      "x": 58.0,
+      "y": 157.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "C1"
+    },
+    {
+      "text": "10u",
+      "x": 58.0,
+      "y": 170.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "C1"
+    },
+    {
+      "text": "C2",
+      "x": -22.0,
+      "y": 157.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "C2"
+    },
+    {
+      "text": "100n",
+      "x": -22.0,
+      "y": 170.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "C2"
+    },
+    {
+      "text": "C3",
+      "x": 98.0,
+      "y": -162.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "C3"
+    },
+    {
+      "text": "22u",
+      "x": 98.0,
+      "y": -150.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "C3"
+    },
+    {
+      "text": "C4",
+      "x": 18.0,
+      "y": -162.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "designator",
+      "owner": "C4"
+    },
+    {
+      "text": "100n",
+      "x": 18.0,
+      "y": -150.0,
+      "anchor": "start",
+      "size": 10.0,
+      "role": "value",
+      "owner": "C4"
+    },
+    {
+      "text": "vbus",
+      "x": 56.0,
+      "y": 83.6,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "vbus",
+      "x": -64.0,
+      "y": -92.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "vout",
+      "x": 52.0,
+      "y": 3.6000000000000014,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "vout",
+      "x": 96.0,
+      "y": -236.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    }
+  ],
+  "ports": [],
+  "fallbacks": []
+}

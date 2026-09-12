@@ -177,12 +177,6 @@ proc drawPart(p: SchematicPart): seq[string] =
       "\" height=\"" & num(p.bodyH - 2.0 * boxStub) &
       "\" fill=\"#fdfdfd\" stroke=\"#333333\" stroke-width=\"2\"/>"
     for pin in p.pins:
-      # Outward escape unit vector, from which box edge the pin sits on.
-      var ox, oy = 0.0
-      if pin.x < bx + 1e-6: ox = -1.0
-      elif pin.x > cx + hw - boxStub - 1e-6: ox = 1.0
-      elif pin.y < by + 1e-6: oy = -1.0
-      else: oy = 1.0
       if pin.x < bx + 1e-6:                       # left edge
         result.add lineAt(bx, pin.y, pin.x, pin.y)
         if pin.name.len > 0:
@@ -199,45 +193,6 @@ proc drawPart(p: SchematicPart): seq[string] =
         result.add lineAt(pin.x, cy + hh - boxStub, pin.x, pin.y)
         if pin.name.len > 0:
           result.add textAt(pin.x, cy + hh - boxStub - 6.0, pin.name, "middle", 9)
-      # Array-collapse pin decoration: a bus-bar tick (common), a diagonal
-      # slash + range tag (distributed), or a forked cap + count (irregular).
-      if pin.mark != pmNone:
-        let qx = -oy
-        let qy = ox
-        let tip = Point(x: pin.x + ox * 6.0, y: pin.y + oy * 6.0)
-        case pin.mark
-        of pmBusBar:
-          result.add "<line x1=\"" & num(tip.x - qx * 8.0) & "\" y1=\"" &
-            num(tip.y - qy * 8.0) & "\" x2=\"" & num(tip.x + qx * 8.0) &
-            "\" y2=\"" & num(tip.y + qy * 8.0) &
-            "\" stroke=\"#1f6feb\" stroke-width=\"4\"/>"
-        of pmBusSlash:
-          let m = Point(x: pin.x + ox * 12.0, y: pin.y + oy * 12.0)
-          result.add "<line x1=\"" & num(m.x + (qx - ox) * 8.0) & "\" y1=\"" &
-            num(m.y + (qy - oy) * 8.0) & "\" x2=\"" & num(m.x - (qx - ox) * 8.0) &
-            "\" y2=\"" & num(m.y - (qy - oy) * 8.0) &
-            "\" stroke=\"#1f6feb\" stroke-width=\"3\"/>"
-          if pin.tag.len > 0:
-            result.add textAt(m.x + qx * 12.0, m.y + qy * 12.0 + 3.0,
-              pin.tag, "middle", 10)
-        of pmForkCap:
-          for d in [-8.0, 0.0, 8.0]:
-            let e = Point(x: pin.x + ox * 18.0 + qx * d,
-                          y: pin.y + oy * 18.0 + qy * d)
-            let dashed = d > 0.0 and pin.tag.endsWith(" open")
-            result.add "<line x1=\"" & num(tip.x) & "\" y1=\"" & num(tip.y) &
-              "\" x2=\"" & num(e.x) & "\" y2=\"" & num(e.y) & "\" stroke=\"" &
-              (if dashed: "#e67e22" else: "#333333") &
-              "\" stroke-width=\"2\"" &
-              (if dashed: " stroke-dasharray=\"4 3\"" else: "") & "/>"
-            if dashed:
-              result.add "<circle cx=\"" & num(e.x) & "\" cy=\"" & num(e.y) &
-                "\" r=\"3\" fill=\"none\" stroke=\"#e67e22\" stroke-width=\"2\"/>"
-          if pin.tag.len > 0:
-            let label = pin.tag.replace(" open", "")
-            result.add textAt(pin.x + ox * 22.0 + qx * 14.0,
-              pin.y + oy * 22.0 + qy * 14.0 + 3.0, label, "middle", 10)
-        of pmNone: discard
     # Designator and value/name stack at the top-left inside corner, clear of
     # the centred rows and columns of pin labels.
     result.add textAt(bx + 5.0, by + 13.0,
@@ -335,6 +290,74 @@ proc drawPart(p: SchematicPart): seq[string] =
 
   if rot != 0.0:
     result.add "</g>"
+
+  # Array-collapse pin decoration: a bus-bar tick (common, suppressed when the
+  # shared net is ground/rail -- a pin that already draws a terminal glyph
+  # says "shared rail" on its own, and on a two-terminal symbol the tick and
+  # the glyph bars would land on top of each other), a diagonal slash + range
+  # tag (distributed), or a forked cap + count (irregular). Hoisted out of the
+  # `"box"` branch and drawn here, after any rotate group closes, so a
+  # collapsed *component* array -- a resistor bank badged `x8`, say -- gets
+  # the same marks a collapsed subsheet box does, not just a box. The world
+  # coordinates in `pin.x`/`pin.y` already reflect rotation (`routing.nim`
+  # rotates every slot before recording it), so this needs no `rotate()`
+  # wrapper of its own.
+  let bx = cx - hw + boxStub
+  let by = cy - hh + boxStub
+  for pin in p.pins:
+    if pin.mark == pmNone: continue
+    var ox, oy = 0.0
+    if p.isBox:
+      # Outward escape unit vector, from which box edge the pin sits on.
+      if pin.x < bx + 1e-6: ox = -1.0
+      elif pin.x > cx + hw - boxStub - 1e-6: ox = 1.0
+      elif pin.y < by + 1e-6: oy = -1.0
+      else: oy = 1.0
+    else:
+      # A symbol has no edge to test against -- its pin slot already points
+      # outward along the lead, so the direction from the body centre to the
+      # pin *is* the outward escape vector.
+      let dx = pin.x - cx
+      let dy = pin.y - cy
+      let d = sqrt(dx * dx + dy * dy)
+      if d > 1e-6: (ox, oy) = (dx / d, dy / d)
+      else: ox = 1.0
+    let qx = -oy
+    let qy = ox
+    let tip = Point(x: pin.x + ox * 6.0, y: pin.y + oy * 6.0)
+    case pin.mark
+    of pmBusBar:
+      result.add "<line x1=\"" & num(tip.x - qx * 8.0) & "\" y1=\"" &
+        num(tip.y - qy * 8.0) & "\" x2=\"" & num(tip.x + qx * 8.0) &
+        "\" y2=\"" & num(tip.y + qy * 8.0) &
+        "\" stroke=\"#1f6feb\" stroke-width=\"4\"/>"
+    of pmBusSlash:
+      let m = Point(x: pin.x + ox * 12.0, y: pin.y + oy * 12.0)
+      result.add "<line x1=\"" & num(m.x + (qx - ox) * 8.0) & "\" y1=\"" &
+        num(m.y + (qy - oy) * 8.0) & "\" x2=\"" & num(m.x - (qx - ox) * 8.0) &
+        "\" y2=\"" & num(m.y - (qy - oy) * 8.0) &
+        "\" stroke=\"#1f6feb\" stroke-width=\"3\"/>"
+      if pin.tag.len > 0:
+        result.add textAt(m.x + qx * 12.0, m.y + qy * 12.0 + 3.0,
+          pin.tag, "middle", 10)
+    of pmForkCap:
+      for d in [-8.0, 0.0, 8.0]:
+        let e = Point(x: pin.x + ox * 18.0 + qx * d,
+                      y: pin.y + oy * 18.0 + qy * d)
+        let dashed = d > 0.0 and pin.tag.endsWith(" open")
+        result.add "<line x1=\"" & num(tip.x) & "\" y1=\"" & num(tip.y) &
+          "\" x2=\"" & num(e.x) & "\" y2=\"" & num(e.y) & "\" stroke=\"" &
+          (if dashed: "#e67e22" else: "#333333") &
+          "\" stroke-width=\"2\"" &
+          (if dashed: " stroke-dasharray=\"4 3\"" else: "") & "/>"
+        if dashed:
+          result.add "<circle cx=\"" & num(e.x) & "\" cy=\"" & num(e.y) &
+            "\" r=\"3\" fill=\"none\" stroke=\"#e67e22\" stroke-width=\"2\"/>"
+      if pin.tag.len > 0:
+        let label = pin.tag.replace(" open", "")
+        result.add textAt(pin.x + ox * 22.0 + qx * 14.0,
+          pin.y + oy * 22.0 + qy * 14.0 + 3.0, label, "middle", 10)
+    of pmNone: discard
 
   # A non-box symbol's designator and value are emitted as SchematicLabels by
   # `layout`'s label pass (placed against wires and neighbouring bodies), not

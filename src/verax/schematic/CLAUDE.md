@@ -443,26 +443,108 @@ implements.
     from geometry. Its `labels` field renders each `brNetLabel` group's
     merged tag (`"U1=spi1"` / `"X1=spi1(cs0)"` / `"R1="` for an unmerged
     carrier), so `groupText` is testable without laying anything out.
-- **`arrays.nim`** — the repeated-subsheet grouping index, `include`d
-  **after `./bundles`** (it reads `BundlePlan`/`BundleRole`, `pinKey`,
-  `portDirection`, `isGroundHere`/`isRailHere`) and **before
-  `./composites/composite`** (the arena is built over the already-filtered
-  `state.comps`). Spliced after `symbols.nim`, so every hand-off is plain
-  data, the `bundleGroupsFor`/`laneOf` pattern. Full design note:
+- **`arrays.nim`** — the repeated-**part** grouping index (subsheet instances
+  and, since component grouping, raw components too), `include`d **after
+  `./bundles`** (it reads `BundlePlan`/`BundleRole`, `pinKey`, `portDirection`,
+  `isGroundHere`/`isRailHere`) and **before `./composites/composite`** (the
+  arena is built over the already-filtered `state.comps`, and a collapsed
+  array's representative is now also excluded from `compositePlan`'s arena —
+  see the composites bullet). Spliced after `symbols.nim`, so every hand-off
+  is plain data, the `bundleGroupsFor`/`laneOf` pattern. Full design note:
   `docs/subsheet_arrays.md`.
-  * `arrayPlan(nl, bundles): ArrayPlan` groups `Component`s that instantiate
-    one subcircuit (`subNetlist.name` + the pin-key sequence — `graph.instantiate`
-    fixes both). **Zero-value early return under three instances** is the
-    byte-identity guarantee. `prepare` drops the N−1 non-representative
+  * Two passes share one `ArrayPlan`, built by `state.prepare` under two
+    stages (`lsArrays`, `lsPartArrays`, in that order): `buildSubsheetArrays`
+    groups `Component`s that instantiate one subcircuit (`subNetlist.name` +
+    the pin-key sequence — `graph.instantiate` fixes both); `buildComponentArrays`
+    groups raw components (`subNetlist == nil`) sharing
+    `kind \x1f value \x1f partNumber \x1f name \x1f <pin names> \x1f <pin kinds>`
+    — **`value` is in the key deliberately** (a 10k and a 2k bank must never
+    merge), and a component stating **neither** a value nor a `partNumber`
+    excludes it from candidacy outright, checked before the key is built: the
+    collapsed symbol shows one value, and a blank one asserts nothing about
+    the N real parts it stands for. `xbar_rf`'s termination resistors state
+    `value`; its SMA connectors and ADG904 switches carry no `value` at all
+    but state `partNumber` — identified by what they *are* rather than what
+    they measure, just as real an identity (this is also what keeps this
+    codebase's own topology-only test fixtures — a resistor chain or star
+    built to exercise placement/routing, stating neither because none of them
+    are testing this feature — from silently qualifying the moment three of
+    them share two empty strings).
+    Both passes call the identical `classifyGroup`/`addSignatureArrays` body;
+    what differs is candidacy and one extra veto for a component group (**the
+    all-common decline**: a candidate must have at least one port classified
+    `apDistributed` or it is dropped — `xbar_rf`'s eight `CBY*` decoupling
+    caps are all `apCommon` on `(v3v3rf, gnd)`, a *bank*
+    `composites/passive.parallelStackKind` already draws better as eight
+    visible bodies, and without this rule the array would steal it). **Chain
+    pairing is skipped for a non-box representative** (`symbolFor(rep).isBox`)
+    — the recirculation arc is a fixed staple on the *box interior*, which a
+    resistor symbol has none of, so a would-be chain degrades to
+    *distributed* instead, the honest drawing. A **no-op pass** (no ≥3-instance
+    subsheet, or no ≥3-member raw-component signature) is the byte-identity
+    guarantee, same as before. `prepare` drops the N−1 non-representative
     members of each collapsed array from `state.comps` **before `syms` is
     sized**; the filter is the sibling-clone shape
     (`pinPos.hasKey && partIdxByDesig.hasKey`, `ownsPin`) every layout site
     already tolerates, so `groupOf.len == 0`-style inertness is not needed —
     an empty `hidden` set makes the comps loop verbatim.
+  * **A net distributed at both ends** (`8x(R+C)`: every `mid_i` sits on the R
+    array's port 2 *and* the C array's port 1) is the one genuinely new
+    failure mode component grouping introduces: writing `suppressed`
+    per-array, as the subsheet-only pass safely could (a net was never
+    claimed twice there), lets the two arrays — enumerating members in
+    independent `nl.components` orders — suppress
+    overlapping-but-different subsets of the shared nets, in the worst case
+    suppressing every one, so the bus never routes; the totality assertion
+    does not catch it, since every net is still accounted for (just
+    unroutable). Fixed by `finalizeArrayPlan`, run exactly **once** after
+    whichever of the two builders ran: it derives `suppressed` from the
+    *final* `groupOf`, bucketing nets by `(array, port)` and keeping the one
+    that comes first in `nl.nets` order, well-defined regardless of which
+    array ends up owning the group. `arrayRouteFor`'s `first` is then simply
+    `true` whenever a net survives the `suppressed` check — no comparison
+    against the port's own member-order `nets[0]`, which need not agree with
+    the `nl.nets`-order pick once two arrays enumerate the same members
+    differently.
+  * **A split visible only through bus/interface membership.**
+    `subGroupsOf`'s partition key (`splitKeyOf`) reads `iface.instance` then
+    `bus.name` off each bound net before falling back to the net's own
+    name — a distributed port's members are N *distinct* nets by
+    definition, so raw-identity counting can never see a split that exists
+    only because those nets are declared members of two different buses:
+    `xbar_rf`'s eight `rf_switch` instances bind `RFC` to `rin[0..3]` on
+    four of them and `rout[0..3]` on the other four, sharing no net at all,
+    and now draw as two `x4` groups (input/output) instead of one
+    nonsensical `x8`; the same fix also splits its `JIN*`/`JOUT*` SMA
+    connectors and its `RT_IN*`/`RT_OUT*` terminations, and splits its 24
+    address/enable pulldowns into an `en` `x8` and an `a` `x16`. Precedence
+    (`iface.instance` before `bus.name`) matches `bundles.nim`'s own: the
+    bare signal name is identical across every instance of a declared
+    interface, so keying on it first would fold every instance's
+    same-named signal into one family and undo `spi_memories`'s three-way
+    split. The same family name is what a *bundled* distributed pin draws
+    once collapsed (`ArrayPort.bundleFamily`, set at classification time
+    from the first bound member): the representative's own raw binding is
+    one specific member (`rin_0`), but the collapsed box stands for every
+    hidden member's binding on that bus, so `arrayPinFor` fills the pin's
+    `net` with the bus name ("rin") instead, and `routing.nim`'s net-label
+    pass (`arrayBundleLabelFor`) substitutes it for the one visible tag a
+    representative would otherwise draw under its own pre-collapse index —
+    every other, non-representative carrier keeps its own precise tag
+    unchanged.
+  * **`pmBusBar` on a glyph-drawing pin.** An `apCommon` port whose net is
+    ground or a rail already draws its own terminal glyph there — the tick is
+    merely redundant on a box but collides outright on a two-terminal symbol.
+    `ArrayPort.railCommon`, set at classification time for both passes,
+    suppresses the mark in `arrayPinFor`. Deliberately a visual change to
+    `spi_daisy_chain`/`spi_memories` too (their `vdd`/`gnd` ticks disappear);
+    the `chainSheet()` test fixture gained a common **signal** port so the
+    mark keeps real test coverage.
   * **Totality is an invariant, not a hope.** Every distinct net named by a
     hidden member's pin must be suppressed, in `groupOf`, still on the
     representative's own pin, on an irregular port, or owned by a bundle — a
-    `doAssert` at the end of `arrayPlan`. A net every pin of which sits on a
+    `doAssert` inside `finalizeArrayPlan`, run over the complete plan (both
+    passes' arrays) rather than per-pass. A net every pin of which sits on a
     hidden member and is in none of these disappears with no marker
     (`routing.nim` only marks a single-pin net), which is a path-integrity
     bug, hence an assertion.
@@ -503,13 +585,26 @@ implements.
     `ArrayPlan` ⇒ byte-identical historical output; every downstream path
     (`prepare`'s filter, `symbols`' extra lanes, `routing`'s
     skip/group/arc branches, `finish`'s `arrayNets`) is guarded on it.
-  * Public `arrayReport*(nl)` beside `bundleReport`: `"vdd=common"`,
-    `"sclk_out=chained(out,x7)"`, `"wp=distributed[1:6]"`,
-    `"nc=irregular(2*6,open=4)"`.
+  * Public `arrayReport*(nl)` beside `bundleReport`, covering both passes:
+    `source` (the subckt name or the component `kind`) and `origin`
+    (`"subsheet"` / `"component"`) tell a subsheet array from a component one;
+    `ports` renders `"vdd=common"`, `"sclk_out=chained(out,x7)"`,
+    `"wp=distributed[1:6]"`, `"nc=irregular(2*6,open=4)"` regardless of which
+    built the array.
 - **`composites/composite.nim`**, **`composites/passive.nim`**,
   **`composites/pi.nim`** and **`composites/tee.nim`** — the composite arena
   `constrained.nim` pools placement over, and the four motifs registered into
-  it. `composite.nim` is kind-agnostic: `CompositePort`,
+  it. `state.nim`'s `planComposites` excludes every bundled part *and* every
+  collapsed array's representative from `compositePlan`'s arena before it
+  ever recognizes a motif. The bundle case was free (a bundle carrier is
+  always a box, `isTraversable` wants `subNetlist == nil`, so it could never
+  have been eligible); a **component** array's representative is not — it is
+  a flat two-terminal part still fully visible, exactly what
+  `parallelStackKind`/`seriesChainKind`/pi/tee look for — so without the
+  exclusion a termination resistor badged `x8` could be claimed as a member
+  of a composite it does not belong to, and that composite's internal fanout
+  would run to a symbol standing for eight different physical resistors, not
+  one. `composite.nim` is kind-agnostic: `CompositePort`,
   `PlaceableItem`, `CompositePlan` (the arena: `items`, the leaf/composite
   entries; `topLevel`, the arena indices placement actually sees, singletons
   and top-level composites interleaved in ascending first-raw-member order;

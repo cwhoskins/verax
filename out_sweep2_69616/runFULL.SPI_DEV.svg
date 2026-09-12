@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="576" height="464" viewBox="-284 -212 576 464">
+  <title>SPI_DEV</title>
+  <rect x="-284" y="-212" width="576" height="464" fill="#ffffff"/>
+  <line x1="-320" y1="-212" x2="-320" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-280" y1="-212" x2="-280" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-240" y1="-212" x2="-240" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-200" y1="-212" x2="-200" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-160" y1="-212" x2="-160" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-120" y1="-212" x2="-120" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-80" y1="-212" x2="-80" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-40" y1="-212" x2="-40" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="0" y1="-212" x2="0" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="40" y1="-212" x2="40" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="80" y1="-212" x2="80" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="120" y1="-212" x2="120" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="160" y1="-212" x2="160" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="200" y1="-212" x2="200" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="240" y1="-212" x2="240" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="280" y1="-212" x2="280" y2="252" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="-240" x2="292" y2="-240" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="-200" x2="292" y2="-200" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="-160" x2="292" y2="-160" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="-120" x2="292" y2="-120" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="-80" x2="292" y2="-80" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="-40" x2="292" y2="-40" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="0" x2="292" y2="0" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="40" x2="292" y2="40" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="80" x2="292" y2="80" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="120" x2="292" y2="120" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="160" x2="292" y2="160" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="200" x2="292" y2="200" stroke="#eef0f3" stroke-width="1"/>
+  <line x1="-284" y1="240" x2="292" y2="240" stroke="#eef0f3" stroke-width="1"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="0,96 0,136"/>
+  <line x1="10" y1="136" x2="-10" y2="136" stroke="#333333" stroke-width="2"/>
+  <line x1="6" y1="140" x2="-6" y2="140" stroke="#333333" stroke-width="2"/>
+  <line x1="2" y1="144" x2="-2" y2="144" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="0,-96 0,-136"/>
+  <line x1="-10" y1="-136" x2="10" y2="-136" stroke="#333333" stroke-width="2"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="-76,-40 -84,-40 -88,-44 -88,-160 -148,-160 -160,-160"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="-88,-160 148,-160 160,-160"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="-76,0 -84,0 -88,4 -88,200 -148,200 -160,200"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="-88,200 148,200 160,200"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="-76,40 -88,40 -148,40 -160,40"/>
+  <polyline fill="none" stroke="#333333" stroke-width="2" points="76,0 88,0 148,0 160,0"/>
+  <circle cx="-88" cy="200" r="3" fill="#333333"/>
+  <circle cx="-88" cy="-160" r="3" fill="#333333"/>
+  <rect x="-56" y="-76" width="112" height="152" fill="#fdfdfd" stroke="#333333" stroke-width="2"/>
+  <line x1="0" y1="-76" x2="0" y2="-96" stroke="#333333" stroke-width="2"/>
+  <text x="0" y="-64" font-family="monospace" font-size="9" fill="#333333" text-anchor="middle">VCC</text>
+  <line x1="0" y1="76" x2="0" y2="96" stroke="#333333" stroke-width="2"/>
+  <text x="0" y="70" font-family="monospace" font-size="9" fill="#333333" text-anchor="middle">GND</text>
+  <line x1="-56" y1="-40" x2="-76" y2="-40" stroke="#333333" stroke-width="2"/>
+  <text x="-51" y="-37" font-family="monospace" font-size="9" fill="#333333" text-anchor="start">SRCLK</text>
+  <line x1="-56" y1="0" x2="-76" y2="0" stroke="#333333" stroke-width="2"/>
+  <text x="-51" y="3" font-family="monospace" font-size="9" fill="#333333" text-anchor="start">RCLK</text>
+  <line x1="-56" y1="40" x2="-76" y2="40" stroke="#333333" stroke-width="2"/>
+  <text x="-51" y="43" font-family="monospace" font-size="9" fill="#333333" text-anchor="start">SER</text>
+  <line x1="56" y1="0" x2="76" y2="0" stroke="#333333" stroke-width="2"/>
+  <text x="51" y="3" font-family="monospace" font-size="9" fill="#333333" text-anchor="end">QH_S</text>
+  <text x="-51" y="-63" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">U1</text>
+  <text x="-51" y="-49" font-family="monospace" font-size="10" fill="#333333" text-anchor="start">shift_register</text>
+  <polygon points="-244,-172 -168,-172 -160,-160 -168,-148 -244,-148" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <text x="-202" y="-156" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">sclk_in</text>
+  <polygon points="-220,28 -168,28 -160,40 -168,52 -220,52" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <text x="-190" y="44" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">sdi</text>
+  <polygon points="-228,188 -168,188 -160,200 -168,212 -228,212" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <text x="-194" y="204" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">cs_in</text>
+  <polygon points="160,-172 244,-172 252,-160 244,-148 160,-148" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <text x="206" y="-156" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">sclk_out</text>
+  <polygon points="160,-12 212,-12 220,0 212,12 160,12" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <text x="190" y="4" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">sdo</text>
+  <polygon points="160,188 228,188 236,200 228,212 160,212" fill="#ffffff" stroke="#333333" stroke-width="2"/>
+  <text x="198" y="204" font-family="monospace" font-size="10" fill="#333333" text-anchor="middle">cs_out</text>
+  <text x="16" y="-132.4" font-family="monospace" font-size="12" fill="#333333" text-anchor="start">vdd</text>
+</svg>

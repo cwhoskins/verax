@@ -1,0 +1,236 @@
+{
+  "schemaVersion": 1,
+  "title": "SPI_MEMORY",
+  "minX": -260.0,
+  "minY": -166.0,
+  "maxX": 276.0,
+  "maxY": 166.0,
+  "parts": [
+    {
+      "designator": "U1",
+      "label": "",
+      "kind": "memory",
+      "name": "",
+      "value": "",
+      "symbol": "box",
+      "isBox": true,
+      "bodyW": 152.0,
+      "bodyH": 152.0,
+      "inkW": 112.0,
+      "inkH": 112.0,
+      "x": 0.0,
+      "y": 0.0,
+      "rotation": 0.0,
+      "pins": [
+        {
+          "name": "VCC",
+          "net": "vdd",
+          "x": 0.0,
+          "y": -76.0
+        },
+        {
+          "name": "VSS",
+          "net": "0",
+          "x": 0.0,
+          "y": 76.0
+        },
+        {
+          "name": "spi[4]",
+          "net": "spi",
+          "x": 76.0,
+          "y": 0.0,
+          "members": [
+            {
+              "name": "sclk",
+              "net": "spi_sclk"
+            },
+            {
+              "name": "mosi",
+              "net": "spi_mosi"
+            },
+            {
+              "name": "miso",
+              "net": "spi_miso"
+            },
+            {
+              "name": "cs",
+              "net": "spi_cs"
+            }
+          ]
+        },
+        {
+          "name": "HOLD",
+          "net": "vdd",
+          "x": -76.0,
+          "y": -20.0
+        },
+        {
+          "name": "WP",
+          "net": "wp",
+          "x": -76.0,
+          "y": 20.0
+        }
+      ]
+    }
+  ],
+  "wires": [
+    {
+      "net": "0",
+      "kind": "ground",
+      "points": [
+        {
+          "x": 0.0,
+          "y": 76.0
+        },
+        {
+          "x": 0.0,
+          "y": 116.0
+        }
+      ]
+    },
+    {
+      "net": "vdd",
+      "kind": "supply",
+      "points": [
+        {
+          "x": 0.0,
+          "y": -76.0
+        },
+        {
+          "x": 0.0,
+          "y": -116.0
+        }
+      ]
+    },
+    {
+      "net": "vdd",
+      "kind": "supply",
+      "points": [
+        {
+          "x": -76.0,
+          "y": -20.0
+        },
+        {
+          "x": -116.0,
+          "y": -20.0
+        }
+      ]
+    },
+    {
+      "net": "wp",
+      "kind": "signal",
+      "points": [
+        {
+          "x": -76.0,
+          "y": 20.0
+        },
+        {
+          "x": -88.0,
+          "y": 20.0
+        },
+        {
+          "x": -88.0,
+          "y": 40.0
+        },
+        {
+          "x": -148.0,
+          "y": 40.0
+        },
+        {
+          "x": -160.0,
+          "y": 40.0
+        }
+      ]
+    },
+    {
+      "net": "spi",
+      "kind": "interface",
+      "members": [
+        "spi_sclk",
+        "spi_mosi",
+        "spi_miso",
+        "spi_cs"
+      ],
+      "points": [
+        {
+          "x": 76.0,
+          "y": 0.0
+        },
+        {
+          "x": 88.0,
+          "y": 0.0
+        },
+        {
+          "x": 148.0,
+          "y": 0.0
+        },
+        {
+          "x": 160.0,
+          "y": 0.0
+        }
+      ]
+    }
+  ],
+  "junctions": [],
+  "labels": [
+    {
+      "text": "vdd",
+      "x": 16.0,
+      "y": -112.4,
+      "anchor": "start",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    },
+    {
+      "text": "vdd",
+      "x": -132.0,
+      "y": -16.4,
+      "anchor": "end",
+      "size": 12.0,
+      "role": "rail",
+      "owner": ""
+    }
+  ],
+  "ports": [
+    {
+      "name": "wp",
+      "net": "wp",
+      "dir": "input",
+      "x": -190.0,
+      "y": 40.0,
+      "bodyW": 60.0,
+      "bodyH": 24.0,
+      "rotation": 180.0
+    },
+    {
+      "name": "spi[4]",
+      "net": "spi",
+      "dir": "bidir",
+      "x": 198.0,
+      "y": 0.0,
+      "bodyW": 76.0,
+      "bodyH": 24.0,
+      "rotation": 0.0,
+      "members": [
+        {
+          "name": "sclk",
+          "net": "spi_sclk"
+        },
+        {
+          "name": "mosi",
+          "net": "spi_mosi"
+        },
+        {
+          "name": "miso",
+          "net": "spi_miso"
+        },
+        {
+          "name": "cs",
+          "net": "spi_cs"
+        }
+      ]
+    }
+  ],
+  "fallbacks": []
+}

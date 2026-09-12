@@ -131,6 +131,13 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
     let shownDesig = if p.label.len > 0: p.label else: p.designator
     if shownDesig.len > 0: lines.add (shownDesig, designatorSize, lrDesignator)
     if p.value.len > 0: lines.add (p.value, valueSize, lrValue)
+    # A collapsed *component* array's representative symbol (a termination
+    # resistor badged "x8") has no box interior for `svg` to print the count
+    # into, unlike a collapsed subsheet's box -- so it rides along as one more
+    # stacked label line, placed collision-aware by the same first-fit search
+    # as the designator/value above it, rather than a fixed offset that could
+    # land on a wire.
+    if p.count >= 2: lines.add ("x" & $p.count, designatorSize, lrDesignator)
     if lines.len == 0: continue
     var occupied: set[Side]
     for pin in p.pins:

@@ -42,6 +42,20 @@ test "component/net designator overrides and string-literal labels work":
   check nl.nets.hasKey("weird net name")
   check nl.components.hasKey("weird designator")
 
+test "a multi-dimensional bus needs no macro change, only a new addBus overload":
+  ## `width =`'s expression passes straight to `addBus` (`handleBus`), so
+  ## `width = [8, 2]` resolves to the new `openArray[int]` overload with no
+  ## change to the DSL itself.
+  let nl = netlist("t"):
+    bus a, width = [8, 2]
+    component U1, kind = "mcu":
+      pin "A0", a[3, 0], kind = ptInput
+      pin "A1", a[3, 1], kind = ptInput
+
+  check nl.nets.hasKey("a_3_0")
+  check nl.nets.hasKey("a_3_1")
+  check findBus(nl, "a").dims == @[8, 2]
+
 test "unknown key on net/component/pin lands in attrs, not a compile error":
   let nl = netlist("t"):
     net n1, tolerance = "1%"
