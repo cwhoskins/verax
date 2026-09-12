@@ -62,8 +62,37 @@ type
     ## system -- the annotation each value is stored under says which it is,
     ## and `netlist/environment` is the one place that adds the two together.
 
+  DBm* = distinct float
+    ## Absolute power, decibels relative to 1 mW -- the unit an RF budget is
+    ## denominated in (`p1db_dbm`, `oip3_dbm`, a stage's output power). Kept
+    ## distinct from `Decibels` rather than folded into it for the bug that
+    ## split prevents: adding two `dBm` figures is meaningless (power in dBm
+    ## does not add; watts do), while adding a `dB` *gain* to a `dBm` *level*
+    ## is exactly the arithmetic a cascade budget needs -- and `unitsAgree`
+    ## can only tell those two operations apart if `unitOf` returns distinct
+    ## strings for the two types. See `verax/touchstone/types` for the
+    ## `dbmToWatts`/`wattsToDbm` conversions, which travel with the
+    ## S-parameter reader rather than here, since converting is only ever
+    ## needed by something that already has a linear power to convert.
+  DBc* = distinct float
+    ## Power relative to a stated carrier, not to 1 mW -- a spur or a harmonic
+    ## is reported "-60 dBc", meaning 60 dB below whatever the carrier level
+    ## happens to be, and that reference moves with the carrier while `dBm`'s
+    ## does not. No annotation is registered in this unit in phase 0: a
+    ## carrier-relative measurement only exists once something has been
+    ## simulated to compare against, which is a later phase's `im3_dbc`.
+  NoiseDensity* = distinct float
+    ## Voltage noise density, volts per root-hertz. `.noise` is the one
+    ## simulation output this module had no representation for at all before
+    ## this type existed -- everything else here is either a level or a
+    ## ratio, and a spectral density is neither. No `A/rtHz` constructor yet:
+    ## nothing in this codebase measures a current noise density, and adding
+    ## the constructor before there is a producer for it is exactly the
+    ## unused-slot smell `tolerance`'s doc comment already warns against.
+
   Quantity* = Volts | Ohms | Farads | Henries | Hertz | Seconds | Amps |
-              Watts | Fraction | Degrees | Decibels | Celsius
+              Watts | Fraction | Degrees | Decibels | Celsius |
+              DBm | DBc | NoiseDensity
 
 template defCtor(name: untyped, T: typedesc, scale: float) =
   proc name*(x: SomeNumber): T {.inline.} =
@@ -138,6 +167,22 @@ defCtor(ppm, Fraction, 1e-6)
 defCtor(deg, Degrees, 1.0)
 defCtor(dB, Decibels, 1.0)
 
+# Absolute and carrier-relative logarithmic power. `DBm`/`dBm` and `DBc`/`dBc`
+# do not collide with each other or with `Decibels`/`dB` for the reason
+# `Decibels`/`dB` itself relies on: only the *first* character of an
+# identifier is case-significant in Nim, so `DBm` (the type) and `dBm` (the
+# constructor) are already two different names before the rest of the string
+# is even compared.
+defCtor(dBm, DBm, 1.0)
+defCtor(dBc, DBc, 1.0)
+
+# Noise density. `VrtHz` is the bare SI unit; `nVrtHz` is the decade a real
+# op-amp or preamp datasheet actually states (single-digit nV/rtHz), the same
+# reason `mohm`/`nH`/`pF` exist instead of forcing every caller through the
+# base-unit constructor and a literal exponent.
+defCtor(VrtHz, NoiseDensity, 1.0)
+defCtor(nVrtHz, NoiseDensity, 1e-9)
+
 proc toFloat*(q: Quantity): float {.inline.} =
   ## The value in SI base units -- volts, ohms, farads, henries, hertz,
   ## seconds, amps, or a bare fraction.
@@ -157,6 +202,9 @@ proc unitOf*(q: Quantity): string =
   elif q is Degrees: "deg"
   elif q is Decibels: "dB"
   elif q is Celsius: "degC"
+  elif q is DBm: "dBm"
+  elif q is DBc: "dBc"
+  elif q is NoiseDensity: "V/rtHz"
   else: ""
 
 proc `$`*(q: Quantity): string =

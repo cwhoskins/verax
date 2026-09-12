@@ -89,7 +89,25 @@ const builtinDesignatorPrefixes* = {
     "dcdc": "U", "smps": "U", "buck": "U", "boost": "U", "switcher": "U",
     "buffer": "U", "voltage_follower": "U", "unity_gain_buffer": "U",
     "line_driver": "U", "level_shifter": "U", "sensor": "U",
-    "code_model": "A", "subcircuit": "X"}
+    "code_model": "A", "subcircuit": "X",
+    "attenuator": "AT", "balun": "T", "coupler": "DC",
+    "transmission_line": "TL"}
+    ## The last four are phase 0 of the RF vocabulary: a designator prefix
+    ## only, cosmetic like every other entry in this table, added ahead of
+    ## any model or `formats/spice.nim` device letter for the kind. `balun`
+    ## sharing `"T"` with `transformer`/`coupled_inductor` is intentional --
+    ## duplicate values across keys are already normal here (`opamp`/`mcu`/
+    ## `regulator` all map to `"U"`) and a balun genuinely is a transformer
+    ## for designator purposes. Deliberately **not** added for `lna`/
+    ## `power_amplifier`/`vga`/`mixer`/`circulator`/`sparam_block`/
+    ## `microstrip`/`stripline`: the `"U"` fallback already gives each of
+    ## those a sensible schematic letter, and the transmission-line-family
+    ## kinds get a *real* one only once phase 3's `mlin`/`tline` model makes
+    ## that letter mean something -- adding one now with no model behind it
+    ## is the same half-added-kind trap `tests/test_spice_spellable.nim`
+    ## exists to catch, just approached from the opposite direction (a
+    ## `conductiveKinds` entry with no letter, rather than a letter with no
+    ## conductivity classification).
   ## Reference-designator prefixes by component kind.
   ##
   ## **Deliberately a separate table from `formats/spice.prefixByDeviceKind`,

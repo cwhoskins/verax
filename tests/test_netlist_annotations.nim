@@ -168,6 +168,44 @@ test "the provenance markers themselves are not reported as unknown keys":
 
 # --- extensibility -----------------------------------------------------
 
+# --- the RF vocabulary --------------------------------------------------
+
+test "gain_db is dB and rejects a dBm literal":
+  let nl = board()
+  setAnnotation(nl.components["C1"], "gain_db", 12.5.dB)
+  check abs(annotationFloat(nl.components["C1"], "gain_db").value - 12.5) < 1e-9
+  expect(NetlistError):
+    setAnnotation(nl.components["C1"], "gain_db", 12.5.dBm)
+
+test "oip3_dbm is dBm and rejects a dB literal":
+  let nl = board()
+  setAnnotation(nl.components["C1"], "oip3_dbm", 30.0.dBm)
+  check abs(annotationFloat(nl.components["C1"], "oip3_dbm").value - 30.0) < 1e-9
+  expect(NetlistError):
+    setAnnotation(nl.components["C1"], "oip3_dbm", 30.0.dB)
+
+test "z0 is ohms and applies at both component and pin scope":
+  check asComponent in annDef("z0").scopes
+  check asPin in annDef("z0").scopes
+  let nl = board()
+  setAnnotation(nl.components["C1"], "z0", 50.0.ohm)
+  check abs(annotationFloat(nl.components["C1"], "z0").value - 50.0) < 1e-9
+
+test "sparams is an opaque file path, like dielectric and value":
+  check annDef("sparams").kind == akString
+  let nl = board()
+  setAnnotation(nl.components["C1"], "sparams", "parts/lna_gain.s2p")
+  check annotation(nl.components["C1"], "sparams").value == "parts/lna_gain.s2p"
+
+test "trace_width is a dimensionless-registered geometry key, metres by convention":
+  # No `Metres` type exists in verax/units yet (see the annotation's own doc
+  # comment); it is registered unit-less and a bare number is accepted the
+  # same way `dielectric`'s free text and `tolerance`'s bare fraction are.
+  check annDef("trace_width").unit == ""
+  let nl = board()
+  setAnnotation(nl.components["C1"], "trace_width", 0.2e-3)
+  check abs(annotationFloat(nl.components["C1"], "trace_width").value - 0.2e-3) < 1e-12
+
 test "a key can be registered at runtime, keeping the plugin path open":
   check not isRegistered("slew_rate")
   registerAnnotation(AnnDef(key: "slew_rate", kind: akFloat, unit: "V",

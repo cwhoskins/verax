@@ -1,6 +1,7 @@
 import std/[math, unittest]
 
 import verax/units
+import verax/eng
 
 test "suffixes scale to SI base units":
   check toFloat(3.3.V) == 3.3
@@ -70,3 +71,40 @@ test "a dB literal stores the dB figure, not the ratio it denotes":
 test "negative phase and gain are ordinary values":
   check toFloat(-45.deg) == -45.0
   check toFloat(-3.dB) == -3.0
+
+# --- eng() must not SI-prefix a logarithmic unit -----------------------
+
+test "eng() renders dB as a bare decimal, not SI-prefixed":
+  # The live defect this fixes: eng()'s prefix loop used to treat "dB" like
+  # any other unit, so a real 0.5 dB closed-loop peak rendered "500 mdB" --
+  # analysis/analyses/opamp.nim:546 did exactly this for every design until
+  # noPrefixUnits existed.
+  check eng(0.5, "dB") == "0.5 dB"
+  # A value that would have crossed the milli/micro prefix boundary under
+  # the old behaviour (0.002 -> "2 mdB") stays a plain decimal instead.
+  check eng(0.002, "dB") == "0.002 dB"
+
+test "NoiseDensity still SI-prefixes, since a spectral density genuinely has decades":
+  check $(4.1.nVrtHz) == "4.10 nV/rtHz"
+
+# --- absolute power and carrier-relative ratios ------------------------
+
+test "DBm and DBc round-trip and report their own unit strings":
+  check toFloat(10.dBm) == 10.0
+  check toFloat(-6.dBc) == -6.0
+  check unitOf(10.dBm) == "dBm"
+  check unitOf((-6).dBc) == "dBc"
+
+test "DBm and DBc render as bare decimals through eng(), same as Decibels":
+  check $(0.5.dBm) == "0.5 dBm"
+  check $((-6.0).dBc) == "-6 dBc"
+
+test "DBm, DBc and Decibels are distinct types, so a dBm cannot be mistaken for a dB gain":
+  check not compiles((let x: Decibels = 10.dBm))
+  check not compiles((let x: DBm = 10.dB))
+  check not compiles((let x: DBc = 10.dBm))
+
+test "NoiseDensity suffix constructors scale to volts per root-hertz":
+  check toFloat(1.VrtHz) == 1.0
+  check abs(toFloat(4.1.nVrtHz) - 4.1e-9) < 1e-18
+  check unitOf(1.VrtHz) == "V/rtHz"

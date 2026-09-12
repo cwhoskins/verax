@@ -298,6 +298,162 @@ const builtinAnnotations* = [
   AnnDef(key: "lsec", kind: akFloat, unit: "H", scopes: {asComponent},
     doc: "Secondary-winding inductance of a transformer. Stated directly, " &
          "or derived from `lpri` and `turns`."),
+
+  # --- RF datasheet vocabulary --------------------------------------------
+  # `parts/Choice` is a procurement record and carries none of this -- an
+  # amplifier's gain, noise figure and linearity are electrical performance
+  # the way `gbw` and `esr` are, not part-selection metadata, so they belong
+  # in the same vocabulary as those rather than in a second one. None of
+  # these is read by anything yet: `analysis/rf_chain.nim` and
+  # `analysis/cascade.nim` (Friis, cascaded IP3, dynamic range) are a later
+  # phase's work, and registering the keys first is what lets a design state
+  # a datasheet number today without namespacing it as `rf.gain_db` and
+  # rewriting the design once the reader arrives -- the same reason
+  # `tolerance` was registered ahead of its consumer.
+  AnnDef(key: "gain_db", kind: akFloat, unit: "dB", scopes: {asComponent},
+    doc: "Small-signal voltage or power gain of an RF stage (an LNA, a PA, " &
+         "a VGA, a mixer's conversion gain), datasheet-typical rather than " &
+         "measured. A budget walk sums these along a chain (Friis, run in " &
+         "reverse for gain); a `.sp`/`.ac` sweep of the same stage produces " &
+         "`s21_db` or `gain_at_f_db` instead, and the two are named " &
+         "differently on purpose -- see `psrr_db`/`psrr_min_db` for the " &
+         "precedent that keeps a datasheet claim and a simulated one from " &
+         "being written to the same key and read back as if they agreed."),
+  AnnDef(key: "nf_db", kind: akFloat, unit: "dB", scopes: {asComponent},
+    doc: "Noise figure of an RF stage, datasheet-typical. Feeds Friis's " &
+         "cascade noise figure the same way `gain_db` feeds cascade gain. " &
+         "`.noise` measures a passive or S-parameter network faithfully but " &
+         "cannot see a behavioural or vendor-supplied block's own noise " &
+         "contribution -- confirmed empirically: a gain-10 VCVS chain " &
+         "reported exactly the source resistor's thermal noise times ten " &
+         "and nothing else -- which is why a simulated `nf_sim_db` carries " &
+         "its own provenance rather than silently disagreeing with this."),
+  AnnDef(key: "oip3_dbm", kind: akFloat, unit: "dBm", scopes: {asComponent},
+    doc: "Output third-order intercept point: the extrapolated power at " &
+         "which a stage's fundamental and its third-order intermodulation " &
+         "product would cross, in dBm. The datasheet linearity figure a " &
+         "cascade's dynamic range is budgeted from before anything is " &
+         "simulated; `oip3_sim_dbm` is the two-tone `.tran` measurement of " &
+         "the same number and is a different key for the same reason " &
+         "`nf_db`/`nf_sim_db` are."),
+  AnnDef(key: "iip3_dbm", kind: akFloat, unit: "dBm", scopes: {asComponent},
+    doc: "Input third-order intercept point -- `oip3_dbm` referred to the " &
+         "stage's input (IIP3 = OIP3 - gain). Datasheets state one or the " &
+         "other and rarely both; keep whichever the datasheet gives rather " &
+         "than back-computing, since that only moves where an unstated " &
+         "gain figure's error lands."),
+  AnnDef(key: "p1db_dbm", kind: akFloat, unit: "dBm", scopes: {asComponent},
+    doc: "1 dB compression point, output-referred: the power at which the " &
+         "stage's gain has dropped 1 dB from its small-signal value -- the " &
+         "practical upper edge of the linear region a gain/OIP3 budget " &
+         "assumes. `p1db_sim_dbm` is the swept-power measurement of the " &
+         "same thing."),
+  AnnDef(key: "psat_dbm", kind: akFloat, unit: "dBm", scopes: {asComponent},
+    doc: "Saturated output power: the ceiling a power amplifier's output " &
+         "cannot be driven past regardless of input, well beyond `p1db_dbm`. " &
+         "Sets the hard limit for a transmit chain's maximum output claim " &
+         "the way `voltage_rating` sets one for a part's working voltage."),
+  AnnDef(key: "il_db", kind: akFloat, unit: "dB", scopes: {asComponent},
+    doc: "Insertion loss of a passive part (a filter, a coupler's through " &
+         "arm, a switch's on-state) at its stated frequency -- positive, " &
+         "the conventional sign for a loss rather than a raw negative S21 " &
+         "dB reading. `insertion_loss_db` is the simulated counterpart, " &
+         "read off a `.sp` S21 through `touchstone.insertionLossDb`, which " &
+         "shares this sign convention so the two can be compared directly."),
+  AnnDef(key: "isolation_db", kind: akFloat, unit: "dB", scopes: {asComponent},
+    doc: "Isolation between two paths that should not couple -- an off " &
+         "switch throw, a coupler's isolated port, a circulator's reverse " &
+         "path -- positive, larger is better. `isolation_sim_db` is the " &
+         "measured counterpart once a `.sp` model exists to sweep it; " &
+         "`spice/models/switch`'s `off_termination` already gives a " &
+         "behavioural switch a real (frequency-flat) isolation floor, which " &
+         "this key does not yet feed."),
+  AnnDef(key: "return_loss_db", kind: akFloat, unit: "dB", scopes: {asComponent},
+    doc: "Datasheet return loss at the part's rated impedance -- positive, " &
+         "larger is a better match, matching `touchstone.returnLossDb`'s " &
+         "sign (the opposite sign from a raw S11 dB reading). The simulated " &
+         "counterpart is `s11_db`/`return_loss_db` produced by a `.sp` run, " &
+         "named identically on purpose since a port match is the one RF " &
+         "figure here where a stated and a measured value are meant to be " &
+         "compared directly rather than kept apart by name -- there is no " &
+         "cascaded arithmetic that combines several parts' return losses " &
+         "into one number the way Friis combines gain and noise figure."),
+  AnnDef(key: "z0", kind: akFloat, unit: "ohm", scopes: {asComponent, asPin},
+    doc: "Reference impedance a port is designed against -- almost always " &
+         "50 ohm, sometimes 75. `rf_port` (a later phase's role) reads this " &
+         "to know what a `.sp` port card should carry and what `sAt`/" &
+         "`gammaOf` should compare a simulated or measured impedance " &
+         "against; a component-scope value applies to every pin of that " &
+         "part with no `z0` of its own, the same fallback `zin`/`rout` use."),
+  AnnDef(key: "sparams", kind: akString, scopes: {asComponent},
+    doc: "Path to a Touchstone `.s1p`/`.s2p`/`.sNp` file describing this " &
+         "part's measured or vendor-simulated S-parameters. Free text, " &
+         "never parsed here -- same pattern as `dielectric` and `value` -- " &
+         "because reading and interpreting the file is `verax/touchstone`'s " &
+         "job and turning it into a runnable device is a later phase's " &
+         "`sparam_block` XSPICE model, neither of which this module may " &
+         "depend on without `netlist` gaining an edge it must not have."),
+  AnnDef(key: "er", kind: akFloat, scopes: {asComponent},
+    doc: "Substrate relative permittivity (dielectric constant) for a " &
+         "microstrip or stripline component. Dimensionless by definition, " &
+         "so no unit is checked -- feeds a closed-form Z0 calculation " &
+         "(Hammerstad-Jensen or IPC-2141) the way `pcb/types.StackMaterial` " &
+         "already carries it for a board's own stackup; authored here " &
+         "because a transmission-line *component* in phase 0 has no `Pcb` " &
+         "to read a stackup from."),
+  AnnDef(key: "tand", kind: akFloat, scopes: {asComponent},
+    doc: "Substrate loss tangent, dimensionless. Paired with `er`; the pair " &
+         "is exactly what ngspice's `mlin` microstrip model (verified " &
+         "present in the installed ngspice 46 build) takes alongside " &
+         "`trace_width`/`substrate_h`/`copper_t`/`roughness`."),
+  AnnDef(key: "trace_width", kind: akFloat, scopes: {asComponent},
+    doc: "Trace width, in **metres** -- there is no `Metres` type in " &
+         "`verax/units` yet (board geometry lives in `pcb/units.Nm`, a " &
+         "deliberately different tier per `verax/CLAUDE.md`, and adding a " &
+         "third geometry representation for one annotation set is a bigger " &
+         "decision than this phase warrants), so this is registered " &
+         "unit-less and documented here instead -- the same unenforced-but-" &
+         "documented convention `dielectric`'s free-text values and " &
+         "`tolerance`'s bare fraction already use. State it in metres " &
+         "(`0.2e-3` for a 0.2 mm trace), not millimetres."),
+  AnnDef(key: "trace_length", kind: akFloat, scopes: {asComponent},
+    doc: "Trace length, in metres -- see `trace_width` for why this is " &
+         "unit-less rather than typed, and state it the same way."),
+  AnnDef(key: "substrate_h", kind: akFloat, scopes: {asComponent},
+    doc: "Substrate (dielectric) height under the trace, in metres -- see " &
+         "`trace_width`. The `h` in ngspice's `mlin` model and in the " &
+         "Hammerstad-Jensen closed form alike."),
+  AnnDef(key: "copper_t", kind: akFloat, scopes: {asComponent},
+    doc: "Copper thickness, in metres -- see `trace_width`. Standard " &
+         "1 oz copper is about 35e-6 m; state the actual weight rather " &
+         "than assuming it, since `mlin` and IPC-2141 both use it directly " &
+         "in the impedance formula rather than as a second-order term."),
+  AnnDef(key: "roughness", kind: akFloat, scopes: {asComponent},
+    doc: "Copper surface roughness, in metres RMS -- see `trace_width`. " &
+         "Matters more at the frequencies this vocabulary exists for than " &
+         "it does anywhere else in this library: roughness loss rises with " &
+         "frequency and can dominate a microstrip's total loss well before " &
+         "the skin-effect term does."),
+  AnnDef(key: "antenna_gain_dbi", kind: akFloat, unit: "dB", scopes: {asComponent},
+    doc: "Antenna gain relative to an isotropic radiator, in dBi. " &
+         "Registered in unit `\"dB\"` rather than a fourth logarithmic " &
+         "type: dBi and dB are the same logarithmic ratio, differing only " &
+         "in what they are referred to (isotropic vs. nothing stated), so " &
+         "`setAnnotation(c, \"antenna_gain_dbi\", x.dB)` round-trips " &
+         "correctly and a `DBi` type would buy nothing a fourth near-" &
+         "identical type doesn't already cost. Feeds `eirp_dbm` (a later " &
+         "phase's budget quantity) together with a transmit chain's output " &
+         "power; stating neither this nor `antenna_efficiency` still " &
+         "leaves the chain's conducted power at the port checkable, per " &
+         "this area's graceful-degradation rule."),
+  AnnDef(key: "antenna_efficiency", kind: akFloat, scopes: {asComponent},
+    doc: "Radiation efficiency as a fraction 0..1 (dimensionless, like " &
+         "`tolerance` -- accepts a trailing '%' through the same " &
+         "`parseAnnFloat` path). An antenna that is a good 50 ohm match " &
+         "can still radiate a small fraction of what it accepts, and " &
+         "`return_loss_db` alone cannot see the difference between power " &
+         "radiated and power lost as heat in the element -- this is the " &
+         "other half of the number an EIRP claim needs."),
 ]
 
 var registry: OrderedTable[string, AnnDef]
