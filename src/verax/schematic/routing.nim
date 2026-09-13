@@ -22,7 +22,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                 composites = CompositePlan(),
                 bundles = BundlePlan(),
                 arrays = ArrayPlan(),
-                portY = initTable[string, float]()): RoutingState =
+                portY = initTable[string, float](),
+                mirrors: seq[bool] = @[]): RoutingState =
   ## Build the routed scene for the given centres/rotations. Pure and
   ## deterministic. `ok` is false only when `routeNet` reports an unreachable
   ## pin and `withFallbacks` is false -- the one recoverable routing failure,
@@ -51,7 +52,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                            symbol: sd.name, isBox: sd.isBox,
                            bodyW: sd.bodyW, bodyH: sd.bodyH,
                            inkW: sd.inkW, inkH: sd.inkH,
-                           x: pos[i].x, y: pos[i].y, rotation: rots[i])
+                           x: pos[i].x, y: pos[i].y, rotation: rots[i],
+                           mirror: (if i < mirrors.len: mirrors[i] else: false))
     if arrays.byRep.hasKey(c.designator):
       let a = arrays.arrays[arrays.byRep[c.designator]]
       sp.count = a.members.len
@@ -817,7 +819,8 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                     portY = initTable[string, float](),
                     ov = LayoutOverridePlan(),
                     sides: seq[LayoutSide] = @[],
-                    leftSplit = NegInf, rightSplit = Inf): RoutingState =
+                    leftSplit = NegInf, rightSplit = Inf,
+                    mirrors: seq[bool] = @[]): RoutingState =
   ## The placement-routing feedback loop. When `routeScene` cannot route a
   ## signal net it tries deterministic single-part moves and keeps any move
   ## that routes strictly further than the best layout so far, up to
@@ -836,7 +839,8 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   let constrained = options.policy == lpConstrainedLayered
   var best = routeScene(nl, comps, syms, pos, rots, idxOf,
                         constrained = constrained, composites = composites,
-                        bundles = bundles, arrays = arrays, portY = portY)
+                        bundles = bundles, arrays = arrays, portY = portY,
+                        mirrors = mirrors)
   if best.ok: return best
 
   # Pool length, not raw count, is what should gate the recovery loop: its
@@ -855,7 +859,8 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
      comps.len > 4 * options.feedbackMaxParts:
     return routeScene(nl, comps, syms, pos, rots, idxOf,
                       withFallbacks = true, constrained = constrained,
-                      composites = composites, bundles = bundles, portY = portY)
+                      composites = composites, bundles = bundles, portY = portY,
+                      mirrors = mirrors)
 
   var bestPos = pos
   var bestRots = rots
@@ -921,7 +926,8 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
               continue
             let cand = routeScene(nl, comps, syms, candPos, candRots, idxOf,
                                   constrained = constrained, composites = composites,
-                                  bundles = bundles, arrays = arrays, portY = portY)
+                                  bundles = bundles, arrays = arrays, portY = portY,
+                                  mirrors = mirrors)
             if cand.ok or cand.failOrd > best.failOrd:
               best = cand
               bestPos = candPos
@@ -938,7 +944,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     return routeScene(nl, comps, syms, bestPos, bestRots, idxOf,
                       withFallbacks = true, constrained = constrained,
                       composites = composites, bundles = bundles,
-                      arrays = arrays, portY = portY)
+                      arrays = arrays, portY = portY, mirrors = mirrors)
   best
 
 proc routeScene(state: LayoutState, withFallbacks = false): RoutingState =
@@ -946,7 +952,7 @@ proc routeScene(state: LayoutState, withFallbacks = false): RoutingState =
     state.idxOf, withFallbacks = withFallbacks,
     constrained = state.options.policy == lpConstrainedLayered,
     composites = state.composites, bundles = state.bundles,
-    arrays = state.arrays, portY = state.portY)
+    arrays = state.arrays, portY = state.portY, mirrors = state.mirrors)
 
 proc recoverRouting(state: LayoutState): RoutingState =
   # `activeOverrides`, not `state.overrides` directly -- see the identical
@@ -958,5 +964,5 @@ proc recoverRouting(state: LayoutState): RoutingState =
   recoverRouting(state.nl, state.comps, state.syms, state.pos, state.rots,
     state.idxOf, state.options, state.composites, state.bundles, state.arrays,
     portY = state.portY, ov = ov, sides = ov.side, leftSplit = state.leftSplit,
-    rightSplit = state.rightSplit)
+    rightSplit = state.rightSplit, mirrors = state.mirrors)
 

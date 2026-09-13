@@ -100,6 +100,15 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   if options.stageEnabled(lsOrient) and options.policy == lpConstrainedLayered:
     constrainedRecomputeRotations(ctx)
 
+  # The definitive mirror assignment, once the centres (and, for a
+  # constrained-layered sheet, the rotations) are final: a stated
+  # `layout.mirror` override is honoured absolutely, and every other
+  # mirrorable box is scored both ways by the same wirelength metric
+  # orientation uses. A no-op scene, bit-for-bit, when nothing states a
+  # mirror and no box ever scores better mirrored.
+  if options.stageEnabled(lsMirror):
+    chooseMirrors(ctx)
+
   # Reserve complete, unshortened rail/ground glyphs before routing, and
   # repair exact distinct-net terminal-pin coincidences as a hard condition.
   # This bounded pass moves the smallest implicated symbols first; routing

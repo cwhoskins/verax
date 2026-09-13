@@ -184,14 +184,30 @@ proc layoutSideNode(valueNode: NimNode): NimNode =
   error("a layout `side` must be one of left, right, auto -- got '" &
         valueNode.strVal & "'", valueNode)
 
+proc layoutMirrorNode(valueNode: NimNode): NimNode =
+  ## Maps the bare ident `true`/`false`/`auto` to the matching `LayoutMirror`
+  ## enum symbol, at compile time -- `layoutSideNode`'s shape. `true`/`false`
+  ## arrive as `nnkIdent` here, same as any other bare identifier, since this
+  ## is an untyped macro context and neither has been bound to `system.bool`
+  ## yet.
+  if valueNode.kind != nnkIdent:
+    error("a layout `mirror` must be one of true, false, auto", valueNode)
+  case valueNode.strVal
+  of "true": return ident"mirrorOn"
+  of "false": return ident"mirrorOff"
+  of "auto": return ident"mirrorAuto"
+  else: discard
+  error("a layout `mirror` must be one of true, false, auto -- got '" &
+        valueNode.strVal & "'", valueNode)
+
 proc handleLayout(entityVar: NimNode, stmt: NimNode): NimNode =
   ## `layout:` inside a `component` block -- the strict counterpart to the
   ## permissive statement-head fallback, exactly the split `handleSpec` makes
   ## for the electrical annotation vocabulary. Only `layoutHintKeys`
   ## (`netlist/layouthints`) are accepted, so a typo is a compile error
   ## naming the real keys rather than a silently ignored `attrs` entry -- and
-  ## the list is the one place a future hint (rotation, a pin placement, an
-  ## absolute position) gets added on this side of the DSL.
+  ## the list is the one place a future hint (a pin placement, an absolute
+  ## position) gets added on this side of the DSL.
   var args: seq[NimNode]
   for i in 1 ..< stmt.len: args.add stmt[i]
   let (rest, blk) = stripTrailingBlock(args)
@@ -215,6 +231,10 @@ proc handleLayout(entityVar: NimNode, stmt: NimNode): NimNode =
     case key
     of "side":
       let call = newCall(ident"setLayoutSide", entityVar, layoutSideNode(pair[1]))
+      call.copyLineInfo(pair)
+      result.add call
+    of "mirror":
+      let call = newCall(ident"setLayoutMirror", entityVar, layoutMirrorNode(pair[1]))
       call.copyLineInfo(pair)
       result.add call
     else:

@@ -676,6 +676,42 @@ suite "layout: block":
     check not c.attrs.hasKey("layout.side")
     check layoutSide(c) == sideAuto
 
+  test "layout: mirror = true/false writes and reads back through layoutMirror":
+    let nl = netlist("mirrors"):
+      net gnd, kind = ntGround, name = "0"
+      net a, kind = ntSignal
+      component U1, kind = "mcu":
+        layout:
+          mirror = true
+        pin "1", a, kind = ptPassive
+      component U2, kind = "mcu":
+        layout:
+          mirror = false
+        pin "1", a, kind = ptPassive
+      component U3, kind = "mcu":
+        pin "1", a, kind = ptPassive
+    check nl.components["U1"].attrs["layout.mirror"] == "true"
+    check layoutMirror(nl.components["U1"]) == mirrorOn
+    check nl.components["U2"].attrs["layout.mirror"] == "false"
+    check layoutMirror(nl.components["U2"]) == mirrorOff
+    check not nl.components["U3"].attrs.hasKey("layout.mirror")
+    check layoutMirror(nl.components["U3"]) == mirrorAuto
+
+  test "an unknown mirror value is a compile error":
+    check(not compiles(block:
+      discard netlist("bad"):
+        net gnd, kind = ntGround, name = "0"
+        component U1, kind = "mcu":
+          layout:
+            mirror = sideways))
+
+  test "mirror = auto clears any override":
+    let c = newComponent("U1", kind = "mcu")
+    setLayoutMirror(c, mirrorOn)
+    setLayoutMirror(c, mirrorAuto)
+    check not c.attrs.hasKey("layout.mirror")
+    check layoutMirror(c) == mirrorAuto
+
 suite "traverse: block":
   test "one edge: \"A\" <-> \"B\" writes a single conducting path":
     let nl = netlist("t"):

@@ -9,7 +9,7 @@ type
   StageId* = enum
     lsPrepare, lsBundles, lsArrays, lsPartArrays, lsSemanticSeed, lsForcePlacement,
     lsConstrainedRefinement, lsCompositeOrient, lsSeparate, lsPack,
-    lsLayoutOverrides, lsOrient,
+    lsLayoutOverrides, lsOrient, lsMirror,
     lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting,
     lsRoutingAwareRepair, lsPortRefine, lsLabels, lsBounds
 
@@ -72,6 +72,14 @@ const canonicalStages*: array[StageId, StageSpec] = [
   # (`LayoutOverridePlan.any` stays false and every consumer is inert).
   StageSpec(id: lsLayoutOverrides, enabled: true),
   StageSpec(id: lsOrient, enabled: true),
+  # The definitive mirror assignment (`state.chooseMirrors`), once the
+  # centres are final: a stated `layout.mirror` override is honoured
+  # absolutely, and every other mirrorable box (a fallback box with no
+  # multi-member composite membership) is scored both ways by the same
+  # `rotationScore` wirelength metric `lsOrient` uses. Off, or no box on the
+  # sheet is ever mirrored either way -> the pre-feature scene, bit-for-bit
+  # (`LayoutState.mirrors` stays all-false and every consumer is inert).
+  StageSpec(id: lsMirror, enabled: true),
   StageSpec(id: lsTerminalRepair, enabled: true),
   StageSpec(id: lsPrepareRouting, enabled: true),
   StageSpec(id: lsRoute, enabled: true),

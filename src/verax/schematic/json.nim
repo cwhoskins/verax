@@ -156,6 +156,7 @@ proc sceneToJson*(s: Schematic): JsonNode =
     o["x"] = %p.x
     o["y"] = %p.y
     o["rotation"] = %p.rotation
+    if p.mirror: o["mirror"] = %true
     if p.count > 0: o["count"] = %p.count
     if p.members.len > 0:
       var ms = newJArray()
@@ -309,6 +310,16 @@ proc optArr(n: JsonNode, key: string): JsonNode =
     fail("scene JSON: field \"" & key & "\" must be an array")
   n[key]
 
+proc optBool(n: JsonNode, key: string): bool =
+  ## An additive boolean field: `false` when absent (so an archive written
+  ## before the field existed still parses), type-checked when present.
+  ## Beside `optStr`/`optInt`/`optArr` -- the same additive contract, for
+  ## `SchematicPart.mirror`.
+  if not n.hasKey(key): return false
+  if n[key].kind != JBool:
+    fail("scene JSON: field \"" & key & "\" must be a boolean")
+  n[key].bval
+
 proc optBundleMembers(n: JsonNode, key: string): seq[BundleMember] =
   for m in optArr(n, key):
     if m.kind != JObject: fail("scene JSON: bundle member must be an object")
@@ -385,6 +396,7 @@ proc jsonToScene*(node: JsonNode): Schematic =
       x: reqFloat(pn, "x"),
       y: reqFloat(pn, "y"),
       rotation: reqFloat(pn, "rotation"),
+      mirror: optBool(pn, "mirror"),
       count: optInt(pn, "count"))
     for m in optArr(pn, "members"):
       if m.kind != JString: fail("scene JSON: part member must be a string")

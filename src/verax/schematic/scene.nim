@@ -109,6 +109,20 @@ type
       ## body by this angle around the part centre; the part's labels are
       ## placed by `layout` outside the rotated group and stay upright.
       ## Always 0 for boxes and for non-two-terminal symbols.
+    mirror*: bool
+      ## Reflected about the part's own vertical centre axis, applied after
+      ## `rotation`. Only ever true for a box (`state.chooseMirrors`; a box's
+      ## drawn rectangle and ink extents are symmetric about the centre, and
+      ## `svg`'s box branch and the array pin marks already derive each pin's
+      ## edge from its *world* coordinate rather than from `rotation`, so a
+      ## mirrored box needs no SVG transform of its own -- `layout` bakes it
+      ## into the symbol's slot coordinates before the scene is built, the
+      ## same way `bundleGroupsFor`'s `groupSide` bakes a merged pin's side).
+      ## Extending this to an asymmetric symbol (`source4`, a transistor, a
+      ## rotated two-terminal part) would need the reflection threaded
+      ## through rather than baked, plus an SVG `scale(-1,1)` group with
+      ## upright-text handling -- not done here because for a horizontal
+      ## two-terminal symbol mirror-X is already identical to `rotate(180)`.
     pins*: seq[SchematicPin]
     count*: int
       ## `>= 2` only on the representative of a collapsed subsheet array: how

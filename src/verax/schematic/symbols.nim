@@ -33,6 +33,104 @@ const boxStub* = 20.0
   ## extent so routing stays grid-aligned; `svg` insets the visible rectangle
   ## by this much and draws a stub from that edge out to the pin.
 
+proc traversalSides(c: Component): seq[int] =
+  ## Parallel to `c.pins`: `-1` no opinion, `0` left, `1` right -- from a
+  ## declared `traverse:` spec's connectivity graph, so a through-path (the
+  ## ADG904's `RFC <-> [RF1..RF4]`) lands its two ends on *opposite* box
+  ## edges instead of alternating by declaration order. `boxSlots` treats
+  ## `@[]` (the inert value, returned whenever the component states no
+  ## traversal, its declared edges don't 2-colour -- an odd cycle has no
+  ## two-sided drawing -- or it declares no edge at all, e.g. `traverse:
+  ## none`) as "no opinion for any pin", so an undeclared component takes its
+  ## exact historical alternating path. A named pin `c.pins` does not have is
+  ## silently skipped -- `validateTraversal` is where a bad name is actually
+  ## reported, never here.
+  ##
+  ## Both `traverse.paths` and `traverse.blocked` edges count: each declares
+  ## a through-path, and it is topology, not DC conduction, that decides
+  ## which edge a pin is drawn on. A pin whose `Pin.kind` already forces a
+  ## side (`ptPower`/`ptGround`/`ptInput`/`ptOutput`, `boxSlots`' own special
+  ## cases) keeps that edge -- excluded from the result -- but an
+  ## `ptInput`/`ptOutput` pin still seeds its connected component's colour
+  ## (lowest-ordinal such pin wins) so the two-colouring agrees with
+  ## `boxSlots` rather than fighting it.
+  if not statesTraversal(c): return @[]
+  let spec = traversal(c)
+  if spec.mode == tmNone: return @[]
+  var ord = initTable[string, int]()
+  var n = 0
+  for name, _ in c.pins:
+    ord[name] = n
+    inc n
+  if n == 0: return @[]
+
+  var adj = newSeq[seq[int]](n)
+  var anyEdge = false
+  for e in spec.edges:
+    if not ord.hasKey(e.a) or not ord.hasKey(e.b): continue
+    let ia = ord[e.a]
+    let ib = ord[e.b]
+    if ia == ib: continue
+    adj[ia].add ib
+    adj[ib].add ia
+    anyEdge = true
+  if not anyEdge: return @[]
+
+  var hasOwnSide = newSeq[bool](n)
+  var seedSide = newSeq[int](n)     # -1 / 0 (left, ptInput) / 1 (right, ptOutput)
+  var idx = 0
+  for _, p in c.pins:
+    seedSide[idx] = -1
+    case p.kind
+    of ptPower, ptGround: hasOwnSide[idx] = true
+    of ptInput: hasOwnSide[idx] = true; seedSide[idx] = 0
+    of ptOutput: hasOwnSide[idx] = true; seedSide[idx] = 1
+    else: discard
+    inc idx
+
+  var color = newSeq[int](n)
+  for k in 0 ..< n: color[k] = -1
+  for start in 0 ..< n:
+    if color[start] != -1 or adj[start].len == 0: continue
+    # Collect this whole connected component first (BFS), so the seed colour
+    # can be picked from the lowest-ordinal forced-side pin anywhere in it,
+    # not just at `start`.
+    var order = @[start]
+    var seen = newSeq[bool](n)
+    seen[start] = true
+    var qi = 0
+    while qi < order.len:
+      let u = order[qi]
+      inc qi
+      for v in adj[u]:
+        if not seen[v]:
+          seen[v] = true
+          order.add v
+    var seed = -1
+    var seedOrd = n
+    for u in order:
+      if seedSide[u] != -1 and u < seedOrd:
+        seedOrd = u
+        seed = seedSide[u]
+    color[start] = (if seed == -1: 0 else: seed)
+    var bipartite = true
+    var queue = @[start]
+    var qi2 = 0
+    while qi2 < queue.len:
+      let u = queue[qi2]
+      inc qi2
+      for v in adj[u]:
+        if color[v] == -1:
+          color[v] = 1 - color[u]
+          queue.add v
+        elif color[v] == color[u]:
+          bipartite = false
+    if not bipartite: return @[]
+
+  result = newSeq[int](n)
+  for k in 0 ..< n:
+    result[k] = (if hasOwnSide[k]: -1 else: color[k])
+
 proc boxSlots(c: Component, groupOf: seq[int] = @[],
               groupNames: seq[string] = @[], groupSide: seq[int] = @[],
               extraLanes: seq[string] = @[], extraSide: seq[int] = @[],
@@ -40,10 +138,13 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
     tuple[slots, extraSlots: seq[Point], halfW, halfH: float] =
   ## Deterministic fallback-box pin placement, keyed on pin type: declared
   ## power pins leave the top edge, ground pins the bottom, inputs the left and
-  ## outputs the right; every other pin fills the left edge then the right.
-  ## Within an edge the pins are spread symmetrically about the body centre.
-  ## `halfW`/`halfH` are the pin extent -- pins sit on this rectangle so their
-  ## escape points land on the routing grid, and `svg` draws the body itself
+  ## outputs the right; every other pin fills the left edge then the right,
+  ## unless a declared `traverse:` spec's two-colouring (`traversalSides`)
+  ## gives it an opinion first -- so a through-path's two ends land on
+  ## opposite edges rather than alternating by declaration order. Within an
+  ## edge the pins are spread symmetrically about the body centre. `halfW`/
+  ## `halfH` are the pin extent -- pins sit on this rectangle so their escape
+  ## points land on the routing grid, and `svg` draws the body itself
   ## `boxStub` smaller so each pin visibly juts out with its name just inside.
   ##
   ## `groupOf` (parallel to `c.pins`: `-1` an own slot, `>=0` a merged-group
@@ -53,13 +154,16 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
   ## stays parallel to `c.pins` and `slotOf`/`pinWorldPositions`/`rotationScore`
   ## are untouched. `rows`/`cols` count *lanes*. **`groupOf.len == 0` is the
   ## historical path, bit-for-bit** -- that one default is the whole inertness
-  ## guarantee at this layer.
+  ## guarantee at this layer; `traversalSides` returning `@[]` for an
+  ## undeclared component is what keeps it bit-for-bit too.
   const
     pitch = 40.0       ## row spacing on the left/right edges
     endPitch = 80.0     ## column spacing on the top/bottom edges -- wider so a
                         ## rail stub's net-name label clears the next pin
   proc spread(count, k: int, step: float): float =
     (float(k) - float(count - 1) / 2.0) * step
+
+  let travSide = traversalSides(c)
 
   if groupOf.len == 0 and extraLanes.len == 0 and titleWidth == 0.0:
     var names: seq[string]
@@ -72,6 +176,8 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
       of ptGround: bot.add i
       of ptInput: left.add i
       of ptOutput: right.add i
+      elif i < travSide.len and travSide[i] == 0: left.add i
+      elif i < travSide.len and travSide[i] == 1: right.add i
       elif left.len <= right.len: left.add i
       else: right.add i
       inc i
@@ -118,7 +224,19 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
     let forced =
       if g >= 0 and g < groupSide.len: groupSide[g] else: -1
     let laneId = laneNames.len
-    if forced == 0: left.add laneId
+    # A declared traversal opinion for this lane's first pin wins over a
+    # merged bundle group's own `forced` side: `forced` for a lane of
+    # otherwise-directionless pins (the ADG904's `m`/RF bus, all `ptPassive`)
+    # comes from `bundleGroupsFor`'s generic `portDirection` fallback --
+    # "nothing drives it, so call it an input" -- which is not a real
+    # electrical statement, whereas `traverse:` is an explicit one about
+    # exactly these pins. A pin with a kind-based side of its own
+    # (`ptPower`/`ptGround`/`ptInput`/`ptOutput`) always has `travSide[i] ==
+    # -1` (`traversalSides` excludes them), so this never overrides a
+    # genuinely directional bundle member.
+    if i < travSide.len and travSide[i] == 0: left.add laneId
+    elif i < travSide.len and travSide[i] == 1: right.add laneId
+    elif forced == 0: left.add laneId
     elif forced == 1: right.add laneId
     else:
       case p.kind

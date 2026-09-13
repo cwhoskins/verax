@@ -53,6 +53,13 @@ type
     idxOf: Table[string, int]
     pos: seq[Point]
     rots: seq[float]
+    mirrors: seq[bool]
+      ## Parallel to `comps`. `state.chooseMirrors` (`lsMirror`) is the sole
+      ## writer, through `applyMirror` -- which also bakes the reflection
+      ## into `state.syms[i]`'s slot coordinates, so nothing downstream needs
+      ## its own mirror-aware transform (see `SchematicPart.mirror`'s doc).
+      ## All-false is the zero value: an un-annotated sheet with `lsMirror`
+      ## off, or one where no box ever scores better mirrored, is unchanged.
     ohw: seq[float]
     ohh: seq[float]
     composites: CompositePlan
@@ -141,6 +148,68 @@ proc chooseCompositeOrientation(state: var LayoutState) =
   ## orientable composite.
   chooseCompositeOrientation(state.nl, state.comps, state.syms, state.pos,
     state.rots, state.composites)
+
+proc mirrorable(sd: SymbolDef): bool {.inline.} =
+  ## Mirror is scoped to fallback boxes: a box's drawn rectangle and ink
+  ## extents are symmetric about its own centre, and `svg`'s box branch and
+  ## the array pin marks already derive each pin's edge from its *world*
+  ## coordinate -- so reflecting `slots`/`extraSlots`/`byName` about x=0 is a
+  ## correct, self-contained transform with no SVG or routing change needed.
+  ## A symbol part is deliberately excluded: `source4`/`transistor`/a rotated
+  ## two-terminal symbol would need the reflection threaded through instead
+  ## of baked, plus an SVG `scale(-1,1)` group with upright-text handling --
+  ## not built here, since for a horizontal two-terminal symbol mirror-X is
+  ## already identical to `rotate(180)`.
+  sd.isBox
+
+proc applyMirror(state: var LayoutState, i: int, on: bool) =
+  ## Sets `state.mirrors[i]` and reflects `state.syms[i]`'s slot coordinates
+  ## about its own centre (x=0 in symbol-local coordinates) if the requested
+  ## state differs from what is already applied. Idempotent.
+  if state.mirrors[i] == on: return
+  state.mirrors[i] = on
+  for k in 0 ..< state.syms[i].slots.len:
+    state.syms[i].slots[k].x = -state.syms[i].slots[k].x
+  for k in 0 ..< state.syms[i].extraSlots.len:
+    state.syms[i].extraSlots[k].x = -state.syms[i].extraSlots[k].x
+  for key in state.syms[i].byName.keys:
+    state.syms[i].byName[key].x = -state.syms[i].byName[key].x
+
+proc chooseMirrors(state: var LayoutState) =
+  ## `lsMirror`, the definitive mirror assignment once centres are final. A
+  ## stated `layout.mirror` override is honoured absolutely -- the same
+  ## guarantee `enforceLayoutSides` gives `side`, no search. Otherwise, a
+  ## mirrorable box that belongs to no multi-member composite/array unit (a
+  ## 2-pin box *can* be a `parallel`/`pi`/`tee` member -- only `series`
+  ## excludes boxes -- and flipping one member would invalidate the
+  ## composite's rigid internal frame) is scored both ways by the same
+  ## `rotationScore` wirelength metric `bestRotation` uses, snapshot-read
+  ## against one `pinWorldPositions` table so the choice does not depend on
+  ## visiting order -- exactly `forcePlace`'s "fresh-write, snapshot-read"
+  ## shape, here run once rather than per-iteration since there is no
+  ## co-optimisation loop to feed back into.
+  let ov = activeOverrides(state)
+  let n = state.comps.len
+  let pinWorld = pinWorldPositions(state.comps, state.syms, state.pos, state.rots)
+  var decision = newSeq[bool](n)
+  for i in 0 ..< n:
+    if i < ov.mirror.len and ov.mirror[i] != mirrorAuto:
+      decision[i] = ov.mirror[i] == mirrorOn
+      continue
+    if not mirrorable(state.syms[i]): continue
+    if state.composites.ownerOf[i] != i: continue
+    let plainScore = rotationScore(state.syms[i], state.comps[i], state.pos[i],
+                                    0.0, pinWorld)
+    var mirroredSym = state.syms[i]
+    for k in 0 ..< mirroredSym.slots.len:
+      mirroredSym.slots[k].x = -mirroredSym.slots[k].x
+    for k in 0 ..< mirroredSym.extraSlots.len:
+      mirroredSym.extraSlots[k].x = -mirroredSym.extraSlots[k].x
+    let mirroredScore = rotationScore(mirroredSym, state.comps[i], state.pos[i],
+                                       0.0, pinWorld)
+    decision[i] = mirroredScore < plainScore - grid
+  for i in 0 ..< n:
+    applyMirror(state, i, decision[i])
 
 proc constrainedRecomputeRotations(state: var LayoutState) =
   ## The definitive constrained orient pass: let each orientable composite
@@ -259,6 +328,19 @@ proc prepare(state: var LayoutState) =
                                 lanes.names, lanes.side, tw)
     else:
       state.syms[i] = symbolFor(c, @[], @[], @[], lanes.names, lanes.side, tw)
+
+  # A stated `layout.mirror` override is applied immediately -- before
+  # composite recognition and the semantic seed walk read `state.syms`'
+  # slot geometry -- so both see the authored orientation rather than the
+  # default and one silently re-deciding it out from under the other.
+  # `chooseMirrors` (`lsMirror`) revisits every component later, but an
+  # override is never reconsidered there, only re-applied (idempotent).
+  state.mirrors = newSeq[bool](n)
+  let earlyOv = activeOverrides(state)
+  for i in 0 ..< n:
+    if i < earlyOv.mirror.len and earlyOv.mirror[i] != mirrorAuto:
+      applyMirror(state, i, earlyOv.mirror[i] == mirrorOn)
+
   # The constrained plan is made before placement and remains the sole source
   # of member offsets and external composite geometry for the whole pipeline.
   if state.options.policy == lpConstrainedLayered:

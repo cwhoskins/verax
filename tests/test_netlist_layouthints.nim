@@ -105,3 +105,58 @@ test "a SPICE round trip loses layout.side, exactly like package metadata":
   let back = readNetlist(newStringStream(text), "t")
   for _, c in back.components:
     check not c.attrs.hasKey(layoutSideKey)
+
+test "parseLayoutMirror accepts exactly true/false/auto":
+  check parseLayoutMirror("true") == (true, mirrorOn)
+  check parseLayoutMirror("false") == (true, mirrorOff)
+  check parseLayoutMirror("auto") == (true, mirrorAuto)
+  check parseLayoutMirror("TRUE") == (false, mirrorAuto)
+  check parseLayoutMirror("") == (false, mirrorAuto)
+
+test "setLayoutMirror/layoutMirror round-trip, and mirrorAuto clears the key":
+  let nl = board()
+  let c = nl.components["R1"]
+  check layoutMirror(c) == mirrorAuto
+  check not c.attrs.hasKey(layoutMirrorKey)
+
+  setLayoutMirror(c, mirrorOn)
+  check c.attrs[layoutMirrorKey] == "true"
+  check layoutMirror(c) == mirrorOn
+
+  setLayoutMirror(c, mirrorOff)
+  check c.attrs[layoutMirrorKey] == "false"
+  check layoutMirror(c) == mirrorOff
+
+  setLayoutMirror(c, mirrorAuto)
+  check not c.attrs.hasKey(layoutMirrorKey)
+  check layoutMirror(c) == mirrorAuto
+
+test "an unparseable stored mirror value reads back as mirrorAuto, not an error":
+  let nl = board()
+  nl.components["R1"].attrs[layoutMirrorKey] = "yes"
+  check layoutMirror(nl.components["R1"]) == mirrorAuto
+
+test "validateLayoutHints reports an unparseable mirror value, naming the component":
+  let nl = board()
+  nl.components["R1"].attrs[layoutMirrorKey] = "yes"
+  let issues = validateLayoutHints(nl)
+  check issues.len == 1
+  check issues[0].kind == KindLayoutHintUnparseable
+  check issues[0].severity == sevWarning
+  check issues[0].components == @[nl.components["R1"]]
+
+test "layout.mirror survives clone":
+  let nl = board()
+  setLayoutMirror(nl.components["R1"], mirrorOn)
+  var globals: OrderedTable[string, Net]
+  let cloned = clone(nl, globals)
+  check layoutMirror(cloned.components["R1"]) == mirrorOn
+
+test "a SPICE round trip loses layout.mirror, exactly like layout.side":
+  let nl = board()
+  setLayoutMirror(nl.components["R1"], mirrorOn)
+  let text = render(nl)
+  check "layout" notin text
+  let back = readNetlist(newStringStream(text), "t")
+  for _, c in back.components:
+    check not c.attrs.hasKey(layoutMirrorKey)

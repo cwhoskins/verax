@@ -4582,3 +4582,309 @@ suite "traverse: block and the schematic's widened isTraversable":
     options.policy = lpConstrainedLayered
     let s = layout(wouldBePi(thirdPin = true, declareSpec = false), options)
     check not pinLocked(s)
+
+suite "traversal-driven box pin sides":
+  proc adg904Shape(declareSpec: bool): Netlist =
+    ## The ADG904's exact pin table (`designs/xbar_rf.nim`): `RFC`/`RF1..4`
+    ## all `ptPassive`, `A0`/`A1`/`EN` all `ptInput`, `VDD`/`GND`. 10 pins
+    ## with no registered symbol -> a fallback box.
+    result = newNetlist("adg904_shape")
+    let rfc = addNet(result, newNet("rfc"))
+    let rf1 = addNet(result, newNet("rf1"))
+    let rf2 = addNet(result, newNet("rf2"))
+    let rf3 = addNet(result, newNet("rf3"))
+    let rf4 = addNet(result, newNet("rf4"))
+    let a0 = addNet(result, newNet("a0"))
+    let a1 = addNet(result, newNet("a1"))
+    let en = addNet(result, newNet("en"))
+    let vdd = addNet(result, newNet("v3v3", ntPower))
+    let gnd = addNet(result, newNet("0", ntGround))
+    let u = addComponent(result, newComponent("U1", kind = "rf_switch"))
+    discard connect(u, "RFC", rfc, ptPassive)
+    discard connect(u, "RF1", rf1, ptPassive)
+    discard connect(u, "RF2", rf2, ptPassive)
+    discard connect(u, "RF3", rf3, ptPassive)
+    discard connect(u, "RF4", rf4, ptPassive)
+    discard connect(u, "A0", a0, ptInput)
+    discard connect(u, "A1", a1, ptInput)
+    discard connect(u, "EN", en, ptInput)
+    discard connect(u, "VDD", vdd, ptPower)
+    discard connect(u, "GND", gnd, ptGround)
+    if declareSpec:
+      addTraversalEdge(u, "RFC", "RF1")
+      addTraversalEdge(u, "RFC", "RF2")
+      addTraversalEdge(u, "RFC", "RF3")
+      addTraversalEdge(u, "RFC", "RF4")
+
+  proc sideOf(u1: SchematicPart, pinName: string): int =
+    ## -1 left, 0 top/bottom (or off the pin extent, unexpected), 1 right.
+    for p in u1.pins:
+      if p.name == pinName:
+        if abs(abs(p.x - u1.x) - u1.bodyW / 2.0) < 1e-6:
+          return (if p.x < u1.x: -1 else: 1)
+        return 0
+    doAssert false, "no pin " & pinName
+
+  test "a declared RFC<->RF1..4 through-path puts RFC opposite RF1..4":
+    let s = layout(adg904Shape(declareSpec = true))
+    let u1 = partOf(s, "U1")
+    check u1.isBox
+    let rfcSide = sideOf(u1, "RFC")
+    check rfcSide != 0
+    for rf in ["RF1", "RF2", "RF3", "RF4"]:
+      check sideOf(u1, rf) == -rfcSide
+    # The three ptInput select/enable pins are unaffected -- still left.
+    for pinName in ["A0", "A1", "EN"]:
+      check sideOf(u1, pinName) == -1
+
+  test "no traverse: spec produces the identical historical alternation":
+    let s = layout(adg904Shape(declareSpec = false))
+    let u1 = partOf(s, "U1")
+    # RFC, RF2, RF4 alternate to the left; RF1, RF3 to the right -- exactly
+    # `left.len <= right.len` walking the pins in declared order with no
+    # traversal opinion at all.
+    check sideOf(u1, "RFC") == -1
+    check sideOf(u1, "RF1") == 1
+    check sideOf(u1, "RF2") == -1
+    check sideOf(u1, "RF3") == 1
+    check sideOf(u1, "RF4") == -1
+    for pinName in ["A0", "A1", "EN"]:
+      check sideOf(u1, pinName) == -1
+
+  proc oddCycleShape(): Netlist =
+    ## Three `ptPassive` pins in a triangle of declared edges -- an odd
+    ## cycle, which has no two-sided drawing.
+    result = newNetlist("odd_cycle")
+    let na = addNet(result, newNet("na"))
+    let nb = addNet(result, newNet("nb"))
+    let nc = addNet(result, newNet("nc"))
+    let u = addComponent(result, newComponent("U1", kind = "triangle_part"))
+    discard connect(u, "A", na, ptPassive)
+    discard connect(u, "B", nb, ptPassive)
+    discard connect(u, "C", nc, ptPassive)
+    addTraversalEdge(u, "A", "B")
+    addTraversalEdge(u, "B", "C")
+    addTraversalEdge(u, "C", "A")
+
+  test "a non-bipartite spec falls back to the historical alternation":
+    let s = layout(oddCycleShape())
+    let u1 = partOf(s, "U1")
+    check u1.isBox
+    # `left.len <= right.len`, unaffected by the undrawable triangle: A left,
+    # B right, C left.
+    check sideOf(u1, "A") == -1
+    check sideOf(u1, "B") == 1
+    check sideOf(u1, "C") == -1
+
+  proc allModeShape(): Netlist =
+    result = newNetlist("all_mode")
+    let na = addNet(result, newNet("na"))
+    let nb = addNet(result, newNet("nb"))
+    let nc = addNet(result, newNet("nc"))
+    let u = addComponent(result, newComponent("U1", kind = "jumper_part"))
+    discard connect(u, "A", na, ptPassive)
+    discard connect(u, "B", nb, ptPassive)
+    discard connect(u, "C", nc, ptPassive)
+    setTraversalMode(u, tmAll)
+
+  test "traverse: all with no declared edges is inert here too":
+    let s = layout(allModeShape())
+    let u1 = partOf(s, "U1")
+    check sideOf(u1, "A") == -1
+    check sideOf(u1, "B") == 1
+    check sideOf(u1, "C") == -1
+
+  proc seededShape(midIsOutput: bool): Netlist =
+    ## A 3-pin path `P0 <-> MID <-> P2`. When `MID` is `ptOutput` it forces
+    ## its own connected component's colour seed to "right", flipping both
+    ## `P0` and `P2` from the unseeded default (left) to right -- proving the
+    ## seed actually changes the two-colouring rather than merely agreeing
+    ## with it by coincidence.
+    result = newNetlist("seeded")
+    let n0 = addNet(result, newNet("n0"))
+    let n1 = addNet(result, newNet("n1"))
+    let n2 = addNet(result, newNet("n2"))
+    let u = addComponent(result, newComponent("U1", kind = "seeded_part"))
+    discard connect(u, "P0", n0, ptPassive)
+    discard connect(u, "MID", n1, (if midIsOutput: ptOutput else: ptPassive))
+    discard connect(u, "P2", n2, ptPassive)
+    addTraversalEdge(u, "P0", "MID")
+    addTraversalEdge(u, "MID", "P2")
+
+  test "an unseeded path alternates left/right/left from the default seed":
+    let s = layout(seededShape(midIsOutput = false))
+    let u1 = partOf(s, "U1")
+    check sideOf(u1, "P0") == -1
+    check sideOf(u1, "MID") == 1
+    check sideOf(u1, "P2") == -1
+
+  test "a ptOutput pin in the graph seeds its component, flipping the ends":
+    let s = layout(seededShape(midIsOutput = true))
+    let u1 = partOf(s, "U1")
+    check sideOf(u1, "P0") == 1
+    check sideOf(u1, "MID") == 1        # ptOutput's own kind still wins here
+    check sideOf(u1, "P2") == 1
+
+  proc adg904Bundled(): Netlist =
+    ## The actual regression: `designs/xbar_rf.nim`'s exact shape -- two
+    ## switches sharing one midplane bus (`m`, width 4), each with its own
+    ## `RFC <-> RF1..4` through-path, exactly like the crossbar's two-stage
+    ## `m[0..3]` nets. Two entities uniformly touching all four bus members
+    ## is what makes `bundles.nim` collapse `RF1..4` into **one merged pin**
+    ## per switch (`brCollapsed`) -- unlike a single-entity bus, which stays
+    ## unmerged and never exercises the bug. `RF1..4` are `ptPassive` with no
+    ## kind-based side of their own, so before a merged bundle lane was
+    ## checked against `traversalSides`, `bundleGroupsFor`'s `portDirection`
+    ## fallback ("nothing drives it, call it an input") put the whole merged
+    ## `m` lane on the **same** side as `RFC` -- silently defeating the
+    ## traversal split the instant a design's RF pins also happened to be a
+    ## declared bus, which every real ADG904 usage is.
+    result = newNetlist("adg904_bundled")
+    let rfc = addNet(result, newNet("rfc"))
+    let u = addComponent(result, newComponent("U1", kind = "rf_switch"))
+    discard connect(u, "RFC", rfc, ptPassive)
+    let rfc2 = addNet(result, newNet("rfc2"))
+    let u2 = addComponent(result, newComponent("U2", kind = "rf_switch"))
+    discard connect(u2, "RFC", rfc2, ptPassive)
+    for i in 1 .. 4:
+      let n = addNet(result, newNet("m" & $i))
+      n.attrs["bus.name"] = "m"
+      n.attrs["bus.index"] = $(i - 1)
+      n.attrs["bus.width"] = "4"
+      discard connect(u, "RF" & $i, n, ptPassive)
+      discard connect(u2, "RF" & $i, n, ptPassive)
+    addTraversalEdge(u, "RFC", "RF1")
+    addTraversalEdge(u, "RFC", "RF2")
+    addTraversalEdge(u, "RFC", "RF3")
+    addTraversalEdge(u, "RFC", "RF4")
+    addTraversalEdge(u2, "RFC", "RF1")
+    addTraversalEdge(u2, "RFC", "RF2")
+    addTraversalEdge(u2, "RFC", "RF3")
+    addTraversalEdge(u2, "RFC", "RF4")
+
+  test "a through-path split survives even when its far end is a declared bus":
+    let s = layout(adg904Bundled())
+    let u1 = partOf(s, "U1")
+    check u1.isBox
+    var mLane: SchematicPin
+    var found = false
+    for p in u1.pins:
+      if p.name != "RFC":
+        mLane = p
+        found = true
+    check found
+    let rfcSide = sideOf(u1, "RFC")
+    check rfcSide != 0
+    let mSide = (if abs(abs(mLane.x - u1.x) - u1.bodyW / 2.0) < 1e-6:
+                   (if mLane.x < u1.x: -1 else: 1)
+                 else: 0)
+    check mSide == -rfcSide
+
+suite "layout.mirror":
+  proc crossedMirrorShape(): tuple[nl: Netlist, ra, rb: string] =
+    ## `U1` is a 2-pin fallback box; historically `P0` (ordinal 0) lands on
+    ## the box's left edge and `P1` (ordinal 1) on its right. `P0`'s net is
+    ## wired to `RA`, forced strictly right of the sheet; `P1`'s net to `RB`,
+    ## forced strictly left -- crossed, so mirroring `U1` (putting `P0` on
+    ## the right, facing `RA`, and `P1` on the left, facing `RB`) shortens
+    ## both wires.
+    let nl = newNetlist("crossed")
+    let p0 = addNet(nl, newNet("p0"))
+    let p1 = addNet(nl, newNet("p1"))
+    let gnd = addNet(nl, newNet("0", ntGround))
+    let u = addComponent(nl, newComponent("U1", kind = "odd_ic"))
+    discard connect(u, "P0", p0, ptPassive)
+    discard connect(u, "P1", p1, ptPassive)
+    let ra = addComponent(nl, newComponent("RA", kind = "resistor"))
+    discard connect(ra, "1", p0, ptPassive)
+    discard connect(ra, "2", gnd, ptPassive)
+    setLayoutSide(ra, sideRight)
+    let rb = addComponent(nl, newComponent("RB", kind = "resistor"))
+    discard connect(rb, "1", p1, ptPassive)
+    discard connect(rb, "2", gnd, ptPassive)
+    setLayoutSide(rb, sideLeft)
+    (nl, "RA", "RB")
+
+  test "chooseMirrors flips a box when mirroring shortens its wires":
+    let (nl, _, _) = crossedMirrorShape()
+    let s = layout(nl)
+    check partOf(s, "U1").mirror
+
+  test "a stated layout.mirror = false overrides what the heuristic would pick":
+    let (nl, _, _) = crossedMirrorShape()
+    setLayoutMirror(findComponent(nl, "U1"), mirrorOff)
+    let s = layout(nl)
+    check not partOf(s, "U1").mirror
+
+  test "a stated layout.mirror = true is honoured even with no wirelength reason":
+    let nl = newNetlist("plain_mirror")
+    let a = addNet(nl, newNet("a"))
+    let gnd = addNet(nl, newNet("0", ntGround))
+    let u = addComponent(nl, newComponent("U1", kind = "plain_ic"))
+    discard connect(u, "P0", a, ptPassive)
+    discard connect(u, "P1", gnd, ptPassive)
+    setLayoutMirror(u, mirrorOn)
+    let s = layout(nl)
+    check partOf(s, "U1").mirror
+
+  test "a mirrored box's pins are the unmirrored ones reflected about its centre":
+    let nlMirrored = newNetlist("m")
+    block:
+      let a = addNet(nlMirrored, newNet("a"))
+      let b = addNet(nlMirrored, newNet("b"))
+      let u = addComponent(nlMirrored, newComponent("U1", kind = "plain_ic"))
+      discard connect(u, "P0", a, ptPassive)
+      discard connect(u, "P1", b, ptPassive)
+      setLayoutMirror(u, mirrorOn)
+    let nlPlain = newNetlist("m")
+    block:
+      let a = addNet(nlPlain, newNet("a"))
+      let b = addNet(nlPlain, newNet("b"))
+      discard addComponent(nlPlain, newComponent("U1", kind = "plain_ic"))
+      discard connect(nlPlain.components["U1"], "P0", a, ptPassive)
+      discard connect(nlPlain.components["U1"], "P1", b, ptPassive)
+    var noMirrorStage = defaultLayoutOptions()
+    noMirrorStage.stages.excl lsMirror
+    let mirrored = partOf(layout(nlMirrored), "U1")
+    let plain = partOf(layout(nlPlain, noMirrorStage), "U1")
+    check mirrored.x == plain.x and mirrored.y == plain.y
+    check mirrored.bodyW == plain.bodyW and mirrored.bodyH == plain.bodyH
+    for pp in plain.pins:
+      var found = false
+      for mp in mirrored.pins:
+        if mp.name == pp.name:
+          found = true
+          check abs(mp.x - (2.0 * plain.x - pp.x)) < 1e-6
+          check abs(mp.y - pp.y) < 1e-6
+      check found
+
+  test "a composite member box is never mirrored, even under the same bias":
+    let (nl, _, _) = crossedMirrorShape()
+    # A second box sharing exactly `U1`'s two nets forces a parallel-stack
+    # composite of two members -- `chooseMirrors` must skip both.
+    let u1 = findComponent(nl, "U1")
+    var p0Net, p1Net: Net
+    for name, pin in u1.pins:
+      if name == "P0": p0Net = pin.net
+      if name == "P1": p1Net = pin.net
+    let u2 = addComponent(nl, newComponent("XB2", kind = "odd_ic"))
+    discard connect(u2, "P0", p0Net, ptPassive)
+    discard connect(u2, "P1", p1Net, ptPassive)
+    let s = layout(nl)
+    check coStacked(partOf(s, "U1"), partOf(s, "XB2"))
+    check not partOf(s, "U1").mirror
+    check not partOf(s, "XB2").mirror
+
+  test "the scene JSON round-trips mirror, additively":
+    let (nl, _, _) = crossedMirrorShape()
+    let s = layout(nl)
+    check partOf(s, "U1").mirror
+    let text = sceneToJsonString(s)
+    check "\"mirror\": true" in text
+    let back = jsonToScene(text)
+    check partOf(back, "U1").mirror
+
+  test "a mirror-free scene's JSON carries no mirror key at all":
+    let s = layout(divider())
+    let text = sceneToJsonString(s)
+    check "mirror" notin text
