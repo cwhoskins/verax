@@ -163,6 +163,51 @@ test "dc-path walk crosses a hierarchical instance boundary via hierNet":
 
   check checkDCPaths(top).len == 0
 
+# --- a declared traverse: spec on an N-pin switch ----------------------
+
+proc rfSwitchSheet(declared: bool): Netlist =
+  ## An ADG904-shaped switch: `RFC` driven directly, RF1..RF4 each landing on
+  ## their own net, `EN` tied straight to ground so it is never itself the
+  ## subject of a finding here. Six connected pins -- more than the 2-pin
+  ## default has anything to say about -- so undeclared, `dcReachable` can
+  ## only call `SW1` ambiguous; declared, `RFC <-> RF1..RF4` is the only path
+  ## from any `RFn` back to the driven net, so crossing it is the only way
+  ## `U2`'s input on `rf1` is ever reached.
+  result = netlist("rf_switch_sheet"):
+    net rfc, kind = ntSignal
+    net rf1, kind = ntSignal
+    net rf2, kind = ntSignal
+    net rf3, kind = ntSignal
+    net rf4, kind = ntSignal
+    net gnd, kind = ntGround, name = "0"
+    component U1, kind = "driver_ic":
+      pin "OUT", rfc, kind = ptOutput
+    component SW1, kind = "rf_switch":
+      pin "RFC", rfc, kind = ptPassive
+      pin "RF1", rf1, kind = ptPassive
+      pin "RF2", rf2, kind = ptPassive
+      pin "RF3", rf3, kind = ptPassive
+      pin "RF4", rf4, kind = ptPassive
+      pin "EN", gnd, kind = ptInput
+    component U2, kind = "receiver_ic":
+      pin "IN", rf1, kind = ptInput
+  if declared:
+    let sw = result.components["SW1"]
+    for rfn in ["RF1", "RF2", "RF3", "RF4"]:
+      addTraversalEdge(sw, "RFC", rfn)
+
+test "an undeclared rf_switch: dcReachable calls it ambiguous, as today":
+  let nl = rfSwitchSheet(declared = false)
+  let issues = checkDCPaths(nl)
+  check issues.len == 1
+  check issues[0].kind == "ambiguous_dc_path"
+  check issues[0].components.len == 1
+  check issues[0].components[0].designator == "SW1"
+
+test "a declared traverse: spec makes dcReachable cross the switch: no findings":
+  let nl = rfSwitchSheet(declared = true)
+  check checkDCPaths(nl).len == 0
+
 # --- a power rail nobody gave a voltage --------------------------------
 
 proc biasRail(withVoltage: bool): Netlist =

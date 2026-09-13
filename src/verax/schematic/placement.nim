@@ -298,7 +298,9 @@ const
 
 proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
                              pos: var seq[Point], rots: seq[float],
-                             ohw, ohh: seq[float], locked: seq[bool] = @[]) =
+                             ohw, ohh: seq[float], locked: seq[bool] = @[],
+                             sides: seq[LayoutSide] = @[],
+                             leftSplit = NegInf, rightSplit = Inf) =
   ## Deterministic, bounded post-placement repair. Exact distinct-net pin
   ## coincidences are reduced first as a hard condition; otherwise it keeps a
   ## grid move that strictly reduces full-glyph conflicts, preserving the
@@ -345,6 +347,9 @@ proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
             let x = pos[i].x + float(dx) * grid
             let y = pos[i].y + float(dy) * grid
             if overlapsAny(i, x, y, pos, ohw, ohh, all): continue
+            if sides.len == comps.len and
+               not sideBandAllows(sides[i], x, ohw[i], leftSplit, rightSplit):
+              continue
             var candidate = pos
             candidate[i] = Point(x: x, y: y)
             let next = terminalClearance(comps, syms, candidate, rots)

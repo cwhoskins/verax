@@ -25,7 +25,7 @@ proc teeRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]] =
     var seen = initHashSet[string]()
     var candidates: seq[Net]
     for i, c in comps:
-      let trav = isTraversable(c, nl) and isPassiveElement(syms[i])
+      let trav = isTwoTerminal(c, nl) and isPassiveElement(syms[i])
       for _, pin in c.pins:
         if pin.net == nil: continue
         pinCount.mgetOrPut(pin.net.name, 0).inc

@@ -3,12 +3,15 @@
 ## idea 3, "shunt pair flanking any part". Canonical drawing: the series part
 ## horizontal, a shunt hanging straight down to ground from each end.
 ##
-## Recognition is topology-only, the discipline `isTraversable` documents:
+## Recognition is topology-only, the discipline `isTwoTerminal` documents:
 ## `isGround` on a shunt's far net, `isRail`/`isGround` rejected on the series
 ## nets, and never a `Component.kind` string or a pin name. Members are always
-## raw flat two-terminal singletons, so a pi never nests another kind's
-## composite; registered after `parallelStackKind`, so a shunt that is really
-## a parallel bank stays a parallel stack and this pi is declined.
+## raw flat two-terminal singletons -- `isTwoTerminal`, not the widened
+## `isTraversable` that only `constrained.pathsFrom` calls, is what every
+## `recognize` hook here tests, so a pi never nests another kind's composite
+## and never claims a declared multi-exit part as its series or shunt member;
+## registered after `parallelStackKind`, so a shunt that is really a parallel
+## bank stays a parallel stack and this pi is declined.
 
 proc piRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]] =
   var groups: seq[seq[int]]
@@ -22,7 +25,7 @@ proc piRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]] =
     var traversableOn = initTable[string, seq[int]]()
     var pinCount = initTable[string, int]()
     for i, c in comps:
-      let usable = isTraversable(c, nl) and isPassiveElement(syms[i])
+      let usable = isTwoTerminal(c, nl) and isPassiveElement(syms[i])
       for _, pin in c.pins:
         if pin.net == nil: continue
         pinCount.mgetOrPut(pin.net.name, 0).inc
@@ -52,7 +55,7 @@ proc piRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]] =
 
     var claimed = newSeq[bool](comps.len)
     for i, c in comps:
-      if claimed[i] or not isTraversable(c, nl) or not isPassiveElement(syms[i]):
+      if claimed[i] or not isTwoTerminal(c, nl) or not isPassiveElement(syms[i]):
         continue
       var nets: seq[string]
       var fixed = false

@@ -48,6 +48,36 @@ Add `name = "0"` to give the net a different SPICE name from its identifier.
 `capacitor`, `inductor`, `diode`, `bjt`, `mosfet`, `voltage_source`,
 `current_source` are understood; anything else is carried through untouched.
 
+**`traverse:`** — inside a `component` block, states which pin pairs conduct
+through this part, for the parts a `kind` string alone cannot say it about: an
+N-pin RF switch, a connector, a relay, a jumper block. Two independent checks
+read it — the static DC-path walk (`checkDCPaths`/`dc_path_exists`) and the
+schematic's own topology walk — and neither guesses at a part with more than
+two connected pins unless it says so:
+
+```nim
+component U, designator = "XSW1", kind = "rf_switch", partNumber = "ADG904":
+  traverse:
+    "RFC" <-> ["RF1", "RF2", "RF3", "RF4"]
+  pin "RFC", rfc, kind = ptPassive
+  pin "RF1", m[0], kind = ptPassive
+  ...
+```
+
+`"A" <-> "B"` is one conducting edge; either side may be a bracketed list,
+expanding to the cross product (`"RFC" <-> ["RF1", "RF2"]` is two edges).
+`blocks "A" <-> "B"` states a schematic path that is *not* a DC path (an
+AC-coupling capacitor's two pins are connected on the page but never conduct).
+The bare words `none` and `all` override the ordinary two-pin default outright
+— `none` says this part conducts nothing at all (the way to state that an
+ordinary-looking resistor is not one), `all` opts every connected pin pair
+into whatever `kind` already says electrically. Pin names are not checked
+against the component's own `pin` statements at compile time — the block may
+come first, as above — so `verax check`'s structural section is where an
+unknown pin name is caught. Directionality is out of scope: a signal-path
+part that only passes a signal one way (an op-amp, a buffer) is already
+better served by `spice/models/behavioral.passesSignal`.
+
 ### Interfaces
 
 Import `verax/netlist/interfaces/std` for the standard I2C, SPI and UART

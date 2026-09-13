@@ -496,10 +496,16 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     # member. A *merged* group gets one tag (`lg.text`) at the merged pin;
     # `lg.text` must equal that group's merged `SchematicPin.name` so
     # `fallbackFor` sets `part` and `fallbackEscapeDir` can match. An
-    # *unmerged* group keeps one tag per pin under the real member net name.
-    # The published members now fold to ONE pennant (`byPort` covers a
-    # net-label bundle too) sharing ONE `portConn` entry keyed by `b.display`
-    # -- so the port side gets one merged tag, not one per member. It is
+    # *unmerged* group keeps one tag per pin under the real member net name --
+    # **unless** a collapsed array now owns that pin's port
+    # (`arrayOwnsDistributedPin`): the array draws a real wire for it instead
+    # (`xbar_rf`'s `rin`/`rout`/`en`), under the bundle's own occupancy tag,
+    # so a bare tag here would be a second, contradictory drawing of the same
+    # connection. The published members now fold to ONE pennant (`byPort`
+    # covers a net-label bundle too) sharing ONE `portConn` entry keyed by
+    # `b.display` -- so the port side gets one merged tag, not one per member
+    # -- but that marker is likewise skipped once the array's own route
+    # already reaches the same port point (`arrGroup`, checked below). It is
     # tagged `b.display`, not `b.portText`: `fallbackEscapeDir` recovers a
     # port-point fallback's escape direction by matching
     # `SchematicPort.net == f.net`, and a port's `net` field is the
@@ -515,6 +521,13 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         let pIdx = partIdxByDesig[lg.desig]
         let comp = nl.components[lg.desig]
         if lg.merged:
+          # A merged carrier is not itself necessarily an array member (it
+          # may be the shared far side of a bus every *other* carrier of
+          # which collapsed, e.g. `bundledTerminationBank`'s `U1`) --
+          # `arrayOwnsDistributedPin` can't see that from `comp`/`lg.pins[0]`
+          # alone, so ask whether an array already routes this group's own
+          # underlying net directly.
+          if arrays.groupOf.hasKey(lg.members[0].net): continue
           let key = pinKey(comp, lg.pins[0].pin)
           if not pinPos.hasKey(key): continue
           pendingFallbacks.add (
@@ -523,6 +536,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
             netName: lg.text, kind: fbNetLabel, bundle: b.display)
         else:
           for pr in lg.pins:
+            if arrayOwnsDistributedPin(arrays, comp, pr.pin): continue
             let key = pinKey(comp, pr.pin)
             if not pinPos.hasKey(key): continue
             # `lg` was built over the pre-collapse netlist, so an unmerged
@@ -538,12 +552,18 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
               pin: (pt: pinPos[key], partIdx: pIdx,
                     esc: Point(x: 0.0, y: 0.0), pinName: pr.pin),
               netName: labelText, kind: fbNetLabel, bundle: b.display)
-      for pc in portConn.getOrDefault(b.display):
-        pendingFallbacks.add (
-          pin: (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: ""),
-          netName: b.display, kind: fbNetLabel, bundle: b.display)
-      inc sigOrd
-      continue
+      if not arrGroup:
+        for pc in portConn.getOrDefault(b.display):
+          pendingFallbacks.add (
+            pin: (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: ""),
+            netName: b.display, kind: fbNetLabel, bundle: b.display)
+        inc sigOrd
+        continue
+      # Else: a collapsed array owns this net's route (this is exactly its
+      # triggering "first" member -- see `arrayRouteFor`) -- fall through to
+      # the ordinary `arrGroup` handling below to draw the real wire, having
+      # already drawn whatever net-label tags remain for any carrier the
+      # array does not own.
 
     let coll = bi >= 0 and bundles.bundles[bi].role == brCollapsed
     if coll and net.name != bundles.bundles[bi].members[0]:
@@ -794,7 +814,10 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                     composites: CompositePlan,
                     bundles = BundlePlan(),
                     arrays = ArrayPlan(),
-                    portY = initTable[string, float]()): RoutingState =
+                    portY = initTable[string, float](),
+                    ov = LayoutOverridePlan(),
+                    sides: seq[LayoutSide] = @[],
+                    leftSplit = NegInf, rightSplit = Inf): RoutingState =
   ## The placement-routing feedback loop. When `routeScene` cannot route a
   ## signal net it tries deterministic single-part moves and keeps any move
   ## that routes strictly further than the best layout so far, up to
@@ -877,6 +900,9 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
             for i in unit:
               let nx = bestPos[i].x + float(dx) * grid
               let ny = bestPos[i].y + float(dy) * grid
+              if sides.len == comps.len and
+                 not sideBandAllows(sides[i], nx, rawW[i], leftSplit, rightSplit):
+                clear = false
               for j in allParts:
                 if inUnit[j]: continue
                 if abs(nx - bestPos[j].x) < rawW[i] + rawW[j] - 1e-9 and
@@ -889,7 +915,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                                  y: bestPos[i].y + float(dy) * grid)
             let candRots = constrainedRecomputeRotations(nl, comps, syms,
               candPos, bestRots,
-              constrainedAnchors(comps, bestPos, idxOf, composites, arrays),
+              constrainedAnchors(comps, bestPos, idxOf, composites, arrays, ov),
               composites)
             if terminalClearance(comps, syms, candPos, candRots).coincidences > 0:
               continue
@@ -923,7 +949,14 @@ proc routeScene(state: LayoutState, withFallbacks = false): RoutingState =
     arrays = state.arrays, portY = state.portY)
 
 proc recoverRouting(state: LayoutState): RoutingState =
+  # `activeOverrides`, not `state.overrides` directly -- see the identical
+  # comment on `state.nim`'s `repairTerminalClearance` wrapper: with
+  # `lsLayoutOverrides` disabled, `leftSplit`/`rightSplit` stay `-Inf`/`Inf`,
+  # and a non-empty `sides` against those would reject every candidate for an
+  # overridden part instead of the intended no-op.
+  let ov = activeOverrides(state)
   recoverRouting(state.nl, state.comps, state.syms, state.pos, state.rots,
     state.idxOf, state.options, state.composites, state.bundles, state.arrays,
-    portY = state.portY)
+    portY = state.portY, ov = ov, sides = ov.side, leftSplit = state.leftSplit,
+    rightSplit = state.rightSplit)
 

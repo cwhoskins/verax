@@ -36,14 +36,15 @@ type
     btBus, btInterface
 
   BundleRole = enum
-    brScalar     ## fails collapse, non-ported, < 3 component entities: ordinary
+    brScalar     ## fails collapse (non-uniform, or a non-box carrier): ordinary
                  ## wires, membership colour only
-    brCollapsed  ## exactly two endpoint entities, uniform: one merged pin per
-                 ## end, one thick wire between them
-    brNetLabel   ## fails collapse **and** (published or spanning 3+ component
-                 ## entities): grouped net-label tags, no wires -- one merged
-                 ## tag per box endpoint carrying >= 2 members, a bare member
-                 ## tag elsewhere
+    brCollapsed  ## two or more endpoint entities, uniform: one merged pin per
+                 ## entity, one thick bus tree between them
+    brNetLabel   ## fails collapse (non-uniform, a non-box carrier, or a
+                 ## single unported entity) **and** (published or spanning 3+
+                 ## component entities): grouped net-label tags, no wires --
+                 ## one merged tag per box endpoint carrying >= 2 members, a
+                 ## bare member tag elsewhere
 
   LabelGroup = object
     ## One endpoint's share of a `brNetLabel` bundle: the member pins on one
@@ -190,7 +191,13 @@ proc bundleEntities(nl: Netlist, members: seq[Net]):
   (first, firstPorted, true)
 
 proc collapsible(parts: seq[string], ported: bool): bool {.inline.} =
-  parts.len + (if ported: 1 else: 0) == 2
+  ## Two or more endpoint entities -- a component, or the sheet boundary
+  ## (`ported`, one entity however many `nl.ports` keys are involved) --
+  ## paired with `bundleEntities.uniform` (every member touches the *same*
+  ## entity set) is the whole collapse precondition. There is no upper cap:
+  ## a uniform bus across any number of boxes draws as one bus tree rather
+  ## than degrading to grouped net-label tags once it passes three entities.
+  parts.len + (if ported: 1 else: 0) >= 2
 
 proc bundleUnionEntities(nl: Netlist, members: seq[Net]):
     tuple[parts: seq[string], ported: bool] =
@@ -478,8 +485,9 @@ proc bundlePlan(nl: Netlist): BundlePlan =
     ## designators only (the `p.component.netlist == nl` guard), never the
     ## sheet boundary, so three-plus *components* fanning off one bus draw as
     ## grouped net-label tags -- the conventional schematic -- rather than a
-    ## nest of N recoloured wires. Collapse is still tested first, so a
-    ## two-endpoint bus is unaffected.
+    ## nest of N recoloured wires, **unless** it collapses first: a uniform
+    ## bus touching the identical entity set on every member draws as one bus
+    ## tree regardless of how many entities that set has.
     if members.len < 2 or anyRailOrGround(members): return
     let ent = bundleEntities(nl, members)
     let union = bundleUnionEntities(nl, members)
@@ -509,9 +517,10 @@ proc bundlePlan(nl: Netlist): BundlePlan =
                   (parts: ent.parts, ported: ent.ported))
         continue
       # A published interface, or one fanning to 3+ component entities, that
-      # fails collapse becomes ONE net-label bundle over *all* its member
-      # nets -- the per-`bus.name` retry is skipped entirely. The trade,
-      # stated in `schematic/CLAUDE.md`: a >= 3-entity interface no longer
+      # fails collapse (non-uniform, or a non-box carrier) becomes ONE
+      # net-label bundle over *all* its member nets -- the per-`bus.name`
+      # retry is skipped entirely. The trade, stated in
+      # `schematic/CLAUDE.md`: a published or >= 3-entity interface no longer
       # gets a collapsed sub-bus (e.g. `spiSharedBusSheet` loses its
       # `bus:spi1_cs` sub-bundle -- it is claimed by `iface:spi1`).
       if union.ported or union.parts.len >= 3:
@@ -520,8 +529,10 @@ proc bundlePlan(nl: Netlist): BundlePlan =
 
     # Retry: re-split by the members' recorded `bus.name` (`addInterface`
     # always sets it). Each sub-bus with >= 2 members re-runs as `btBus`.
-    # Reached only for the < 3-entity, non-ported, non-uniform leftover,
-    # where a wide sub-bus can still collapse point-to-point.
+    # Reached only for the < 3-entity, non-ported, non-uniform leftover
+    # (uniform or >= 3-entity/published candidates are claimed above), where
+    # a narrower sub-bus can still be uniform even though the whole interface
+    # was not, and so can still collapse.
     var subOrder: seq[string]
     var subNets = initTable[string, seq[Net]]()
     for n in members:

@@ -2798,6 +2798,160 @@ suite "run archive svg":
       check fileExists(dir / "run000.json")
       check ">U1</text>" in readFile(dir / "run000.svg")
 
+# --- layout.side overrides --------------------------------------------
+
+import verax/netlist/layouthints
+
+suite "layout side overrides":
+  proc rightEdge(p: SchematicPart): float = p.x + p.bodyW / 2.0
+  proc leftEdge(p: SchematicPart): float = p.x - p.bodyW / 2.0
+
+  proc layeredChain(): Netlist =
+    ## U1 -> U2 -> U3 -> R1, an output-pin chain so constrained layering
+    ## naturally orders them left to right -- the same shape as "constrained
+    ## layered policy places output flow in increasing columns" above.
+    result = newNetlist("layered_ov")
+    let a = addNet(result, newNet("a"))
+    let b = addNet(result, newNet("b"))
+    let c = addNet(result, newNet("c"))
+    let u1 = addComponent(result, newComponent("U1", kind = "mcu"))
+    discard connect(u1, "OUT", a, ptOutput)
+    let u2 = addComponent(result, newComponent("U2", kind = "mcu"))
+    discard connect(u2, "IN", a, ptInput)
+    discard connect(u2, "OUT", b, ptOutput)
+    let u3 = addComponent(result, newComponent("U3", kind = "mcu"))
+    discard connect(u3, "IN", b, ptInput)
+    discard connect(u3, "OUT", c, ptOutput)
+    let r1 = addComponent(result, newComponent("R1", kind = "resistor"))
+    discard connect(r1, "1", c, ptPassive)
+    discard connect(r1, "2", addNet(result, newNet("d")), ptPassive)
+
+  test "a left-overridden component lands strictly left of everything else":
+    let nl = layeredChain()
+    setLayoutSide(findComponent(nl, "R1"), sideLeft) # naturally rightmost
+    let s = layout(nl)
+    let r1 = partOf(s, "R1")
+    for desig in ["U1", "U2", "U3"]:
+      check rightEdge(r1) < leftEdge(partOf(s, desig))
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
+
+  test "a right-overridden component lands strictly right of everything else":
+    let nl = layeredChain()
+    setLayoutSide(findComponent(nl, "U1"), sideRight) # naturally leftmost
+    let s = layout(nl)
+    let u1 = partOf(s, "U1")
+    for desig in ["U2", "U3", "R1"]:
+      check leftEdge(u1) > rightEdge(partOf(s, desig))
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
+
+  test "ports stay outside an overridden component's dedicated column":
+    let nl = newNetlist("ported_ov")
+    let ip = addNet(nl, newNet("in1"))
+    let op = addNet(nl, newNet("out1"))
+    let u1 = addComponent(nl, newComponent("U1", kind = "mcu"))
+    discard connect(u1, "IN", ip, ptInput)
+    discard connect(u1, "OUT", op, ptOutput)
+    let r1 = addComponent(nl, newComponent("R1", kind = "resistor"))
+    discard connect(r1, "1", op, ptPassive)
+    discard connect(r1, "2", addNet(nl, newNet("tail")), ptPassive)
+    addPort(nl, "IN", ip)
+    addPort(nl, "OUT", op)
+    setLayoutSide(findComponent(nl, "R1"), sideLeft)
+    let s = layout(nl)
+    let r1p = partOf(s, "R1")
+    var checkedAny = false
+    for port in s.ports:
+      if port.dir in {pdInput, pdUnspecified}:
+        checkedAny = true
+        check port.x + port.bodyW / 2.0 < leftEdge(r1p)
+    check checkedAny
+
+  test "an overridden sheet lays out deterministically":
+    let nl = layeredChain()
+    setLayoutSide(findComponent(nl, "R1"), sideLeft)
+    check sceneToJsonString(layout(nl)) == sceneToJsonString(layout(nl))
+
+  test "no override is byte-identical with lsLayoutOverrides in or out of stages":
+    let a = layeredChain()
+    let b = layeredChain()
+    var withStage = defaultLayoutOptions()
+    var withoutStage = defaultLayoutOptions()
+    withoutStage.stages.excl lsLayoutOverrides
+    check sceneToJsonString(layout(a, withStage)) ==
+          sceneToJsonString(layout(b, withoutStage))
+
+  test "disabling lsLayoutOverrides drops an override to the pre-feature scene":
+    let overridden = layeredChain()
+    setLayoutSide(findComponent(overridden, "R1"), sideLeft)
+    var withoutStage = defaultLayoutOptions()
+    withoutStage.stages.excl lsLayoutOverrides
+    let plain = layeredChain()
+    check sceneToJsonString(layout(overridden, withoutStage)) ==
+          sceneToJsonString(layout(plain))
+
+  proc manyIsolatedResistors(n: int): Netlist =
+    ## `n` resistors sharing no net with one another -- no motif can group
+    ## any of them, so the composite-collapsed pool is exactly `n` raw parts.
+    result = newNetlist("isolated_many")
+    for i in 1 .. n:
+      let a = addNet(result, newNet("a" & $i))
+      let b = addNet(result, newNet("b" & $i))
+      let r = addComponent(result, newComponent("R" & $i, kind = "resistor"))
+      discard connect(r, "1", a, ptPassive)
+      discard connect(r, "2", b, ptPassive)
+
+  test "the side guarantee holds on a sheet too large for constrained layering":
+    # 65 pool items is one over `constrainedMaxParts` (64): `constrainedEligible`
+    # declines the sheet, so the semantic-seed hint (`constrainedTopology`)
+    # never runs -- this exercises `enforceLayoutSides` alone.
+    let nl = manyIsolatedResistors(65)
+    setLayoutSide(findComponent(nl, "R1"), sideLeft)
+    let s = layout(nl)
+    let r1 = partOf(s, "R1")
+    for i in 2 .. 65:
+      check rightEdge(r1) < leftEdge(partOf(s, "R" & $i))
+
+  proc parallelPair(): Netlist =
+    ## R1 and C1 in parallel across the same two nets -- `parallelStackKind`'s
+    ## recognized composite: one placement unit for both.
+    result = newNetlist("pair_ov")
+    let a = addNet(result, newNet("a"))
+    let b = addNet(result, newNet("b"))
+    let r = addComponent(result, newComponent("R1", kind = "resistor"))
+    discard connect(r, "1", a, ptPassive)
+    discard connect(r, "2", b, ptPassive)
+    let c = addComponent(result, newComponent("C1", kind = "capacitor"))
+    discard connect(c, "1", a, ptPassive)
+    discard connect(c, "2", b, ptPassive)
+
+  test "a composite whose members disagree on side resolves first-wins, reported as a conflict":
+    let nl = parallelPair()
+    setLayoutSide(findComponent(nl, "R1"), sideLeft)
+    setLayoutSide(findComponent(nl, "C1"), sideRight)
+    let rep = layoutOverrideReport(nl)
+    check "R1=left" in rep
+    var sawConflict = false
+    for line in rep:
+      if line.startsWith("C1=right") and "conflict" in line: sawConflict = true
+    check sawConflict
+
+  test "a composite carrying a side override moves as one unit":
+    let nl = parallelPair()
+    setLayoutSide(findComponent(nl, "R1"), sideLeft)
+    let r2 = addComponent(nl, newComponent("R2", kind = "resistor"))
+    discard connect(r2, "1", addNet(nl, newNet("x")), ptPassive)
+    discard connect(r2, "2", addNet(nl, newNet("y")), ptPassive)
+    let s = layout(nl)
+    let r1p = partOf(s, "R1")
+    let c1p = partOf(s, "C1")
+    let r2p = partOf(s, "R2")
+    check max(rightEdge(r1p), rightEdge(c1p)) < leftEdge(r2p)
+
+  test "layoutOverrideReport is empty for a netlist with no override":
+    check layoutOverrideReport(layeredChain()).len == 0
+
 # --- multi-channel package labels -----------------------------------
 
 import verax/netlist/dsl as nldsl
@@ -3138,6 +3292,43 @@ suite "bundle plan (bus/interface grouping)":
     check distinctWiresNeverShareCollinearRuns(s)
     check differentNetsRespectSeparation(s)
 
+  proc uniformThreeBoxBusSheet(): Netlist =
+    ## A bus wired identically to THREE boxes, every member touching every
+    ## box -- {U1, U2, U3}, uniform, not ported. There is no entity cap on
+    ## collapse: this draws as one bus tree, not the 3+-entity net-label
+    ## convention (`xbar_rf`'s `m` bus is the same shape, across eight).
+    nldsl.netlist("three_box_bus"):
+      net gnd, kind = ntGround, name = "0"
+      bus db, width = 4
+      for nm in ["U1", "U2", "U3"]:
+        component U, designator = nm, kind = "mcu":
+          pin "G", gnd, kind = ptGround
+          pin "D0", db[0], kind = ptPassive
+          pin "D1", db[1], kind = ptPassive
+          pin "D2", db[2], kind = ptPassive
+          pin "D3", db[3], kind = ptPassive
+
+  test "a uniform bus across three boxes collapses to one bus tree, no entity cap":
+    let rep = bundleReport(uniformThreeBoxBusSheet())
+    check rep.len == 1
+    check rep[0].role == "collapsed"
+    check rep[0].entities == @["U1", "U2", "U3"]
+    let s = layout(uniformThreeBoxBusSheet())
+    check s.fallbacks.len == 0
+    var busWires = 0
+    var mergedPins = 0
+    for w in s.wires:
+      if w.kind == wkBus and w.members.len > 1: inc busWires
+    for p in s.parts:
+      for pin in p.pins:
+        if pin.members.len > 1: inc mergedPins
+    check busWires > 0
+    check mergedPins == 3        # one merged pin per box
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
+    check signalWiresRespectForeignSeeds(s)
+    check labelsClearOfGeometry(s)
+
   proc wideEnableBusSheet(published: openArray[int]): Netlist =
     ## An 8-wide bus, one member per distinct box -> fails uniform collapse
     ## -> `brNetLabel`, exactly the shape `designs/xbar_rf.nim`'s `en` bus
@@ -3288,12 +3479,15 @@ suite "bundle plan (bus/interface grouping)":
         pin "VSS", gnd, kind = ptGround
         port spi, peripheral, pins = {"sclk": "SCK", "mosi": "SI", "miso": "SO"}
 
-  test "a ported interface broken out across three entities degrades to net labels":
+  test "a uniform ported interface broken out across three entities collapses to one bus":
+    ## Both boxes carry all three signals, so the whole entity set (U1, U2,
+    ## the sheet boundary) is uniform -- collapse has no entity cap and wins
+    ## over the old 3+-entity net-label convention.
     let nl = brokenOutInterfaceSheet()
     let rep = bundleReport(nl)
     check rep.len == 1
-    check rep[0].role == "netlabel"
-    check rep[0].labels == @["U1=spi", "U2=spi"]     # both carry all 3 -> merged
+    check rep[0].role == "collapsed"
+    check rep[0].entities == @["U1", "U2"]
     check rep[0].port == "spi[3]"                    # interface -> count form
     let s = layout(nl)
     # The three published members fold to ONE pennant, not three.
@@ -3302,56 +3496,56 @@ suite "bundle plan (bus/interface grouping)":
     check s.ports[0].net == rep[0].display
     check s.ports[0].dir == pdBidir     # sclk/mosi in, miso inout -> mixed
     check s.ports[0].members.len == 3
-    var labelNets: seq[string]
-    for f in s.fallbacks:
-      check f.kind == fbNetLabel
-      check f.bundle == rep[0].display
-      if f.net notin labelNets: labelNets.add f.net
-    # One tag identity now: the two merged part tags and the one merged port
-    # tag all read the bundle's own occupancy name, never a member net name.
-    check labelNets == @[rep[0].display]
+    check s.fallbacks.len == 0          # a real routed bus, no deliberate tags
+    var busWires = 0
     for w in s.wires:
-      check w.net notin ["spi_sclk", "spi_mosi", "spi_miso"]
-      check w.net != rep[0].display
-    # U1 and U2 each collapse their three member pins onto one merged "spi" pin.
+      if w.kind == wkInterface:
+        check w.net == rep[0].display
+        check w.members.len == 3
+        inc busWires
+    check busWires > 0
+    # U1 and U2 each collapse their three member pins onto one merged pin.
     var merged = 0
     for p in s.parts:
       if p.designator notin ["U1", "U2"]: continue
       for pin in p.pins:
-        if pin.name == "spi":
+        if pin.name == "spi[3]":
           check pin.members.len == 3
           check pin.net == rep[0].display
           inc merged
     check merged == 2
-    # The teal chevron, not the amber open circle.
+    # The purple interface wire, not the teal net-label chevron.
     let svg = renderSvg(s)
-    check "#0f7b6c" in svg
-    check "#e67e22" notin svg
+    check "#8250df" in svg
+    check "#0f7b6c" notin svg
 
   test "diagnostics refuses a deliberate net label and skips it in the sweep":
-    let s = layout(brokenOutInterfaceSheet())
-    # Diagnose the merged group tag specifically -- a group text, not a net.
-    let one = diagnoseFallbackNet(s, "spi")
+    let s = layout(spiSharedBusSheet())
+    # Diagnose one member's own deliberate tag -- U1's bare group text, not
+    # a net (this bundle is non-uniform -- R1/U2/U3 each hold different
+    # signals -- so it stays `brNetLabel` regardless of the entity count).
+    let one = diagnoseFallbackNet(s, "spi1")
     check one.deliberate
     check one.routed
     check one.failPin == -1
     check diagnoseAllFallbacks(s).len == 0
 
   test "a net-label member name is drawn once per tag, not doubled by the net-name pass":
-    let s = layout(brokenOutInterfaceSheet())
+    let s = layout(spiSharedBusSheet())
     var labelCount = initCountTable[string]()
     for lb in s.labels:
       if lb.role == lrNet: labelCount.inc lb.text
     var fbCount = initCountTable[string]()
     for f in s.fallbacks:
       if f.kind == fbNetLabel: fbCount.inc f.net
-    # The two merged part tags plus the one merged port tag: three labels,
-    # none added by the net-name pass, none doubled.
-    check fbCount["spi"] == 3
-    check labelCount["spi"] == 3
-    # The member names are never drawn as free text -- they survive only
-    # inside the merged port's `members` (asserted in the previous test).
-    for name in ["spi_sclk", "spi_mosi", "spi_miso"]:
+    # Four distinct tags -- U1's bare group text, one merged slice tag each
+    # on U2/U3, and R1's own bare member net -- each drawn exactly once,
+    # none doubled by the net-name pass.
+    for tag in ["spi1", "spi1(cs0)", "spi1(cs1)", "spi1_miso"]:
+      check fbCount[tag] == 1
+      check labelCount[tag] == 1
+    # The member names folded into a merged tag are never drawn as free text.
+    for name in ["spi1_sclk", "spi1_mosi", "spi1_cs_0", "spi1_cs_1"]:
       check fbCount[name] == 0
       check labelCount[name] == 0
 
@@ -4100,12 +4294,20 @@ suite "component arrays":
 
   test "a bundled distributed array pin draws the bus name, not one member's net":
     # `bundledTerminationBank`'s R1/R2/R3 each sit on port "1", every one
-    # bound to a distinct member of `bus grp` -- the same shape `xbar_rf`'s
-    # eight `rf_switch` instances hit on `rin`/`rout`. The array's own
-    # mark/tag is suppressed (bundle wins at the pin), but the
-    # representative's own raw binding ("a1") must not leak through either:
-    # once the array collapses, this one pin stands for every hidden
-    # member's binding on the bus, so its identity is the bus itself.
+    # bound to a distinct member of `bus grp` -- but `U1` on the far side
+    # *merges* all three (P1/P2/P3 fold to one box pin), so this is a *mixed*
+    # bundle: one carrier merged, three not. A bus tree drawn between R1 and
+    # a `U1` that stands for a merged trio has no single occupancy tag left
+    # for the array to route under (`xbar_rf`'s `a` bus is the same shape:
+    # every switch merges its own `A0`+`A1`, every pulldown resistor owns
+    # just one member) -- the array defers to the bundle's own drawing
+    # wholesale (`mergedByBundle` is forced true everywhere on a bundle that
+    # merges *anywhere*), not only at the one carrier that individually
+    # merges. The array's own mark/tag is suppressed (bundle wins at the
+    # pin), but the representative's own raw binding ("a1") must not leak
+    # through either: once the array collapses, this one pin stands for
+    # every hidden member's binding on the bus, so its identity is the bus
+    # itself.
     let nl = bundledTerminationBank()
     let s = layout(nl)
     let rep = partOf(s, "R1")
@@ -4162,6 +4364,53 @@ suite "component arrays":
     counts.sort()
     check counts == @[4, 4]
 
+  proc twoSidedDistributedBusBank(): Netlist =
+    ## Four connectors and four switches, channel `i` wired
+    ## `Ji.RF -- b[i] -- Ui.IN` -- `xbar_rf`'s `rin`/`rout` shape exactly: a
+    ## bus non-uniform across its whole 8-entity span (`brNetLabel`), but
+    ## each half forms its OWN 4-member component array, one member per
+    ## carrier (never merged), so the array on either end now draws and
+    ## routes it -- one real bus wire between the two boxes, not a bare tag
+    ## on each end.
+    result = newNetlist("two_sided_bus")
+    let gnd = addNet(result, newNet("0", ntGround))
+    for i in 1 .. 4:
+      let n = addNet(result, newNet("b" & $i))
+      n.attrs["bus.name"] = "b"
+      n.attrs["bus.index"] = $(i - 1)
+      n.attrs["bus.width"] = "4"
+      let j = addComponent(result, newComponent("J" & $i, kind = "connector",
+                                                partNumber = "CONN"))
+      discard connect(j, "RF", n, ptPassive)
+      discard connect(j, "GND", gnd, ptGround)
+      let u = addComponent(result, newComponent("U" & $i, kind = "switch",
+                                                partNumber = "SW"))
+      discard connect(u, "IN", n, ptPassive)
+      discard connect(u, "GND", gnd, ptGround)
+
+  test "a bus distributed across two separate arrays routes as one bus between them":
+    let nl = twoSidedDistributedBusBank()
+    let rep = bundleReport(nl)
+    check rep.len == 1
+    check rep[0].role == "netlabel"       # 8 entities, non-uniform
+    let arr = arrayReport(nl)
+    check arr.len == 2
+    for a in arr:
+      check a.count == 4
+      check "RF=distributed[1:4](bundled)" in a.ports or
+            "IN=distributed[1:4](bundled)" in a.ports
+    let s = layout(nl)
+    check s.fallbacks.len == 0
+    var busWires = 0
+    for w in s.wires:
+      if w.kind == wkBus and w.net == rep[0].display:
+        check w.members.len == 4
+        inc busWires
+    check busWires > 0
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
+    check signalWiresRespectForeignSeeds(s)
+
   proc collapsedBundleVetoBank(): Netlist =
     ## Three otherwise-identical "gadget" parts, each with a private two-wire
     ## bus to its own widget -- a `brCollapsed` bundle, whose far endpoint
@@ -4193,3 +4442,143 @@ suite "component arrays":
     let nl = collapsedBundleVetoBank()
     check bundleReport(nl).len == 3      # three private point-to-point buses
     check arrayReport(nl).len == 0       # ... so the component array declines
+
+  proc survivingCollapsedBundleBank(): Netlist =
+    ## Five identical-shape gadgets share ONE uniform 2-wide bus -- a single
+    ## `brCollapsed` bundle across all five entities, the `xbar_rf` `m`-bus
+    ## shape (every member wired identically across every entity). Only
+    ## G1..G3 (`value = "v1"`) share a signature; G4/G5 carry a different
+    ## value and, at two members, never reach the array floor, so they stay
+    ## visible. Hiding G2/G3 as the array's non-representative members still
+    ## leaves G1, G4 and G5 on the bundle -- three surviving entities -- so
+    ## the array should still collapse: `survivesCollapsedBundles`'s
+    ## placeable-endpoint count, not the old blanket "any member touches
+    ## some collapsed bundle" veto, which would have declined this outright.
+    result = newNetlist("surviving_bank")
+    let gnd = addNet(result, newNet("0", ntGround))
+    let b0 = addNet(result, newNet("b0"))
+    let b1 = addNet(result, newNet("b1"))
+    b0.attrs["bus.name"] = "shared"
+    b0.attrs["bus.index"] = "0"
+    b0.attrs["bus.width"] = "2"
+    b1.attrs["bus.name"] = "shared"
+    b1.attrs["bus.index"] = "1"
+    b1.attrs["bus.width"] = "2"
+    for i in 1 .. 5:
+      let value = if i <= 3: "v1" else: "v2"
+      let g = addComponent(result, newComponent("G" & $i, kind = "gadget"))
+      g.attrs["value"] = value
+      let sel = addNet(result, newNet("s" & $i))
+      discard connect(g, "sel", sel, ptInput)
+      discard connect(g, "gnd", gnd, ptGround)
+      discard connect(g, "b0", b0, ptPassive)
+      discard connect(g, "b1", b1, ptPassive)
+
+  test "a brCollapsed bundle with enough surviving entities does not veto the array":
+    let nl = survivingCollapsedBundleBank()
+    let rep = bundleReport(nl)
+    check rep.len == 1
+    check rep[0].role == "collapsed"
+    check rep[0].entities == @["G1", "G2", "G3", "G4", "G5"]
+    let arr = arrayReport(nl)
+    check arr.len == 1
+    check arr[0].count == 3
+    check arr[0].rep == "G1"
+
+import verax/netlist/traversal
+
+proc wouldBePi(thirdPin, declareSpec: bool): Netlist =
+  ## `piFilter`'s exact shape (series `L1` between `fin`/`mid`, a grounded
+  ## shunt cap at each end), except `L1` may carry a third connected pin (to
+  ## its own private net) and may declare its own `RFC`-style `traverse:`
+  ## edge between the two pins that would otherwise make it a pi's series
+  ## leg. `piRecognize` tests `isTwoTerminal` and never the widened
+  ## `isTraversable` that only `constrained.pathsFrom` calls -- so a third
+  ## pin must decline the pi regardless of what `L1` declares, and a bare
+  ## declaration on an otherwise-ordinary 2-pin part must change nothing.
+  result = newNetlist("would_be_pi")
+  let src = addNet(result, newNet("src"))
+  let fin = addNet(result, newNet("fin"))
+  let mid = addNet(result, newNet("mid"))
+  let fout = addNet(result, newNet("fout"))
+  let gnd = addNet(result, newNet("0", ntGround))
+  let v1 = addComponent(result, newComponent("V1", kind = "voltage_source"))
+  discard connect(v1, "+", src); discard connect(v1, "-", gnd)
+  let rs = addComponent(result, newComponent("RS", kind = "resistor"))
+  discard connect(rs, "1", src, ptPassive); discard connect(rs, "2", fin, ptPassive)
+  let l1 = addComponent(result, newComponent("L1", kind = "rf_switch"))
+  discard connect(l1, "1", fin, ptPassive)
+  discard connect(l1, "2", mid, ptPassive)
+  if thirdPin:
+    let extra = addNet(result, newNet("extra"))
+    discard connect(l1, "3", extra, ptPassive)
+  if declareSpec:
+    addTraversalEdge(l1, "1", "2")
+  let c1 = addComponent(result, newComponent("C1", kind = "capacitor"))
+  discard connect(c1, "1", fin, ptPassive); discard connect(c1, "2", gnd, ptPassive)
+  let c2 = addComponent(result, newComponent("C2", kind = "capacitor"))
+  discard connect(c2, "1", mid, ptPassive); discard connect(c2, "2", gnd, ptPassive)
+  let rl = addComponent(result, newComponent("RL", kind = "resistor"))
+  discard connect(rl, "1", mid, ptPassive); discard connect(rl, "2", fout, ptPassive)
+  let rt = addComponent(result, newComponent("RT", kind = "resistor"))
+  discard connect(rt, "1", fout, ptPassive); discard connect(rt, "2", gnd, ptPassive)
+
+proc pinLocked(s: Schematic): bool =
+  ## `piInternalLayout`'s exact canonical signature: series horizontal, each
+  ## shunt exactly `2 * grid` pitches below and `grid` pitches either side of
+  ## it (`piInternalLayout`'s `pinSpan`-based offsets, grid-rounded) --
+  ## unreachable by ordinary force placement, which never lands two
+  ## unrelated parts on that precise a relationship by coincidence, so this
+  ## is a reliable positive/negative signature for "the pi composite formed
+  ## around L1", not just "L1 and its shunts ended up near each other".
+  let l1 = partOf(s, "L1")
+  let c1 = partOf(s, "C1")
+  let c2 = partOf(s, "C2")
+  abs(l1.pins[0].y - l1.pins[1].y) < 1e-6 and
+    c1.rotation in [90.0, 270.0] and c2.rotation in [90.0, 270.0] and
+    c1.y == c2.y and c1.y > l1.y and
+    abs((c1.x - l1.x) + (c2.x - l1.x)) < 1e-6 and
+    abs(abs(c1.x - l1.x) - abs(c2.x - l1.x)) < 1e-6 and
+    abs(c1.x - l1.x) > 1e-6
+
+suite "traverse: block and the schematic's widened isTraversable":
+  test "the sheet is unchanged when nothing declares a traverse: spec":
+    # `wouldBePi(false, false)` is exactly `piFilter`'s shape (an ordinary
+    # 2-pin `L1`, nothing declared) -- the existing "constrained pi
+    # composite" test above already pins this geometry; this just confirms
+    # the traversal machinery being present at all does not perturb the
+    # historical no-declaration path for the identical shape built here.
+    var options = defaultLayoutOptions()
+    options.policy = lpConstrainedLayered
+    let s = layout(wouldBePi(thirdPin = false, declareSpec = false), options)
+    check pinLocked(s)
+    check s.fallbacks.len == 0
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
+
+  test "an ordinary 2-pin part declaring its own conduction still forms the pi":
+    # A bare `traverse:` declaration that only restates what `isTwoTerminal`
+    # already established changes nothing: `piRecognize` never reads it.
+    var options = defaultLayoutOptions()
+    options.policy = lpConstrainedLayered
+    let s = layout(wouldBePi(thirdPin = false, declareSpec = true), options)
+    check pinLocked(s)
+
+  test "a declared multi-exit part is still declined by the pi recognizer":
+    # The motivating regression: an 8-pin RF switch that states its own
+    # conduction must not be picked up by a composite recognizer keyed on
+    # exactly two connected pins -- `pi`/`tee`/`series` call `isTwoTerminal`,
+    # never the widened `isTraversable`, specifically so this stays declined.
+    var options = defaultLayoutOptions()
+    options.policy = lpConstrainedLayered
+    let s = layout(wouldBePi(thirdPin = true, declareSpec = true), options)
+    check partOf(s, "L1").pins.len == 3
+    check not pinLocked(s)
+    check distinctWiresNeverShareCollinearRuns(s)
+    check differentNetsRespectSeparation(s)
+
+  test "the same undeclared multi-pin part is declined too, as it always was":
+    var options = defaultLayoutOptions()
+    options.policy = lpConstrainedLayered
+    let s = layout(wouldBePi(thirdPin = true, declareSpec = false), options)
+    check not pinLocked(s)

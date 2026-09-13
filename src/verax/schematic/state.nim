@@ -69,6 +69,19 @@ type
       ## placed, routed or drawn, so every index-parallel array below is one
       ## entry shorter per hidden member. `recoverRouting` never rebuilds it.
     semanticAnchors: seq[Point]
+    overrides: LayoutOverridePlan
+      ## Authored `layout.side` hints (`netlist/layouthints`), parallel to
+      ## `comps`. Built in `prepare` right after `comps` is filled -- one pass
+      ## over components, independent of `syms`/composites. `any == false`
+      ## (no component states a side) is the zero-value guarantee every
+      ## consumer below is gated on.
+    leftSplit: float
+      ## The x boundary `enforceLayoutSides` established for the left band:
+      ## `-Inf` when no component is left-overridden, so `sideBandAllows`
+      ## reads as vacuously true. Read by `repairTerminalClearance` and
+      ## `recoverRouting` so neither can move a part back across it.
+    rightSplit: float
+      ## The mirror of `leftSplit` for the right band; `Inf` when unused.
     portY: Table[string, float]
       ## Post-route interface-port y overrides, keyed by `SchematicPort.name`.
       ## Empty on the first route; `refinePortPlacement` (stage `lsPortRefine`)
@@ -92,16 +105,24 @@ proc planComposites(state: var LayoutState) =
   for rep in state.arrays.byRep.keys: excluded.incl rep
   state.composites = compositePlan(state.comps, state.syms, excluded)
 
+proc activeOverrides(state: LayoutState): LayoutOverridePlan =
+  ## `state.overrides` gated on `lsLayoutOverrides`: disabling the stage must
+  ## produce the pre-feature scene regardless of what a component states, not
+  ## merely skip `enforceLayoutSides` -- so the seed/anchor hint in
+  ## `constrainedTopology` reads a plan with `any == false` too.
+  if state.options.stageEnabled(lsLayoutOverrides): state.overrides
+  else: LayoutOverridePlan()
+
 proc constrainedSemanticSeed(state: var LayoutState) =
   constrainedSemanticSeed(state.comps, state.pos, state.idxOf, state.composites,
-    state.arrays)
+    state.arrays, activeOverrides(state))
 
 proc restoreCompositeOffsets(state: var LayoutState) =
   restoreCompositeOffsets(state.composites, state.pos)
 
 proc constrainedAnchors(state: LayoutState): seq[Point] =
   constrainedAnchors(state.comps, state.pos, state.idxOf, state.composites,
-    state.arrays)
+    state.arrays, activeOverrides(state))
 
 proc constrainedRefine(state: var LayoutState) =
   constrainedRefine(state.comps, state.pos, state.idxOf)
@@ -163,8 +184,17 @@ proc poolOrigin(state: LayoutState, members: seq[int],
 
 proc repairTerminalClearance(state: var LayoutState) =
   let locked = compositeMembers(state.composites, state.comps.len)
+  # `activeOverrides`, not `state.overrides` directly: with
+  # `lsLayoutOverrides` disabled, `leftSplit`/`rightSplit` stay at their
+  # vacuous `-Inf`/`Inf` defaults (`enforceLayoutSides` never narrowed them),
+  # and passing a non-empty `sides` against those would make `sideBandAllows`
+  # reject *every* candidate for an overridden part (`x + halfWidth <= -Inf`
+  # is never true) instead of the intended no-op -- an empty `sides` here
+  # fails the callee's `sides.len == comps.len` guard and skips the check
+  # entirely, exactly like a sheet with no override at all.
+  let ov = activeOverrides(state)
   repairTerminalClearance(state.comps, state.syms, state.pos, state.rots,
-    state.ohw, state.ohh, locked)
+    state.ohw, state.ohh, locked, ov.side, state.leftSplit, state.rightSplit)
 
 # --- placement stages -----------------------------------------------------
 # The bodies below were the inline stretches of `layout`. Each mutates the
@@ -207,6 +237,17 @@ proc prepare(state: var LayoutState) =
     if c.designator in state.arrays.hidden: continue
     state.comps.add c
   let n = state.comps.len
+
+  # `layout.side` overrides, one pass over `state.comps` -- independent of
+  # `syms`/composites, so it can be built here regardless of policy or the
+  # `lsLayoutOverrides` stage. `leftSplit`/`rightSplit` default to vacuously
+  # permissive here so a sheet that runs with `lsLayoutOverrides` disabled
+  # (skipping `enforceLayoutSides`, the only other writer of these two
+  # fields) still reads every `sideBandAllows` check as unconstrained,
+  # instead of the zero-value-float trap of an unset `-Inf`/`Inf` pair.
+  state.overrides = layoutOverridePlan(state.comps)
+  state.leftSplit = NegInf
+  state.rightSplit = Inf
 
   state.syms = newSeq[SymbolDef](n)
   for i, c in state.comps:
@@ -485,3 +526,124 @@ proc separate(state: var LayoutState) =
       "schematic placement could not separate component " &
       state.comps[members[0]].designator
     placed.add members[0]
+
+proc placeOverrideUnit(state: var LayoutState, item: int, isLeft: bool,
+                       freeMinX, freeMaxX: float,
+                       placedRects: var seq[seq[Obstacle]]) =
+  ## Places one overridden pool unit: the same expanding-ring nearest-free-cell
+  ## search `separate` uses, seeded just past the free region's edge, with one
+  ## added rejection -- the unit's inflated body must stay entirely on its
+  ## required side of that edge. A free proc, not nested inside
+  ## `enforceLayoutSides`: a closure may not capture the `var LayoutState` the
+  ## search threads (the same reason `separationRects` is free rather than
+  ## nested).
+  let members = poolMembers(state, item)
+  let offsets = poolOffsets(state, item)
+  let origin = poolOrigin(state, members, offsets)
+  # Extents relative to origin are translation-invariant (member offsets are
+  # fixed), so the rect at the *current* position tells us how far the unit's
+  # edge sits from its own origin.
+  let rect0 = separationRects(state, members[0])[0]
+  let relLeft = rect0.x1 - origin.x
+  let relRight = rect0.x2 - origin.x
+  let seedX =
+    if isLeft: round((freeMinX - relRight - 2.0 * grid) / grid) * grid
+    else: round((freeMaxX - relLeft + 2.0 * grid) / grid) * grid
+  let maxR = max(64, 4 * state.comps.len)
+  var done = false
+  for r in 0 .. maxR:
+    for dy in -r .. r:
+      for dx in -r .. r:
+        if max(abs(dx), abs(dy)) != r: continue
+        let cand = Point(x: seedX + float(dx) * grid,
+                         y: origin.y + float(dy) * grid)
+        if isLeft:
+          if cand.x + relRight > freeMinX: continue
+        else:
+          if cand.x + relLeft < freeMaxX: continue
+        for at, m in members: state.pos[m] = cand + offsets[at]
+        let here = separationRects(state, members[0])
+        var clear = true
+        for other in placedRects:
+          if anyOverlap(here, other):
+            clear = false
+            break
+        if clear:
+          placedRects.add here
+          done = true
+          break
+      if done: break
+    if done: break
+  doAssert done,
+    "schematic placement could not enforce layout.side for " &
+    state.comps[members[0]].designator
+
+proc enforceLayoutSides(state: var LayoutState) =
+  ## The hard guarantee behind a `layout.side` override (`netlist/layouthints`):
+  ## once separation and packing have settled every centre, translate each
+  ## overridden unit rigidly into its own dedicated column, strictly left (or
+  ## right) of every non-overridden unit -- not merely onto whichever edge it
+  ## would have landed on anyway. `state.leftSplit`/`state.rightSplit` are the
+  ## resulting band boundaries; `repairTerminalClearance` and `recoverRouting`
+  ## read them afterward (via `sideBandAllows`) so neither later mover can pull
+  ## a part back across the line this pass draws.
+  ##
+  ## Reuses `separate`'s own machinery -- `placementPool`/`poolMembers`/
+  ## `poolOffsets`/`poolOrigin` for a rigid per-unit translation that preserves
+  ## composite member offsets exactly, and `separationRects`/`anyOverlap` for
+  ## the same expanding-ring nearest-free-cell search, non-overlap always
+  ## authoritative -- with one added rejection: a left (right) unit's inflated
+  ## body must land entirely left (right) of the free region's edge.
+  state.leftSplit = NegInf
+  state.rightSplit = Inf
+  if not state.overrides.any: return
+
+  let pool = placementPool(state)
+  var leftUnits, rightUnits: seq[int]
+  var placedRects: seq[seq[Obstacle]]
+  var freeMinX = Inf
+  var freeMaxX = NegInf
+  for item in pool:
+    case poolSide(state.composites, state.overrides, item)
+    of sideLeft: leftUnits.add item
+    of sideRight: rightUnits.add item
+    of sideAuto:
+      let rect = separationRects(state, poolMembers(state, item)[0])
+      placedRects.add rect
+      for r in rect:
+        freeMinX = min(freeMinX, r.x1)
+        freeMaxX = max(freeMaxX, r.x2)
+
+  if (leftUnits.len == 0 and rightUnits.len == 0) or freeMinX > freeMaxX:
+    return
+
+  # Deterministic order: current origin x ascending, then first raw member --
+  # computed once, before anything moves, and sorted via a plain tuple's
+  # lexicographic `<` rather than a closure over `state` (same reason
+  # `placeOverrideUnit` is a free proc, not nested).
+  var leftKeyed = newSeq[tuple[x: float, first, item: int]](leftUnits.len)
+  for i, item in leftUnits:
+    let members = poolMembers(state, item)
+    leftKeyed[i] = (poolOrigin(state, members, poolOffsets(state, item)).x,
+                    members[0], item)
+  leftKeyed.sort()
+  var rightKeyed = newSeq[tuple[x: float, first, item: int]](rightUnits.len)
+  for i, item in rightUnits:
+    let members = poolMembers(state, item)
+    rightKeyed[i] = (poolOrigin(state, members, poolOffsets(state, item)).x,
+                     members[0], item)
+  rightKeyed.sort()
+
+  for k in leftKeyed: placeOverrideUnit(state, k.item, true, freeMinX, freeMaxX, placedRects)
+  for k in rightKeyed: placeOverrideUnit(state, k.item, false, freeMinX, freeMaxX, placedRects)
+
+  if leftUnits.len > 0:
+    var maxRightEdge = NegInf
+    for item in leftUnits:
+      maxRightEdge = max(maxRightEdge, separationRects(state, poolMembers(state, item)[0])[0].x2)
+    state.leftSplit = (maxRightEdge + freeMinX) / 2.0
+  if rightUnits.len > 0:
+    var minLeftEdge = Inf
+    for item in rightUnits:
+      minLeftEdge = min(minLeftEdge, separationRects(state, poolMembers(state, item)[0])[0].x1)
+    state.rightSplit = (freeMaxX + minLeftEdge) / 2.0

@@ -215,12 +215,17 @@ proc runRcCorner(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] 
 
 proc dcConnected(a, b: Net): bool =
   ## Is there a DC-conductive path from `a` to `b`? A breadth-first walk
-  ## across `condConductive` two-terminal parts and hierarchy boundaries,
-  ## the same traversal `analysis/io_check.dcReachable` uses -- but stopped
-  ## at a *named target* rather than at any terminus. A `condAmbiguous` part
-  ## (a diode, an IC, a **transformer**) is never crossed, which is what
-  ## makes this the isolation-barrier check: the two windings of a `K`-coupled
-  ## pair have no DC path between them.
+  ## across conductive pin pairs and hierarchy boundaries, the same
+  ## traversal `analysis/io_check.dcReachable` uses -- but stopped at a
+  ## *named target* rather than at any terminus. A pin pair `conductiveExits`
+  ## does not return (an undeclared ambiguous part -- a diode, an IC, a
+  ## **transformer** -- or a pair a declared spec does not name) is never
+  ## crossed, which is what makes this the isolation-barrier check: the two
+  ## windings of a `K`-coupled pair have no DC path between them. This is
+  ## also what makes `dc_path_exists(rfc, rf1)` true across a declared
+  ## ADG904 (`designs/xbar_rf.nim`): the switch's own `traverse:` spec
+  ## answers `conductiveExits`, in place of the whole-component
+  ## `classifyConductivity` this used to call.
   if a == b: return true
   var visited: seq[Net] = @[a]
   var queue: seq[Net] = @[a]
@@ -237,13 +242,11 @@ proc dcConnected(a, b: Net): bool =
           visited.add p.hierNet
           queue.add p.hierNet
         continue
-      if classifyConductivity(comp) != condConductive: continue
-      for _, other in comp.pins:
-        if other == p or other.net == nil or other.net == net: continue
-        if other.net == b: return true
-        if other.net notin visited:
-          visited.add other.net
-          queue.add other.net
+      for exitNet in conductiveExits(comp, p):
+        if exitNet == b: return true
+        if exitNet notin visited:
+          visited.add exitNet
+          queue.add exitNet
     if net.netlist != nil and net.netlist.instanceOf != nil:
       for _, pp in net.netlist.instanceOf.pins:
         if pp.hierNet == net and pp.net != nil and pp.net notin visited:

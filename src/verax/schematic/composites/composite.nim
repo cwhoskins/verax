@@ -130,11 +130,19 @@ proc onThisSheet(nl: Netlist, net: Net): bool {.inline.} =
   ## the thing this must still reject: it is not in this sheet's `nl.nets`.
   net != nil and (net.netlist == nl or nl.nets.getOrDefault(net.name) == net)
 
-proc isTraversable(c: Component, nl: Netlist): bool =
+proc isTwoTerminal(c: Component, nl: Netlist): bool =
   ## Semantic path walking is intentionally topology-only. All flat,
-  ## two-terminal devices qualify, regardless of their electrical kind. Used
-  ## both by a `recognize` hook (`parallelRecognize`) and by the constrained
-  ## placement's own semantic walk (`pathsFrom`).
+  ## two-terminal devices qualify, regardless of their electrical kind.
+  ## Today's `isTraversable` body, verbatim, under its new name -- every
+  ## composite recognizer (`parallelRecognize`, `pi`/`tee`/`series`) keeps
+  ## calling exactly this, never the widened `isTraversable` below. Each of
+  ## them assumes a *unique* other net via `twoTermOtherNet`, which a
+  ## multi-exit declared part breaks, and `isPassiveElement`
+  ## (`composite.isPassiveElement`) filters only sources, not boxes -- so
+  ## without keeping this the exact two-terminal test, a declared 8-pin
+  ## switch could be claimed as a pi/tee member and that composite's
+  ## internal fanout would run to a symbol standing for eight different
+  ## physical pins, not the two it actually draws.
   if c == nil or c.netlist != nl or c.subNetlist != nil:
     return false
   var connected = 0
@@ -150,6 +158,65 @@ proc twoTermOtherNet(c: Component, netName: string): Net =
   ## by the pi/tee recognizers.
   for _, pin in c.pins:
     if pin.net != nil and pin.net.name != netName: return pin.net
+
+proc traversalExits(c: Component, nl: Netlist, fromNet: Net): seq[Net] =
+  ## Every other net conduction reaches from `fromNet` through `c`, by
+  ## topology alone -- never `Component.kind`, the discipline every
+  ## recognizer here keeps. When `c` states a `netlist/traversal` spec, the
+  ## exits are read off whichever of `c`'s own pins sits on `fromNet` and
+  ## that pin's declared conducting edges; otherwise this is exactly
+  ## `twoTermOtherNet` wrapped in a one-element `seq`, which is what every
+  ## flat two-terminal part already had. `constrained.pathsFrom` is the only
+  ## caller: it used to follow the single `Net` `twoTermOtherNet` returned,
+  ## and a declared multi-throw switch can have more than one exit from the
+  ## pin the walk arrived on, which is why that single `Net` became this
+  ## `seq[Net]`.
+  if statesTraversal(c):
+    let spec = traversal(c)
+    case spec.mode
+    of tmNone:
+      return
+    of tmAll:
+      for _, pin in c.pins:
+        if pin.net != nil and pin.net != fromNet and pin.net notin result:
+          result.add pin.net
+      return
+    of tmDefault:
+      discard
+    var fromPins: seq[string]
+    for pinName, pin in c.pins:
+      if pin.net == fromNet: fromPins.add pinName
+    for e in spec.edges:
+      if not e.conducts: continue
+      for fp in fromPins:
+        var otherName = ""
+        if e.a == fp: otherName = e.b
+        elif e.b == fp: otherName = e.a
+        else: continue
+        if c.pins.hasKey(otherName):
+          let otherNet = c.pins[otherName].net
+          if otherNet != nil and otherNet != fromNet and otherNet notin result:
+            result.add otherNet
+    return
+  let other = twoTermOtherNet(c, fromNet.name)
+  if other != nil: result.add other
+
+proc isTraversable(c: Component, nl: Netlist): bool =
+  ## `isTwoTerminal`, widened for a part that states its own conduction: a
+  ## declared `traverse:` spec with at least one conducting edge reachable
+  ## from a net this sheet draws is traversable regardless of pin count -- an
+  ## 8-pin RF switch is the motivating case (`designs/xbar_rf.nim`'s
+  ## ADG904). The **only** caller is `constrained.pathsFrom`'s own semantic
+  ## walk; see `isTwoTerminal`'s doc comment for why every composite
+  ## recognizer must keep calling that one instead of this one.
+  if isTwoTerminal(c, nl): return true
+  if c == nil or c.netlist != nl or c.subNetlist != nil or not statesTraversal(c):
+    return false
+  for _, pin in c.pins:
+    if pin.net != nil and onThisSheet(nl, pin.net) and
+       traversalExits(c, nl, pin.net).len > 0:
+      return true
+  false
 
 proc twoTermPinOnNet(c: Component, netName: string): string =
   ## The pin name of `c` sitting on `netName` ("" if none).

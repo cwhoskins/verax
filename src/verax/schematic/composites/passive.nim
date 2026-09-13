@@ -26,7 +26,7 @@ proc parallelRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int
   ## key is unordered, so declaration and pin order cannot split the group.
   var groupOf = initTable[string, int]()
   for i, c in comps:
-    if not isTraversable(c, c.netlist):
+    if not isTwoTerminal(c, c.netlist):
       result.add @[i]
       continue
     var nets: seq[string]
@@ -178,7 +178,7 @@ proc parallelStackKind(): CompositeKind =
 # interface port. Link nets give every usable part degree <= 2, so the link
 # graph is a disjoint set of paths and cycles; a cycle cannot be a horizontal
 # row, so it is declined rather than cut. Recognition is topology-only, never a
-# `Component.kind` string or a pin name -- the discipline `isTraversable`
+# `Component.kind` string or a pin name -- the discipline `isTwoTerminal`
 # documents.
 
 proc seriesSharedNet(a, b: Component): string =
@@ -203,11 +203,13 @@ proc seriesRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]]
     var netByName = initTable[string, Net]()
     for i, c in comps:
       # A chain member must draw as an actual flat two-terminal passive symbol.
-      # `isTraversable` alone also passes a fallback *box* -- an unrecognized
-      # kind, or a many-pin part (an MCU with only two nets wired) that the
-      # semantic walker still traverses but that has no business being
-      # rigidified into a horizontal passive row.
-      usable[i] = isTraversable(c, nl) and isPassiveElement(syms[i]) and
+      # The widened `isTraversable` alone would also pass a fallback *box* --
+      # an unrecognized kind, a many-pin part (an MCU with only two nets
+      # wired), or now a declared multi-exit switch -- that `pathsFrom`'s
+      # semantic walker traverses but that has no business being rigidified
+      # into a horizontal passive row, which is why this tests `isTwoTerminal`
+      # and not `isTraversable`.
+      usable[i] = isTwoTerminal(c, nl) and isPassiveElement(syms[i]) and
                   not syms[i].isBox
       for _, pin in c.pins:
         if pin.net == nil: continue

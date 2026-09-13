@@ -76,8 +76,11 @@ import ./annotations
 import ./packages
 import ./interfaces
 import ./pinmux
+import ./layouthints
+import ./traversal
 
-export types, graph, annotations, packages, interfaces, pinmux
+export types, graph, annotations, packages, interfaces, pinmux, layouthints,
+       traversal
 
 const
   netKnownFields = ["kind"]
@@ -164,6 +167,150 @@ proc handleSpec(entityVar: NimNode, scope: AnnScope, stmt: NimNode,
     let call = newCall(ident"setAnnotation", entityVar, newLit(key), pair[1])
     call.copyLineInfo(pair)
     result.add call
+  result.copyLineInfo(stmt)
+
+proc layoutSideNode(valueNode: NimNode): NimNode =
+  ## Maps the bare ident `left`/`right`/`auto` to the matching `LayoutSide`
+  ## enum symbol, at compile time, so a design file never has to spell
+  ## `sideLeft` itself. Shared by `handleLayout` (the `component` block) and
+  ## `handleInstance`'s head keyword, so the two spellings cannot drift.
+  if valueNode.kind != nnkIdent:
+    error("a layout `side` must be one of left, right, auto", valueNode)
+  case valueNode.strVal
+  of "left": return ident"sideLeft"
+  of "right": return ident"sideRight"
+  of "auto": return ident"sideAuto"
+  else: discard
+  error("a layout `side` must be one of left, right, auto -- got '" &
+        valueNode.strVal & "'", valueNode)
+
+proc handleLayout(entityVar: NimNode, stmt: NimNode): NimNode =
+  ## `layout:` inside a `component` block -- the strict counterpart to the
+  ## permissive statement-head fallback, exactly the split `handleSpec` makes
+  ## for the electrical annotation vocabulary. Only `layoutHintKeys`
+  ## (`netlist/layouthints`) are accepted, so a typo is a compile error
+  ## naming the real keys rather than a silently ignored `attrs` entry -- and
+  ## the list is the one place a future hint (rotation, a pin placement, an
+  ## absolute position) gets added on this side of the DSL.
+  var args: seq[NimNode]
+  for i in 1 ..< stmt.len: args.add stmt[i]
+  let (rest, blk) = stripTrailingBlock(args)
+  if rest.len > 0:
+    error("`layout` takes no arguments, only a block", stmt)
+  if blk == nil:
+    error("`layout` requires a block", stmt)
+
+  result = newStmtList()
+  for pair in blk:
+    if pair.kind == nnkCommentStmt: continue
+    if pair.kind != nnkAsgn and pair.kind != nnkExprEqExpr:
+      error("expected `key = value` inside `layout`", pair)
+    let keyNode = pair[0]
+    if keyNode.kind != nnkIdent:
+      error("a `layout` key must be a bare identifier", keyNode)
+    let key = keyNode.strVal
+    if key notin layoutHintKeys:
+      error("unknown layout hint '" & key & "'. Registered keys are: " &
+            layoutHintKeys.join(", ") & ".", keyNode)
+    case key
+    of "side":
+      let call = newCall(ident"setLayoutSide", entityVar, layoutSideNode(pair[1]))
+      call.copyLineInfo(pair)
+      result.add call
+    else:
+      error("unknown layout hint '" & key & "'", keyNode)
+  result.copyLineInfo(stmt)
+
+proc traversalPinList(node: NimNode): seq[NimNode] =
+  ## One side of a `<->`: a single pin-name expression, or a bracketed list
+  ## of them (`nnkBracket`). Never checked against the component's own pins
+  ## here -- see `handleTraverse`'s own note on why that has to wait.
+  if node.kind == nnkBracket:
+    for e in node: result.add e
+  else:
+    result.add node
+
+proc handleTraverseEdge(entityVar: NimNode, infixNode: NimNode,
+                        conducts: bool): NimNode =
+  ## One `"A" <-> "B"`/`"A" <-> [...]`/`[...] <-> [...]` statement, expanded
+  ## to the cross product of its two sides -- `"RFC" <-> ["RF1", "RF2"]` is
+  ## two edges, not one, since each names a genuinely different pin pair.
+  infixNode.expectKind(nnkInfix)
+  if not infixNode[0].eqIdent("<->"):
+    error("expected a pin pair written `\"A\" <-> \"B\"` inside `traverse`",
+          infixNode)
+  let lhs = traversalPinList(infixNode[1])
+  let rhs = traversalPinList(infixNode[2])
+  result = newStmtList()
+  for a in lhs:
+    for b in rhs:
+      let call = newCall(ident"addTraversalEdge", entityVar, a, b, newLit(conducts))
+      call.copyLineInfo(infixNode)
+      result.add call
+
+proc handleTraverse(entityVar: NimNode, stmt: NimNode): NimNode =
+  ## `traverse:` inside a `component` block -- states which pin pairs
+  ## conduct through this part, for the N-pin case `netlist/kinds`'
+  ## `classifyConductivity` and `schematic`'s two-terminal-only walk cannot
+  ## express (an 8-pin RF switch is the motivating case,
+  ## `designs/xbar_rf.nim`'s ADG904). Modelled on `handleLayout` immediately
+  ## above: a strict, compile-time-checked block for a namespaced `attrs`
+  ## family, the counterpart to the permissive statement-head fallback.
+  ##
+  ## Accepted statements (`nim --eval`, verified against exactly these
+  ## shapes): `"A" <-> "B"` (`nnkInfix`, one conducting edge); `"A" <-> [...]`
+  ## or `[...] <-> [...]` (bracket on either/both sides, the cross product);
+  ## `blocks "A" <-> "B"` (`nnkCommand` wrapping the infix -- a schematic path
+  ## that is not a DC path, e.g. an AC-coupling capacitor's two pins are
+  ## connected on the page but never conduct); the bare idents `none`
+  ## (explicitly not traversable at all -- the way to override the 2-pin
+  ## default on an ordinary resistor) and `all` (every pin pair, answered by
+  ## `classifyConductivity` -- opting a whole part into the kind-table
+  ## answer regardless of how many pins it has connected).
+  ##
+  ## **Pin names are never checked against the component's own pins here.**
+  ## They are arbitrary expressions, not necessarily literals, and the block
+  ## may -- as in the worked example -- precede the `pin` statements that
+  ## declare what the component's pins even are; `netlist/traversal.
+  ## validateTraversal` is where an unknown pin name is caught, at check
+  ## time rather than compile time, exactly the split `handleLayout` makes
+  ## for an unparseable *value* (though not for an unknown *key*, which this
+  ## block does still catch here, since the key vocabulary itself -- `<->`,
+  ## `blocks`, `none`, `all` -- is fixed and closed, unlike a pin name).
+  ##
+  ## **Directionality (`->`) is deliberately out of scope.** The one
+  ## directional case that exists -- an op-amp or buffer passing a signal
+  ## input-to-output only -- is already handled, and handled better, by
+  ## `spice/models/behavioral.passesSignal` plus `signalPathPins`
+  ## (`analysis/analyses/opamp.nim` reads them). A second, weaker directional
+  ## mechanism here would give two answers to one question.
+  var args: seq[NimNode]
+  for i in 1 ..< stmt.len: args.add stmt[i]
+  let (rest, blk) = stripTrailingBlock(args)
+  if rest.len > 0:
+    error("`traverse` takes no arguments, only a block", stmt)
+  if blk == nil:
+    error("`traverse` requires a block", stmt)
+
+  result = newStmtList()
+  for entry in blk:
+    if entry.kind == nnkCommentStmt: continue
+    if entry.kind == nnkIdent:
+      if entry.eqIdent("none"):
+        result.add newCall(ident"setTraversalMode", entityVar, ident"tmNone")
+      elif entry.eqIdent("all"):
+        result.add newCall(ident"setTraversalMode", entityVar, ident"tmAll")
+      else:
+        error("expected `none`, `all`, a pin pair (`\"A\" <-> \"B\"`) or " &
+              "`blocks \"A\" <-> \"B\"` inside `traverse`", entry)
+    elif entry.kind == nnkInfix:
+      result.add handleTraverseEdge(entityVar, entry, conducts = true)
+    elif entry.kind == nnkCommand and entry.len == 2 and
+         entry[0].eqIdent("blocks") and entry[1].kind == nnkInfix:
+      result.add handleTraverseEdge(entityVar, entry[1], conducts = false)
+    else:
+      error("expected `none`, `all`, a pin pair (`\"A\" <-> \"B\"`) or " &
+            "`blocks \"A\" <-> \"B\"` inside `traverse`", entry)
   result.copyLineInfo(stmt)
 
 proc primaryLabel(node: NimNode): (NimNode, NimNode) =
@@ -510,9 +657,13 @@ proc handleComponent(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
         result.add handleSimReplace(compVar, inner)
       elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("spec"):
         result.add handleSpec(compVar, asComponent, inner)
+      elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("layout"):
+        result.add handleLayout(compVar, inner)
+      elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("traverse"):
+        result.add handleTraverse(compVar, inner)
       else:
-        error("only `pin`, `port`, `simReplace` and `spec` statements are " &
-              "allowed inside a `component` block", inner)
+        error("only `pin`, `port`, `simReplace`, `spec`, `layout` and " &
+              "`traverse` statements are allowed inside a `component` block", inner)
   result.copyLineInfo(stmt)
 
 proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
@@ -572,6 +723,7 @@ proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
 
   var kindNode: NimNode = newLit("subcircuit")
   var tweakNode: NimNode = nil
+  var sideNode: NimNode = nil
   var fieldPairs: seq[NimNode]
   for a in rest[3 ..^ 1]:
     a.expectKind(nnkExprEqExpr)
@@ -579,6 +731,11 @@ proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
     of "kind": kindNode = a[1]
     of "designator": designatorStrNode = a[1]
     of "with": tweakNode = a[1]
+    # `side =` here is `layout:`'s head-keyword counterpart -- `instance`
+    # takes no trailing block at all (see the check above), so this is the
+    # only place an instantiated subcircuit's own layout hint can be stated.
+    # Same mapping (`layoutSideNode`), so the two spellings cannot drift.
+    of "side": sideNode = layoutSideNode(a[1])
     else: fieldPairs.add(a)
 
   let instVar = if identSym != nil: identSym else: genSym(nskLet, "inst")
@@ -592,6 +749,8 @@ proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
               portsSeq, globalsSym, kindNode))
   for p in fieldPairs:
     result.add dispatchField(instVar, componentKnownFields, p)
+  if sideNode != nil:
+    result.add newCall(ident"setLayoutSide", instVar, sideNode)
   result.add newCall(ident"promotePortDirections", instVar)
 
   # `with = <proc(Netlist)>` runs against **this instance's own clone**,

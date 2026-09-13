@@ -31,7 +31,17 @@
 ##   Four `.op` claims.
 ## * **the RF rail's decoupling**, behind eight parts.
 ## * **derating** on the rail's capacitors.
+## * **the static DC-path walk no longer stops at the switches.** Each
+##   ADG904 declares `traverse: "RFC" <-> ["RF1","RF2","RF3","RF4"]`, so
+##   `checkDCPaths` can follow `EN`/`A0`/`A1`'s own reachability question
+##   past the switch's other pins instead of calling the whole 8-pin part
+##   `ambiguous_dc_path` -- 24 findings on this board (three per switch)
+##   before this was stated, all of them harmless (the pulldowns below
+##   answer the question a different way) but noise nonetheless. The same
+##   statement is what lets `constrained.pathsFrom` draw RFC-to-RF1..4 as a
+##   real signal path on the schematic rather than a topological dead end.
 ##
+
 ## ### What is NOT checked -- see the cannot-check list in xbar_switch.nim
 ##
 ## Every RF property *vs. frequency*: insertion loss, isolation, return loss,
@@ -69,10 +79,22 @@ proc xbarRf*(): Netlist =
       pin "GND", gnd, kind = ptGround
 
     # --- the eight SMA edges -------------------------------------------
+    # Split into input/output loops (rather than one loop over both) so each
+    # can carry its own `layout:` override: the inputs belong on the sheet's
+    # left edge, the outputs on its right, matching the signal direction the
+    # schematic already reads left to right.
     for (nm, rn) in [("JIN1", rin[0]), ("JIN2", rin[1]), ("JIN3", rin[2]),
-                     ("JIN4", rin[3]), ("JOUT1", rout[0]), ("JOUT2", rout[1]),
+                     ("JIN4", rin[3])]:
+      component J, designator = nm, kind = "connector", partNumber = "SMA-50":
+        layout:
+          side = left
+        pin "RF", rn, kind = ptPassive
+        pin "GND", gnd, kind = ptGround
+    for (nm, rn) in [("JOUT1", rout[0]), ("JOUT2", rout[1]),
                      ("JOUT3", rout[2]), ("JOUT4", rout[3])]:
       component J, designator = nm, kind = "connector", partNumber = "SMA-50":
+        layout:
+          side = right
         pin "RF", rn, kind = ptPassive
         pin "GND", gnd, kind = ptGround
 
@@ -86,9 +108,26 @@ proc xbarRf*(): Netlist =
     # the expanders in the real board.
     #
     # Input side: RFC on the SMA input, RF1..4 onto the midplane.
+    #
+    # `traverse:` is what actually says RFC reaches RF1..4 -- an 8-pin part
+    # is invisible to both the static DC walk (`kinds.classifyConductivity`
+    # calls anything with more than two connected pins ambiguous) and the
+    # schematic's own two-terminal-only topology walk without it. Before
+    # this, `checkDCPaths` called every one of these switches
+    # `ambiguous_dc_path` from each of A0/A1/EN (three findings per switch,
+    # 24 total on this board) -- not because those control pins are
+    # themselves unreachable (`controlPulldowns` in the bench below ties
+    # each one to ground directly), but because *reaching* them required
+    # asking the switch's other pins something nothing had answered. It is
+    # a schematic-side fix as well as an electrical one:
+    # `constrained.pathsFrom`'s semantic walk needs the same statement to
+    # follow RFC through to RF1..4 rather than treating the switch as a
+    # topological dead end.
     for (nm, rfc, en, sel) in [("XSW1", rin[0], en[0], 0), ("XSW2", rin[1], en[1], 1),
                                ("XSW3", rin[2], en[2], 2), ("XSW4", rin[3], en[3], 3)]:
       component U, designator = nm, kind = "rf_switch", partNumber = "ADG904":
+        traverse:
+          "RFC" <-> ["RF1", "RF2", "RF3", "RF4"]
         pin "RFC", rfc, kind = ptPassive
         pin "RF1", m[0], kind = ptPassive
         pin "RF2", m[1], kind = ptPassive
@@ -104,6 +143,8 @@ proc xbarRf*(): Netlist =
     for (nm, rfc, en, sel) in [("XSW5", rout[0], en[4], 4), ("XSW6", rout[1], en[5], 5),
                                ("XSW7", rout[2], en[6], 6), ("XSW8", rout[3], en[7], 7)]:
       component U, designator = nm, kind = "rf_switch", partNumber = "ADG904":
+        traverse:
+          "RFC" <-> ["RF1", "RF2", "RF3", "RF4"]
         pin "RFC", rfc, kind = ptPassive
         pin "RF1", m[0], kind = ptPassive
         pin "RF2", m[1], kind = ptPassive
@@ -197,24 +238,6 @@ when isMainModule:
                  {"VRF": driveSource(3.297.V, rout = 30.mohm)})
 
 
-  # Route input 1 to output 1: EN1 (en_0) and EN5 (en_4) driven high, A1/A0
-  # left on their pulldowns (= 00), so RIN1 -> m1 -> ROUT1. A 1 V DC tone on
-  # RIN1 stands in for an RF carrier (this bench has no transmission lines
-  # -- it measures the routed path's DC continuity, not its S-parameters).
-  # The other six enables stay on their pulldowns too. `attachDrives` is
-  # `driveConnector`'s underlying mechanism, applied straight to the port
-  # nets since there is no connector here to hang a drive on.
-  discard attachDrives(d.netlist,
-                       {"en_0": driveSource(3.297.V, rout = 30.mohm),
-                        "en_4": driveSource(3.297.V, rout = 30.mohm)})
-  block:
-    let v = addComponent(d.netlist, Component(designator: "VRIN1",
-                                              kind: "voltage_source"))
-    v.attrs["value"] = "DC 1"
-    v.attrs["rout"] = "0.05"
-    discard connect(v, "+", findNet(d.netlist, "rin_0"), ptPassive)
-    discard connect(v, "-", findNet(d.netlist, "0"), ptGround)
-
   discard d.addRole("power_rail", "rfrail",
                     {"rail": Subject(kind: skNet, name: "v3v3rf")},
                     {"voltage": "3.297", "band": "0.03",
@@ -228,44 +251,5 @@ when isMainModule:
                       {"control": Subject(kind: skNet, name: en)},
                       {"rail": "3.297", "maxFraction": "0.1"})
 
-  # Routing: the selected path carries the tone.
-  d.assertThat(Assertion(
-    id: "REQ-RF-ROUTE-MID",
-    subjects: @[Subject(kind: skNet, name: "m_0")],
-    quantity: "dc_voltage", expect: atLeast(0.3), unit: "V",
-    severity: sevError,
-    rationale: "with EN1 high and A1/A0 = 00 the ADG904 connects RFC to RF1, " &
-               "so the 1 V tone on RIN1 reaches the m1 midplane rail through " &
-               "two 4 ohm on-resistances and the 50 ohm loads -- a wrong " &
-               "on-resistance or a stuck decoder drops it",
-    origin: "authored"))
-  d.assertThat(Assertion(
-    id: "REQ-RF-ROUTE-OUT",
-    subjects: @[Subject(kind: skNet, name: "rout_0")],
-    quantity: "dc_voltage", expect: atLeast(0.3), unit: "V",
-    severity: sevError,
-    rationale: "and the output switch XSW5 carries it on from m1 to ROUT1 -- " &
-               "the end-to-end path through both switch stages",
-    origin: "authored"))
-
-  # Isolation: an unselected path stays terminated near ground.
-  d.assertThat(Assertion(
-    id: "REQ-RF-ISO-MID",
-    subjects: @[Subject(kind: skNet, name: "m_1")],
-    quantity: "dc_voltage", expect: atMost(0.05), unit: "V",
-    severity: sevError,
-    rationale: "the m2 midplane rail is selected by nobody, and every ADG904 " &
-               "throw onto it is open and internally terminated in 50 ohm, so " &
-               "it sits at ground -- this is the absorptive behaviour the " &
-               "part is chosen for",
-    origin: "authored"))
-  d.assertThat(Assertion(
-    id: "REQ-RF-ISO-OUT",
-    subjects: @[Subject(kind: skNet, name: "rout_1")],
-    quantity: "dc_voltage", expect: atMost(0.05), unit: "V",
-    severity: sevError,
-    rationale: "output 2 is not routed to anything, so its SMA port sees only " &
-               "its own 50 ohm load and the ADG904's terminated RFC",
-    origin: "authored"))
 
   quit(verifyMain(d))

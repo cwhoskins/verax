@@ -130,9 +130,31 @@ type
     cls: ArrayPortClass
     dir: PortDirection         ## folded member direction (chained: in/out)
     nets: seq[string]          ## member order; "" for an unbound member
-    bundled: bool              ## a bundle owns this port's drawing
-    display: string            ## scene/occupancy tag; "" for apCommon and
-                               ## for a bundled port
+    bundled: bool              ## this port's nets are members of some
+                               ## bus/interface bundle (reporting fact only --
+                               ## see `mergedByBundle` for who actually draws)
+    mergedByBundle: bool       ## apDistributed only: the bundle already
+                               ## merges a pin at this representative for this
+                               ## port -- a `brCollapsed` bundle, a
+                               ## `brNetLabel` `LabelGroup` with >= 2 owned
+                               ## members here (`bundles.byPin`), **or** a
+                               ## bundle that merges a pin *anywhere at all*
+                               ## (`ArrayBuildCtx.mixedMergeBundle`: `xbar_rf`'s
+                               ## `a` bus merges `A0`+`A1` on every switch but
+                               ## not on its lone-member pulldowns, so no
+                               ## coherent single tag is left for a bus tree to
+                               ## reuse -- every carrier defers). A `bundled`
+                               ## port that is not merged *anywhere on its
+                               ## bundle* (one member per carrier throughout,
+                               ## e.g. `xbar_rf`'s `rin`/`rout`/`en`) is drawn
+                               ## and routed by the array instead, reusing the
+                               ## bundle's own occupancy tag so both sides
+                               ## (and any other array sharing the same bus)
+                               ## agree on one wire.
+    display: string            ## scene/occupancy tag; "" for apCommon. For a
+                               ## `bundled`, non-`mergedByBundle` port this is
+                               ## the *bundle's own* `Bundle.display`, not a
+                               ## freshly allocated one -- see `mergedByBundle`
     tag: string                ## drawn text: "" / "cs[1:3]" / "3*9"
     open: bool                 ## apIrregular: some member's net is nil
     distinctNets: int          ## apIrregular: distinct non-nil net count
@@ -156,14 +178,14 @@ type
                                ## bus/interface-instance name behind this
                                ## port (`splitKeyOf` of the first bound
                                ## member's net) -- "rin", not "rin_0". "" when
-                               ## `not bundled`. `arrayPinFor` reads this
-                               ## instead of falling through to the
-                               ## representative's own raw net: once a
-                               ## whole array collapses to one box, that box
-                               ## stands for every member's binding on this
-                               ## bus, and one member's specific index is no
-                               ## longer the box's identity, the bus itself
-                               ## is.
+                               ## `not bundled`. `arrayPinFor` reads this for
+                               ## a `mergedByBundle` port instead of falling
+                               ## through to the representative's own raw
+                               ## net: once a whole array collapses to one
+                               ## box, that box stands for every member's
+                               ## binding on this bus, and one member's
+                               ## specific index is no longer the box's
+                               ## identity, the bus itself is.
 
   PartArray = object
     key: string                ## "<subNetlist.name|kind>\x1f<...>\x1f<sub>",
@@ -240,26 +262,64 @@ proc splitKeyOf(x: Net): string {.inline.} =
 
 type
   ArrayBuildCtx = object
-    inCollapsedBundle: HashSet[string]
-      ## A `brCollapsed` bundle is a point-to-point wire between exactly two
-      ## entities; hiding one deletes its far end. That is the only decline,
-      ## shared verbatim by both passes.
     usedDisplays: HashSet[string]
       ## Every display tag already spoken for -- by a bundle, or by an
       ## earlier-registered array of *either* origin. Shared across both
       ## passes so `buildComponentArrays` never allocates a display the
       ## subsheet pass already gave out (and vice versa were the order ever
       ## reversed).
+    mixedMergeBundle: HashSet[int]
+      ## Index (into `BundlePlan.bundles`) of every `brNetLabel` bundle with
+      ## at least one merged `LabelGroup` -- `xbar_rf`'s `a` bus, where every
+      ## switch merges its own `A0`+`A1` but every pulldown resistor owns
+      ## just one member. `ap.mergedByBundle` (`classifyGroup`) treats every
+      ## port on such a bundle as bundle-owned, even one whose OWN
+      ## representative merges nothing (the pulldowns' `"1"` port): a bundle
+      ## drawn as a mix of merged tags and real wires between different
+      ## carriers of the *same* members has no coherent single occupancy tag
+      ## left for a bus tree to reuse, so the array must defer to it
+      ## wholesale rather than only at the carriers that happen to merge.
 
 proc initArrayBuildCtx(nl: Netlist, bundles: BundlePlan,
                        base = ArrayPlan()): ArrayBuildCtx =
-  for b in bundles.bundles:
-    if b.role == brCollapsed:
-      for d in b.parts: result.inCollapsedBundle.incl d
-  for b in bundles.bundles: result.usedDisplays.incl b.display
+  for bi, b in bundles.bundles:
+    result.usedDisplays.incl b.display
+    if b.role == brNetLabel:
+      for lg in b.labelGroups:
+        if lg.merged:
+          result.mixedMergeBundle.incl bi
+          break
   for a in base.arrays:
     for ap in a.ports:
       if ap.display.len > 0: result.usedDisplays.incl ap.display
+
+proc survivesCollapsedBundles(bundles: BundlePlan, alreadyHidden: HashSet[string],
+                              candidateHidden: seq[string]): bool =
+  ## A `brCollapsed` bundle is a bus tree between its endpoint entities;
+  ## hiding members down to fewer than two surviving entities deletes its far
+  ## end, so that is the only decline this checks -- shared verbatim by both
+  ## passes. Unlike the old blanket "any member of this whole candidate
+  ## touches *some* collapsed bundle" rule, this is evaluated per sub-group
+  ## (`g` from `subGroupsOf`, via its own `candidateHidden` -- the members
+  ## that sub-group would hide) against every `brCollapsed` bundle, so a
+  ## bundle that keeps two or more of its own entities placeable after this
+  ## group's members disappear does not veto it. `xbar_rf`'s two `rf_switch
+  ## x4` groups each hide three of the eight switches carrying the (now
+  ## collapsible) `m` bus -- five, then two, switches remain on it, so both
+  ## groups still collapse.
+  var hidden = alreadyHidden
+  for d in candidateHidden: hidden.incl d
+  for b in bundles.bundles:
+    if b.role != brCollapsed: continue
+    var touchesHidden = false
+    for d in b.parts:
+      if d in hidden: touchesHidden = true
+    if not touchesHidden: continue
+    var survivors = 0
+    for d in b.parts:
+      if d notin hidden: inc survivors
+    if survivors < 2: return false
+  true
 
 proc uniqueDisplay(ctx: var ArrayBuildCtx, nl: Netlist, natural: string): string =
   # `used` is threaded explicitly rather than closed over: a nested proc may
@@ -385,6 +445,7 @@ proc classifyGroup(ctx: var ArrayBuildCtx, nl: Netlist, sig: string, gi: int,
   for mi in g: sub.members.add members[mi]
   sub.rep = sub.members[0]
   sub.label = sub.members[0] & ".." & sub.members[^1]
+  let repC = nl.components[sub.rep]
 
   # Per-port classification over this sub-group.
   for pi, pn in portNames:
@@ -408,6 +469,22 @@ proc classifyGroup(ctx: var ArrayBuildCtx, nl: Netlist, sig: string, gi: int,
         # one final sub-group every member's family is expected to agree --
         # the first is as good a witness as any.
         if ap.bundleFamily.len == 0: ap.bundleFamily = splitKeyOf(x)
+    # The bundle merges a pin here iff it already claims THIS representative
+    # pin (`bundles.byPin`) -- true for a `brCollapsed` bundle (every member
+    # pin registered) or a `brNetLabel` `LabelGroup` merging >= 2 owned
+    # members on this carrier (e.g. `xbar_rf`'s `a` bus: `A0`+`A1` both land
+    # on one switch) -- **or** iff the bundle merges a pin *anywhere at all*
+    # (`ctx.mixedMergeBundle`): a bundle that merges on one carrier (a
+    # switch's `A0`+`A1`) but not on another sharing the very same members
+    # (a pulldown's lone `"1"`) has no single occupancy tag left that a bus
+    # tree could reuse coherently, so every carrier defers to the bundle
+    # wholesale rather than only the ones that individually merge. A
+    # `bundled` port that owns only one member per carrier, on a bundle that
+    # never merges anywhere (`rin`/`rout`/`en`), is drawn/routed by the array
+    # instead.
+    ap.mergedByBundle = bundles.byPin.hasKey(pinKey(repC, pn)) or
+      (ap.nets.len > 0 and bundles.byNet.hasKey(ap.nets[0]) and
+       bundles.byNet[ap.nets[0]] in ctx.mixedMergeBundle)
     var allSame = objs.len == g.len
     for x in objs:
       if x != objs[0]: allSame = false
@@ -520,8 +597,22 @@ proc classifyGroup(ctx: var ArrayBuildCtx, nl: Netlist, sig: string, gi: int,
   for pi in 0 ..< sub.ports.len:
     case sub.ports[pi].cls
     of apDistributed:
-      if sub.ports[pi].bundled: continue
-      sub.ports[pi].display = uniqueDisplay(ctx, nl, sub.ports[pi].name)
+      if sub.ports[pi].mergedByBundle: continue
+      if sub.ports[pi].bundled:
+        # Not merged anywhere -- the array draws and routes this port itself,
+        # but reusing the bundle's OWN occupancy tag (never a fresh one) is
+        # what lets this array's route, the port pennant already folded by
+        # `bundles.byPort`, and -- when the same bus is distributed across
+        # more than one array (`xbar_rf`'s `rin`: a `connector x4` on one end,
+        # an `rf_switch x4` on the other) -- the OTHER array's own route all
+        # agree on one wire under one name, with no cross-array coordination
+        # needed: whichever array's `plan.groupOf` write is registered last
+        # is the one `arrayRouteFor` honours, and every competing array's own
+        # `display` is identical anyway.
+        let bi = bundles.byNet.getOrDefault(sub.ports[pi].nets[0], -1)
+        if bi >= 0: sub.ports[pi].display = bundles.bundles[bi].display
+      if sub.ports[pi].display.len == 0:
+        sub.ports[pi].display = uniqueDisplay(ctx, nl, sub.ports[pi].name)
       sub.ports[pi].tag = sub.ports[pi].name & "[1:" & $g.len & "]"
     of apChained:
       if sub.ports[pi].isOut:
@@ -561,7 +652,7 @@ proc registerArray(nl: Netlist, plan: var ArrayPlan, sub: PartArray) =
     plan.portOfPin[pinKey(repC, ap.name)] = (arrIdx, pi)
     case ap.cls
     of apDistributed:
-      if ap.bundled: continue
+      if ap.mergedByBundle: continue
       for nm in ap.nets:
         if nm.len == 0: continue
         plan.groupOf[nm] = (arrIdx, pi)
@@ -585,11 +676,15 @@ proc addSignatureArrays(ctx: var ArrayBuildCtx, nl: Netlist,
                         binding: seq[seq[Net]], rep0: Component,
                         origin: ArrayOrigin, allowChain: bool) =
   ## Sub-groups one candidate signature's members, classifies each sub-group
-  ## of >= 3, and registers every one that survives the all-common decline
-  ## (component groups only -- a subsheet array has no such veto, since a
+  ## of >= 3, and registers every one that survives the collapsed-bundle
+  ## decline (`survivesCollapsedBundles`) and, for a component group only,
+  ## the all-common decline (a subsheet array has no such veto, since a
   ## repeated subcircuit is a design decision, not an inferred visual motif).
   for gi, g in subGroupsOf(members.len, portNames, binding):
     if g.len < 3: continue
+    var hidden: seq[string]
+    for i in 1 ..< g.len: hidden.add members[g[i]]
+    if not survivesCollapsedBundles(bundles, plan.hidden, hidden): continue
     let sub = classifyGroup(ctx, nl, sig, gi, members, g, portNames, binding,
                             bundles, rep0, origin, allowChain)
     if origin == aoComponent:
@@ -688,9 +783,6 @@ proc buildSubsheetArrays(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan) 
     let members = sigMembers[sig]
     if members.len < 3: continue
     block signatureBody:
-      for d in members:
-        if d in ctx.inCollapsedBundle: break signatureBody
-
       let rep0 = nl.components[members[0]]
       var portNames: seq[string]
       for pn, _ in rep0.pins: portNames.add pn
@@ -754,9 +846,6 @@ proc buildComponentArrays(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan)
     let members = sigMembers[sig]
     if members.len < 3: continue
     block signatureBody:
-      for d in members:
-        if d in ctx.inCollapsedBundle: break signatureBody
-
       let rep0 = nl.components[members[0]]
       var portNames: seq[string]
       for pn, _ in rep0.pins: portNames.add pn
@@ -823,7 +912,12 @@ proc arrayPinFor(plan: ArrayPlan, c: Component, pinName: string):
     # the two would collide outright.
     if not ap.bundled and not ap.railCommon: result.mark = pmBusBar
   of apDistributed:
-    if not ap.bundled:
+    if not ap.mergedByBundle:
+      # Not merged anywhere: the array draws and routes this port itself
+      # (`display`/`tag` were computed accordingly in `classifyGroup` --
+      # `display` is the bundle's own tag when `bundled`, so this agrees with
+      # whatever the bundle's port pennant and any other array sharing the
+      # same bus already draw).
       result.mark = pmBusSlash
       result.tag = ap.tag
       result.net = ap.display
@@ -865,7 +959,21 @@ proc arrayBundleLabelFor(plan: ArrayPlan, c: Component, pinName: string): string
   if not plan.portOfPin.hasKey(pinKey(c, pinName)): return ""
   let (ai, pi) = plan.portOfPin[pinKey(c, pinName)]
   let ap = plan.arrays[ai].ports[pi]
-  if ap.cls == apDistributed and ap.bundled: ap.bundleFamily else: ""
+  if ap.cls == apDistributed and ap.mergedByBundle: ap.bundleFamily else: ""
+
+proc arrayOwnsDistributedPin(plan: ArrayPlan, c: Component, pinName: string): bool =
+  ## True when a collapsed array's own bus now carries this exact
+  ## representative pin's port -- `routing.nim`'s net-label pass must not
+  ## also draw a bare tag (or a portConn marker) for it: the array draws a
+  ## real wire instead, under the bundle's own occupancy tag
+  ## (`ArrayPort.display`, see `classifyGroup`), so the bundle's net-label
+  ## pass steps aside for exactly the ports it does. `mergedByBundle` is the
+  ## opposite case -- bundle wins at the pin -- and stays with the ordinary
+  ## net-label drawing.
+  if not plan.portOfPin.hasKey(pinKey(c, pinName)): return false
+  let (ai, pi) = plan.portOfPin[pinKey(c, pinName)]
+  let ap = plan.arrays[ai].ports[pi]
+  ap.cls == apDistributed and not ap.mergedByBundle
 
 proc arrayRouteFor(plan: ArrayPlan, netName: string):
     tuple[skip: bool, group: bool, tag: string, members: seq[string],

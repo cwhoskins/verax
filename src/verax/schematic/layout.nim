@@ -9,6 +9,8 @@ import ../netlist/types
 import ../netlist/kinds
 import ../netlist/annotations
 import ../netlist/packages
+import ../netlist/layouthints
+import ../netlist/traversal
 import ./scene
 import ./pipeline
 
@@ -23,6 +25,7 @@ include ./composites/composite
 include ./composites/passive
 include ./composites/pi
 include ./composites/tee
+include ./overrides
 include ./constrained
 include ./state
 include ./routing
@@ -80,6 +83,14 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
 
   if options.policy == lpConstrainedLayered:
     restoreCompositeOffsets(ctx)
+
+  # The hard guarantee behind a `layout.side` override: translate each
+  # overridden unit into its own dedicated column now that separation and
+  # packing have settled every centre, and record the resulting band so
+  # `repairTerminalClearance`/`recoverRouting` below cannot undo it. A no-op
+  # scene, bit-for-bit, when nothing states a side or the stage is off.
+  if options.stageEnabled(lsLayoutOverrides):
+    enforceLayoutSides(ctx)
 
   # --- orientation: the definitive assignment once the centres are final ---
   # Separation and packing have moved parts since the loop froze rotation, so

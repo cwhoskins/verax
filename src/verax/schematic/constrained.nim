@@ -112,25 +112,28 @@ proc pathsFrom(nl: Netlist, start: Net, skip: int,
       if not isTraversable(c, nl) or not idxOf.hasKey(c.designator): continue
       let i = idxOf[c.designator]
       if i == skip or i in seen: continue
-      var other: Net
-      for _, mate in c.pins:
-        if mate.net != net:
-          other = mate.net
-          break
-      if other == nil: continue
-      let step = (pool: plan.poolOf[i], exit: other.name)
-      if step in visitedHere: continue
-      visitedHere.incl step
-      var nextSeen = seen
-      nextSeen.incl i
-      var nextPath = path
-      nextPath.add i
-      walk(other, nextPath, nextSeen)
+      # A flat two-terminal part has exactly one exit here, exactly as
+      # before; a declared multi-throw switch (`isTraversable`'s widened
+      # half) can have several, one per pin its own `traverse:` spec names
+      # as conducting from the pin the walk arrived on -- so the single
+      # `Net` this loop used to compute directly is now every entry of
+      # `traversalExits`, each keyed into `visitedHere` on its own `exit`
+      # name exactly as the old single exit was.
+      for other in traversalExits(c, nl, net):
+        let step = (pool: plan.poolOf[i], exit: other.name)
+        if step in visitedHere: continue
+        visitedHere.incl step
+        var nextSeen = seen
+        nextSeen.incl i
+        var nextPath = path
+        nextPath.add i
+        walk(other, nextPath, nextSeen)
   walk(start, @[], initHashSet[int]())
   result = found
 
 proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
-                         plan: CompositePlan, arrays: ArrayPlan): ConstrainedTopology =
+                         plan: CompositePlan, arrays: ArrayPlan,
+                         ov = LayoutOverridePlan()): ConstrainedTopology =
   ## Longest-path relaxation on semantic output arcs, run over the
   ## composite-collapsed *pool* -- `layers` and `sameColumn` are indexed by
   ## pool position (0 ..< `plan.topLevel.len`), not raw component index, so a
@@ -272,9 +275,46 @@ proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
     result.layers[part] = result.layers[src]
     result.sameColumn.add (src, part)
 
+  # `layout.side` (`netlist/layouthints`) is only a *seed hint* here --
+  # `enforceLayoutSides` (`state.nim`) is the hard guarantee, run once
+  # centres are settled. This just pulls a left-overridden unit's layer to 0
+  # and a right-overridden one past every other unit's layer, applied after
+  # both post-passes above since either can move a layer value, then densely
+  # renumbers so `constrainedTargets`' `0 ..< poolLen` loop (which silently
+  # drops anything at a layer `>= poolLen`) still visits every unit. A
+  # no-override sheet takes `ov.any == false` and skips this entirely.
+  if ov.any:
+    var leftUnits, rightUnits: seq[int]
+    for pos in 0 ..< poolLen:
+      case poolSide(plan, ov, plan.topLevel[pos])
+      of sideLeft: leftUnits.add pos
+      of sideRight: rightUnits.add pos
+      of sideAuto: discard
+    if leftUnits.len > 0 or rightUnits.len > 0:
+      let leftSet = leftUnits.toHashSet()
+      let rightSet = rightUnits.toHashSet()
+      if leftUnits.len > 0:
+        for pos in 0 ..< poolLen:
+          if pos notin leftSet: result.layers[pos] = result.layers[pos] + 1
+        for pos in leftUnits: result.layers[pos] = 0
+      if rightUnits.len > 0:
+        var maxOther = 0
+        for pos in 0 ..< poolLen:
+          if pos notin rightSet: maxOther = max(maxOther, result.layers[pos])
+        for pos in rightUnits: result.layers[pos] = maxOther + 1
+      var distinctLayers: seq[int]
+      for pos in 0 ..< poolLen:
+        if result.layers[pos] notin distinctLayers:
+          distinctLayers.add result.layers[pos]
+      distinctLayers.sort()
+      var remap = initTable[int, int]()
+      for at, v in distinctLayers: remap[v] = at
+      for pos in 0 ..< poolLen: result.layers[pos] = remap[result.layers[pos]]
+
 proc constrainedTargets(comps: seq[Component], pos: seq[Point],
                         idxOf: Table[string, int],
-                        plan: CompositePlan, arrays: ArrayPlan): seq[Point] =
+                        plan: CompositePlan, arrays: ArrayPlan,
+                        ov = LayoutOverridePlan()): seq[Point] =
   ## Stable, bounded stage placement over the composite-collapsed pool. A pool
   ## item -- a raw singleton or a whole recognized composite -- is one
   ## placement unit; units fill at most three adjacent stages before adding
@@ -299,7 +339,7 @@ proc constrainedTargets(comps: seq[Component], pos: seq[Point],
   ## this reduces to the pre-pooling stacking exactly, one unit apart -- the
   ## identity case that is provably unchanged.
   if not constrainedEligible(comps, plan): return pos
-  var topology = constrainedTopology(comps, idxOf, plan, arrays)
+  var topology = constrainedTopology(comps, idxOf, plan, arrays, ov)
   let poolLen = plan.topLevel.len
   # A local return is allowed one semantic stage either side of its source;
   # reserve a second stage even for the minimal source-plus-feedback case.
@@ -372,18 +412,19 @@ proc constrainedTargets(comps: seq[Component], pos: seq[Point],
 
 proc constrainedSemanticSeed(comps: seq[Component], pos: var seq[Point],
                              idxOf: Table[string, int], plan: CompositePlan,
-                             arrays: ArrayPlan) =
+                             arrays: ArrayPlan, ov = LayoutOverridePlan()) =
   if constrainedEligible(comps, plan):
-    pos = constrainedTargets(comps, pos, idxOf, plan, arrays)
+    pos = constrainedTargets(comps, pos, idxOf, plan, arrays, ov)
 
 proc constrainedAnchors(comps: seq[Component], seed: seq[Point],
                         idxOf: Table[string, int],
-                        plan: CompositePlan, arrays: ArrayPlan): seq[Point] =
+                        plan: CompositePlan, arrays: ArrayPlan,
+                        ov = LayoutOverridePlan()): seq[Point] =
   ## Semantic columns are deliberately *soft* anchors.  The constrained policy
   ## must retain the topology hint without overwriting the force solution (and
   ## without turning a feedback sheet into a rigid template).
   if constrainedEligible(comps, plan):
-    constrainedTargets(comps, seed, idxOf, plan, arrays)
+    constrainedTargets(comps, seed, idxOf, plan, arrays, ov)
   else:
     seed
 

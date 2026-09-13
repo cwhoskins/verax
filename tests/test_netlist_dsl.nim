@@ -612,3 +612,194 @@ test "the flat assign path writes the same three keys":
   check nl.components["U1A"].attrs["package.ref"] == "U1"
   check nl.components["U1A"].attrs["package.section"] == "A"
   check nl.components["U1B"].attrs["package.def"] == "DSL_FLAT"
+
+suite "layout: block":
+  test "layout: side = left/right writes and reads back through layoutSide":
+    let nl = netlist("sides"):
+      net gnd, kind = ntGround, name = "0"
+      net a, kind = ntSignal
+      component U1, kind = "mcu":
+        layout:
+          side = left
+        pin "1", a, kind = ptPassive
+      component U2, kind = "mcu":
+        layout:
+          side = right
+        pin "1", a, kind = ptPassive
+      component U3, kind = "mcu":
+        pin "1", a, kind = ptPassive
+    check nl.components["U1"].attrs["layout.side"] == "left"
+    check layoutSide(nl.components["U1"]) == sideLeft
+    check nl.components["U2"].attrs["layout.side"] == "right"
+    check layoutSide(nl.components["U2"]) == sideRight
+    check not nl.components["U3"].attrs.hasKey("layout.side")
+    check layoutSide(nl.components["U3"]) == sideAuto
+
+  test "instance ..., side = left/right sets the instantiated subcircuit's own side":
+    proc blk(): Netlist =
+      subckt("B", [P, G]):
+        net G, kind = ntGround, name = "0"
+        net P, kind = ntSignal
+        component kind = "capacitor", value = "1n":
+          pin "1", P, kind = ptPassive
+          pin "2", G, kind = ptPassive
+    let nl = netlist("top"):
+      net gnd, kind = ntGround, name = "0", global = true
+      net a, kind = ntSignal
+      instance XA, blk(), [a, gnd], side = left
+      instance XB, blk(), [a, gnd], side = right
+      instance XC, blk(), [a, gnd]
+    check layoutSide(nl.components["XA"]) == sideLeft
+    check layoutSide(nl.components["XB"]) == sideRight
+    check layoutSide(nl.components["XC"]) == sideAuto
+
+  test "an unknown layout key is a compile error naming the registered keys":
+    check(not compiles(block:
+      discard netlist("bad"):
+        net gnd, kind = ntGround, name = "0"
+        component U1, kind = "mcu":
+          layout:
+            rotation = 90))
+
+  test "an unknown side value is a compile error":
+    check(not compiles(block:
+      discard netlist("bad"):
+        net gnd, kind = ntGround, name = "0"
+        component U1, kind = "mcu":
+          layout:
+            side = sideways))
+
+  test "side = auto clears any override":
+    let c = newComponent("U1", kind = "mcu")
+    setLayoutSide(c, sideLeft)
+    setLayoutSide(c, sideAuto)
+    check not c.attrs.hasKey("layout.side")
+    check layoutSide(c) == sideAuto
+
+suite "traverse: block":
+  test "one edge: \"A\" <-> \"B\" writes a single conducting path":
+    let nl = netlist("t"):
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      component Z1, kind = "rf_switch":
+        traverse:
+          "RFC" <-> "RF1"
+        pin "RFC", a, kind = ptPassive
+        pin "RF1", b, kind = ptPassive
+    check nl.components["Z1"].attrs["traverse.paths"] == "RFC,RF1"
+    check not nl.components["Z1"].attrs.hasKey("traverse.blocked")
+    check not nl.components["Z1"].attrs.hasKey("traverse.mode")
+
+  test "\"A\" <-> [list] is the cross product, one edge per list member":
+    let nl = netlist("t"):
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      net c, kind = ntSignal
+      component Z1, kind = "rf_switch":
+        traverse:
+          "RFC" <-> ["RF1", "RF2"]
+        pin "RFC", a, kind = ptPassive
+        pin "RF1", b, kind = ptPassive
+        pin "RF2", c, kind = ptPassive
+    check nl.components["Z1"].attrs["traverse.paths"] == "RFC,RF1;RFC,RF2"
+
+  test "[list] <-> [list] is the full cross product on both sides":
+    let nl = netlist("t"):
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      net c, kind = ntSignal
+      component Z1, kind = "rf_switch":
+        traverse:
+          ["A", "B"] <-> ["C"]
+        pin "A", a, kind = ptPassive
+        pin "B", b, kind = ptPassive
+        pin "C", c, kind = ptPassive
+    check nl.components["Z1"].attrs["traverse.paths"] == "A,C;B,C"
+
+  test "blocks \"A\" <-> \"B\" writes a non-conducting (schematic-only) edge":
+    let nl = netlist("t"):
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      component C1, kind = "capacitor":
+        traverse:
+          blocks "IN" <-> "OUT"
+        pin "IN", a, kind = ptPassive
+        pin "OUT", b, kind = ptPassive
+    check nl.components["C1"].attrs["traverse.blocked"] == "IN,OUT"
+    check not nl.components["C1"].attrs.hasKey("traverse.paths")
+
+  test "none writes traverse.mode = none":
+    let nl = netlist("t"):
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      component R1, kind = "resistor":
+        traverse:
+          none
+        pin "1", a, kind = ptPassive
+        pin "2", b, kind = ptPassive
+    check nl.components["R1"].attrs["traverse.mode"] == "none"
+
+  test "all writes traverse.mode = all":
+    let nl = netlist("t"):
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      component U1, kind = "connector":
+        traverse:
+          all
+        pin "1", a, kind = ptPassive
+        pin "2", b, kind = ptPassive
+    check nl.components["U1"].attrs["traverse.mode"] == "all"
+
+  test "several statements in one block accumulate rather than clobber":
+    let nl = netlist("t"):
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      net c, kind = ntSignal
+      net d, kind = ntSignal
+      component Z1, kind = "rf_switch":
+        traverse:
+          "RFC" <-> ["RF1", "RF2"]
+          blocks "RF1" <-> "RF2"
+        pin "RFC", a, kind = ptPassive
+        pin "RF1", b, kind = ptPassive
+        pin "RF2", c, kind = ptPassive
+        pin "EN", d, kind = ptInput
+    check nl.components["Z1"].attrs["traverse.paths"] == "RFC,RF1;RFC,RF2"
+    check nl.components["Z1"].attrs["traverse.blocked"] == "RF1,RF2"
+
+  test "traverse: block may precede the pin statements it names":
+    # The worked example from the plan: pin names inside `traverse:` are not
+    # checked against the component's own pins at DSL time, so the block may
+    # come first -- `validateTraversal` is what catches an unknown pin name.
+    let nl = netlist("t"):
+      net a, kind = ntSignal
+      net b, kind = ntSignal
+      component Z1, kind = "rf_switch":
+        traverse:
+          "RFC" <-> "RF1"
+        pin "RFC", a, kind = ptPassive
+        pin "RF1", b, kind = ptPassive
+    check nl.components["Z1"].attrs["traverse.paths"] == "RFC,RF1"
+
+  test "an unrecognized keyword inside traverse is a compile error":
+    check(not compiles(block:
+      discard netlist("bad"):
+        component Z1, kind = "rf_switch":
+          traverse:
+            rotate = 90
+          pin "1", 1, kind = ptPassive))
+
+  test "a malformed pin-pair statement inside traverse is a compile error":
+    check(not compiles(block:
+      discard netlist("bad"):
+        component Z1, kind = "rf_switch":
+          traverse:
+            "RFC" -> "RF1"    # `->`, not `<->`
+          pin "1", 1, kind = ptPassive))
+
+  test "traverse with no block is a compile error":
+    check(not compiles(block:
+      discard netlist("bad"):
+        component Z1, kind = "rf_switch":
+          traverse
+          pin "1", 1, kind = ptPassive))

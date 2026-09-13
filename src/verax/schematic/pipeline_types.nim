@@ -8,7 +8,8 @@ import std/[os, strutils]
 type
   StageId* = enum
     lsPrepare, lsBundles, lsArrays, lsPartArrays, lsSemanticSeed, lsForcePlacement,
-    lsConstrainedRefinement, lsCompositeOrient, lsSeparate, lsPack, lsOrient,
+    lsConstrainedRefinement, lsCompositeOrient, lsSeparate, lsPack,
+    lsLayoutOverrides, lsOrient,
     lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting,
     lsRoutingAwareRepair, lsPortRefine, lsLabels, lsBounds
 
@@ -61,6 +62,15 @@ const canonicalStages*: array[StageId, StageSpec] = [
   StageSpec(id: lsCompositeOrient, enabled: true),
   StageSpec(id: lsSeparate, enabled: true),
   StageSpec(id: lsPack, enabled: true),
+  # A hard post-placement guarantee for `layout.side` overrides
+  # (`netlist/layouthints`): after separation/packing settle every centre,
+  # translate each overridden unit rigidly into its own dedicated column,
+  # strictly left/right of everything else, and record the resulting
+  # `leftSplit`/`rightSplit` band boundaries so `lsTerminalRepair` and
+  # `lsRecoverRouting`/`lsRoutingAwareRepair` cannot undo it. Off, or no
+  # component states a `layout.side` -> the pre-feature scene, bit-for-bit
+  # (`LayoutOverridePlan.any` stays false and every consumer is inert).
+  StageSpec(id: lsLayoutOverrides, enabled: true),
   StageSpec(id: lsOrient, enabled: true),
   StageSpec(id: lsTerminalRepair, enabled: true),
   StageSpec(id: lsPrepareRouting, enabled: true),

@@ -420,6 +420,18 @@ a regulator is asked and not a thing to bind separately.)
       are `kind = "rf_switch"` and make four new `.op` claims -- a routed path
       and an off path's isolation. Still not modelled: off-isolation vs.
       frequency (`Roff` is flat), charge injection, break-before-make timing.
+      A narrower gap this closed since: the ADG904 had a real `.op` model but
+      was still invisible to the *static* walks -- `checkDCPaths`/
+      `dc_path_exists` called every 8-pin switch `condAmbiguous` and never
+      crossed it, since neither `kinds.classifyConductivity` nor the
+      schematic's own topology walk assumes more than two connected pins. A
+      `traverse:` block on the component (`netlist/traversal.nim`) is the
+      author's own statement of which pin pairs conduct, read by both walks
+      through `kinds.conductivityBetween`/`conductiveExits`; `xbar_rf.nim`'s
+      eight ADG904s now declare `"RFC" <-> ["RF1","RF2","RF3","RF4"]`, so
+      `RFC..RFn` stop reading `ambiguous_dc_path` and `dc_path_exists` can
+      state a routed connection or an isolation barrier through one instead
+      of only around it.
     - **`sequencing` role** (already §20). "The switch enables come up only
       after 3v3 is up" is a real requirement here; the pulldowns make it true
       structurally and nothing checks the dynamic ordering.

@@ -66,11 +66,19 @@ boxes*, so N−1 components stop being drawn.
 7. **Guards:** rail/ground ports are excluded from the classification vote;
    `N < 3` never collapses; a chain must be linear and complete (every member,
    no branch at any link net, no cycle) or the port degrades to *distributed*.
-8. **Declining** an array means only "a member carries a `brCollapsed` bundle"
-   (a point-to-point wire whose far end would vanish). A `brNetLabel` /
+8. **Declining** an array means "a member carries a `brCollapsed` bundle that
+   this candidate's own hidden members would leave with fewer than two
+   placeable endpoint entities" (`survivesCollapsedBundles`) — a bus tree
+   between two or more entities, one of which would vanish. A `brNetLabel` /
    `brScalar` bundle degrades cleanly over hidden members, so the array still
-   collapses and that port is marked `bundled` — **the bundle wins at the pin,
-   the array wins at the box.**
+   collapses and that port is marked `bundled` — **the bundle wins at the pin
+   only where it actually merges one** (a `brCollapsed` bundle, or a
+   `brNetLabel` group folding ≥2 owned members onto one carrier, or any
+   bundle that merges *anywhere at all* — see `ArrayPort.mergedByBundle`); a
+   `bundled` port that never merges (one member per carrier throughout, e.g.
+   `xbar_rf`'s `rin`/`rout`/`en`) is drawn and routed by the array instead,
+   reusing the bundle's own occupancy tag so the array wins at the box **and**
+   the wire.
 
 ## Data model
 
@@ -252,24 +260,29 @@ Fixed decisions specific to this pass:
    the bare signal name first would fold every instance of a declared
    interface's same-named signal into one family and undo `spi_memories`'s
    three-way split. The same fix also splits `xbar_rf`'s `JIN*`/`JOUT*`
-   connectors, its `RT_IN*`/`RT_OUT*` terminations, and its 24 address/enable
-   pulldowns into an `en` `x8` and an `a` `x16`.
+   connectors and its 24 address/enable pulldowns into an `en` `x8` and an
+   `a` `x16`.
 
-   The natural companion bug: a bus-fanned distributed port that splits this
-   way is realistically also a `>= 3`-entity `brNetLabel` bundle (that is
-   what makes a bus a bus, structurally), so "bundle wins at the pin"
-   (decision 6 of the parent design's fixed decisions) suppresses the array's
-   own mark/tag there — but the *representative's* drawn `net` field and its
-   one surviving net-label tag still fell back to whichever single member
-   binding the representative happened to keep (`"rin_0"`), which was
-   correct when that component stood only for itself and became misleading
-   once it stood for the whole array. `ArrayPort.bundleFamily`, set at
-   classification time from `splitKeyOf` of the first bound member, and read
-   by `arrayPinFor` (the pin's `net`) and `routing.nim`'s
-   `arrayBundleLabelFor` (the one visible net-label tag an unmerged
-   representative still draws), substitute the bus/interface name (`"rin"`)
-   there instead. Every non-representative carrier — anything not hidden by
-   an array — keeps its own precise per-net tag unchanged.
+   The natural companion bug, from when "bundle wins at the pin" suppressed
+   the array's own mark/tag on *every* `bundled` port regardless of whether
+   the bundle actually merged anything there: the *representative's* drawn
+   `net` field and its one surviving net-label tag fell back to whichever
+   single member binding the representative happened to keep (`"rin_0"`),
+   correct when that component stood only for itself and misleading once it
+   stood for the whole array. `ArrayPort.bundleFamily`, set at classification
+   time from `splitKeyOf` of the first bound member, and read by
+   `arrayPinFor` (the pin's `net`) and `routing.nim`'s `arrayBundleLabelFor`
+   (the one visible net-label tag an unmerged representative still draws),
+   substitute the bus/interface name there instead — but only now for a port
+   the bundle genuinely still owns (`ArrayPort.mergedByBundle`, e.g. `xbar_rf`'s
+   `a` bus, where every switch merges its own `A0`+`A1`). `rin`/`rout`/`en`
+   never merge anywhere on their bundle, so `mergedByBundle` is false
+   throughout and the array now draws and routes them itself, reusing the
+   bundle's own occupancy tag (`Bundle.display`) rather than allocating a
+   fresh one or falling back to a member's raw net name — see "Bundled
+   distributed ports now route as the array's own bus" below. Every
+   non-representative carrier — anything not hidden by an array — keeps its
+   own precise per-net tag unchanged.
 
 Verified: `nim c -r --path:./src tests/test_schematic.nim` — the
 `component arrays` suite (classification, the N<3 floor and zero-value
@@ -281,12 +294,73 @@ probe, both bundle-interaction cases, the bundle-family pin/label fixture,
 and the bus-family-only split fixture). `./bin/verax check
 designs/xbar_rf.nim --schematic-only --keep-runs=out` and inspecting
 `out/runFULL.svg`/`out/runFULL.html` is the worked example: two `connector x4`
-boxes (input/output SMA edges), two `rf_switch x4` boxes (input/output
-switch banks), two `resistor x4` symbols for the `RT_IN*`/`RT_OUT*`
-terminations, one `resistor x8` and one `resistor x16` for the enable/address
-pulldowns, the eight `CBY*` caps still a visible parallel stack, and zero
-`fbUnrouted` fallbacks (every remaining fallback is a deliberate `fbNetLabel`
-bus tag, each now reading its plain bus name).
+boxes (input/output SMA edges), two `rf_switch x4` boxes (input/output switch
+banks — the ADG904's own absorptive termination replaced the board's old
+`RT_*` resistors), one `resistor x8` and one `resistor x16` for the
+enable/address pulldowns, the eight `CBY*` caps still a visible parallel
+stack, real bus-tree wires for `m`/`rin`/`rout` between the collapsed arrays
+(see "Bundled distributed ports now route as the array's own bus" below),
+and zero `fbUnrouted` fallbacks (every remaining fallback is a deliberate
+`fbNetLabel` bus tag for `en`/`a`, each reading its plain bus name).
+
+## Bundled distributed ports now route as the array's own bus
+
+Two changes on top of the design above, both load-bearing for
+`designs/xbar_rf.nim`, which was built to route no bus wider than two
+endpoint entities at all — collapse capped at exactly two, and any `bundled`
+distributed port stood down for the bundle regardless of whether the bundle
+had anything to merge there.
+
+1. **`bundles.collapsible` has no entity cap.** Uniformity (every member
+   touches the identical entity set) is now the whole collapse precondition;
+   `xbar_rf`'s `m` bus, wired identically across all eight `rf_switch`
+   instances, collapses to one bus tree instead of degrading past three
+   entities to grouped net-label tags.
+2. **The collapsed-bundle array veto is a placeable-endpoint count.**
+   `survivesCollapsedBundles` declines a candidate group only when hiding its
+   own non-representative members would leave some `brCollapsed` bundle with
+   fewer than two entities still placeable elsewhere — not the old "any
+   member touches some collapsed bundle" rule, which would have declined both
+   of `xbar_rf`'s `rf_switch x4` groups the moment `m` collapsed (each hides
+   only three of the other seven switches on `m`, leaving five, then two,
+   still on it).
+3. **A `bundled` port that never merges anywhere on its bundle is drawn and
+   routed by the array itself** (`ArrayPort.mergedByBundle`, computed via
+   `bundles.byPin`): a `brCollapsed` bundle, a `brNetLabel` `LabelGroup`
+   folding `>= 2` owned members onto one carrier (`a`'s `A0`+`A1`), or a
+   bundle merging a pin *anywhere at all* (a mixed bundle — merged on one
+   carrier, single-member on another sharing the same members — has no
+   single occupancy tag a bus tree could reuse coherently, so every carrier
+   defers) all still mean "bundle wins at the pin". Otherwise — one member
+   per carrier throughout, `rin`/`rout`/`en` — `classifyGroup` reuses the
+   *bundle's own* `Bundle.display` as the array's occupancy tag (never a
+   fresh one), so the array's real route, the port pennant `bundles.byPort`
+   already folds, and — when the same bus is distributed across more than
+   one array (`rin`: a `connector x4` on one end, an `rf_switch x4` on the
+   other) — the *other* array's own route all agree on one wire under one
+   name with no cross-array coordination needed: whichever array's
+   `plan.groupOf` write lands last is the one `arrayRouteFor` honours, and
+   every competing array's own `display` is identical anyway.
+   `routing.nim`'s net-label pass steps aside per carrier it no longer owns
+   (`arrayOwnsDistributedPin`, plus a direct `arrays.groupOf` check for a
+   merged carrier that is not itself an array member — a shared far-side box)
+   and, once its own triggering "first" member is array-owned, falls through
+   into the ordinary route below instead of `continue`ing, so the same net
+   iteration draws the array's real wire rather than a competing tag.
+
+`en` reaches this same array-owned code path — every pulldown and every
+switch owns exactly one member — but its placement on this sheet happens not
+to route as a tree; the existing graceful "an array bus that will not route
+carries every member by name instead" fallback applies unchanged, converting
+the attempt back into net-label tags rather than a dashed failure. Nothing
+here changes what routing failure *looks like* — only what gets attempted.
+
+Verified: the same `tests/test_schematic.nim` run above, plus "a uniform bus
+across three boxes collapses to one bus tree, no entity cap", "a brCollapsed
+bundle with enough surviving entities does not veto the array", and "a bus
+distributed across two separate arrays routes as one bus between them" (the
+`rin`/`rout` shape, built standalone rather than against the real
+`xbar_rf.nim`).
 
 ## Verification
 

@@ -463,6 +463,24 @@ proc anyOverlap(a, b: seq[Obstacle]): bool =
       if obstaclesOverlap(x, y): return true
   false
 
+proc sideBandAllows(side: LayoutSide, x, halfWidth, leftSplit, rightSplit: float):
+    bool =
+  ## Whether an inflated body centred at `x` with the given `halfWidth`
+  ## respects the `layout.side` band `enforceLayoutSides` established --
+  ## `leftSplit`/`rightSplit` default to `-Inf`/`Inf` when the corresponding
+  ## side is unused, so this is vacuously true on every sheet with no
+  ## override. `LayoutSide` is a real top-level import
+  ## (`netlist/layouthints`), not something `include`d, so this is callable
+  ## from every included unit regardless of splice order. Shared by
+  ## `repairTerminalClearance` and `recoverRouting`'s candidate-cell filters,
+  ## the two movers that run after `enforceLayoutSides` and could otherwise
+  ## undo its guarantee.
+  const eps = 1e-6
+  case side
+  of sideLeft: x + halfWidth <= leftSplit + eps
+  of sideRight: x - halfWidth >= rightSplit - eps
+  of sideAuto: x - halfWidth >= leftSplit - eps and x + halfWidth <= rightSplit + eps
+
 proc buildFreeGrid(obstacles: seq[Obstacle], terminals: openArray[Point]):
     tuple[nodes: seq[Point], adj: seq[seq[int]]] =
   ## The Hanan grid: every inflated-obstacle boundary and signal-terminal

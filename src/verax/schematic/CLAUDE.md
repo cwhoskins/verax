@@ -17,7 +17,7 @@ implements.
   otherwise; `designator` itself is a join key `finish`/`routing`/`placement`
   all key on and is **never** rewritten in place, and a multi-channel package
   is deliberately **not** a composite — a recognizer keys on `Pin.kind`
-  topology and `isTraversable` wants two connected pins with
+  topology and `isTwoTerminal` wants two connected pins with
   `subNetlist == nil`, which an op-amp sharing a die is not),
   `SchematicWire`s (per-net polylines, tagged signal/ground/supply),
   `SchematicJunction`s, `SchematicLabel`s (text plus `anchor`/`size`/`role`/
@@ -295,8 +295,9 @@ implements.
   `onThisSheet` (`composites/composite.nim`): a **global** net (`"0"`, any
   `global = true` rail) stays a single object whose `.netlist` is the root, so
   a bare `net.netlist == nl` test wrongly rejects this sheet's own
-  ground-connected two-terminal parts — `isTraversable` and `pathsFrom` accept
-  a net that is either owned by `nl` *or* the identical object `nl.nets` holds
+  ground-connected two-terminal parts — `isTwoTerminal` (and the widened
+  `isTraversable` built on it), plus `pathsFrom`'s own check, all accept a
+  net that is either owned by `nl` *or* the identical object `nl.nets` holds
   under that name, which a sibling's private net never is. Without it the pi
   section in `RIAA_CHANNEL` (`RL`–`CIN`–`RB`) is not recognized on the child
   sheet and its parts scatter.
@@ -378,23 +379,28 @@ implements.
     any member for which `isGroundHere`/`isRailHere` (a rail member declines
     the **whole** bundle). A non-box carrier blocks **collapse only**, not
     net-label degradation. A candidate whose members *uniformly* touch
-    exactly two endpoint entities (a component, or the sheet boundary —
+    two or more endpoint entities (a component, or the sheet boundary —
     `bePort`, one entity however many `nl.ports` keys) → **`brCollapsed`**:
-    one merged pin per end, one thick coloured wire. Otherwise, if the
-    candidate is **published or its members span 3+ component entities**
-    (`union.parts` counts components, never the sheet boundary) →
-    **`brNetLabel`**: grouped net-label tags, no wires — one merged tag per
-    box endpoint carrying `>= 2` members (`spi1`, or `spi1(cs0)` for a
-    coherent slice, `groupText`), a bare member tag on every other endpoint.
-    A `>= 3`-entity interface takes this branch directly and **no longer
-    retries per `bus.name`** (so it never gets a collapsed sub-bus); the
-    retry survives only for the `< 3`-entity, non-ported, non-uniform
-    leftover, where a wide sub-bus can still collapse point-to-point. A
+    one merged pin per entity, one thick coloured bus tree between them.
+    **There is no entity cap** — uniformity is the whole test, so a bus
+    fanning to any number of identically-touched boxes collapses rather than
+    degrading past three (`designs/xbar_rf.nim`'s `m` bus: uniform across all
+    eight `rf_switch` instances). Otherwise, if the candidate is **published
+    or its members span 3+ component entities** (`union.parts` counts
+    components, never the sheet boundary) → **`brNetLabel`**: grouped
+    net-label tags, no wires — one merged tag per box endpoint carrying
+    `>= 2` members (`spi1`, or `spi1(cs0)` for a coherent slice, `groupText`),
+    a bare member tag on every other endpoint. A `>= 3`-entity interface
+    takes this branch directly and **no longer retries per `bus.name`** (so
+    it never gets a collapsed sub-bus); the retry survives only for the
+    `< 3`-entity, non-ported, non-uniform leftover, where a narrower sub-bus
+    can still be uniform even though the whole interface was not. A
     remaining failure stays **`brScalar`**: ordinary wires, recoloured. The
     whole-bundle rail decline and the `< 2` floor still keep a genuinely
-    point-to-point bus free to collapse; `designs/i2c_eeprom.nim`'s sda/scl
-    now draw as grouped `i2c` tags (4 entities), and its readiness report is
-    unchanged because the `i2c` role reads the netlist, not the picture.
+    two-entity bus free to collapse; `designs/i2c_eeprom.nim`'s sda/scl
+    now draw as grouped `i2c` tags (4 entities, non-uniform), and its
+    readiness report is unchanged because the `i2c` role reads the netlist,
+    not the picture.
   * **The plan is a function of the netlist alone.** Which nets group, and
     how, depends only on `attrs`, `nl.ports` identity and the pin graph, none
     of which a `recoverRouting` candidate move touches — so recovery moves
@@ -516,21 +522,25 @@ implements.
     four of them and `rout[0..3]` on the other four, sharing no net at all,
     and now draw as two `x4` groups (input/output) instead of one
     nonsensical `x8`; the same fix also splits its `JIN*`/`JOUT*` SMA
-    connectors and its `RT_IN*`/`RT_OUT*` terminations, and splits its 24
-    address/enable pulldowns into an `en` `x8` and an `a` `x16`. Precedence
-    (`iface.instance` before `bus.name`) matches `bundles.nim`'s own: the
-    bare signal name is identical across every instance of a declared
-    interface, so keying on it first would fold every instance's
-    same-named signal into one family and undo `spi_memories`'s three-way
-    split. The same family name is what a *bundled* distributed pin draws
-    once collapsed (`ArrayPort.bundleFamily`, set at classification time
-    from the first bound member): the representative's own raw binding is
-    one specific member (`rin_0`), but the collapsed box stands for every
-    hidden member's binding on that bus, so `arrayPinFor` fills the pin's
-    `net` with the bus name ("rin") instead, and `routing.nim`'s net-label
-    pass (`arrayBundleLabelFor`) substitutes it for the one visible tag a
-    representative would otherwise draw under its own pre-collapse index —
-    every other, non-representative carrier keeps its own precise tag
+    connectors, and splits its 24 address/enable pulldowns into an `en` `x8`
+    and an `a` `x16`. Precedence (`iface.instance` before `bus.name`) matches
+    `bundles.nim`'s own: the bare signal name is identical across every
+    instance of a declared interface, so keying on it first would fold every
+    instance's same-named signal into one family and undo `spi_memories`'s
+    three-way split. The same family name is what a *bundled*, still
+    bundle-merged distributed pin draws once collapsed (`ArrayPort.bundleFamily`,
+    set at classification time from the first bound member) — `xbar_rf`'s
+    `a` bus, where the representative's own raw binding is one specific pair
+    (`a_0_0`/`a_0_1`) but the collapsed box stands for every hidden member's
+    binding on that bus, so `arrayPinFor` fills the pin's `net` with the bus
+    name ("a") instead, and `routing.nim`'s net-label pass
+    (`arrayBundleLabelFor`) substitutes it for the one visible tag a
+    representative would otherwise draw under its own pre-collapse index.
+    `rin`/`rout`/`en` never merge anywhere on their bundle, so they no longer
+    take this path at all — the array draws and routes them directly, under
+    the bundle's own tag reused verbatim (see the collapsed-array precedence
+    bullet above). Every other, non-representative carrier keeps its own
+    precise tag
     unchanged.
   * **`pmBusBar` on a glyph-drawing pin.** An `apCommon` port whose net is
     ground or a rail already draws its own terminal glyph there — the tick is
@@ -557,10 +567,48 @@ implements.
   * **Sub-grouping** splits an array by every *splitting* port (its nets
     partition the members into ≥2 groups of ≥2, none open) before
     classifying, so `spi_memories`'s nine memories draw as three `x3` boxes.
-  * **The `brCollapsed`-only decline**, and **bundle-wins-at-the-pin,
-    array-wins-at-the-box**: a `brNetLabel`/`brScalar` bundle keeps its own
-    drawing and that port reads `bundled`; only a `brCollapsed` bundle
-    (whose far end would vanish) vetoes the array.
+  * **The collapsed-bundle decline is a placeable-endpoint count, not a
+    blanket veto** (`survivesCollapsedBundles`): a `brCollapsed` bundle is a
+    bus tree between its endpoint entities, so a candidate group is declined
+    only when hiding its own non-representative members would leave that
+    bundle with **fewer than two** entities still placeable — evaluated per
+    sub-group against `plan.hidden` union the candidate's own hidden set, not
+    "any member touches some collapsed bundle" (the old rule, which would
+    have wrongly declined `xbar_rf`'s two `rf_switch x4` groups once `m`
+    collapses across all eight switches: each group hides only three of the
+    other seven, leaving five, then two, still on the bus). A `brNetLabel`/
+    `brScalar` bundle keeps its own drawing and that port reads `bundled`
+    regardless.
+  * **Bundle-wins-at-the-pin only where the bundle actually merges one**
+    (`ArrayPort.mergedByBundle`): a `brCollapsed` bundle, a `brNetLabel`
+    `LabelGroup` folding `>= 2` owned members onto one carrier (`xbar_rf`'s
+    `a` bus: `A0`+`A1` both land on one switch), or a bundle that merges a
+    pin *anywhere on it at all* (a mixed bundle — merged on one carrier, not
+    on another sharing the same members, has no single occupancy tag left
+    for a bus tree to reuse coherently, so every carrier defers). A `bundled`
+    port that is **never** merged anywhere on its bundle (one member per
+    carrier throughout — `xbar_rf`'s `rin`/`rout`/`en`) is drawn **and
+    routed** by the array instead: `classifyGroup` reuses the *bundle's own*
+    `Bundle.display` (never a freshly allocated tag) as `ArrayPort.display`,
+    so the array's real wire, the port pennant `bundles.byPort` already
+    folds, and — when the same bus is distributed across more than one array
+    (`rin`: a `connector x4` on one end, an `rf_switch x4` on the other) —
+    the *other* array's own route all agree on one wire under one name with
+    no cross-array coordination: whichever array's `plan.groupOf` write lands
+    last is the one `arrayRouteFor` honours, and every competing array's own
+    `display` is identical anyway. `routing.nim`'s net-label pass steps aside
+    per carrier it no longer owns (`arrayOwnsDistributedPin`, and — for a
+    carrier whose *own* representative is not itself an array member, e.g. a
+    merged far-side box — a direct `arrays.groupOf` check on that carrier's
+    own underlying net) and, once its triggering "first" member is
+    array-owned, falls through into the ordinary route below instead of
+    `continue`ing, so the same net iteration draws the array's real wire
+    rather than a competing net-label tag. This is what actually routes
+    `xbar_rf`'s `m`/`rin`/`rout` as real bus trees between its collapsed
+    arrays; `en` reaches the same code path but its own placement happens
+    not to route (the existing graceful "array bus that will not route"
+    fallback still applies, converting the attempt back to net-label tags
+    rather than a dashed failure).
   * **The escape-seed dedupe** is keyed on the **point**, not the part
     (unlike `seededBundle`): a distributed group's endpoints sit at
     *different* points on a foreign part (eight CS pins on an MCU), each
@@ -597,14 +645,29 @@ implements.
   it. `state.nim`'s `planComposites` excludes every bundled part *and* every
   collapsed array's representative from `compositePlan`'s arena before it
   ever recognizes a motif. The bundle case was free (a bundle carrier is
-  always a box, `isTraversable` wants `subNetlist == nil`, so it could never
+  always a box, `isTwoTerminal` wants `subNetlist == nil`, so it could never
   have been eligible); a **component** array's representative is not — it is
   a flat two-terminal part still fully visible, exactly what
   `parallelStackKind`/`seriesChainKind`/pi/tee look for — so without the
   exclusion a termination resistor badged `x8` could be claimed as a member
   of a composite it does not belong to, and that composite's internal fanout
   would run to a symbol standing for eight different physical resistors, not
-  one. `composite.nim` is kind-agnostic: `CompositePort`,
+  one. **`composite.nim` also splits `isTwoTerminal` from a widened
+  `isTraversable`**, for `netlist/traversal`'s `traverse:` block: every
+  `recognize` hook here (`parallel`/`pi`/`tee`/`series`) keeps calling
+  `isTwoTerminal` -- today's exactly-two-connected-pins test, verbatim --
+  because each assumes a *unique* other net via `twoTermOtherNet`, which a
+  declared multi-exit part (an 8-pin RF switch stating which `RFn` its
+  `RFC` reaches) would break, and `isPassiveElement` filters only sources,
+  not boxes, so nothing else would stop `pi`/`tee` from swallowing one.
+  `isTraversable` widens that to "`isTwoTerminal`, or a declared spec with
+  at least one conducting edge reachable from a net this sheet draws" and
+  has exactly one caller, `constrained.pathsFrom`'s own semantic walk, whose
+  single-exit hop (`twoTermOtherNet`) becomes a loop over
+  `traversalExits(c, nl, fromNet): seq[Net]` — declared edges from whichever
+  pin sits on `fromNet` when `c` states a spec, otherwise the same single
+  `twoTermOtherNet` answer wrapped in a one-element `seq`. `composite.nim` is
+  kind-agnostic: `CompositePort`,
   `PlaceableItem`, `CompositePlan` (the arena: `items`, the leaf/composite
   entries; `topLevel`, the arena indices placement actually sees, singletons
   and top-level composites interleaved in ascending first-raw-member order;
@@ -668,9 +731,11 @@ implements.
   idea 1, the complementary case — chained, not paralleled): flat two-terminal
   passive parts wired end to end through **link nets** become one horizontal
   row. A link net has exactly two pins in total, both on distinct *usable*
-  members (`isTraversable` **and** `isPassiveElement` **and** not a fallback
-  box — an MCU with two nets wired is traversable but has no place in a passive
-  row), and is neither ground, nor a rail, nor a declared `nl.ports` interface
+  members (`isTwoTerminal` **and** `isPassiveElement` **and** not a fallback
+  box — an MCU with two nets wired is two-terminal but has no place in a
+  passive row, and nor, now, would a declared multi-exit switch that the
+  widened `isTraversable` alone would also have passed), and is neither
+  ground, nor a rail, nor a declared `nl.ports` interface
   (a port must stay an external routable endpoint). Link nets give every usable
   part degree ≤ 2, so the link graph is paths and cycles; a cycle cannot be a
   horizontal row, so it is declined outright rather than cut at an arbitrary

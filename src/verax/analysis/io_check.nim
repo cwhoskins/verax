@@ -121,29 +121,38 @@ proc dcReachable(startNet: Net): tuple[reached: bool, ambiguous: seq[Component]]
           queue.add p.hierNet
         continue
 
-      # A component only matters here if it has some *other* connected pin
-      # on a genuinely different net -- otherwise it's a dead end for this
-      # walk (e.g. the very component whose input is being checked, once
-      # its other pins, if any, are exhausted) and must not be classified
-      # as an ambiguous blocker just for touching this net.
-      var otherNets: seq[Net]
-      for _, otherPin in comp.pins:
-        if otherPin != p and otherPin.net != nil and otherPin.net != net and
-           otherPin.net notin otherNets:
-          otherNets.add otherPin.net
-      if otherNets.len == 0: continue
+      # Per-pin, not per-component: `conductiveExits` answers "every net this
+      # walk can reach from `p` through `comp`", which for an undeclared
+      # two-terminal part is the single other pin it always was, and for a
+      # declared multi-throw switch is only the pins its own spec names as
+      # conducting -- an ADG904's RFC reaches whichever RFn is selected and
+      # nothing else, rather than every other RF pin at once. This also
+      # folds in the old "a dead end for this walk" guard for free: a
+      # component with no other *connected* pin at all yields no exits and
+      # no ambiguous pair either, with nothing further to check.
+      let exits = conductiveExits(comp, p)
+      for n in exits:
+        if n notin visited:
+          visited.add n
+          queue.add n
 
-      case classifyConductivity(comp)
-      of condConductive:
-        for n in otherNets:
-          if n notin visited:
-            visited.add n
-            queue.add n
-      of condBlocking:
-        discard
-      of condAmbiguous:
-        if comp notin ambiguous:
-          ambiguous.add comp
+      if exits.len == 0:
+        # Nothing was reached from `p` through `comp` -- either every other
+        # pin is genuinely blocked (an ordinary two-terminal part, or a
+        # declared spec that names other edges but not this pin), or the
+        # walk simply cannot tell (an unrecognized kind, or more than two
+        # connected pins with nothing declared). Only the second case is
+        # worth reporting: an undeclared IC is `ambiguous_dc_path` exactly
+        # as it was when this asked `classifyConductivity(comp)` once for
+        # the whole part, while a fully declared switch -- whose unlisted
+        # pairs answer `condBlocking`, never `condAmbiguous` -- is crossed
+        # where its spec says so and silently blocked everywhere else.
+        for _, otherPin in comp.pins:
+          if otherPin != p and otherPin.net != nil and otherPin.net != net and
+             conductivityBetween(comp, p, otherPin) == condAmbiguous:
+            if comp notin ambiguous:
+              ambiguous.add comp
+            break
 
     if net.netlist != nil and net.netlist.instanceOf != nil:
       for _, pp in net.netlist.instanceOf.pins:

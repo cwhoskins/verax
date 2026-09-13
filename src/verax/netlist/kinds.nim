@@ -15,6 +15,9 @@
 
 import std/[strutils, tables]
 import ./types
+import ./traversal
+
+export traversal
 
 type
   Conductivity* = enum
@@ -44,6 +47,66 @@ proc classifyConductivity*(c: Component): Conductivity =
   if c.kind in blockingKinds: condBlocking
   elif c.kind in conductiveKinds: condConductive
   else: condAmbiguous
+
+proc conductivityBetween*(c: Component, a, b: Pin): Conductivity =
+  ## `classifyConductivity` answers for the whole component; this answers
+  ## *per pin pair*, which is the question an N-pin part with a declared
+  ## `netlist/traversal` spec actually poses -- an ADG904 conducts RFC to
+  ## whichever RFn is selected and nothing between any other pair, and
+  ## `classifyConductivity` alone has no way to say that (it is never
+  ## widened to try: `kinds.isPassive` and `schematic/placement.portDrives`
+  ## both still ask its whole-component question, and widening it would
+  ## silently move both).
+  ##
+  ## The fallback ladder:
+  ##   1. `c` states a traversal spec (`statesTraversal`) -> that spec answers
+  ##      *exclusively*, nothing else is consulted. `tmNone` is `condBlocking`
+  ##      for every pair (the way to override the 2-pin default on, say, a
+  ##      resistor stated not to conduct); `tmAll` is `classifyConductivity(c)`
+  ##      for every pair (opt every pin pair into the kind-table answer); a
+  ##      pair matching a declared edge is `condConductive`/`condBlocking` by
+  ##      that edge's `conducts` flag; a pair matching *no* declared edge on a
+  ##      part that declared some is `condBlocking` -- a declaration is
+  ##      exhaustive, the entire point of writing one is to say what *does*
+  ##      connect, so an unlisted pair is not a gap to guess at.
+  ##   2. Nothing stated, and `c` has exactly two connected pins ->
+  ##      `classifyConductivity(c)`, today's answer, unchanged.
+  ##   3. Nothing stated, and `c` has more than two connected pins ->
+  ##      `condAmbiguous`, never guessed. No member of `conductiveKinds` has
+  ##      more than two terminals, so this is not a behavioural change for
+  ##      any undeclared part today -- it is the rule that was already true,
+  ##      made explicit for the N-pin case the old whole-component question
+  ##      never had to face.
+  if statesTraversal(c):
+    let spec = traversal(c)
+    case spec.mode
+    of tmNone: return condBlocking
+    of tmAll: return classifyConductivity(c)
+    of tmDefault: discard
+    for e in spec.edges:
+      if (e.a == a.name and e.b == b.name) or (e.a == b.name and e.b == a.name):
+        return (if e.conducts: condConductive else: condBlocking)
+    return condBlocking
+  var connected = 0
+  for _, p in c.pins:
+    if p.net != nil: inc connected
+  if connected == 2: classifyConductivity(c) else: condAmbiguous
+
+proc conductiveExits*(c: Component, fromPin: Pin): seq[Net] =
+  ## Every distinct net conduction reaches from `fromPin` through `c` -- each
+  ## other pin's net where `conductivityBetween(c, fromPin, pin)` is
+  ## `condConductive`. The walkers' entry point: `analysis/io_check.dcReachable`
+  ## and `contract/evaluators/static.dcConnected` both used to `case` on
+  ## `classifyConductivity(comp)` once per component and enqueue every *other*
+  ## connected net when it read conductive; this is the per-pin replacement
+  ## that lets an undeclared two-terminal part answer exactly as before (one
+  ## exit) while a declared multi-throw switch answers with only the nets its
+  ## spec actually names.
+  for _, p in c.pins:
+    if p == fromPin or p.net == nil or p.net == fromPin.net: continue
+    if conductivityBetween(c, fromPin, p) == condConductive and
+       p.net notin result:
+      result.add p.net
 
 const
   couplingKinds* = ["mutual_inductance"]

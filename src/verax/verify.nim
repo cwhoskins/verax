@@ -55,6 +55,8 @@ import ./netlist/environment
 import ./netlist/packages
 import ./netlist/interfaces
 import ./netlist/pinmux
+import ./netlist/layouthints
+import ./netlist/traversal
 import ./schematic
 import ./analysis/io_check
 import ./analysis/evaluators/contract_eval
@@ -251,6 +253,8 @@ proc readiness*(d: Design, allowed = allCapabilities): Readiness =
   for i in validatePackages(d.netlist): result.structural.add i
   for i in validateInterfaces(d.netlist): result.structural.add i
   for i in validatePinmux(d.netlist): result.structural.add i
+  for i in validateLayoutHints(d.netlist): result.structural.add i
+  for i in validateTraversal(d.netlist): result.structural.add i
 
   result.environment = environmentOf(d.netlist)
   result.hottest = describeHottest(d.netlist, result.environment)
