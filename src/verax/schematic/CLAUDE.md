@@ -62,7 +62,14 @@ implements.
   internal fanout to its one shared glyph, drawn like `wkSignal` (a plain
   line, no glyph bars) — see the rail-decisions paragraph in the `layout.nim`
   bullet below.
-- **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, `finish.nim`, `diagnostics.nim`, and (see below) `composites/composite.nim`, `composites/passive.nim` and `constrained.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary. The include order is load-bearing: `composites/composite` and `composites/passive` sit after `placement.nim` (they use `rotationChoices`/`slotOf`/`rotatedSlot`/`axisUnit`/`pinWorldPositions`) and before `constrained.nim` (which pools placement over the arena they define), and `state.nim`'s include must stay between `constrained.nim` (uses its procs) and `routing.nim` (defines `RoutingState`). `bundles.nim` (bus/interface grouping) is included after `./placement` and before `./composites/composite` — see its own bullet; `arrays.nim` (repeated-subsheet grouping) is included right after `./bundles` and reads its plan; the two rail predicates `isGroundHere`/`isRailHere` were hoisted to module level in `geometry.nim` (the first include) once `bundlePlan` became the third consumer, deleting the verbatim-duplicate local closures that had sat in `routing.nim` and `finish.nim`. The pipeline stage list gained `lsBundles` between `lsPrepare` and `lsSemanticSeed`, then `lsArrays` between `lsBundles` and `lsSemanticSeed` (both consumed inside `prepare`, `lsArrays` after `lsBundles`); off ⇒ a zero-value plan and the pre-feature scene, bit-for-bit. Private included `state.nim` holds `LayoutState`/`RoutingState`: component-symbol-position state and label-only routing metadata must never be added to public `Schematic`. `state.nim` also carries the placement-stage bodies (`prepare`, `forcePlace`, `snapToGrid`, `separate`) and the thin `*(state: var LayoutState)` forwarders, so `layout` itself is just the ordered stage list. `finish.nim` consumes the completed scene plus that state while preserving label order and bounds behavior. `LayoutOptions.policy` is a `LayoutPolicy` enum holding a single value, `lpConstrainedLayered`, kept as an enum rather than deleted so a future second policy has somewhere to land without every `options.policy == lpConstrainedLayered` call site changing shape; `defaultLayoutOptions` sets it, so it is both the only and the default policy for an ordinary `layout(nl)` call, not just for archive rendering. `parseLayoutPolicy` and `archiveLayoutOptions` centralize the CLI/environment spelling (`--schematic-layout`/`$VERAX_SCHEMATIC_LAYOUT`, only ever `constrained-layered`) used by archive writers — a no-op today, kept for the same future-second-policy reason. `lsSemanticSeed` (after the deterministic golden-angle seed), `lsConstrainedRefinement` (after force placement and before existing legalization) and `lsCompositeOrient` (right after refinement, before separation — picks each orientable composite's rigid `unitRot`, see the `composites/` bullet) carry the constrained pipeline's bounded deterministic meaning; it uses the existing bounded routing recovery as `lsRoutingAwareRepair`. It is for ordinary sheets (at most 64 *placement units*, and at most 256 raw parts), not a general graph-drawing solver: output-pin arcs seed left-to-right columns, while bounded deterministic stage placement folds each semantic layer across at most three adjacent columns (grouping parallel flat two-terminal parts by the same unordered net pair) rather than making a passive-heavy layer arbitrarily vertical; a same-component return has the adjacent-stage freedom on either side of its source, not an output-side-only rule. A bounded semantic walk follows every flat device with exactly two connected terminals (regardless of kind) until an input endpoint, stopping at rails, ground, hierarchy and inputs. It uses the existing `portDirection(net) == pdInput` result, including its no-driver fallback, for input interfaces. A traversal step is keyed on `(pool item, exit net)`, not the pool item alone: a recognized composite is one *placement unit* but its members are still distinct signal edges, so a pi's grounded shunt must not consume the pool position its series member needs to be walked through (the bug that put `RIAA_CHANNEL`'s `RL`–`CIN`–`RB` pi right of the op-amp it feeds). Both members of a parallel pair share both nets, so from either they yield the same `(pool, exit)` step and still collapse to one; `seen` stays raw so path length is bounded by the raw part count. A same-component return keeps its traversed parts in the source column; a genuine return to an earlier component keeps its path passives right of the driving output. Insertion order otherwise breaks feedback arcs, and existing legalization remains authoritative for non-overlap. Its signal trees are atomic trunk-and-tap attempts: a failed net restores occupancy and becomes marker-only fallbacks. Do not attach heuristics, reorder existing passes, or reinterpret terminal/recovery safeguards.
+  `SchematicDivider` (`y`, `x1`/`x2`, `label`) and `Schematic.dividers` are
+  the newest additive fields: the separated power/decoupling band's dashed
+  dividing rule (see the `power.nim` bullet below). Empty on every sheet with
+  no power-classified unit — the same zero-value guarantee `fallbacks`/
+  `ports` already carry — and it is not a `SchematicLabel`: the caption names
+  the *divider*, not a part or a net, so it never enters the first-fit label
+  pass `finish.nim` runs for everything else.
+- **`layout.nim`** — compatibility façade and pipeline coordinator for `layout(nl: Netlist): Schematic`, pure and deterministic. Its internal implementation is split across `geometry.nim`, `symbols.nim`, `placement.nim`, `router.nim`, `routing.nim`, `labels.nim`, `finish.nim`, `diagnostics.nim`, and (see below) `composites/composite.nim`, `composites/passive.nim`, `constrained.nim` and `power.nim`; these are included implementation units so private layout state stays internal while the established `layout` API remains the import boundary. The include order is load-bearing: `composites/composite` and `composites/passive` sit after `placement.nim` (they use `rotationChoices`/`slotOf`/`rotatedSlot`/`axisUnit`/`pinWorldPositions`) and before `constrained.nim` (which pools placement over the arena they define), `power.nim` sits after `constrained.nim` (its `poolPower` calls `unitExternallyPurePower`) and before `state.nim` (`state.prepare` builds the plan, `state.nim` also carries the actual `enforcePowerBand`/`placePowerUnit` mover pass, mirroring `overrides.nim`/`enforceLayoutSides` — the plain-data classification lives with the plan, the `LayoutState`-mutating enforcement lives where `LayoutState` exists), and `state.nim`'s include must stay between `constrained.nim` (uses its procs) and `routing.nim` (defines `RoutingState`). `bundles.nim` (bus/interface grouping) is included after `./placement` and before `./composites/composite` — see its own bullet; `arrays.nim` (repeated-subsheet grouping) is included right after `./bundles` and reads its plan; the two rail predicates `isGroundHere`/`isRailHere` were hoisted to module level in `geometry.nim` (the first include) once `bundlePlan` became the third consumer, deleting the verbatim-duplicate local closures that had sat in `routing.nim` and `finish.nim`. The pipeline stage list gained `lsBundles` between `lsPrepare` and `lsSemanticSeed`, then `lsArrays` between `lsBundles` and `lsSemanticSeed` (both consumed inside `prepare`, `lsArrays` after `lsBundles`); off ⇒ a zero-value plan and the pre-feature scene, bit-for-bit. It later gained `lsPowerBand` between `lsPack` and `lsLayoutOverrides` (see the `power.nim` bullet below) — a `layout.side` column is a left/right band inside whichever y-half a part already landed in, so the power band must settle first. Private included `state.nim` holds `LayoutState`/`RoutingState`: component-symbol-position state and label-only routing metadata must never be added to public `Schematic`. `state.nim` also carries the placement-stage bodies (`prepare`, `forcePlace`, `snapToGrid`, `separate`, `enforcePowerBand`) and the thin `*(state: var LayoutState)` forwarders, so `layout` itself is just the ordered stage list. `finish.nim` consumes the completed scene plus that state while preserving label order and bounds behavior, and now also emits the power band's dashed divider (`finishDividers`, run **after** `finishBounds` since its extent is derived from the finished scene bounds). `LayoutOptions.policy` is a `LayoutPolicy` enum holding a single value, `lpConstrainedLayered`, kept as an enum rather than deleted so a future second policy has somewhere to land without every `options.policy == lpConstrainedLayered` call site changing shape; `defaultLayoutOptions` sets it, so it is both the only and the default policy for an ordinary `layout(nl)` call, not just for archive rendering. `parseLayoutPolicy` and `archiveLayoutOptions` centralize the CLI/environment spelling (`--schematic-layout`/`$VERAX_SCHEMATIC_LAYOUT`, only ever `constrained-layered`) used by archive writers — a no-op today, kept for the same future-second-policy reason. `lsSemanticSeed` (after the deterministic golden-angle seed), `lsConstrainedRefinement` (after force placement and before existing legalization) and `lsCompositeOrient` (right after refinement, before separation — picks each orientable composite's rigid `unitRot`, see the `composites/` bullet) carry the constrained pipeline's bounded deterministic meaning; it uses the existing bounded routing recovery as `lsRoutingAwareRepair`. It is for ordinary sheets (at most 64 *placement units*, and at most 256 raw parts), not a general graph-drawing solver: output-pin arcs seed left-to-right columns, while bounded deterministic stage placement folds each semantic layer across at most three adjacent columns (grouping parallel flat two-terminal parts by the same unordered net pair) rather than making a passive-heavy layer arbitrarily vertical; a same-component return has the adjacent-stage freedom on either side of its source, not an output-side-only rule. A bounded semantic walk follows every flat device with exactly two connected terminals (regardless of kind) until an input endpoint, stopping at rails, ground, hierarchy and inputs. It uses the existing `portDirection(net) == pdInput` result, including its no-driver fallback, for input interfaces. A traversal step is keyed on `(pool item, exit net)`, not the pool item alone: a recognized composite is one *placement unit* but its members are still distinct signal edges, so a pi's grounded shunt must not consume the pool position its series member needs to be walked through (the bug that put `RIAA_CHANNEL`'s `RL`–`CIN`–`RB` pi right of the op-amp it feeds). Both members of a parallel pair share both nets, so from either they yield the same `(pool, exit)` step and still collapse to one; `seen` stays raw so path length is bounded by the raw part count. A same-component return keeps its traversed parts in the source column; a genuine return to an earlier component keeps its path passives right of the driving output. Insertion order otherwise breaks feedback arcs, and existing legalization remains authoritative for non-overlap. Its signal trees are atomic trunk-and-tap attempts: a failed net restores occupancy and becomes marker-only fallbacks. Do not attach heuristics, reorder existing passes, or reinterpret terminal/recovery safeguards.
   A placement unit is a raw singleton or a whole recognized composite
   (`constrainedEligible`, `constrained.nim`): the semantic layering
   (`constrainedTopology`/`constrainedTargets`) and the per-candidate route
@@ -479,16 +486,29 @@ implements.
     Both passes call the identical `classifyGroup`/`addSignatureArrays` body;
     what differs is candidacy and one extra veto for a component group (**the
     all-common decline**: a candidate must have at least one port classified
-    `apDistributed` or it is dropped — `xbar_rf`'s eight `CBY*` decoupling
-    caps are all `apCommon` on `(v3v3rf, gnd)`, a *bank*
-    `composites/passive.parallelStackKind` already draws better as eight
-    visible bodies, and without this rule the array would steal it). **Chain
+    `apDistributed`, or every port must be `apCommon` **and** `ArrayPort
+    .railCommon` — the **bypass-bank floor** below — or it is dropped).
+    `xbar_rf`'s eight `CBY*` decoupling caps are all `apCommon` **and**
+    `railCommon` on `(v3v3rf, gnd)`, which the bypass-bank floor now lets
+    through: a genuine rail/ground bank collapses to one badged symbol
+    instead of `composites/passive.parallelStackKind`'s eight visible
+    bodies. **A component group whose all-common ports are *not* a
+    rail/ground pair still declines** (a signal-net parallel bank keeps its
+    visible stack — the original reason for the decline). **The floor
+    itself is two-tier**: a subsheet array, or a component array with no
+    `apDistributed` port and no `railCommon` bank, still needs three or
+    more members (the historical floor — two same-signature parts wired
+    into *unrelated* roles, an ordinary divider's same-valued resistors,
+    must not silently merge just because their value matches); a component
+    array every one of whose ports is `apCommon` **and** `railCommon`
+    collapses at **two** — that is unambiguously one repeated thing wired
+    the identical way, never a coincidence. **Chain
     pairing is skipped for a non-box representative** (`symbolFor(rep).isBox`)
     — the recirculation arc is a fixed staple on the *box interior*, which a
     resistor symbol has none of, so a would-be chain degrades to
     *distributed* instead, the honest drawing. A **no-op pass** (no ≥3-instance
-    subsheet, or no ≥3-member raw-component signature) is the byte-identity
-    guarantee, same as before. `prepare` drops the N−1 non-representative
+    subsheet, no ≥3-member raw-component signature, and no ≥2-member
+    rail/ground bank) is the byte-identity guarantee, same as before. `prepare` drops the N−1 non-representative
     members of each collapsed array from `state.comps` **before `syms` is
     sized**; the filter is the sibling-clone shape
     (`pinPos.hasKey && partIdxByDesig.hasKey`, `ownsPin`) every layout site
@@ -562,7 +582,9 @@ implements.
     tick), *distributed* (N distinct nets → one `wkBus` wire, `[1:N]` tag),
     *chained* (`out(i) == in(i+1)`, linear and complete → a recirculation
     arc), *irregular* (a forked-cap glyph + `n·m` count, click-to-expand).
-    Rail/ground ports are out of the vote; `N < 3` never collapses; a
+    Rail/ground ports are out of the vote; `N < 3` never collapses, except
+    the bypass-bank floor above, which admits `N == 2` for a group every
+    port of which is `apCommon` and railed; a
     non-linear or branched chain degrades to *distributed*.
   * **Sub-grouping** splits an array by every *splitting* port (its nets
     partition the members into ≥2 groups of ≥2, none open) before
@@ -781,6 +803,62 @@ implements.
   above `compositeKinds` — `include` is a textual splice into one module, so
   these are ordinary forward declarations, resolved once each file's body is
   spliced in below.
+- **`power.nim`** — power/decoupling band classification: which placement
+  units belong in the separated power section `state.enforcePowerBand`
+  carves out below the signal circuit, and why. `include`d right after
+  `./constrained` (needs `unitExternallyPurePower`, `CompositePlan`/
+  `rawMembers`) and before `./state` — deliberately plain data throughout,
+  the `overrides.nim`/`enforceLayoutSides` split: this file holds only
+  `PowerClass` (`pcSignal`/`pcPower`), `PowerPlan` (`cls`, parallel to
+  `CompositePlan.items`; `any`, true only when the sheet has *both* a
+  signal- and a power-classified unit — an all-power or all-signal sheet
+  has nothing to separate, the zero-value guarantee every consumer is
+  gated on), `poolPower` and `powerPlan`; the actual `LayoutState`-mutating
+  mover (`enforcePowerBand`/`placePowerUnit`) lives in `state.nim`, where
+  `LayoutState` exists. Classification runs at the **placement-unit**
+  level, exactly `poolSide`'s shape: an authored `layout.power` override
+  (`netlist/layouthints`) wins first-wins across a unit's members; failing
+  that, `unitExternallyPurePower` (`constrained.nim`) classifies the whole
+  unit as power when every net linking it to the rest of the sheet is a
+  rail or ground — a decoupling bank, a bulk cap, a ferrite bead or
+  inductor between two rails, an LC/RC filter between planes, a
+  rail-to-rail divider. A unit with any external signal net stays in the
+  signal circuit unless overridden — an LDO with an enable or feedback pin
+  is exactly this case. `rawPowerFlags(power, plan, n)` projects `cls`
+  onto raw component indices — the plain-data escape hatch `arrays.nim`'s
+  `extraMembers` documents for `groupsOf` — since `geometry.nim`'s
+  `powerBandAllows` (beside `sideBandAllows`) and `placement
+  .repairTerminalClearance`'s new `isPower`/`powerSplit` parameters are
+  spliced in *before* this file even exists and so cannot reference
+  `PowerPlan`/`PowerClass` directly; `powerBandAllows` therefore takes a
+  bare `bool` rather than the enum, for the identical reason.
+  `state.prepare` builds `state.power` right after `planComposites` —
+  after composites exist, so a composite's members classify as one unit —
+  gated on `lsPowerBand`: disabling the stage leaves `state.power` at its
+  zero value regardless of what any component states, so a disabled stage
+  cannot change `groupsOf`'s `noMerge` behaviour either (`placement
+  .groupsOf` gained a `noMerge: seq[bool]` parameter, parallel to `comps`,
+  that suppresses its small-group-folds-into-nearest-power-rail-net-mate
+  merge for a root group every one of whose members is flagged — without
+  it, packing glues a power unit back onto the IC the band pass is about
+  to pull it away from). `state.enforcePowerBand` is `enforceLayoutSides`'
+  pattern turned through 90 degrees: partition `placementPool` into
+  signal/power units, shelf-pack the power units in a left-to-right band
+  strictly below the signal units' bounding box (`placePowerUnit`, a
+  `placeOverrideUnit` sibling — the same expanding-ring nearest-free-cell
+  search, seeded so the unit's own inflated top-left corner lands near the
+  shelf cursor, **rounded to the grid** before the ring search since the
+  cursor is rect-boundary arithmetic that need not itself land on a grid
+  step), and record the resulting `state.powerSplit` y boundary so
+  `repairTerminalClearance`/`recoverRouting` (both gained the identical
+  `isPower`/`powerSplit` band-holding parameters `layout.side`'s
+  `leftSplit`/`rightSplit` already have) cannot pull a part back above it.
+  Runs at stage `lsPowerBand`, between `lsPack` and `lsLayoutOverrides` —
+  before the side-column enforcement, since a `layout.side` band is carved
+  inside whichever y-half a part already landed in. `finish.finishDividers`
+  (run after `finishBounds`, since the divider's `x1`/`x2` span the
+  finished scene bounds) emits the `SchematicDivider` (see `scene.nim`'s
+  bullet) `svg.nim` draws as a dashed rule with a "POWER" caption.
 - **`svg.nim`** — `renderSvg`/`writeSvgFile`. Self-contained SVG: every colour
   a literal, every style inlined, a graph-paper grid, wires as polylines,
   junction circles, ground/power symbols (each bar drawn perpendicular to the
@@ -812,7 +890,11 @@ implements.
   so the router needs no per-net clearance; a per-net clearance is a separate
   change with its own invariant test, and going to stroke 6 (2 units of gap
   reads as touching) is the thing to resist without also raising
-  `wireMinSeparation`, which would move every existing layout. **Painter order** is grid, wires, fallback
+  `wireMinSeparation`, which would move every existing layout. `drawDivider`
+  draws the power/decoupling band's dashed rule (`#999999`, `12 8`
+  dasharray) plus its "POWER" caption, right after the grid and before any
+  wire — so a wire or symbol's white fill always paints over it, never the
+  reverse. **Painter order** is grid, dividers, wires, fallback
   stubs, junction dots, part symbols, ports, labels: dots sit on top of the
   wires they join
   but under any symbol fill, so a dot that lands at a part pin or port edge
@@ -865,7 +947,11 @@ implements.
   token like every other enum here. The writer emits `members` on
   wires/pins/ports and `kind`/`bundle` on fallbacks **only when non-default**,
   so a bus-free scene's JSON is byte-identical to a pre-feature archive and
-  both still round-trip.
+  both still round-trip. `dividers` follows the identical discipline: the
+  writer emits it **only when `Schematic.dividers` is non-empty**, and the
+  reader goes through `optArr` (an empty array when the key is absent), so a
+  pre-feature archive with no power-classified unit round-trips unchanged
+  and a divider-free scene's JSON is byte-identical to before the feature.
 - **`render.nim`** — the composition layer above `svg`/`json`: it drives
   `layout` over a whole design *and* its sub-circuits and writes the run
   archive. `writeScenePair(scene, base)` writes `base.svg` and `base.json`

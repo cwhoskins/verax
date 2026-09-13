@@ -200,6 +200,19 @@ proc layoutMirrorNode(valueNode: NimNode): NimNode =
   error("a layout `mirror` must be one of true, false, auto -- got '" &
         valueNode.strVal & "'", valueNode)
 
+proc layoutPowerNode(valueNode: NimNode): NimNode =
+  ## Maps the bare ident `true`/`false`/`auto` to the matching `LayoutPower`
+  ## enum symbol, at compile time -- `layoutMirrorNode`'s shape.
+  if valueNode.kind != nnkIdent:
+    error("a layout `power` must be one of true, false, auto", valueNode)
+  case valueNode.strVal
+  of "true": return ident"powerOn"
+  of "false": return ident"powerOff"
+  of "auto": return ident"powerAuto"
+  else: discard
+  error("a layout `power` must be one of true, false, auto -- got '" &
+        valueNode.strVal & "'", valueNode)
+
 proc handleLayout(entityVar: NimNode, stmt: NimNode): NimNode =
   ## `layout:` inside a `component` block -- the strict counterpart to the
   ## permissive statement-head fallback, exactly the split `handleSpec` makes
@@ -235,6 +248,10 @@ proc handleLayout(entityVar: NimNode, stmt: NimNode): NimNode =
       result.add call
     of "mirror":
       let call = newCall(ident"setLayoutMirror", entityVar, layoutMirrorNode(pair[1]))
+      call.copyLineInfo(pair)
+      result.add call
+    of "power":
+      let call = newCall(ident"setLayoutPower", entityVar, layoutPowerNode(pair[1]))
       call.copyLineInfo(pair)
       result.add call
     else:

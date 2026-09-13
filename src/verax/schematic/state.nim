@@ -89,6 +89,18 @@ type
       ## `recoverRouting` so neither can move a part back across it.
     rightSplit: float
       ## The mirror of `leftSplit` for the right band; `Inf` when unused.
+    power: PowerPlan
+      ## Power/decoupling band classification (see `power.nim`), a function
+      ## of the composite arena and the authored `layout.power` overrides
+      ## alone. Built in `prepare` right after `planComposites`, gated on
+      ## `lsPowerBand` -- disabling the stage leaves this at its zero value
+      ## (`any == false`) regardless of what any component states, exactly
+      ## `activeOverrides`' shape for `lsLayoutOverrides`.
+    powerSplit: float
+      ## The y boundary `enforcePowerBand` established for the power band:
+      ## `Inf` when no unit is power-classified, so `powerBandAllows` reads
+      ## as vacuously true. Read by `repairTerminalClearance` and
+      ## `recoverRouting` so neither can move a part back above it.
     portY: Table[string, float]
       ## Post-route interface-port y overrides, keyed by `SchematicPort.name`.
       ## Empty on the first route; `refinePortPlacement` (stage `lsPortRefine`)
@@ -138,7 +150,8 @@ proc groupsOf(state: LayoutState): seq[int] =
   var extra: Table[string, seq[string]]
   for netName, homes in state.arrays.extraPins:
     for home in homes: extra.mgetOrPut(netName, @[]).add home.desig
-  groupsOf(state.nl, state.comps, state.pos, state.idxOf, extra)
+  let noMerge = rawPowerFlags(state.power, state.composites, state.comps.len)
+  groupsOf(state.nl, state.comps, state.pos, state.idxOf, extra, noMerge)
 
 proc packGroups(state: var LayoutState, group: seq[int]) =
   packGroups(state.pos, state.ohw, state.ohh, group)
@@ -262,8 +275,10 @@ proc repairTerminalClearance(state: var LayoutState) =
   # fails the callee's `sides.len == comps.len` guard and skips the check
   # entirely, exactly like a sheet with no override at all.
   let ov = activeOverrides(state)
+  let isPower = rawPowerFlags(state.power, state.composites, state.comps.len)
   repairTerminalClearance(state.comps, state.syms, state.pos, state.rots,
-    state.ohw, state.ohh, locked, ov.side, state.leftSplit, state.rightSplit)
+    state.ohw, state.ohh, locked, ov.side, state.leftSplit, state.rightSplit,
+    isPower, state.powerSplit)
 
 # --- placement stages -----------------------------------------------------
 # The bodies below were the inline stretches of `layout`. Each mutates the
@@ -317,6 +332,7 @@ proc prepare(state: var LayoutState) =
   state.overrides = layoutOverridePlan(state.comps)
   state.leftSplit = NegInf
   state.rightSplit = Inf
+  state.powerSplit = Inf
 
   state.syms = newSeq[SymbolDef](n)
   for i, c in state.comps:
@@ -345,6 +361,16 @@ proc prepare(state: var LayoutState) =
   # of member offsets and external composite geometry for the whole pipeline.
   if state.options.policy == lpConstrainedLayered:
     planComposites(state)
+  # Power/decoupling band classification, right after the composite arena
+  # exists -- a composite is one placement unit, so classifying by raw
+  # component would let a bank's members disagree. Gated on `lsPowerBand`,
+  # not merely inert on an empty result: disabling the stage must leave
+  # `state.power` at its zero value regardless of what any component states,
+  # exactly `activeOverrides`' shape for `lsLayoutOverrides` -- otherwise a
+  # disabled stage would still change `groupsOf`'s `noMerge` behaviour.
+  if state.options.policy == lpConstrainedLayered and
+     state.options.stageEnabled(lsPowerBand):
+    state.power = powerPlan(state.comps, state.composites, activeOverrides(state))
 
   state.pos = newSeq[Point](n)
   for i in 0 ..< n:
@@ -729,3 +755,128 @@ proc enforceLayoutSides(state: var LayoutState) =
     for item in rightUnits:
       minLeftEdge = min(minLeftEdge, separationRects(state, poolMembers(state, item)[0])[0].x1)
     state.rightSplit = (freeMaxX + minLeftEdge) / 2.0
+
+proc placePowerUnit(state: var LayoutState, item: int, seedX, seedY, freeMaxY: float,
+                    placedRects: var seq[seq[Obstacle]]) =
+  ## Places one power-band pool unit: the same expanding-ring nearest-free-cell
+  ## search `separate`/`placeOverrideUnit` use, seeded so the unit's own
+  ## inflated top-left corner lands near `(seedX, seedY)`, with one added
+  ## rejection -- the unit's inflated top edge must stay at or below
+  ## `freeMaxY`, the y boundary `enforcePowerBand` is carving. A free proc,
+  ## not nested inside `enforcePowerBand`: a closure may not capture the
+  ## `var LayoutState` the search threads (`placeOverrideUnit`'s own reason).
+  let members = poolMembers(state, item)
+  let offsets = poolOffsets(state, item)
+  let origin = poolOrigin(state, members, offsets)
+  # Extents relative to origin are translation-invariant (member offsets are
+  # fixed), so the rect at the *current* position tells us how far the
+  # unit's top-left edge sits from its own origin.
+  let rect0 = separationRects(state, members[0])[0]
+  let relLeft = rect0.x1 - origin.x
+  let relTop = rect0.y1 - origin.y
+  # Rounded to the grid, `placeOverrideUnit`'s own discipline: `seedX`/`seedY`
+  # are shelf-cursor arithmetic over rect *boundaries*, which need not land on
+  # the grid even though every centre does -- only the ring search's own
+  # `grid`-stepped candidates keep that invariant.
+  let seedOriginX = round((seedX - relLeft) / grid) * grid
+  let seedOriginY = round((seedY - relTop) / grid) * grid
+  let maxR = max(64, 4 * state.comps.len)
+  var done = false
+  for r in 0 .. maxR:
+    for dy in -r .. r:
+      for dx in -r .. r:
+        if max(abs(dx), abs(dy)) != r: continue
+        let cand = Point(x: seedOriginX + float(dx) * grid,
+                         y: seedOriginY + float(dy) * grid)
+        if cand.y + relTop < freeMaxY: continue
+        for at, m in members: state.pos[m] = cand + offsets[at]
+        let here = separationRects(state, members[0])
+        var clear = true
+        for other in placedRects:
+          if anyOverlap(here, other):
+            clear = false
+            break
+        if clear:
+          placedRects.add here
+          done = true
+          break
+      if done: break
+    if done: break
+  doAssert done,
+    "schematic placement could not enforce layout.power for " &
+    state.comps[members[0]].designator
+
+proc enforcePowerBand(state: var LayoutState) =
+  ## The hard guarantee behind the separated power/decoupling band
+  ## (`power.PowerPlan`): once separation and packing have settled every
+  ## centre, translate every power-classified unit into a shelf-packed band
+  ## strictly below every signal-classified unit, and record the resulting
+  ## `state.powerSplit` y boundary; `repairTerminalClearance` and
+  ## `recoverRouting` read it afterward (via `powerBandAllows`) so neither
+  ## later mover can pull a part back above the line this pass draws.
+  ##
+  ## Reuses `separate`'s own machinery, `enforceLayoutSides`'s pattern turned
+  ## through 90 degrees: `placementPool`/`poolMembers`/`poolOffsets`/
+  ## `poolOrigin` for a rigid per-unit translation that preserves composite
+  ## member offsets exactly, `separationRects`/`anyOverlap` for the same
+  ## expanding-ring nearest-free-cell search, non-overlap always
+  ## authoritative -- with one added rejection (`placePowerUnit`): a power
+  ## unit's inflated body must land entirely below the signal region.
+  state.powerSplit = Inf
+  if not state.power.any: return
+
+  let pool = placementPool(state)
+  var signalUnits, powerUnits: seq[int]
+  var placedRects: seq[seq[Obstacle]]
+  var freeMinX = Inf
+  var freeMaxX = NegInf
+  var freeMaxY = NegInf
+  for item in pool:
+    if state.power.cls[item] == pcPower:
+      powerUnits.add item
+    else:
+      let rect = separationRects(state, poolMembers(state, item)[0])
+      placedRects.add rect
+      for r in rect:
+        freeMinX = min(freeMinX, r.x1)
+        freeMaxX = max(freeMaxX, r.x2)
+        freeMaxY = max(freeMaxY, r.y2)
+      signalUnits.add item
+
+  if signalUnits.len == 0 or powerUnits.len == 0 or freeMinX > freeMaxX:
+    return
+
+  # Deterministic order: current origin y ascending, then x, then first raw
+  # member -- computed once, before anything moves (`enforceLayoutSides`'s
+  # own reason for sorting a plain tuple rather than closing over `state`).
+  var keyed = newSeq[tuple[y, x: float, first, item: int]](powerUnits.len)
+  for i, item in powerUnits:
+    let members = poolMembers(state, item)
+    let o = poolOrigin(state, members, poolOffsets(state, item))
+    keyed[i] = (o.y, o.x, members[0], item)
+  keyed.sort()
+
+  # A left-to-right shelf across the signal region's own width, wrapping to a
+  # new row when a unit would overrun it -- the same `groupGap`-style gutter
+  # `packGroups` uses between blocks.
+  const bandGutter = 2.0 * grid
+  var cursorX = freeMinX
+  var rowY = freeMaxY + bandGutter
+  var rowHeight = 0.0
+  for k in keyed:
+    let members = poolMembers(state, k.item)
+    let rect0 = separationRects(state, members[0])[0]
+    let w = rect0.x2 - rect0.x1
+    let h = rect0.y2 - rect0.y1
+    if cursorX > freeMinX and cursorX + w > freeMaxX:
+      cursorX = freeMinX
+      rowY += rowHeight + bandGutter
+      rowHeight = 0.0
+    placePowerUnit(state, k.item, cursorX, rowY, freeMaxY, placedRects)
+    cursorX += w + bandGutter
+    rowHeight = max(rowHeight, h)
+
+  var minTopEdge = Inf
+  for item in powerUnits:
+    minTopEdge = min(minTopEdge, separationRects(state, poolMembers(state, item)[0])[0].y1)
+  state.powerSplit = (freeMaxY + minTopEdge) / 2.0

@@ -4079,10 +4079,11 @@ suite "component arrays":
       for pin in p.pins: check pin.mark == pmNone
 
   proc railBank(n: int): Netlist =
-    ## `n` decoupling caps across one rail pair -- every port `apCommon`, the
-    ## shape `composites/passive.parallelStackKind` already draws as a
-    ## visible stack. Without the all-common decline this would be stolen
-    ## and hidden behind an `xN` badge instead of N visible bodies.
+    ## `n` decoupling caps across one rail pair -- every port `apCommon` and
+    ## `railCommon`, the bypass-bank shape the all-common decline now *lets
+    ## through* (see the test below): a genuine rail/ground bank collapses
+    ## to one badged symbol rather than staying `composites/passive
+    ## .parallelStackKind`'s visible stack.
     result = newNetlist("rail_bank")
     let vdd = addNet(result, newNet("VDD", ntPower))
     let gnd = addNet(result, newNet("0", ntGround))
@@ -4095,18 +4096,54 @@ suite "component arrays":
       discard connect(c, "1", vdd, ptPassive)
       discard connect(c, "2", gnd, ptPassive)
 
-  test "the all-common decline keeps a decoupling bank a visible stack, not xN":
-    let nl = railBank(8)
-    check arrayReport(nl).len == 0     # both ports apCommon -> declined
+  proc signalBank(n: int): Netlist =
+    ## `n` identical resistors in parallel across one *signal* net pair --
+    ## every port `apCommon`, none of it a rail/ground pair. The all-common
+    ## decline still applies here: `composites/passive.parallelStackKind`
+    ## already draws this as a visible stack, and stealing it would hide the
+    ## count behind an `xN` badge instead.
+    result = newNetlist("signal_bank")
+    let a = addNet(result, newNet("a"))
+    let b = addNet(result, newNet("b"))
+    for i in 1 .. n:
+      let r = addComponent(result, newComponent("R" & $i, kind = "resistor"))
+      r.attrs["value"] = "1k"
+      discard connect(r, "1", a, ptPassive)
+      discard connect(r, "2", b, ptPassive)
+
+  test "a rail/ground bank collapses to one badged symbol, even at two members":
+    for n in [2, 8]:
+      let nl = railBank(n)
+      let rep = arrayReport(nl)
+      check rep.len == 1
+      check rep[0].origin == "component"
+      check rep[0].source == "capacitor"
+      check rep[0].count == n
+      check rep[0].ports == @["1=common", "2=common"]
+      let s = layout(nl)
+      check s.parts.len == 2             # V1 + one collapsed "C1..Cn" symbol
+      let c1 = partOf(s, "C1")
+      check c1.count == n
+      check c1.members == (block:
+        var m: seq[string]
+        for i in 1 .. n: m.add "C" & $i
+        m)
+
+  test "the all-common decline still keeps a signal-net bank a visible stack, not xN":
+    let nl = signalBank(8)
+    check arrayReport(nl).len == 0     # both ports apCommon, neither a rail
     let s = layout(nl)
-    check s.parts.len == 9             # V1 + eight visible caps, none hidden
+    check s.parts.len == 8             # all eight visible, none hidden
     for p in s.parts: check p.count == 0
-    # still one parallelStackKind composite: every cap lands on a shared y,
-    # evenly spaced along x, exactly as the 2-cap case already covered above
-    # ("a rail decoupling bank turns its caps upright, side by side").
-    var ys: HashSet[float]
-    for i in 1 .. 8: ys.incl partOf(s, "C" & $i).y
-    check ys.len == 1
+    # still one `parallelStackKind` composite: every resistor shares one
+    # coordinate on its canonical axis (x or y, whichever `lsCompositeOrient`
+    # settles the unit on -- unlike the rail case, nothing here forces a
+    # power-directed frame) and is evenly spaced on the other.
+    var xs, ys: HashSet[float]
+    for i in 1 .. 8:
+      xs.incl partOf(s, "R" & $i).x
+      ys.incl partOf(s, "R" & $i).y
+    check xs.len == 1 or ys.len == 1
 
   proc filterBank(n: int): Netlist =
     ## `n` independent RC low-pass channels, `in_i -[R_i]- mid_i -[C_i]- gnd`.

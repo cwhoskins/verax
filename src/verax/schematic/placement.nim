@@ -300,7 +300,8 @@ proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
                              pos: var seq[Point], rots: seq[float],
                              ohw, ohh: seq[float], locked: seq[bool] = @[],
                              sides: seq[LayoutSide] = @[],
-                             leftSplit = NegInf, rightSplit = Inf) =
+                             leftSplit = NegInf, rightSplit = Inf,
+                             isPower: seq[bool] = @[], powerSplit = Inf) =
   ## Deterministic, bounded post-placement repair. Exact distinct-net pin
   ## coincidences are reduced first as a hard condition; otherwise it keeps a
   ## grid move that strictly reduces full-glyph conflicts, preserving the
@@ -350,6 +351,9 @@ proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
             if sides.len == comps.len and
                not sideBandAllows(sides[i], x, ohw[i], leftSplit, rightSplit):
               continue
+            if isPower.len == comps.len and
+               not powerBandAllows(isPower[i], y, ohh[i], powerSplit):
+              continue
             var candidate = pos
             candidate[i] = Point(x: x, y: y)
             let next = terminalClearance(comps, syms, candidate, rots)
@@ -388,7 +392,8 @@ proc ufUnion(parent: var seq[int], a, b: int) =
 proc groupsOf(nl: Netlist, comps: seq[Component], pos: seq[Point],
               idxOf: Table[string, int],
               extraMembers: Table[string, seq[string]] =
-                initTable[string, seq[string]]()): seq[int] =
+                initTable[string, seq[string]](),
+              noMerge: seq[bool] = @[]): seq[int] =
   ## A group id per part. Parts joined by a *signal* net (ground and rails
   ## excluded -- neither is routed as a tree) are one group; then every group
   ## of at most `mergeMaxParts` parts is folded into the group holding its
@@ -396,6 +401,12 @@ proc groupsOf(nl: Netlist, comps: seq[Component], pos: seq[Point],
   ## stranded away from the IC it serves. Ids are renumbered by ascending
   ## lowest-member index. Fully deterministic: union-find over a fixed edge
   ## set, merge decisions taken against a snapshot of the pre-merge partition.
+  ##
+  ## `noMerge` (parallel to `comps`, the `extraMembers` plain-data-escape-
+  ## hatch discipline -- `schematic/power.rawPowerFlags`) suppresses this
+  ## fold for a root group every one of whose members is flagged: a
+  ## power-band unit must not be re-glued to the IC it was just pulled away
+  ## from. Default empty ⇒ today's behaviour, bit-for-bit.
   ##
   ## `extraMembers` is a plain-data escape hatch, not `ArrayPlan` itself --
   ## `arrays.nim` (which owns that type) is `include`d *after* this file (it
@@ -438,6 +449,11 @@ proc groupsOf(nl: Netlist, comps: seq[Component], pos: seq[Point],
   for root in 0 ..< n:
     if ufFind(parent, root) != root: continue
     if size[root] == 0 or size[root] > mergeMaxParts: continue
+    if noMerge.len == n:
+      var allNoMerge = true
+      for j in 0 ..< n:
+        if ufFind(parent, j) == root and not noMerge[j]: allNoMerge = false
+      if allNoMerge: continue
     var cx, cy = 0.0
     for j in 0 ..< n:
       if ufFind(parent, j) == root:

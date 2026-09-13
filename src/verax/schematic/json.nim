@@ -255,6 +255,20 @@ proc sceneToJson*(s: Schematic): JsonNode =
     fallbacks.add o
   result["fallbacks"] = fallbacks
 
+  # `dividers` is emitted only when non-empty -- the same "write when
+  # non-default" discipline the bus/array fields already follow -- so a
+  # power-free sheet's JSON stays byte-identical to a pre-feature archive.
+  if s.dividers.len > 0:
+    var dividers = newJArray()
+    for d in s.dividers:
+      var o = newJObject()
+      o["y"] = %d.y
+      o["x1"] = %d.x1
+      o["x2"] = %d.x2
+      if d.label.len > 0: o["label"] = %d.label
+      dividers.add o
+    result["dividers"] = dividers
+
 proc sceneToJson*(nl: Netlist): JsonNode =
   ## Convenience: lay out `nl` and serialize the scene.
   sceneToJson(layout(nl))
@@ -477,6 +491,16 @@ proc jsonToScene*(node: JsonNode): Schematic =
       f.ex = d.x
       f.ey = d.y
     result.fallbacks.add f
+
+  # `dividers` is additive -- `optArr` reads an empty array when absent, so a
+  # pre-feature archive with no `dividers` key still reads.
+  for dn in optArr(node, "dividers"):
+    if dn.kind != JObject: fail("scene JSON: divider must be an object")
+    result.dividers.add SchematicDivider(
+      y: reqFloat(dn, "y"),
+      x1: reqFloat(dn, "x1"),
+      x2: reqFloat(dn, "x2"),
+      label: optStr(dn, "label"))
 
 proc jsonToScene*(jsonString: string): Schematic =
   ## Reads a scene from its JSON text (the strict inverse of

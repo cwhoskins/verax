@@ -712,6 +712,42 @@ suite "layout: block":
     check not c.attrs.hasKey("layout.mirror")
     check layoutMirror(c) == mirrorAuto
 
+  test "layout: power = true/false writes and reads back through layoutPower":
+    let nl = netlist("powers"):
+      net gnd, kind = ntGround, name = "0"
+      net a, kind = ntSignal
+      component U1, kind = "mcu":
+        layout:
+          power = true
+        pin "1", a, kind = ptPassive
+      component U2, kind = "mcu":
+        layout:
+          power = false
+        pin "1", a, kind = ptPassive
+      component U3, kind = "mcu":
+        pin "1", a, kind = ptPassive
+    check nl.components["U1"].attrs["layout.power"] == "true"
+    check layoutPower(nl.components["U1"]) == powerOn
+    check nl.components["U2"].attrs["layout.power"] == "false"
+    check layoutPower(nl.components["U2"]) == powerOff
+    check not nl.components["U3"].attrs.hasKey("layout.power")
+    check layoutPower(nl.components["U3"]) == powerAuto
+
+  test "an unknown power value is a compile error":
+    check(not compiles(block:
+      discard netlist("bad"):
+        net gnd, kind = ntGround, name = "0"
+        component U1, kind = "mcu":
+          layout:
+            power = sideways))
+
+  test "power = auto clears any override":
+    let c = newComponent("U1", kind = "mcu")
+    setLayoutPower(c, powerOn)
+    setLayoutPower(c, powerAuto)
+    check not c.attrs.hasKey("layout.power")
+    check layoutPower(c) == powerAuto
+
 suite "traverse: block":
   test "one edge: \"A\" <-> \"B\" writes a single conducting path":
     let nl = netlist("t"):

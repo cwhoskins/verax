@@ -19,10 +19,13 @@
 ## in the open-ended `attrs` bag underneath, where a file reader or another
 ## tool may have written something this module does not yet parse.
 ##
-## Two hints exist today: `side` (`left`/`right`, forcing a component to the
-## schematic's leftmost or rightmost placement column) and `mirror`
+## Three hints exist today: `side` (`left`/`right`, forcing a component to the
+## schematic's leftmost or rightmost placement column), `mirror`
 ## (`true`/`false`, reflecting a box symbol about its own vertical centre
-## axis). `layoutHintKeys` is deliberately a `const seq` rather than inlined
+## axis), and `power` (`true`/`false`, forcing a component into, or out of,
+## the schematic's separated power/decoupling band regardless of what
+## `schematic.unitExternallyPurePower` would infer from its nets).
+## `layoutHintKeys` is deliberately a `const seq` rather than inlined
 ## into the DSL, so a future key (a pin-level placement, an absolute
 ## position) has one place to be added on both sides -- the parser here and
 ## the dispatcher there.
@@ -40,7 +43,8 @@ const
     ## Namespaced under `layout.` so a future `layout.rotation`/`layout.x`/
     ## `layout.y` reads as the same family.
   layoutMirrorKey* = "layout.mirror"
-  layoutHintKeys* = ["side", "mirror"]
+  layoutPowerKey* = "layout.power"
+  layoutHintKeys* = ["side", "mirror", "power"]
     ## Bare keys the DSL's `layout:` block accepts, spelled without the
     ## `layout.` prefix the way the block's own name already supplies it.
     ## This is the extension point for a future hint.
@@ -60,6 +64,14 @@ type
     ## same as `sideLeft`/`sideRight`; when nobody states either, `schematic`
     ## picks whichever reflection shortens wires.
     mirrorAuto, mirrorOn, mirrorOff
+
+  LayoutPower* = enum
+    ## `powerAuto` is both the zero value and "no override stated" --
+    ## `sideAuto`'s shape again. `powerOn`/`powerOff` state a hard guarantee:
+    ## the component is placed in (or kept out of) the separated
+    ## power/decoupling band regardless of what `schematic`'s own
+    ## `unitExternallyPurePower` inference would conclude from its nets.
+    powerAuto, powerOn, powerOff
 
 proc parseLayoutSide*(s: string): tuple[ok: bool, side: LayoutSide] =
   ## The one place that maps a stored string to `LayoutSide`. Shared by the
@@ -131,6 +143,41 @@ proc layoutMirror*(c: Component): LayoutMirror =
   let (ok, mirror) = parseLayoutMirror(c.attrs[layoutMirrorKey])
   if ok: mirror else: mirrorAuto
 
+proc parseLayoutPower*(s: string): tuple[ok: bool, power: LayoutPower] =
+  ## The one place that maps a stored string to `LayoutPower`. Shared by the
+  ## accessor below and by `validateLayoutHints`, the `parseLayoutSide`/
+  ## `parseLayoutMirror` discipline.
+  case s
+  of "true": (true, powerOn)
+  of "false": (true, powerOff)
+  of "auto": (true, powerAuto)
+  else: (false, powerAuto)
+
+proc `$`*(power: LayoutPower): string =
+  case power
+  of powerAuto: "auto"
+  of powerOn: "true"
+  of powerOff: "false"
+
+proc setLayoutPower*(c: Component, power: LayoutPower) =
+  ## States (or clears) `c`'s power-band override. `powerAuto` removes the
+  ## key rather than writing `"auto"` -- `setLayoutSide`/`setLayoutMirror`'s
+  ## one-way-to-mean-nothing-stated rule.
+  if power == powerAuto:
+    c.attrs.del(layoutPowerKey)
+  else:
+    c.attrs[layoutPowerKey] = $power
+
+proc layoutPower*(c: Component): LayoutPower =
+  ## Whether `c` is forced into (or out of) the schematic's separated
+  ## power/decoupling band. Pure and total like `layoutSide`/`layoutMirror`:
+  ## absent or unparseable both read as `powerAuto` rather than raising --
+  ## `validateLayoutHints` is where an unparseable value is actually
+  ## reported.
+  if not c.attrs.hasKey(layoutPowerKey): return powerAuto
+  let (ok, power) = parseLayoutPower(c.attrs[layoutPowerKey])
+  if ok: power else: powerAuto
+
 const
   KindLayoutHintUnparseable* = "layout_hint_unparseable"
 
@@ -156,6 +203,14 @@ proc validateLayoutHints*(nl: Netlist, recursive = true): seq[Issue] =
         result.add newIssue(KindLayoutHintUnparseable, sevWarning,
           c.designator & " states " & layoutMirrorKey & " = \"" &
           c.attrs[layoutMirrorKey] & "\", which is not true/false/auto and " &
+          "will be read as no override at all.",
+          components = @[c])
+    if c.attrs.hasKey(layoutPowerKey):
+      let (ok, _) = parseLayoutPower(c.attrs[layoutPowerKey])
+      if not ok:
+        result.add newIssue(KindLayoutHintUnparseable, sevWarning,
+          c.designator & " states " & layoutPowerKey & " = \"" &
+          c.attrs[layoutPowerKey] & "\", which is not true/false/auto and " &
           "will be read as no override at all.",
           components = @[c])
   if recursive:

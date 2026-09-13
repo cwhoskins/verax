@@ -160,3 +160,58 @@ test "a SPICE round trip loses layout.mirror, exactly like layout.side":
   let back = readNetlist(newStringStream(text), "t")
   for _, c in back.components:
     check not c.attrs.hasKey(layoutMirrorKey)
+
+test "parseLayoutPower accepts exactly true/false/auto":
+  check parseLayoutPower("true") == (true, powerOn)
+  check parseLayoutPower("false") == (true, powerOff)
+  check parseLayoutPower("auto") == (true, powerAuto)
+  check parseLayoutPower("TRUE") == (false, powerAuto)
+  check parseLayoutPower("") == (false, powerAuto)
+
+test "setLayoutPower/layoutPower round-trip, and powerAuto clears the key":
+  let nl = board()
+  let c = nl.components["R1"]
+  check layoutPower(c) == powerAuto
+  check not c.attrs.hasKey(layoutPowerKey)
+
+  setLayoutPower(c, powerOn)
+  check c.attrs[layoutPowerKey] == "true"
+  check layoutPower(c) == powerOn
+
+  setLayoutPower(c, powerOff)
+  check c.attrs[layoutPowerKey] == "false"
+  check layoutPower(c) == powerOff
+
+  setLayoutPower(c, powerAuto)
+  check not c.attrs.hasKey(layoutPowerKey)
+  check layoutPower(c) == powerAuto
+
+test "an unparseable stored power value reads back as powerAuto, not an error":
+  let nl = board()
+  nl.components["R1"].attrs[layoutPowerKey] = "yes"
+  check layoutPower(nl.components["R1"]) == powerAuto
+
+test "validateLayoutHints reports an unparseable power value, naming the component":
+  let nl = board()
+  nl.components["R1"].attrs[layoutPowerKey] = "yes"
+  let issues = validateLayoutHints(nl)
+  check issues.len == 1
+  check issues[0].kind == KindLayoutHintUnparseable
+  check issues[0].severity == sevWarning
+  check issues[0].components == @[nl.components["R1"]]
+
+test "layout.power survives clone":
+  let nl = board()
+  setLayoutPower(nl.components["R1"], powerOn)
+  var globals: OrderedTable[string, Net]
+  let cloned = clone(nl, globals)
+  check layoutPower(cloned.components["R1"]) == powerOn
+
+test "a SPICE round trip loses layout.power, exactly like layout.side":
+  let nl = board()
+  setLayoutPower(nl.components["R1"], powerOn)
+  let text = render(nl)
+  check "layout" notin text
+  let back = readNetlist(newStringStream(text), "t")
+  for _, c in back.components:
+    check not c.attrs.hasKey(layoutPowerKey)

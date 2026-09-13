@@ -820,6 +820,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                     ov = LayoutOverridePlan(),
                     sides: seq[LayoutSide] = @[],
                     leftSplit = NegInf, rightSplit = Inf,
+                    isPower: seq[bool] = @[], powerSplit = Inf,
                     mirrors: seq[bool] = @[]): RoutingState =
   ## The placement-routing feedback loop. When `routeScene` cannot route a
   ## signal net it tries deterministic single-part moves and keeps any move
@@ -908,6 +909,9 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
               if sides.len == comps.len and
                  not sideBandAllows(sides[i], nx, rawW[i], leftSplit, rightSplit):
                 clear = false
+              if isPower.len == comps.len and
+                 not powerBandAllows(isPower[i], ny, rawH[i], powerSplit):
+                clear = false
               for j in allParts:
                 if inUnit[j]: continue
                 if abs(nx - bestPos[j].x) < rawW[i] + rawW[j] - 1e-9 and
@@ -961,8 +965,10 @@ proc recoverRouting(state: LayoutState): RoutingState =
   # and a non-empty `sides` against those would reject every candidate for an
   # overridden part instead of the intended no-op.
   let ov = activeOverrides(state)
+  let isPower = rawPowerFlags(state.power, state.composites, state.comps.len)
   recoverRouting(state.nl, state.comps, state.syms, state.pos, state.rots,
     state.idxOf, state.options, state.composites, state.bundles, state.arrays,
     portY = state.portY, ov = ov, sides = ov.side, leftSplit = state.leftSplit,
-    rightSplit = state.rightSplit, mirrors = state.mirrors)
+    rightSplit = state.rightSplit, isPower = isPower, powerSplit = state.powerSplit,
+    mirrors = state.mirrors)
 

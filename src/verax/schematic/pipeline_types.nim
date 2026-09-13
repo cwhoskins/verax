@@ -9,7 +9,7 @@ type
   StageId* = enum
     lsPrepare, lsBundles, lsArrays, lsPartArrays, lsSemanticSeed, lsForcePlacement,
     lsConstrainedRefinement, lsCompositeOrient, lsSeparate, lsPack,
-    lsLayoutOverrides, lsOrient, lsMirror,
+    lsPowerBand, lsLayoutOverrides, lsOrient, lsMirror,
     lsTerminalRepair, lsPrepareRouting, lsRoute, lsRecoverRouting,
     lsRoutingAwareRepair, lsPortRefine, lsLabels, lsBounds
 
@@ -62,6 +62,18 @@ const canonicalStages*: array[StageId, StageSpec] = [
   StageSpec(id: lsCompositeOrient, enabled: true),
   StageSpec(id: lsSeparate, enabled: true),
   StageSpec(id: lsPack, enabled: true),
+  # A hard post-placement guarantee for the separated power/decoupling band
+  # (`schematic/power`): once separation/packing settle every centre,
+  # translate each power-classified unit into a shelf-packed band strictly
+  # below every signal-classified unit and record the resulting
+  # `powerSplit` y boundary, so `lsTerminalRepair` and
+  # `lsRecoverRouting`/`lsRoutingAwareRepair` cannot undo it. Runs *before*
+  # `lsLayoutOverrides` -- an `layout.side` column is a left/right band
+  # inside whichever y-half a part already landed in, not the other way
+  # round. Off, or no unit on the sheet is externally pure-power -> the
+  # pre-feature scene, bit-for-bit (`PowerPlan.any` stays false and every
+  # consumer is inert).
+  StageSpec(id: lsPowerBand, enabled: true),
   # A hard post-placement guarantee for `layout.side` overrides
   # (`netlist/layouthints`): after separation/packing settle every centre,
   # translate each overridden unit rigidly into its own dedicated column,

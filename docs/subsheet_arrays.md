@@ -66,6 +66,16 @@ boxes*, so N−1 components stop being drawn.
 7. **Guards:** rail/ground ports are excluded from the classification vote;
    `N < 3` never collapses; a chain must be linear and complete (every member,
    no branch at any link net, no cycle) or the port degrades to *distributed*.
+   **The bypass-bank floor** is the one exception: a raw-component group every
+   port of which is `common` *and* the shared net is a rail/ground pair (two
+   or more decoupling/bulk capacitors on one supply/ground pair) collapses at
+   `N == 2` — unambiguously one repeated thing wired the identical way, unlike
+   a coincidence of two same-valued parts wired into unrelated roles (an
+   ordinary divider's `R1`/`R2`), which keeps the three-member floor. Every
+   other all-common group (no distributed port, not a rail/ground pair)
+   still declines outright — see the all-common decline below — so
+   `composites/passive.parallelStackKind` keeps drawing an ordinary signal-net
+   parallel bank as a visible stack.
 8. **Declining** an array means "a member carries a `brCollapsed` bundle that
    this candidate's own hidden members would leave with fewer than two
    placeable endpoint entities" (`survivesCollapsedBundles`) — a bus tree
@@ -200,15 +210,21 @@ Fixed decisions specific to this pass:
    those), `isPackaged(c)` (a multi-section package already claims
    `SchematicPart.label` for `"U10A"`, and the two labels would fight), and
    any member in a `brCollapsed` bundle (unchanged from the subsheet pass).
-3. **The all-common decline.** A candidate group must have at least one port
-   classified `apDistributed` or it is dropped. `xbar_rf`'s eight `CBY*` caps
-   are all on `(v3v3rf, gnd)` — both ports `apCommon` — which is a *bank*, not
-   parallel channels, and `composites/passive.parallelStackKind` already draws
-   a bank better as a visible stack of eight; without this rule the array
-   would steal it and hide the count behind an `xN` badge instead of N
-   visible bodies. (A port classified `apDistributed` can never itself be a
-   rail — the classifier routes a rail-differing port to `apIrregular`
-   first — so no separate rail carve-out is needed here.)
+3. **The all-common decline, and the bypass-bank floor.** A candidate group
+   must have at least one port classified `apDistributed`, *or* every port
+   must be `apCommon` **and** the shared net a rail/ground pair
+   (`ArrayPort.railCommon`), or it is dropped. `xbar_rf`'s eight `CBY*` caps
+   are all on `(v3v3rf, gnd)` — both ports `apCommon` **and** railed — which
+   is exactly the second clause: a genuine decoupling/bulk-cap bank, and
+   nothing else can satisfy it, so it is the one all-common shape allowed to
+   collapse (at two members or more, not three — see guard 7 above). An
+   all-common group on an *ordinary signal net* still declines:
+   `composites/passive.parallelStackKind` already draws that shape better as
+   a visible stack, and stealing it would hide the count behind an `xN`
+   badge instead of N visible bodies. (A port classified `apDistributed` can
+   never itself be a rail — the classifier routes a rail-differing port to
+   `apIrregular` first — so the first clause alone reads simply as "not
+   every port is common".)
 4. **Chain pairing is skipped for a non-box representative.** The
    recirculation arc is a fixed staple drawn on the *box interior*; a
    resistor symbol has no interior to draw one on. A series ladder of raw

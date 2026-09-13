@@ -27,6 +27,7 @@ include ./composites/pi
 include ./composites/tee
 include ./overrides
 include ./constrained
+include ./power
 include ./state
 include ./routing
 include ./finish
@@ -83,6 +84,17 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
 
   if options.policy == lpConstrainedLayered:
     restoreCompositeOffsets(ctx)
+
+  # The hard guarantee behind the separated power/decoupling band: translate
+  # every power-classified unit into a shelf-packed band strictly below every
+  # signal-classified unit now that separation and packing have settled every
+  # centre, and record the resulting `powerSplit` band boundary so
+  # `repairTerminalClearance`/`recoverRouting` below cannot undo it. A no-op
+  # scene, bit-for-bit, when no unit is power-classified or the stage is off.
+  # Runs before `lsLayoutOverrides`: a `layout.side` column is a left/right
+  # band inside whichever y-half a part already landed in.
+  if options.stageEnabled(lsPowerBand):
+    enforcePowerBand(ctx)
 
   # The hard guarantee behind a `layout.side` override: translate each
   # overridden unit into its own dedicated column now that separation and
@@ -150,5 +162,6 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   result.fallbacks = ctx.routing.fallbacks
   finishLabels(ctx, result)
   finishBounds(result, ctx.options.stageEnabled(lsBounds))
+  finishDividers(ctx, result)
 
 include ./diagnostics

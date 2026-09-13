@@ -21,6 +21,18 @@
 ## component sharing kind/value/pins) and one extra decline for a component
 ## group (`the all-common decline`, below).
 ##
+## **The collapse floor is three members, with one deliberately narrow
+## exception at two**: a raw-component group every one of whose ports
+## genuinely shares both nets across every member -- a true parallel bank --
+## *and* those shared nets are a rail/ground pair collapses at two (the
+## bypass-bank floor, in `addSignatureArrays`). Two same-signature parts
+## wired any other way (in series, or in parallel on an ordinary signal net)
+## keep the three-member floor: two same-valued resistors that merely happen
+## to sit in unrelated roles of one circuit (a divider's `R1`/`R2`) must not
+## silently merge into one box just because their `value` matches -- only a
+## group that is unambiguously *one repeated thing wired the same way*
+## qualifies below three.
+##
 ## The plan is a pure function of the netlist and the bundle plan. It reads
 ## `Component.subNetlist` identity, `Component.kind`/`value`/`partNumber`/
 ## `name`, pin structure, and the instance pins' parent nets (`Pin.net`); it
@@ -58,17 +70,23 @@
 ## star, none of them stating a value or a part number because none of them
 ## are testing this feature) turned out to do.
 ##
-## **The all-common decline** keeps a decoupling bank out of this feature: a
-## candidate component group must have at least one port classified
-## `apDistributed` or it is dropped. `xbar_rf`'s eight `CBY*` caps are all on
-## `(v3v3rf, gnd)` -- both ports `apCommon` -- which is a *bank*, not parallel
-## channels, and `composites/passive.parallelStackKind` already draws a bank
-## better as a visible stack of eight; without this rule the array would steal
-## it and hide the count behind an `xN` badge instead of N visible bodies.
-## (A port classified `apDistributed` can never itself be a rail -- the
-## classifier routes a rail-differing port to `apIrregular` first -- so this
-## reads simply as "not every port is common", no separate rail carve-out
-## needed.)
+## **The all-common decline** keeps a component group whose ports are all
+## `apCommon` out of this feature *unless* the shared nets are all rail/
+## ground -- a candidate group must have at least one port classified
+## `apDistributed`, or every port must be `apCommon` **and** `railCommon`
+## (`ArrayPort.railCommon`), or it is dropped. The second clause is
+## deliberately narrow: it is exactly a bypass bank -- two or more identical
+## decoupling/bulk capacitors sharing one rail/ground pair -- and nothing
+## else, so `xbar_rf`'s eight `CBY*` caps on `(v3v3rf, gnd)` now collapse to
+## one badged symbol the same way a repeated resistor bank does. A component
+## group with no distributed port and *not* a pure rail/ground bank (an
+## all-common group sharing an ordinary signal net, however that would
+## arise) still declines: `composites/passive.parallelStackKind` already
+## draws that shape, and stealing it would hide the count behind an `xN`
+## badge instead of the composite's own visible members. (A port classified
+## `apDistributed` can never itself be a rail -- the classifier routes a
+## rail-differing port to `apIrregular` first -- so the first clause reads
+## simply as "not every port is common", no separate rail carve-out needed.)
 ##
 ## **Chain pairing is skipped for a non-box representative.** The
 ## recirculation arc is a fixed staple drawn on the *box interior*
@@ -114,7 +132,7 @@
 type
   ArrayOrigin = enum
     aoSubsheet     ## a subcircuit instantiated three or more times
-    aoComponent    ## a raw (non-hierarchical) component repeated three or
+    aoComponent    ## a raw (non-hierarchical) component repeated two or
                    ## more times, sharing kind/value/partNumber/name/pins
 
   ArrayPortClass = enum
@@ -676,12 +694,14 @@ proc addSignatureArrays(ctx: var ArrayBuildCtx, nl: Netlist,
                         binding: seq[seq[Net]], rep0: Component,
                         origin: ArrayOrigin, allowChain: bool) =
   ## Sub-groups one candidate signature's members, classifies each sub-group
-  ## of >= 3, and registers every one that survives the collapsed-bundle
-  ## decline (`survivesCollapsedBundles`) and, for a component group only,
-  ## the all-common decline (a subsheet array has no such veto, since a
-  ## repeated subcircuit is a design decision, not an inferred visual motif).
+  ## of >= 3 (or, for a component group whose members genuinely share *both*
+  ## nets -- a true parallel bank, see the bypass-bank floor below -- >= 2),
+  ## and registers every one that survives the collapsed-bundle decline
+  ## (`survivesCollapsedBundles`) and, for a component group only, the
+  ## all-common decline (a subsheet array has no such veto, since a repeated
+  ## subcircuit is a design decision, not an inferred visual motif).
   for gi, g in subGroupsOf(members.len, portNames, binding):
-    if g.len < 3: continue
+    if g.len < 2: continue
     var hidden: seq[string]
     for i in 1 ..< g.len: hidden.add members[g[i]]
     if not survivesCollapsedBundles(bundles, plan.hidden, hidden): continue
@@ -689,9 +709,27 @@ proc addSignatureArrays(ctx: var ArrayBuildCtx, nl: Netlist,
                             bundles, rep0, origin, allowChain)
     if origin == aoComponent:
       var anyDistributed = false
+      var allCommonRail = sub.ports.len > 0
       for ap in sub.ports:
         if ap.cls == apDistributed: anyDistributed = true
-      if not anyDistributed: continue
+        if ap.cls != apCommon or not ap.railCommon: allCommonRail = false
+      # The bypass-bank floor: a group every one of whose ports is `apCommon`
+      # *and* `railCommon` genuinely shares both nets across every member --
+      # a decoupling/bulk-cap bank on one rail/ground pair, and nothing else
+      # can be, since two members merely wired the *same way* to *different*
+      # nets (an ordinary divider's same-valued resistors, wired in series
+      # rather than in parallel) read as `apDistributed`/`apIrregular`
+      # instead. That is exactly the bundling this feature is now asked to
+      # draw, so it alone is allowed at two members. The all-common decline
+      # (below) still applies to any other all-common group -- a component
+      # with no distributed port that is *not* a pure bypass bank -- and the
+      # general case (an `apDistributed` port, `xbar_rf`'s eight-channel
+      # filter bank) keeps its historical three-member floor: a coincidence
+      # of two same-valued parts wired into unrelated roles (two resistors of
+      # a divider) must not silently merge into one box.
+      if allCommonRail: discard
+      elif g.len < 3 or not anyDistributed: continue
+    elif g.len < 3: continue
     registerArray(nl, plan, sub)
 
 proc finalizeArrayPlan(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan) =
@@ -844,7 +882,7 @@ proc buildComponentArrays(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan)
 
   for sig in sigOrder:
     let members = sigMembers[sig]
-    if members.len < 3: continue
+    if members.len < 2: continue
     block signatureBody:
       let rep0 = nl.components[members[0]]
       var portNames: seq[string]
@@ -1008,8 +1046,12 @@ proc arrayReport*(nl: Netlist): seq[tuple[source, label, rep: string,
                                     origin: string]] =
   ## Every collapsed array -- subsheet or component -- so "does `sclk_out`
   ## chain?" or "does the termination bank collapse?" is a one-line unit test
-  ## instead of an inference from geometry. A netlist with fewer than three
-  ## instances of any one subsheet or qualifying raw component yields an
+  ## instead of an inference from geometry. A subsheet, or a raw component
+  ## group with no port that genuinely shares both nets across every member,
+  ## needs three or more instances; a raw component group that does share
+  ## both nets on every port -- and those nets are a rail/ground pair, a
+  ## bypass bank -- needs only two (see the bypass-bank floor in
+  ## `addSignatureArrays`). Fewer than that, for either shape, yields an
   ## empty report. Builds the bundle plan itself, so the report is exactly
   ## what `prepare` computes with both `lsArrays` and `lsPartArrays` on (the
   ## default). `source` is the subckt name for a subsheet array or the

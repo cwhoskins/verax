@@ -469,6 +469,18 @@ proc drawChainArc(wire: SchematicWire): seq[string] =
     let my = (wire.points[bi].y + wire.points[bi + 1].y) / 2.0
     result.add textAt(mx, my - 4.0, "x" & $wire.members.len, "middle", 11)
 
+proc drawDivider(d: SchematicDivider): seq[string] =
+  ## The separated power/decoupling band's dashed dividing rule plus its
+  ## caption. Drawn right after the grid and before any wire, so a wire or
+  ## symbol's white fill always paints over it rather than the reverse.
+  result.add "<line x1=\"" & num(d.x1) & "\" y1=\"" & num(d.y) &
+    "\" x2=\"" & num(d.x2) & "\" y2=\"" & num(d.y) &
+    "\" stroke=\"#999999\" stroke-width=\"1.5\" stroke-dasharray=\"12 8\"/>"
+  if d.label.len > 0:
+    result.add "<text x=\"" & num(d.x1 + 6.0) & "\" y=\"" & num(d.y - 6.0) &
+      "\" font-family=\"monospace\" font-size=\"12\" fill=\"#999999\">" &
+      xmlEscape(d.label) & "</text>"
+
 proc renderSvg*(s: Schematic): string =
   ## The whole scene as one self-contained SVG document.
   let w = s.maxX - s.minX
@@ -483,6 +495,8 @@ proc renderSvg*(s: Schematic): string =
   L.add "  <rect x=\"" & num(s.minX) & "\" y=\"" & num(s.minY) &
          "\" width=\"" & num(w) & "\" height=\"" & num(h) & "\" fill=\"#ffffff\"/>"
   for g in drawGrid(s.minX, s.minY, s.maxX, s.maxY): L.add "  " & g
+  for d in s.dividers:
+    for e in drawDivider(d): L.add "  " & e
 
   for wire in s.wires:
     # The glyph at a ground/supply stub is drawn perpendicular to the stub, so

@@ -292,3 +292,19 @@ proc finishBounds(scene: var Schematic, enabled: bool) =
   if not enabled:
     scene.minX = 0.0; scene.minY = 0.0
     scene.maxX = 0.0; scene.maxY = 0.0
+
+proc finishDividers(state: LayoutState, scene: var Schematic) =
+  ## Emits the separated power/decoupling band's dashed rule, spanning the
+  ## finished scene's own bounds -- so it must run **after** `finishBounds`,
+  ## and must not itself feed back into that pass (`svg`/`json` draw/emit it
+  ## independently of `scene.wires`/`scene.parts`). A no-op, `scene.dividers`
+  ## left empty, when `enforcePowerBand` never established a band
+  ## (`state.powerSplit == Inf`) -- the zero-value guarantee every consumer
+  ## of the divider is gated on.
+  if state.powerSplit == Inf: return
+  const pad = 20.0
+  scene.dividers.add SchematicDivider(
+    y: state.powerSplit,
+    x1: scene.minX + pad,
+    x2: scene.maxX - pad,
+    label: "POWER")

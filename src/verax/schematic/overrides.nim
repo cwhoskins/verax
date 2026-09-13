@@ -34,10 +34,18 @@ type
       ## False when no component states a mirror -- `chooseMirrors`'s own
       ## zero-value guarantee, independent of `any` since a sheet may state
       ## one hint family and not the other.
+    power: seq[LayoutPower]
+      ## Parallel to `state.comps`. `powerAuto` for every component nobody
+      ## annotated -- `power.poolPower` is the only consumer.
+    anyPower: bool
+      ## False when no component states a power override -- `poolPower`'s
+      ## own zero-value guarantee, independent of `any`/`anyMirror` since a
+      ## sheet may state any one hint family and not the others.
 
 proc layoutOverridePlan(comps: seq[Component]): LayoutOverridePlan =
   result.side = newSeq[LayoutSide](comps.len)
   result.mirror = newSeq[LayoutMirror](comps.len)
+  result.power = newSeq[LayoutPower](comps.len)
   for i, c in comps:
     let s = layoutSide(c)
     result.side[i] = s
@@ -45,6 +53,9 @@ proc layoutOverridePlan(comps: seq[Component]): LayoutOverridePlan =
     let m = layoutMirror(c)
     result.mirror[i] = m
     if m != mirrorAuto: result.anyMirror = true
+    let p = layoutPower(c)
+    result.power[i] = p
+    if p != powerAuto: result.anyPower = true
 
 proc poolSide(plan: CompositePlan, ov: LayoutOverridePlan, item: int): LayoutSide =
   ## The side a placement-pool unit is forced to. `item` is an arena index
@@ -59,6 +70,37 @@ proc poolSide(plan: CompositePlan, ov: LayoutOverridePlan, item: int): LayoutSid
     if ov.side[i] != sideAuto: return ov.side[i]
   sideAuto
 
+proc reportPoolOverride[T](result: var seq[string], comps: seq[Component],
+                          plan: CompositePlan, values: seq[T], auto: T,
+                          render: proc (v: T): string {.noSideEffect.}) =
+  ## Shared by the `side` and `power` sections of `layoutOverrideReport`:
+  ## both hints resolve per placement unit with the identical deterministic
+  ## first-wins rule (`poolSide`/`poolPower`), so both are reported the
+  ## identical way -- the pool-level winner alone, plus every disagreeing
+  ## member named against it.
+  for idx in plan.topLevel:
+    let members = rawMembers(plan, idx)
+    if members.len == 1:
+      let i = members[0]
+      if values[i] != auto:
+        result.add comps[i].designator & "=" & render(values[i])
+      continue
+    var winner = -1
+    var conflict = false
+    for i in members:
+      if values[i] != auto:
+        if winner < 0: winner = i
+        elif values[winner] != values[i]: conflict = true
+    if winner < 0: continue
+    for i in members:
+      if values[i] == auto: continue
+      if i == winner:
+        result.add comps[i].designator & "=" & render(values[i])
+      elif conflict:
+        result.add comps[i].designator & "=" & render(values[i]) &
+          "(conflict: composite uses " & comps[winner].designator & "=" &
+          render(values[winner]) & ")"
+
 proc layoutOverrideReport*(nl: Netlist): seq[string] =
   ## Every stated `layout.side`, as `"U1=left"` -- and, for a composite whose
   ## members disagree, `"C5=right(conflict: composite uses R5=left)"` naming
@@ -68,7 +110,11 @@ proc layoutOverrideReport*(nl: Netlist): seq[string] =
   ## unconditional per component, since `chooseMirrors` (unlike `poolSide`)
   ## never resolves a composite's disagreeing members, it simply does not
   ## apply a mirror to any component belonging to a multi-member placement
-  ## unit. Empty for a netlist with no `layout.side`/`layout.mirror` attr at
+  ## unit. Every stated `layout.power` follows last, as `"C1=power"`/
+  ## `"C1=no-power"` -- resolved the identical pool-level first-wins way as
+  ## `side` (`poolPower` mirrors `poolSide` exactly), since a power override
+  ## is also a per-*unit* guarantee, not a per-component one. Empty for a
+  ## netlist with no `layout.side`/`layout.mirror`/`layout.power` attr at
   ## all.
   ##
   ## Rebuilds the composite arena directly from `nl`, the same
@@ -79,39 +125,25 @@ proc layoutOverrideReport*(nl: Netlist): seq[string] =
   var comps: seq[Component]
   for _, c in nl.components: comps.add c
   let ov = layoutOverridePlan(comps)
-  if not ov.any and not ov.anyMirror: return
+  if not ov.any and not ov.anyMirror and not ov.anyPower: return
 
   for i, c in comps:
     if ov.mirror[i] != mirrorAuto:
       result.add c.designator & "=" & (if ov.mirror[i] == mirrorOn: "mirror"
                                         else: "no-mirror")
 
-  if not ov.any: return
+  if not ov.any and not ov.anyPower: return
 
   var syms = newSeq[SymbolDef](comps.len)
   for i, c in comps: syms[i] = symbolFor(c)
   let bundles = bundlePlan(nl)
   let plan = compositePlan(comps, syms, bundles.bundled)
 
-  for idx in plan.topLevel:
-    let members = rawMembers(plan, idx)
-    if members.len == 1:
-      let i = members[0]
-      if ov.side[i] != sideAuto:
-        result.add comps[i].designator & "=" & $ov.side[i]
-      continue
-    var winner = -1
-    var conflict = false
-    for i in members:
-      if ov.side[i] != sideAuto:
-        if winner < 0: winner = i
-        elif ov.side[winner] != ov.side[i]: conflict = true
-    if winner < 0: continue
-    for i in members:
-      if ov.side[i] == sideAuto: continue
-      if i == winner:
-        result.add comps[i].designator & "=" & $ov.side[i]
-      elif conflict:
-        result.add comps[i].designator & "=" & $ov.side[i] &
-          "(conflict: composite uses " & comps[winner].designator & "=" &
-          $ov.side[winner] & ")"
+  proc renderSide(v: LayoutSide): string = $v
+  if ov.any:
+    reportPoolOverride(result, comps, plan, ov.side, sideAuto, renderSide)
+
+  proc renderPower(v: LayoutPower): string =
+    if v == powerOn: "power" else: "no-power"
+  if ov.anyPower:
+    reportPoolOverride(result, comps, plan, ov.power, powerAuto, renderPower)

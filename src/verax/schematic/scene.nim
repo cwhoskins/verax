@@ -247,6 +247,22 @@ type
       ## The dashed stub polyline from the pin outward; empty for a
       ## zero-space fallback.
 
+  SchematicDivider* = object
+    ## The separated power/decoupling band's dashed dividing rule (see
+    ## `schematic/power`/`state.enforcePowerBand`). Additive to
+    ## `sceneSchemaVersion` 1: absent (`Schematic.dividers` empty) on every
+    ## sheet with no power-classified unit, exactly as `fallbacks`/`ports`
+    ## were on the netlist this scene type first shipped for.
+    y*: float
+      ## The dividing rule's y, in world units -- everything at or below it
+      ## is the power/decoupling section.
+    x1*, x2*: float
+      ## The rule's horizontal extent, derived from the finished scene bounds.
+    label*: string
+      ## Caption drawn at the rule's left end ("POWER"); "" draws the rule
+      ## alone. Not a `SchematicLabel` -- it names the *divider*, not a part
+      ## or a net, and is never subject to the first-fit label pass.
+
   Schematic* = object
     ## The renderable view of one netlist level: placed parts, per-net wires,
     ## junction dots, net labels and interface ports, plus the world-space
@@ -258,6 +274,10 @@ type
     labels*: seq[SchematicLabel]
     ports*: seq[SchematicPort]
     fallbacks*: seq[SchematicFallback]
+    dividers*: seq[SchematicDivider]
+      ## The separated power/decoupling band's dashed rule(s). Empty on
+      ## every sheet with no power-classified unit -- the zero-value
+      ## guarantee `state.enforcePowerBand` gives.
     minX*, minY*, maxX*, maxY*: float
 
 proc `+`*(a, b: Point): Point {.inline.} = Point(x: a.x + b.x, y: a.y + b.y)

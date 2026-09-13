@@ -481,6 +481,24 @@ proc sideBandAllows(side: LayoutSide, x, halfWidth, leftSplit, rightSplit: float
   of sideRight: x - halfWidth >= rightSplit - eps
   of sideAuto: x - halfWidth >= leftSplit - eps and x + halfWidth <= rightSplit + eps
 
+proc powerBandAllows(isPower: bool, y, halfHeight, powerSplit: float): bool =
+  ## Whether an inflated body centred at `y` with the given `halfHeight`
+  ## respects the power/decoupling band `enforcePowerBand` (`state.nim`)
+  ## established -- `powerSplit` defaults to `Inf` when no band is active, so
+  ## this is vacuously true for a signal unit on every sheet with no power
+  ## section (a power-classified unit is never checked at all in that case:
+  ## every caller gates on a non-empty `isPower` array, `sideBandAllows`'s own
+  ## `sides.len == comps.len` shape). Takes a bare `bool` rather than
+  ## `schematic/power.PowerClass` deliberately: this proc is spliced in
+  ## `geometry.nim`, well before `power.nim` defines that type, and a plain
+  ## boolean is the same escape hatch `arrays.nim`'s `extraMembers` documents
+  ## for `groupsOf`. Shared by `repairTerminalClearance` and
+  ## `recoverRouting`'s candidate-cell filters, the two movers that run after
+  ## `enforcePowerBand` and could otherwise undo its guarantee.
+  const eps = 1e-6
+  if isPower: y - halfHeight >= powerSplit - eps
+  else: y + halfHeight <= powerSplit + eps
+
 proc buildFreeGrid(obstacles: seq[Obstacle], terminals: openArray[Point]):
     tuple[nodes: seq[Point], adj: seq[seq[int]]] =
   ## The Hanan grid: every inflated-obstacle boundary and signal-terminal
