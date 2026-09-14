@@ -609,7 +609,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
             break
         if got:
           pins.add (pt: mpt, partIdx: partIdxByDesig[desig],
-                    esc: Point(x: 0.0, y: 0.0), pinName: b.pinName)
+                    esc: Point(x: 0.0, y: 0.0), pinName: pinNameFor(b, desig))
       if b.ported:
         for pc in portConn.getOrDefault(b.display):
           pins.add (pt: pc.at, partIdx: 0, esc: pc.inward, pinName: "")
@@ -722,7 +722,9 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       # A non-ported collapsed bundle has no port pennant to read its name, so
       # request one `lrNet` label at the merged pin.
       let b = bundles.bundles[bi]
-      result.bundleLabelReqs.add (text: b.pinName, at: pins[0].pt,
+      result.bundleLabelReqs.add (
+        text: pinNameFor(b, result.parts[pins[0].partIdx].designator),
+        at: pins[0].pt,
         esc: escapeDir(result.parts[pins[0].partIdx], pins[0].pt))
     if constrained and not coll and not arrGroup:
       # Append fanout only after the external tree succeeds, preserving the

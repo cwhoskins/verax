@@ -631,7 +631,21 @@ proc classifyGroup(ctx: var ArrayBuildCtx, nl: Netlist, sig: string, gi: int,
         if bi >= 0: sub.ports[pi].display = bundles.bundles[bi].display
       if sub.ports[pi].display.len == 0:
         sub.ports[pi].display = uniqueDisplay(ctx, nl, sub.ports[pi].name)
-      sub.ports[pi].tag = sub.ports[pi].name & "[1:" & $g.len & "]"
+      # A `bundled` port's drawn tag is the one visible label this pin ever
+      # gets -- the true net-name pass skips every net in `arrayNets`
+      # (`finish.nim`), so a bare pin name here is not merely cosmetically
+      # redundant with `display`, it is the ONLY text a reader sees. Two
+      # bundles that happen to share a pin name on their originating
+      # component (`xbar_rf`'s `rin`/`rout`: both SMA connectors call their
+      # pin "RF") would otherwise draw the identical tag "RF[1:4]" on both
+      # boxes despite being electrically distinct buses. Use the bundle's own
+      # resolved `display` (already disambiguated against `nl.nets`, see
+      # above) instead of the coincidental pin name whenever one is bound;
+      # an unbundled distributed port (no declared bus/interface) keeps the
+      # historical pin-name tag, e.g. `chainSheet`'s "tap[1:4]".
+      let tagName = if sub.ports[pi].bundled: sub.ports[pi].display
+                    else: sub.ports[pi].name
+      sub.ports[pi].tag = tagName & "[1:" & $g.len & "]"
     of apChained:
       if sub.ports[pi].isOut:
         sub.ports[pi].dir = pdOutput

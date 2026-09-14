@@ -63,16 +63,23 @@ type
     key: string              ## "iface:spi" / "bus:spi1_cs" -- index identity
     display: string          ## the scene net identity ("spi"), guaranteed
                              ## distinct from every `nl.nets` key
-    pinName: string          ## the drawn merged pin name: "en[7:0]" / "spi[3]"
+    pinName: string          ## the net-based fallback text: "en[7:0]" /
+                             ## "spi[3]". The *drawn* merged pin name is
+                             ## `pinNameFor(b, desig)` -- a per-designator,
+                             ## pin-name-based answer -- which falls back to
+                             ## this field only when that designator's own
+                             ## pin names don't compress into a family.
     portText: string         ## the drawn merged *port* pennant text, over
                              ## only the published (`portNames`) members --
-                             ## "" when nothing is published. Distinct from
-                             ## `pinName` because a `brNetLabel` bundle can
-                             ## publish a strict subset of its members (a
-                             ## bus wired one member per box, some of the
-                             ## eight boxes' pins not on the sheet boundary
-                             ## at all); `pinName` still names every member
-                             ## for the box-pin/label-group side.
+                             ## "" when nothing is published. A port pennant
+                             ## is legitimately net-based (it says what
+                             ## leaves the sheet), unlike a merged pin.
+                             ## Distinct from `pinName` because a `brNetLabel`
+                             ## bundle can publish a strict subset of its
+                             ## members (a bus wired one member per box, some
+                             ## of the eight boxes' pins not on the sheet
+                             ## boundary at all); `pinName` still names every
+                             ## member for the box-pin/label-group side.
     tag: BundleTag
     role: BundleRole
     dir: PortDirection       ## the folded member direction
@@ -124,6 +131,11 @@ proc wireKindFor(plan: BundlePlan, netName: string): WireKind {.inline.} =
   if not plan.ofNet.hasKey(netName): return wkSignal
   if plan.ofNet[netName] == btInterface: wkInterface else: wkBus
 
+proc pinNameFor(b: Bundle, desig: string): string
+  ## Forward-declared: the body (below `busIndexRangeText`) needs it, but
+  ## `laneOf` -- called from `routing.nim`, spliced in after this file --
+  ## must already see the signature.
+
 proc laneOf(plan: BundlePlan, bi: int, desig: string):
     tuple[name: string, members: seq[BundleMember]] =
   ## The one source of a merged lane's drawn string and member list, so
@@ -131,12 +143,13 @@ proc laneOf(plan: BundlePlan, bi: int, desig: string):
   ## `SchematicPin`) never disagree -- `boxSlots` sizing `innerW` for
   ## `spi1(cs0)` while `svg` prints `spi1[5]` is the bug this prevents. A
   ## linear scan: `labelGroups.len` is the entity count, no table to keep in
-  ## sync. Collapsed bundles are returned unchanged.
+  ## sync. A collapsed bundle's name comes from `pinNameFor`, `desig`-specific
+  ## (see there); its members are the whole bundle's, unchanged.
   let b = plan.bundles[bi]
   if b.role == brNetLabel:
     for lg in b.labelGroups:
       if lg.desig == desig and lg.merged: return (lg.text, lg.members)
-  (b.pinName, b.sceneMembers)
+  (pinNameFor(b, desig), b.sceneMembers)
 
 proc bundleGroupsFor(plan: BundlePlan, c: Component):
     tuple[groupOf, groupSide: seq[int], groupNames: seq[string]] =
@@ -253,9 +266,12 @@ proc dimsRangeText(display: string, dims: seq[int]): string =
   for d in dims: result &= "[" & $(d - 1) & ":0]"
 
 proc busPortText(display: string, tag: BundleTag, members: seq[Net]): string =
-  ## The drawn text for a merged pin or port over `members` (either every
-  ## bundle member, for the box-pin `pinName`, or only the sheet-published
-  ## subset, for the port pennant `portText`). An interface keeps the
+  ## The drawn text for a merged *port* pennant (`portText`, over the
+  ## sheet-published subset) -- what leaves the sheet, so it is correctly
+  ## about the net/bus identity. Also `pinNameFor`'s fallback when a
+  ## designator's own pin names don't compress into a family (see there):
+  ## a merged *pin*'s primary text is about the component, not the bus, but
+  ## a bus/net-shaped answer beats no answer at all. An interface keeps the
   ## existing count form (`spi[3]`) -- its members are heterogeneous named
   ## signals with no index axis to range over. A bus renders a `bus.index`
   ## range instead of a bare count, and a bus whose members carry a uniform
@@ -282,6 +298,52 @@ proc busPortText(display: string, tag: BundleTag, members: seq[Net]): string =
     except ValueError: discard
   indices.sort()
   busIndexRangeText(display, indices)
+
+proc splitPinFamily(name: string): tuple[prefix: string, idx: int, ok: bool] =
+  ## Splits a trailing run of digits off a declared pin name: `"RF1"` ->
+  ## `("RF", 1, true)`; `"GND"`, or an all-digit name, -> `("", 0, false)` --
+  ## no letter-prefixed trailing index, so the caller falls back rather than
+  ## treating a bare unindexed name as part of a family.
+  var i = name.len
+  while i > 0 and name[i - 1] in {'0' .. '9'}: dec i
+  if i == name.len or i == 0: return ("", 0, false)
+  (name[0 ..< i], parseInt(name[i .. ^1]), true)
+
+proc pinNameFor(b: Bundle, desig: string): string =
+  ## The merged pin's drawn text on `desig`'s own box. `busPortText` above
+  ## conflates two different questions -- what a merged *port* pennant
+  ## publishes (a net/bus identity, correctly) and what a merged *pin* sits
+  ## on top of (the component's own pins, which the net's name says nothing
+  ## about) -- and answered both from the bus side. `xbar_rf`'s `m` bus is
+  ## the case that shows it: `RF1..RF4` are four distinct declared ADG904
+  ## pins, wired identically across every switch, so the bundle collapses
+  ## them to one pin per box -- and the box's own pins are what a reader
+  ## standing at the schematic wants named there, not the midplane net
+  ## they happen to share (`m[3:0]`), which is *already* drawn as that pin's
+  ## `net` field and the wire's own label.
+  ##
+  ## Builds the text from `desig`'s own bound pin names (`b.memberPins`,
+  ## already in member -- so bus-index -- order): a bare name for one pin,
+  ## a `busIndexRangeText` range (`"RF[4:1]"`) when every name shares one
+  ## alphabetic prefix and a distinct trailing index, and `b.pinName` --
+  ## the old net-based text -- otherwise: an interface's heterogeneous named
+  ## signals (`sclk`/`mosi`/`miso`), or any bus whose bound pins carry no
+  ## common prefix/index shape.
+  var names: seq[string]
+  for mp in b.memberPins:
+    if mp.desig == desig: names.add mp.pin
+  if names.len == 0: return b.pinName
+  if names.len == 1: return names[0]
+  if b.tag == btInterface: return b.pinName
+  let (p0, i0, ok0) = splitPinFamily(names[0])
+  if not ok0: return b.pinName
+  var indices = @[i0]
+  for k in 1 ..< names.len:
+    let (p, idx, ok) = splitPinFamily(names[k])
+    if not ok or p != p0: return b.pinName
+    indices.add idx
+  indices.sort()
+  busIndexRangeText(p0, indices)
 
 proc groupText(b: Bundle, owned, allMembers: seq[Net]): string =
   ## The tag on a merged net-label pin. `owned` is this component's member
