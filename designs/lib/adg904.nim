@@ -16,10 +16,18 @@
 ## What it does not: insertion loss and isolation vs frequency (flat `Roff`,
 ## no transmission lines), charge injection, and break-before-make timing.
 ## See the cannot-check list in `designs/xbar_switch.nim`.
+##
+## `equipAdg904` also stamps the `traverse:` edges (`RFC <-> RF1..4`) that
+## used to be authored inline at every instantiation site
+## (`designs/xbar_rf.nim`) -- both callers already run every ADG904
+## designator through this proc, so it is the one place that answers "can a
+## graph walk pass through this part" for all of them, rather than a
+## statement repeated per instance that could drift.
 
 import std/tables
 
 import verax/netlist/graph
+import verax/netlist/traversal
 import verax/netlist/types
 
 proc equipAdg904*(nl: Netlist, designators: openArray[string]) =
@@ -37,3 +45,5 @@ proc equipAdg904*(nl: Netlist, designators: openArray[string]) =
     c.attrs["roff"] = "1e9"
     c.attrs["switch.select_pins"] = "A1,A0"
     c.attrs["switch.off_termination"] = "50"   # absorptive
+    for rf in ["RF1", "RF2", "RF3", "RF4"]:
+      addTraversalEdge(c, "RFC", rf)

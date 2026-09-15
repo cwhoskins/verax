@@ -31,10 +31,11 @@
 ##   Four `.op` claims.
 ## * **the RF rail's decoupling**, behind eight parts.
 ## * **derating** on the rail's capacitors.
-## * **the static DC-path walk no longer stops at the switches.** Each
-##   ADG904 declares `traverse: "RFC" <-> ["RF1","RF2","RF3","RF4"]`, so
-##   `checkDCPaths` can follow `EN`/`A0`/`A1`'s own reachability question
-##   past the switch's other pins instead of calling the whole 8-pin part
+## * **the static DC-path walk no longer stops at the switches.** Every
+##   ADG904 gets `traverse: "RFC" <-> ["RF1","RF2","RF3","RF4"]` stamped by
+##   `equipAdg904` (`designs/lib/adg904.nim`), so `checkDCPaths` can follow
+##   `EN`/`A0`/`A1`'s own reachability question past the switch's other pins
+##   instead of calling the whole 8-pin part
 ##   `ambiguous_dc_path` -- 24 findings on this board (three per switch)
 ##   before this was stated, all of them harmless (the pulldowns below
 ##   answer the question a different way) but noise nonetheless. The same
@@ -109,25 +110,27 @@ proc xbarRf*(): Netlist =
     #
     # Input side: RFC on the SMA input, RF1..4 onto the midplane.
     #
-    # `traverse:` is what actually says RFC reaches RF1..4 -- an 8-pin part
-    # is invisible to both the static DC walk (`kinds.classifyConductivity`
-    # calls anything with more than two connected pins ambiguous) and the
-    # schematic's own two-terminal-only topology walk without it. Before
-    # this, `checkDCPaths` called every one of these switches
-    # `ambiguous_dc_path` from each of A0/A1/EN (three findings per switch,
-    # 24 total on this board) -- not because those control pins are
-    # themselves unreachable (`controlPulldowns` in the bench below ties
-    # each one to ground directly), but because *reaching* them required
-    # asking the switch's other pins something nothing had answered. It is
-    # a schematic-side fix as well as an electrical one:
+    # `equipAdg904` (in `designs/lib/adg904.nim`, run in the bench and the
+    # system below) is what actually says RFC reaches RF1..4, via
+    # `addTraversalEdge` -- an 8-pin part is invisible to both the static DC
+    # walk (`kinds.classifyConductivity` calls anything with more than two
+    # connected pins ambiguous) and the schematic's own two-terminal-only
+    # topology walk without it. Before this, `checkDCPaths` called every one
+    # of these switches `ambiguous_dc_path` from each of A0/A1/EN (three
+    # findings per switch, 24 total on this board) -- not because those
+    # control pins are themselves unreachable (`controlPulldowns` in the
+    # bench below ties each one to ground directly), but because *reaching*
+    # them required asking the switch's other pins something nothing had
+    # answered. It is a schematic-side fix as well as an electrical one:
     # `constrained.pathsFrom`'s semantic walk needs the same statement to
     # follow RFC through to RF1..4 rather than treating the switch as a
-    # topological dead end.
+    # topological dead end. It lives with the rest of the ADG904's datasheet
+    # numbers rather than at each instantiation site because it is the same
+    # statement for all eight switches and every caller already runs every
+    # designator through `equipAdg904` for `ron`/`roff`/`select_pins`.
     for (nm, rfc, en, sel) in [("XSW1", rin[0], en[0], 0), ("XSW2", rin[1], en[1], 1),
                                ("XSW3", rin[2], en[2], 2), ("XSW4", rin[3], en[3], 3)]:
       component U, designator = nm, kind = "rf_switch", partNumber = "ADG904":
-        traverse:
-          "RFC" <-> ["RF1", "RF2", "RF3", "RF4"]
         pin "RFC", rfc, kind = ptPassive
         pin "RF1", m[0], kind = ptPassive
         pin "RF2", m[1], kind = ptPassive
@@ -143,8 +146,6 @@ proc xbarRf*(): Netlist =
     for (nm, rfc, en, sel) in [("XSW5", rout[0], en[4], 4), ("XSW6", rout[1], en[5], 5),
                                ("XSW7", rout[2], en[6], 6), ("XSW8", rout[3], en[7], 7)]:
       component U, designator = nm, kind = "rf_switch", partNumber = "ADG904":
-        traverse:
-          "RFC" <-> ["RF1", "RF2", "RF3", "RF4"]
         pin "RFC", rfc, kind = ptPassive
         pin "RF1", m[0], kind = ptPassive
         pin "RF2", m[1], kind = ptPassive
