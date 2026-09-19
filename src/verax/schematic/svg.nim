@@ -274,6 +274,24 @@ proc drawPart(p: SchematicPart): seq[string] =
     result.add textAt(cx + hw - 6.0, cy - 12.0, "OUT+", "end", 10)
     result.add textAt(cx + hw - 6.0, cy + 16.0, "OUT-", "end", 10)
 
+  of "opamp":
+    # Traditional triangular op-amp symbol: base on the left, apex on the
+    # right where OUT leaves. IN+/IN- land exactly on the base and OUT
+    # exactly on the apex, so none of the three needs a drawn lead. V+/V-
+    # meet the slanted top/bottom edges at mid-width, which is only half as
+    # tall as the base there, so each gets a short lead in to its pin.
+    result.add "<polygon points=\"" & num(cx - hw) & "," & num(cy - hh) &
+      " " & num(cx - hw) & "," & num(cy + hh) & " " &
+      num(cx + hw) & "," & num(cy) &
+      "\" fill=\"#ffffff\" stroke=\"#333333\" stroke-width=\"2\"/>"
+    result.add lineAt(cx, cy - hh / 2.0, cx, cy - hh)
+    result.add lineAt(cx, cy + hh / 2.0, cx, cy + hh)
+    # The classic +/- summing-junction marks, just inside the base at each
+    # input lead -- the only thing that says which is which, since IN+/IN-
+    # otherwise land on the bare outline.
+    result.add textAt(cx - hw + 8.0, cy - 16.0 + 4.0, "+", "start", 14)
+    result.add textAt(cx - hw + 8.0, cy + 16.0 + 4.0, "-", "start", 14)
+
   of "transistor":
     result.add lineAt(cx, cy - hh, cx, cy - 16.0)
     result.add lineAt(cx - hh, cy, cx - 16.0, cy)

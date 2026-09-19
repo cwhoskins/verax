@@ -297,7 +297,7 @@ proc inkExtent(name: string, bodyW, bodyH: float): tuple[w, h: float] =
   of "inductor": (bodyW, 16.0)
   of "voltage_source", "current_source": (32.0, bodyH)
   of "transistor": (bodyH, bodyH)
-  else: (bodyW, bodyH)          # source4, box: the drawn shape is the body
+  else: (bodyW, bodyH)          # source4, box, opamp: the drawn shape is the body
 
 proc symbolFor(c: Component, groupOf: seq[int] = @[],
                groupNames: seq[string] = @[], groupSide: seq[int] = @[],
@@ -362,6 +362,26 @@ proc symbolFor(c: Component, groupOf: seq[int] = @[],
     for pinName, _ in c.pins:
       if not byName.hasKey(pinName): return box()
     return SymbolDef(name: "source4", bodyW: bodyW, bodyH: bodyH,
+                     inkW: bodyW, inkH: bodyH, byName: byName)
+  of "opamp", "op_amp", "operational_amplifier":
+    # The traditional triangular op-amp symbol: IN+/IN- land on the flat left
+    # edge (the base), OUT at the apex on the right, V+/V- entering the
+    # slanted top/bottom edges at mid-width. Slots are keyed by pin name, the
+    # `source4` pattern, so declaration order never decides which edge a pin
+    # lands on; a pin-count/name mismatch (a 3-pin ideal model with no drawn
+    # supply pins, say) falls back to the plain box.
+    if n != 5: return box()
+    let bodyW = 2.0 * pinSpan
+    let bodyH = 2.0 * pinSpan
+    var byName = initTable[string, Point]()
+    byName["IN+"] = Point(x: -bodyW / 2.0, y: -16.0)
+    byName["IN-"] = Point(x: -bodyW / 2.0, y: 16.0)
+    byName["OUT"] = Point(x: bodyW / 2.0, y: 0.0)
+    byName["V+"] = Point(x: 0.0, y: -bodyH / 2.0)
+    byName["V-"] = Point(x: 0.0, y: bodyH / 2.0)
+    for pinName, _ in c.pins:
+      if not byName.hasKey(pinName): return box()
+    return SymbolDef(name: "opamp", bodyW: bodyW, bodyH: bodyH,
                      inkW: bodyW, inkH: bodyH, byName: byName)
   of "bjt", "mosfet", "jfet", "transistor":
     result = SymbolDef(name: "transistor", bodyW: h, bodyH: h,

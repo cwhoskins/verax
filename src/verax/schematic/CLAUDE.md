@@ -244,7 +244,14 @@ implements.
   `vccs`, `cccs`, `ccvs`) draw as a rectangular `source4` buffer/controlled
   source with `OUT+`/`OUT-` on the right edge and `IN+`/`IN-` on the left,
   keyed by pin name rather than declaration order, and labelled inside the
-  body (no source-type polarity marker). Determinism is a property worth
+  body (no source-type polarity marker). An `opamp`/`op_amp`/
+  `operational_amplifier` component with exactly the five pins
+  `IN+`/`IN-`/`OUT`/`V+`/`V-` draws as the traditional triangular symbol
+  instead (`source4`'s `byName` pattern again — a mismatched pin set falls
+  back to the box): `IN+`/`IN-` land on the flat base, `OUT` at the apex,
+  `V+`/`V-` lead in from mid-width on the slanted top/bottom edges. Like
+  `source4` it is `byName`-keyed with `slots` empty, so `rotatable` is false
+  and it never turns. Determinism is a property worth
   stating, not assuming: iteration order is graph insertion order throughout,
   `Table`/`HashSet` keys are only ever *looked up* (never iterated) except
   where their contents are sorted afterwards (`junctions`).
