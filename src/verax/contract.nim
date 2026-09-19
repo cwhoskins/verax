@@ -46,5 +46,6 @@ import verax/contract/roles/built_in as roles
 import verax/contract/design
 import verax/contract/evaluate
 import verax/contract/evaluators/static
+import verax/contract/evaluators/diff
 
-export types, roles, design, evaluate, static
+export types, roles, design, evaluate, static, diff

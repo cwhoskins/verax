@@ -21,15 +21,22 @@
 ## component sharing kind/value/pins) and one extra decline for a component
 ## group (`the all-common decline`, below).
 ##
-## **The collapse floor is three members, with one deliberately narrow
-## exception at two**: a raw-component group every one of whose ports
+## **The collapse floor is three members, with two deliberately narrow
+## exceptions at two**: a raw-component group every one of whose ports
 ## genuinely shares both nets across every member -- a true parallel bank --
 ## *and* those shared nets are a rail/ground pair collapses at two (the
-## bypass-bank floor, in `addSignatureArrays`). Two same-signature parts
-## wired any other way (in series, or in parallel on an ordinary signal net)
-## keep the three-member floor: two same-valued resistors that merely happen
-## to sit in unrelated roles of one circuit (a divider's `R1`/`R2`) must not
-## silently merge into one box just because their `value` matches -- only a
+## bypass-bank floor, in `addSignatureArrays`); so does a group with an
+## `apDistributed` port whose varying nets are members of one *declared*
+## bus or interface (`ArrayPort.mergedByBundle`) -- the declared-pair floor,
+## same place -- which is what lets a differential pair's per-leg series
+## termination or ESD clamp (`R1`/`R2`, `D1`/`D2` on one `diff_pair`
+## interface instance) draw as one `x2` box instead of two unrelated
+## symbols. Two same-signature parts wired any other way (in series, or in
+## parallel on an ordinary signal net with no declared bus/interface behind
+## it) keep the three-member floor: two same-valued resistors that merely
+## happen to sit in unrelated roles of one circuit (a divider's `R1`/`R2`)
+## must not silently merge into one box just because their `value` matches --
+## only a
 ## group that is unambiguously *one repeated thing wired the same way*
 ## qualifies below three.
 ##
@@ -723,9 +730,12 @@ proc addSignatureArrays(ctx: var ArrayBuildCtx, nl: Netlist,
                             bundles, rep0, origin, allowChain)
     if origin == aoComponent:
       var anyDistributed = false
+      var anyMergedDistributed = false
       var allCommonRail = sub.ports.len > 0
       for ap in sub.ports:
-        if ap.cls == apDistributed: anyDistributed = true
+        if ap.cls == apDistributed:
+          anyDistributed = true
+          if ap.mergedByBundle: anyMergedDistributed = true
         if ap.cls != apCommon or not ap.railCommon: allCommonRail = false
       # The bypass-bank floor: a group every one of whose ports is `apCommon`
       # *and* `railCommon` genuinely shares both nets across every member --
@@ -736,12 +746,31 @@ proc addSignatureArrays(ctx: var ArrayBuildCtx, nl: Netlist,
       # instead. That is exactly the bundling this feature is now asked to
       # draw, so it alone is allowed at two members. The all-common decline
       # (below) still applies to any other all-common group -- a component
-      # with no distributed port that is *not* a pure bypass bank -- and the
-      # general case (an `apDistributed` port, `xbar_rf`'s eight-channel
-      # filter bank) keeps its historical three-member floor: a coincidence
-      # of two same-valued parts wired into unrelated roles (two resistors of
-      # a divider) must not silently merge into one box.
-      if allCommonRail: discard
+      # with no distributed port that is *not* a pure bypass bank.
+      #
+      # The declared-pair floor: a group with an `apDistributed` port that is
+      # `mergedByBundle` -- its varying nets are members of one *declared*
+      # bus or interface, not merely N distinct nets an identity match
+      # happened to line up -- is also allowed at two. A differential pair's
+      # series termination or ESD clamp (`R1`/`R2`, `D1`/`D2` in
+      # `designs/usb_hs_link.nim`) is the case this exists for: each leg's
+      # far pin is a member of the same declared `diff_pair` interface
+      # instance, which is exactly the evidence the bypass-bank floor uses
+      # for a rail/ground pair, just carried by `iface`/`bus` instead of by
+      # ground/rail identity -- so it is the identical "unambiguously one
+      # repeated thing wired the same way" case, not the coincidence this
+      # module otherwise guards against. A port whose varying nets are
+      # *not* declared members of anything (`R1`/`R2`'s choke-side pins in
+      # that same design) earns no such trust on its own and still draws
+      # honestly as a distributed `[1:N]` tag on the collapsed box -- it is
+      # the presence of *one* declared-and-merged port that vouches for the
+      # pairing, not every port needing its own proof. The general case (an
+      # `apDistributed` port with no declared backing, `xbar_rf`'s
+      # eight-channel filter bank) keeps its historical three-member floor:
+      # a coincidence of two same-valued parts wired into unrelated roles
+      # (two resistors of a divider) must not silently merge into one box
+      # just because nothing declares them related.
+      if allCommonRail or (g.len == 2 and anyMergedDistributed): discard
       elif g.len < 3 or not anyDistributed: continue
     elif g.len < 3: continue
     registerArray(nl, plan, sub)
@@ -1065,8 +1094,10 @@ proc arrayReport*(nl: Netlist): seq[tuple[source, label, rep: string,
   ## needs three or more instances; a raw component group that does share
   ## both nets on every port -- and those nets are a rail/ground pair, a
   ## bypass bank -- needs only two (see the bypass-bank floor in
-  ## `addSignatureArrays`). Fewer than that, for either shape, yields an
-  ## empty report. Builds the bundle plan itself, so the report is exactly
+  ## `addSignatureArrays`), and so does a raw component group with a
+  ## distributed port whose varying nets are members of one declared bus or
+  ## interface (the declared-pair floor, same place). Fewer than that, for
+  ## any of the three shapes, yields an empty report. Builds the bundle plan itself, so the report is exactly
   ## what `prepare` computes with both `lsArrays` and `lsPartArrays` on (the
   ## default). `source` is the subckt name for a subsheet array or the
   ## component `kind` for a component array -- both are the first `\x1f`

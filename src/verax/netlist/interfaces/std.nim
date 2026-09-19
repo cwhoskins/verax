@@ -32,6 +32,39 @@ proc uartInterface*(): InterfaceDef =
   result.modports["dte"] = modport("dte", [("txd",ptOutput),("rxd",ptInput)])
   result.modports["dce"] = modport("dce", [("txd",ptInput),("rxd",ptOutput)])
 
+proc diffPairInterface*(): InterfaceDef =
+  ## A bare differential pair: two signals, no claimed numbers. `implies` the
+  ## `diff_pair` role with no params, so instantiating one claims only
+  ## `diff_pair_symmetry` -- the one thing `contract/evaluators/diff` can
+  ## check without a board. Signals are named `p`/`n` so `diff_pair`'s parts
+  ## bind by the ordinary same-name matching in `addRoleFromInterface`, with
+  ## no need for `RoleClaim.binds`.
+  # Neither modport is flagged `controller`: unlike a bus, a differential
+  # pair has no invariant that a "driver" must be wired anywhere in a given
+  # design -- a sheet describing only the receiver end (an ADC input pair, a
+  # connector-side sheet) is not missing anything, so nothing here should
+  # warn that it is.
+  result.name = "diff_pair"
+  result.signals = @[SignalDef(name: "p", width: 1), SignalDef(name: "n", width: 1)]
+  result.modports["driver"] = modport("driver", [("p", ptOutput), ("n", ptOutput)])
+  result.modports["receiver"] = modport("receiver", [("p", ptInput), ("n", ptInput)])
+  result.implies = @[RoleClaim(role: "diff_pair")]
+
+proc usb2Interface*(): InterfaceDef =
+  ## USB 2.0's D+/D-, carrying the specification's own number: 90 ohm
+  ## differential impedance +/- 15%, USB 2.0 sec. 7.1.1.3. Deliberately
+  ## states no `skew_intra_max` -- the specification's 100 ps figure is a
+  ## *cable* budget, not a board one, and inventing a board-level number on
+  ## the author's behalf is not this catalogue's call to make.
+  result.name = "usb2"
+  result.signals = @[SignalDef(name: "p", width: 1), SignalDef(name: "n", width: 1)]
+  result.modports["host"] = modport("host", [("p", ptInOut), ("n", ptInOut)])
+  result.modports["device"] = modport("device", [("p", ptInOut), ("n", ptInOut)])
+  result.implies = @[RoleClaim(role: "diff_pair",
+    params: {"z_diff": "90", "z_diff_tol": "0.15"}.toOrderedTable)]
+
 registerInterfaceDef(i2cInterface())
 registerInterfaceDef(spiInterface())
 registerInterfaceDef(uartInterface())
+registerInterfaceDef(diffPairInterface())
+registerInterfaceDef(usb2Interface())

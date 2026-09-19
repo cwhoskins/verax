@@ -50,11 +50,12 @@ import ./roles/built_in as roles
 import ./design
 import ./evaluate
 import ./evaluators/static
+import ./evaluators/diff
 
 # Importing the authoring DSL registers the built-in evaluators, exactly as
 # importing `roles` registers the built-in roles: a design you can author but
 # whose claims silently have no producer is the surprising half of that pair.
-export netlistDsl, ctypes, roles, design, evaluate, static, units
+export netlistDsl, ctypes, roles, design, evaluate, static, diff, units
 
 # --- runtime helpers the macros expand into ----------------------------
 

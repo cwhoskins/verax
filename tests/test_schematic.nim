@@ -4145,6 +4145,48 @@ suite "component arrays":
       ys.incl partOf(s, "R" & $i).y
     check xs.len == 1 or ys.len == 1
 
+  proc diffLegBank(): Netlist =
+    ## Two resistors, each with one pin on a private net (`a`/`b` -- no
+    ## declared bus behind either) and the other on a declared two-member
+    ## bus (`p`/`n`, `bus.name = "pair"`) that a third box `S` also touches
+    ## on both legs -- `S` merges >= 2 owned members onto its one carrier,
+    ## which is exactly `designs/usb_hs_link.nim`'s shape: `R1`/`R2`'s far
+    ## pin bound to the same `diff_pair` interface instance, their near pin
+    ## to plain unrelated nets. The declared-pair floor should collapse this
+    ## at two members even though neither port is a rail/ground bank.
+    result = newNetlist("diff_leg_bank")
+    let a = addNet(result, newNet("a"))
+    let b = addNet(result, newNet("b"))
+    let p = addNet(result, newNet("p"))
+    let n = addNet(result, newNet("n"))
+    p.attrs["bus.name"] = "pair"
+    n.attrs["bus.name"] = "pair"
+    let r1 = addComponent(result, newComponent("R1", kind = "resistor"))
+    r1.attrs["value"] = "22"
+    discard connect(r1, "1", a, ptPassive)
+    discard connect(r1, "2", p, ptPassive)
+    let r2 = addComponent(result, newComponent("R2", kind = "resistor"))
+    r2.attrs["value"] = "22"
+    discard connect(r2, "1", b, ptPassive)
+    discard connect(r2, "2", n, ptPassive)
+    let s = addComponent(result, newComponent("S", kind = "ic"))
+    discard connect(s, "P", p, ptInOut)
+    discard connect(s, "N", n, ptInOut)
+
+  test "a declared-pair port collapses two members with no rail/ground bank":
+    let nl = diffLegBank()
+    let rep = arrayReport(nl)
+    check rep.len == 1
+    check rep[0].origin == "component"
+    check rep[0].source == "resistor"
+    check rep[0].count == 2
+    check rep[0].ports == @["1=distributed[1:2]", "2=distributed[1:2](bundled)"]
+    let s = layout(nl)
+    check s.parts.len == 2               # S + one collapsed "R1..R2" symbol
+    let r1 = partOf(s, "R1")
+    check r1.count == 2
+    check r1.members == @["R1", "R2"]
+
   proc filterBank(n: int): Netlist =
     ## `n` independent RC low-pass channels, `in_i -[R_i]- mid_i -[C_i]- gnd`.
     ## Every `mid_i` sits on the R array's port "2" *and* the C array's port

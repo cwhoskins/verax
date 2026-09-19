@@ -270,6 +270,41 @@ prerequisites — the dependencies are stated where they exist.
     only for the *derived* fragments rather than for the design as authored.
     Both are plumbing over things that already work.
 
+18. **A differential pair's skew and impedance claims have nothing to
+    measure against** (§72). `contract/evaluators/diff.nim` registers
+    `intra_pair_skew`, `inter_pair_skew` and `z_diff` and every one of them
+    declines every claim — deliberately, so the quantities are discoverable
+    (`verax quantities`) and a claim naming one gets a true reason rather than
+    "no evaluator produces X" — but nothing backs them yet. This is a
+    different gap from §66's: §66 is RF *simulation* (a two-port S-parameter
+    device and evaluator, for insertion loss/isolation/VSWR on an already-laid
+    trace); this is board *geometry* — none of it exists yet either, in
+    either direction.
+
+    What each needs, roughly cheapest first. **Trace length**: `pcb/geometry`
+    has `flatten(Path)` and `distance(a, b)` and an arc already carries
+    `radius`/`sweep`, so summing segment and arc lengths over one
+    `Copper`/`ckTrack` is a short pure function; the harder half is stitching
+    a net's fragments end to end from `pcb/index`'s spatial candidates into
+    one pin-to-pin path, since nothing today joins copper into a route. A
+    `Metres` type does not obviously belong in `verax/units` (electrical
+    quantities) or stay in `pcb/units.Nm` (integer nanometres, geometry) —
+    that choice wants making before `intra_pair_skew`/`inter_pair_skew` can
+    report a number, since propagation delay is length over a velocity the
+    stackup's `epsilonR` already gives. **Z0**: a closed-form microstrip or
+    edge-coupled-differential formula (Hammerstad-Jensen or IPC-2141) against
+    `pcb/graph.dielectricBetween` and a trace width read off geometry, or
+    stated — closed form disagreeing with a fab's field solver is its own
+    hazard, worth flagging in whatever role/quantity ships it rather than
+    presenting as exact. **The harder prerequisite both of those share**:
+    `Design` holds no `Pcb` at all, and no board-file reader exists
+    (`pcb/formats/kicad.nim`/`odbpp.nim` are unwritten) — so before either
+    quantity can measure a real board, something has to both read one in and
+    attach it to a `Design`. `EvalContext.scratch` (`contract/evaluate.nim`)
+    is the declared, already-typed route for a `Pcb` to reach an evaluator
+    without `contract` gaining an edge to `pcb`; nothing about registering
+    these three quantities early forecloses it.
+
 ---
 
 ## Roles not yet written

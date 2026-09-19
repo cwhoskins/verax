@@ -66,7 +66,7 @@ boxes*, so N−1 components stop being drawn.
 7. **Guards:** rail/ground ports are excluded from the classification vote;
    `N < 3` never collapses; a chain must be linear and complete (every member,
    no branch at any link net, no cycle) or the port degrades to *distributed*.
-   **The bypass-bank floor** is the one exception: a raw-component group every
+   **The bypass-bank floor** is one exception: a raw-component group every
    port of which is `common` *and* the shared net is a rail/ground pair (two
    or more decoupling/bulk capacitors on one supply/ground pair) collapses at
    `N == 2` — unambiguously one repeated thing wired the identical way, unlike
@@ -76,6 +76,19 @@ boxes*, so N−1 components stop being drawn.
    still declines outright — see the all-common decline below — so
    `composites/passive.parallelStackKind` keeps drawing an ordinary signal-net
    parallel bank as a visible stack.
+   **The declared-pair floor** is the other: a raw-component group of `N == 2`
+   with an `apDistributed` port that is `ArrayPort.mergedByBundle` — its
+   varying nets are members of one *declared* bus or interface, not merely N
+   distinct nets an identity match happened to line up — also collapses at
+   two. This is the same "unambiguously one thing, not a coincidence"
+   evidence the bypass-bank floor reads off ground/rail identity, just
+   carried by `iface`/`bus` instead: `designs/usb_hs_link.nim`'s `R1`/`R2`
+   (22R series termination) and `D1`/`D2` (ESD clamps) each have one pin
+   bound to the same `diff_pair` interface instance, so each pair draws as
+   one `x2` box. Only *one* port needs to be declared-and-merged to vouch
+   for the pairing — `R1`/`R2`'s other port (the choke-side pin, plain nets
+   with no declared bus) still draws honestly as a `[1:2]` distributed tag
+   on the collapsed box rather than merging.
 8. **Declining** an array means "a member carries a `brCollapsed` bundle that
    this candidate's own hidden members would leave with fewer than two
    placeable endpoint entities" (`survivesCollapsedBundles`) — a bus tree
@@ -224,7 +237,11 @@ Fixed decisions specific to this pass:
    badge instead of N visible bodies. (A port classified `apDistributed` can
    never itself be a rail — the classifier routes a rail-differing port to
    `apIrregular` first — so the first clause alone reads simply as "not
-   every port is common".)
+   every port is common".) The declared-pair floor sits beside the
+   bypass-bank floor as the second shape allowed at two members: a group
+   with an `apDistributed` port that is `ArrayPort.mergedByBundle` (its
+   varying nets are members of one declared `iface`/`bus`, not merely N
+   distinct nets) — see guard 7 above and the top-of-file module summary.
 4. **Chain pairing is skipped for a non-box representative.** The
    recirculation arc is a fixed staple drawn on the *box interior*; a
    resistor symbol has no interior to draw one on. A series ladder of raw

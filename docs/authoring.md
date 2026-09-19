@@ -90,6 +90,43 @@ bus without creating an ERC conflict or an undriven warning. `findInterface`
 recovers parameterized widths from graph metadata after cloning or hierarchy.
 `designs/spi_memories.nim` is the structural-only worked example.
 
+### Differential pairs
+
+A differential pair needs no new declaration mechanism: it is an ordinary
+two-signal interface whose signals are named `p`/`n`.
+`verax/netlist/interfaces/std.diffPairInterface()` is one — `iface usb0,
+diffPairInterface()` creates `usb0_p`/`usb0_n` and, through the same `implies`
+mechanism `i2cInterface()` uses for `"i2c"`, auto-attaches a `diff_pair` role
+instance whose `p`/`n` parts bind to those two nets by the ordinary same-name
+matching `addRoleFromInterface` already does. `usb2Interface()` is the same
+shape carrying USB 2.0's own number (90 ohm differential impedance, +/-15%).
+
+`iface lane, diffPairInterface(), count = 4` is a lane set — four independent
+pairs, `lane_0` .. `lane_3`, each with its own auto-attached role instance.
+Comparing pairs *to each other* (inter-pair / lane-to-lane skew) needs no
+grouping statement either: it is an ordinary `require` naming one net per
+pair, `require inter_pair_skew(lane_0["p"], lane_1["p"], lane_2["p"],
+lane_3["p"]) <= 200.ps` — the quantity's arity is `2..N`, exactly like any
+other multi-subject claim.
+
+The `diff_pair` role claims `diff_pair_symmetry` unconditionally (a graph walk
+comparing both legs' series parts, hop by hop, by kind and value — the one
+check that needs no board) and, only when stated, `intra_pair_skew` (param
+`skew_intra_max`) and `z_diff` (params `z_diff`/`z_diff_tol`). **Those two
+always come back NOT CHECKED.** They are routing properties, and nothing in
+`pcb/` yet accumulates trace length or solves a stackup against it — see
+`docs/findings.md`. A design that states them (including one using
+`usb2Interface()`, which always claims `z_diff`) will exit `3` until that
+exists. A design meant to check clean today claims only symmetry; if a
+standards-mandated number needs to be on record anyway, `without = "z_diff"`
+on the role instance keeps the claim declared and visibly declined rather
+than silently absent — see "Writing a role of your own" below for what
+`without` means.
+
+An interface def whose signals are not named `p`/`n` (an industry-standard
+`dp`/`dn`, say) still implies `diff_pair` — `RoleClaim.binds` on the
+`implies` entry maps a role part name to the signal it actually reads from.
+
 **`spec:`** — typed annotations, checked **at compile time**. A misspelled key
 or one used on the wrong kind of entity fails the build rather than being
 silently ignored. Run `verax annotations` for the live list. Values take unit

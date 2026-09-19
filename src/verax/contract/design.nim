@@ -290,7 +290,24 @@ proc addImpliedRoles*(d: Design) =
       if d.roles.hasKey(iface.name): continue
       var params: seq[(string, string)]
       for key, value in claim.params: params.add (key, value)
-      discard addRoleFromInterface(d, claim.role, iface.name, iface, [], params)
+      # `claim.binds` maps a role part name to the interface signal it reads
+      # from, for a def whose signals are not named to match the role's
+      # parts (a `dp`/`dn` differential pair implying `diff_pair`, whose
+      # parts are `p`/`n`). Everything not named here still auto-binds by
+      # same-name matching in `addRoleFromInterface`; an explicit entry
+      # simply reaches that call as a normal explicit binding.
+      var bindings: seq[(string, Subject)]
+      for partName, signalName in claim.binds:
+        if not iface.signals.hasKey(signalName):
+          raise newException(NetlistError, "interface '" & iface.def.name &
+            "' implies role '" & claim.role & "' binding '" & partName &
+            "' to undeclared signal '" & signalName & "'")
+        let b = iface.bus(signalName)
+        if b.len != 1:
+          raise newException(NetlistError, "interface signal '" & signalName &
+            "' is wide and cannot bind scalar role part '" & partName & "'")
+        bindings.add (partName, Subject(kind: skNet, name: b[0].name))
+      discard addRoleFromInterface(d, claim.role, iface.name, iface, bindings, params)
 
 proc expandInstance*(inst: RoleInstance): seq[Assertion] =
   ## One role instance's claims, minus the ones it declined. Everything that

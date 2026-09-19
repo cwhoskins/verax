@@ -502,14 +502,26 @@ implements.
     bodies. **A component group whose all-common ports are *not* a
     rail/ground pair still declines** (a signal-net parallel bank keeps its
     visible stack — the original reason for the decline). **The floor
-    itself is two-tier**: a subsheet array, or a component array with no
+    itself is three-tier**: a subsheet array, or a component array with no
     `apDistributed` port and no `railCommon` bank, still needs three or
     more members (the historical floor — two same-signature parts wired
     into *unrelated* roles, an ordinary divider's same-valued resistors,
     must not silently merge just because their value matches); a component
     array every one of whose ports is `apCommon` **and** `railCommon`
     collapses at **two** — that is unambiguously one repeated thing wired
-    the identical way, never a coincidence. **Chain
+    the identical way, never a coincidence; so does a component array of
+    exactly two with an `apDistributed` port that is `ArrayPort
+    .mergedByBundle` — its varying nets are members of one *declared* bus
+    or interface, the identical evidence the bypass-bank floor reads off
+    ground/rail identity instead, just carried by `iface`/`bus` — which is
+    what lets `designs/usb_hs_link.nim`'s `R1`/`R2` (22R termination) and
+    `D1`/`D2` (ESD clamps), each pair's far pin bound to the same
+    `diff_pair` interface instance, collapse to one `x2` box apiece instead
+    of drawing as four unrelated symbols; the port on the *other* side of
+    each (the choke/connector-side pin, bound to plain nets with no
+    declared bus behind them) still draws honestly as a `[1:2]` tag on the
+    collapsed box — one declared-and-merged port vouches for the whole
+    pairing, not every port needing its own proof. **Chain
     pairing is skipped for a non-box representative** (`symbolFor(rep).isBox`)
     — the recirculation arc is a fixed staple on the *box interior*, which a
     resistor symbol has none of, so a would-be chain degrades to

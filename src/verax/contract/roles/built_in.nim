@@ -16,6 +16,7 @@ import ./core
 import ./power
 import ./analog
 import ./digital
+import ./interconnect
 
 export core
 
@@ -421,5 +422,7 @@ proc registerBuiltinRoles*() =
     ],
     apply: nil,
     expand: loadSweepExpand))
+
+  registerInterconnectRoles()
 
 registerBuiltinRoles()

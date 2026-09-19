@@ -38,6 +38,7 @@ const
     "large_signal": staticRead("../../templates/large_signal.nim"),
     "oscillator": staticRead("../../templates/oscillator.nim"),
     "i2c": staticRead("../../templates/i2c.nim"),
+    "diff_pair": staticRead("../../templates/diff_pair.nim"),
     "subcircuit": staticRead("../../templates/subcircuit.nim"),
   }
   builtinLibDir = currentSourcePath().parentDir.parentDir
