@@ -22,9 +22,26 @@ import ../netlist/packages
 
 export types
 
-proc touch(pcb: Pcb) {.inline.} =
-  if pcb != nil and pcb.index != nil:
-    pcb.index.dirty = true
+proc touch*(pcb: Pcb) {.inline.} =
+  ## Records that the board changed: bumps `pcb.rev` and marks the spatial
+  ## index dirty. **Exported**, on the same reasoning as `index.dirty` being
+  ## a public field -- a caller that writes an entity's field directly
+  ## (`p.rot = deg(90)`) has bypassed every mutator in this module and must
+  ## say so explicitly by calling this, or the change is invisible to both
+  ## the index and (new in this stage) to `formats/kicad.writePcb`, which
+  ## decides whether anything needs regenerating purely from `pcb.rev`.
+  if pcb == nil: return
+  inc pcb.rev
+  if pcb.index != nil: pcb.index.dirty = true
+
+proc touch*(pcb: Pcb, e: Copper | Zone | Hole | Placement | PcbLayer | Stackup | Outline) {.inline.} =
+  ## `touch(pcb)` plus stamping the *same* new revision into `e.rev`. One
+  ## global counter shared by every entity, rather than a per-entity counter
+  ## each starting at zero, is what makes "which of these two changed more
+  ## recently" answerable by a plain `>` with no possibility of two entities
+  ## disagreeing about it after being touched in the same mutation.
+  touch(pcb)
+  if e != nil: e.rev = pcb.rev
 
 # ---------------------------------------------------------------- layers
 
@@ -44,7 +61,33 @@ proc addLayer*(pcb: Pcb, l: PcbLayer): PcbLayer {.discardable.} =
   else:
     l.copperIndex = -1
   pcb.layers[l.name] = l
+  touch(pcb)   ## `(layers)` is a whole-board-scoped refusal in the KiCad
+               ## writer (see `formats/kicad.nim`), not a per-layer one, so
+               ## there is nothing to gain from stamping `l.rev` here --
+               ## `pcb.rev` alone is what the writer checks before refusing.
   result = l
+
+proc addShape*(l: PcbLayer, s: Shape) =
+  ## Appends `s` to `l.shapes` and touches the layer. `PcbLayer.shapes` used
+  ## to be mutated by direct `seq` access before this stage, which cannot be
+  ## dirty-tracked -- a `Shape` is a plain `object` with no field a reader
+  ## could stamp `attrs["kicad.node"]` onto, and giving it one is untenable
+  ## at 326,626 `fp_line` nodes on the largest demo board (one extra
+  ## `Table` entry per line would dwarf the arena itself). So graphics are
+  ## dirty-tracked at `l.rev` alone: enough to know *something* changed,
+  ## never *what*. Since `formats/kicad.writePcb` does not regenerate
+  ## graphics at all this stage, any detected change here is exactly what
+  ## turns into a named refusal rather than a silently stale write.
+  l.shapes.add(s)
+  touch(l.pcb, l)
+
+proc setShape*(l: PcbLayer, i: int, s: Shape) =
+  l.shapes[i] = s
+  touch(l.pcb, l)
+
+proc removeShape*(l: PcbLayer, i: int) =
+  l.shapes.delete(i)
+  touch(l.pcb, l)
 
 proc copperLayers*(pcb: Pcb): seq[PcbLayer] =
   ## Copper layers in stack order, top first.
@@ -84,7 +127,7 @@ proc addCopper*(l: PcbLayer, c: Copper): Copper {.discardable.} =
   c.sourceIndex = l.copper.len
   l.copper.add(c)
   registerNet(l.pcb, c)
-  touch(l.pcb)
+  touch(l.pcb, c)
   result = c
 
 proc setNet*(c: Copper, n: Net) =
@@ -94,12 +137,13 @@ proc setNet*(c: Copper, n: Net) =
   unregisterNet(pcb, c)
   c.net = n
   registerNet(pcb, c)
+  touch(pcb, c)
 
 proc setShape*(c: Copper, s: Shape) =
   ## Replaces the geometry and refreshes the cached bounding box.
   c.shape = s
   c.box = box(s)
-  if c.layer != nil: touch(c.layer.pcb)
+  if c.layer != nil: touch(c.layer.pcb, c)
 
 proc removeCopper*(l: PcbLayer, c: Copper) =
   ## Detaches `c` from its layer, its net index and any hole it belonged to.
@@ -116,6 +160,16 @@ proc removeCopper*(l: PcbLayer, c: Copper) =
     raise newException(PcbError, "copper feature not on layer " & l.name)
   unregisterNet(l.pcb, c)
   l.copper.delete(found)
+  touch(l.pcb)   ## Global bump only -- **not** `touch(l.pcb, l)`. `l.rev` is
+                  ## reserved exclusively for `PcbLayer.shapes` graphics edits
+                  ## (`addShape`/`setShape`/`removeShape`, below), because
+                  ## `formats/kicad.writePcb` refuses outright the moment a
+                  ## layer's `rev` moves past its read-time snapshot -- it has
+                  ## no regenerator for graphics at all. Copper deletion is a
+                  ## *supported* edit (segments/vias/pads are a regenerable
+                  ## class with their own delete sweep), so stamping `l.rev`
+                  ## here would make an ordinary "rip up this track" trip the
+                  ## same refusal meant for "I hand-edited the silkscreen".
   for i in found ..< l.copper.len:
     l.copper[i].sourceIndex = i
   if c.hole != nil:
@@ -125,7 +179,6 @@ proc removeCopper*(l: PcbLayer, c: Copper) =
         break
     c.hole = nil
   c.layer = nil
-  touch(l.pcb)
 
 proc copperOn*(pcb: Pcb, netName: string, layerName = ""): seq[Copper] =
   ## Every copper feature on the named net, optionally restricted to one
@@ -146,17 +199,23 @@ proc copperOn*(pcb: Pcb, net: Net, layerName = ""): seq[Copper] =
 proc internAperture*(pcb: Pcb, a: Aperture): Aperture =
   ## Returns the shared instance for `a.name`, storing `a` if it is new. One
   ## `Aperture` object then backs every pad that uses that shape.
+  ##
+  ## `touch(pcb)` only, no entity form: `Aperture` is not one of the seven
+  ## types `rev` was added to (it is shared, interned data, not a per-board
+  ## placed feature the KiCad writer ever regenerates on its own), so there
+  ## is nothing to stamp beyond the board-level counter.
   if a == nil: return nil
   if pcb.apertures.hasKey(a.name):
     return pcb.apertures[a.name]
   pcb.apertures[a.name] = a
+  touch(pcb)
   result = a
 
 # ---------------------------------------------------------------- holes
 
 proc addHole*(pcb: Pcb, h: Hole): Hole {.discardable.} =
   pcb.holes.add(h)
-  touch(pcb)
+  touch(pcb, h)
   result = h
 
 proc attachPad*(h: Hole, c: Copper) =
@@ -167,6 +226,7 @@ proc attachPad*(h: Hole, c: Copper) =
   h.pads.add(c)
   if h.net != nil and c.net == nil:
     setNet(c, h.net)
+  touch((if c.layer != nil: c.layer.pcb else: nil), h)
 
 proc setSpan*(h: Hole, fromLayer, toLayer: PcbLayer) =
   ## Sets the inclusive copper span and derives the via classification from
@@ -174,6 +234,8 @@ proc setSpan*(h: Hole, fromLayer, toLayer: PcbLayer) =
   ## one is blind, both is through.
   h.fromLayer = fromLayer
   h.toLayer = toLayer
+  let pcb = if fromLayer != nil: fromLayer.pcb elif toLayer != nil: toLayer.pcb else: nil
+  touch(pcb, h)
   if h.kind != hkVia or fromLayer == nil or toLayer == nil: return
   if h.viaKind == vkMicro: return
   let touchesTop = fromLayer.side == lsTop or toLayer.side == lsTop
@@ -200,6 +262,12 @@ proc spanLayers*(pcb: Pcb, h: Hole): seq[PcbLayer] =
 proc addZone*(pcb: Pcb, z: Zone): Zone {.discardable.} =
   ## Registers the zone and, for each of its layers, creates and adds the
   ## matching `ckZone` copper record for the authored outline.
+  ##
+  ## .. warning:: That `ckZone` record is the *authored* outline, not real
+  ##   copper -- `fem/extrude.extrudeCopper` must skip it (`cu.kind == ckZone`)
+  ##   and mesh `Zone.fills` instead, or a plane gets meshed twice: once here
+  ##   as a solid slab with no clearances, once again (correctly) from
+  ##   `extrudeZones`. See `Zone.fills`'s own doc comment.
   pcb.zones.add(z)
   z.outline.normalize()
   for l in z.layers:
@@ -207,7 +275,7 @@ proc addZone*(pcb: Pcb, z: Zone): Zone {.discardable.} =
     c.net = z.net
     discard addCopper(l, c)
     z.areas.add(c)
-  touch(pcb)
+  touch(pcb, z)
   result = z
 
 proc addZoneLayer*(pcb: Pcb, z: Zone, l: PcbLayer) =
@@ -217,6 +285,26 @@ proc addZoneLayer*(pcb: Pcb, z: Zone, l: PcbLayer) =
   c.net = z.net
   discard addCopper(l, c)
   z.areas.add(c)
+  touch(pcb, z)
+
+proc addZoneFill*(pcb: Pcb, z: Zone, l: PcbLayer, poly: Polygon): Copper {.discardable.} =
+  ## Registers one derived fill polygon of `z` on layer `l`: a `ckFill`
+  ## record on the zone's net, added through `addCopper` so it lands in
+  ## `Pcb.netCopper` and the spatial index like any other copper feature, and
+  ## appended to `z.fills`.
+  ##
+  ## `poly` is taken as given, not re-derived from `z.outline` -- the whole
+  ## point of a fill is that it is *not* the authored outline (clearances,
+  ## thermal reliefs, priority against other zones all reshape it), so this
+  ## proc has no opinion on where `poly` came from. A KiCad reader passes the
+  ## `(filled_polygon)` points directly; nothing here could reconstruct that
+  ## shape from `z.outline` alone even if it wanted to.
+  let c = newCopper(ckFill, fill(poly))
+  c.net = z.net
+  discard addCopper(l, c)
+  z.fills.add(c)
+  touch(pcb, z)
+  result = c
 
 # ---------------------------------------------------------------- placements
 
@@ -225,7 +313,7 @@ proc addPlacement*(pcb: Pcb, p: Placement): Placement {.discardable.} =
     raise newException(PcbError, "duplicate reference designator: " & p.designator)
   p.pcb = pcb
   pcb.placements[p.designator] = p
-  touch(pcb)
+  touch(pcb, p)
   result = p
 
 proc bindComponent*(p: Placement, c: Component) =
@@ -240,11 +328,13 @@ proc bindComponent*(p: Placement, c: Component) =
   if c == nil: return
   if p.designator == c.designator:
     p.component = c
+    touch(p.pcb, p)
     return
   let r = packageRef(c)
   if r.has and r.value == p.designator:
     let s = packageSection(c)
     p.sections[(if s.has: s.value else: "")] = c
+    touch(p.pcb, p)
     return
   raise newException(PcbError,
     "designator mismatch binding placement '" & p.designator &
@@ -310,11 +400,13 @@ proc addLand*(p: Placement, pinName: string, c: Copper) =
   if not p.lands.hasKey(pinName):
     p.lands[pinName] = @[]
   p.lands[pinName].add(c)
+  touch(p.pcb, p)
 
 proc addPlacementHole*(p: Placement, h: Hole) =
   p.holes.add(h)
   if p.pcb != nil:
     discard addHole(p.pcb, h)
+  touch(p.pcb, p)
 
 proc landsOn*(p: Placement, layerName: string): seq[Copper] =
   for _, cs in p.lands:
@@ -329,6 +421,7 @@ proc addStackEntry*(pcb: Pcb, e: StackEntry): StackEntry {.discardable.} =
   if pcb.stackup == nil: pcb.stackup = newStackup()
   pcb.stackup.entries.add(e)
   pcb.stackup.totalThickness = pcb.stackup.totalThickness + e.thickness
+  touch(pcb, pcb.stackup)
   result = e
 
 proc stackEntryFor*(pcb: Pcb, l: PcbLayer): StackEntry =

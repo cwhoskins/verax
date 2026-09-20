@@ -1,0 +1,821 @@
+** Drc report for baseline.kicad_pcb **
+** Created on 2026-09-19T22:29:10 **
+** Report includes: Errors, Warnings **
+
+** Found 248 DRC violations **
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(204.8510 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(204.3430 mm, 134.3660 mm): Track [/GREEN_IN] on B.Cu, length 0.2540 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(290.9570 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(358.3940 mm, 132.9690 mm): Track [/GREEN_IN] on B.Cu, length 1.2572 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(290.9570 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(315.5950 mm, 133.8580 mm): Track [/GREEN_IN] on B.Cu, length 1.1430 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4388 mm)
+    Rule: board setup constraints edge; error
+    @(204.8510 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(204.3430 mm, 134.1120 mm): Track [/GREEN_IN] on B.Cu, length 0.3592 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(204.8510 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(315.5950 mm, 133.8580 mm): Track [/GREEN_IN] on B.Cu, length 110.9980 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(290.9570 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(357.5050 mm, 133.8580 mm): Track [/GREEN_IN] on B.Cu, length 41.9100 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(204.8510 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(203.9620 mm, 134.7470 mm): Track [/GREEN_IN] on B.Cu, length 0.5388 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(290.9570 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(348.6150 mm, 133.6040 mm): Track [/BLUE_OUT] on top_copper, length 0.3592 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(204.8510 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(348.3610 mm, 133.8580 mm): Track [/BLUE_OUT] on top_copper, length 144.1450 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.3016 mm)
+    Rule: board setup constraints edge; error
+    @(204.8510 mm, 145.5420 mm): Segment on Edge.Cuts
+    @(204.1049 mm, 144.0180 mm): Via [/BLUE_OUT] on top_copper - B.Cu
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4306 mm)
+    Rule: board setup constraints edge; error
+    @(53.5940 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(159.3484 mm, 57.0456 mm): Track [/CSYNC-OUT] on B.Cu, length 0.7147 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4306 mm)
+    Rule: board setup constraints edge; error
+    @(53.5940 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(158.6337 mm, 57.0456 mm): Track [/CSYNC-OUT] on B.Cu, length 0.1476 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4306 mm)
+    Rule: board setup constraints edge; error
+    @(53.5940 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(159.4528 mm, 57.1500 mm): Track [/CSYNC-OUT] on B.Cu, length 0.1476 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(224.1550 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(332.2320 mm, 57.0230 mm): Track [/BLANK-] on In1.Cu, length 2.1553 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(224.1550 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(299.7200 mm, 57.0230 mm): Track [/BLANK-] on In1.Cu, length 32.5120 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(224.1550 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(299.7200 mm, 57.0230 mm): Track [/BLANK-] on In1.Cu, length 0.4579 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(53.5940 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(161.1630 mm, 57.0230 mm): Track [/VD_PAL-] on top_copper, length 2.6941 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(224.1550 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(326.6694 mm, 57.3024 mm): Track [/VD_PAL-] on top_copper, length 0.3951 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(53.5940 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(326.3900 mm, 57.0230 mm): Track [/VD_PAL-] on top_copper, length 165.2270 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(224.1550 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(329.0570 mm, 57.0230 mm): Track [/BT812_RD-] on In2.Cu, length 3.5921 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4306 mm)
+    Rule: board setup constraints edge; error
+    @(53.5940 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(100.6884 mm, 57.0456 mm): Track [/BT812_RD-] on In2.Cu, length 58.6601 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4306 mm)
+    Rule: board setup constraints edge; error
+    @(53.5940 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(99.4410 mm, 58.2930 mm): Track [/BT812_RD-] on In2.Cu, length 1.7641 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(224.1550 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(300.2280 mm, 57.0230 mm): Track [/BT812_RD-] on In2.Cu, length 28.8290 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4080 mm)
+    Rule: board setup constraints edge; error
+    @(224.1550 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(300.1010 mm, 57.1500 mm): Track [/BT812_RD-] on In2.Cu, length 0.1796 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4306 mm)
+    Rule: board setup constraints edge; error
+    @(53.5940 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(159.3484 mm, 57.0456 mm): Track [/BT812_RD-] on In2.Cu, length 0.1476 mm
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.4480 mm)
+    Rule: board setup constraints edge; error
+    @(68.5800 mm, 154.9400 mm): Segment on Edge.Cuts
+    @(55.0000 mm, 57.2000 mm): Zone [GND] on In1.Cu, priority 0
+[copper_edge_clearance]: Board edge clearance violation (board setup constraints edge clearance 0.5000 mm; actual 0.0105 mm)
+    Rule: board setup constraints edge; error
+    @(53.5940 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(185.6740 mm, 154.3050 mm): Zone [+5V] on In2.Cu, priority 0
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(351.9170 mm, 83.4390 mm): Reference field of D3
+    @(350.5320 mm, 83.1520 mm): Pad 130 [GND] of U10 on top_copper
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(351.9170 mm, 83.4390 mm): Reference field of D3
+    @(350.5320 mm, 83.8020 mm): Pad 129 [unconnected-(U10-VID2_C-Pad129)] of U10 on top_copper
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(351.9170 mm, 85.7032 mm): Reference field of D4
+    @(350.5320 mm, 85.1020 mm): Pad 127 [unconnected-(U10-VID1_C-Pad127)] of U10 on top_copper
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(351.9170 mm, 85.7032 mm): Reference field of D4
+    @(350.5320 mm, 86.4020 mm): Pad 125 [/pal-ntsc.sch/C-VIDEO] of U10 on top_copper
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(351.9170 mm, 85.7032 mm): Reference field of D4
+    @(350.5320 mm, 85.7520 mm): Pad 126 [GND] of U10 on top_copper
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(82.1690 mm, 90.8900 mm): Reference field of C58
+    @(80.8990 mm, 89.7400 mm): Pad 12 [Net-(U20-VOFF)] of U20 on top_copper
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(111.7600 mm, 113.1150 mm): Reference field of R28
+    @(112.7500 mm, 111.7600 mm): Pad 1 [+5V] of R29 on top_copper
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(357.7590 mm, 125.8150 mm): Reference field of C32
+    @(356.2350 mm, 125.0950 mm): PTH pad 44 [Net-(U9-VREF)] of U9
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(81.9210 mm, 88.5190 mm): Reference field of C64
+    @(80.6710 mm, 88.0110 mm): Pad 2 [GND] of C43 on B.Cu
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(109.8550 mm, 65.7440 mm): Reference field of R21
+    @(110.0690 mm, 64.6430 mm): PTH pad 2 [GND] of C50
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(111.8870 mm, 63.9230 mm): Reference field of R26
+    @(110.0690 mm, 64.6430 mm): PTH pad 2 [GND] of C50
+[silk_over_copper]: Silkscreen clipped by solder mask
+    Local override; warning
+    @(73.6660 mm, 100.4570 mm): Reference field of C55
+    @(72.8738 mm, 99.3460 mm): PTH pad 3 [GND] of L6
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(158.1150 mm, 158.7500 mm): Footprint BUS1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(358.5210 mm, 58.2930 mm): Footprint C1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(358.1400 mm, 73.7870 mm): Footprint C3
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(333.2480 mm, 131.6990 mm): Footprint C39
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(307.0860 mm, 131.6990 mm): Footprint C40
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(300.3550 mm, 131.5720 mm): Footprint C41
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(358.5210 mm, 60.8330 mm): Footprint C47
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(116.4590 mm, 64.6430 mm): Footprint C49
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(107.5690 mm, 64.6430 mm): Footprint C50
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(82.1690 mm, 92.7100 mm): Footprint C58
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(81.4320 mm, 100.6094 mm): Footprint C60
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(68.7070 mm, 102.2350 mm): Footprint C61
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(123.8250 mm, 60.0926 mm): Footprint C63
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(84.4550 mm, 69.2150 mm): Footprint CV1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(310.3001 mm, 61.0394 mm): Footprint D1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(311.0230 mm, 58.8010 mm): Footprint D2
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(353.9490 mm, 84.4550 mm): Footprint D3
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(353.9490 mm, 86.7192 mm): Footprint D4
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(89.5350 mm, 75.5650 mm): Footprint D6
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(80.1370 mm, 107.0610 mm): Footprint L1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(84.4550 mm, 61.9760 mm): Footprint L2
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(70.8660 mm, 106.9340 mm): Footprint L3
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(345.3130 mm, 97.1550 mm): Footprint L4
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(326.0090 mm, 131.5720 mm): Footprint L5
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(72.8738 mm, 109.5060 mm): Footprint L6
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(59.0550 mm, 104.7750 mm): Footprint P1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(59.0550 mm, 116.2050 mm): Footprint P2
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(59.0550 mm, 93.3450 mm): Footprint P3
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(105.6640 mm, 70.3580 mm): Footprint P4
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(93.3450 mm, 61.5950 mm): Footprint P5
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(59.0550 mm, 81.9150 mm): Footprint P8
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(114.3000 mm, 74.9300 mm): Footprint P9
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(89.5350 mm, 59.0550 mm): Footprint P10
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(89.5350 mm, 63.5000 mm): Footprint P11
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(82.4230 mm, 57.9120 mm): Footprint P12
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(84.5400 mm, 82.0420 mm): Footprint POT1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(123.8250 mm, 63.1190 mm): Footprint R1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(67.9450 mm, 111.8870 mm): Footprint R4
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(348.2340 mm, 131.6990 mm): Footprint R8
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(70.7390 mm, 76.8350 mm): Footprint R10
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(77.3430 mm, 76.8350 mm): Footprint R11
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(358.5210 mm, 63.6270 mm): Footprint R14
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(294.7670 mm, 131.5720 mm): Footprint R22
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(313.6900 mm, 132.0800 mm): Footprint R23
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(339.5980 mm, 131.3180 mm): Footprint R24
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(111.7600 mm, 114.9350 mm): Footprint R28
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(114.3000 mm, 111.7600 mm): Footprint R29
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(67.9450 mm, 116.2050 mm): Footprint R45
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(188.5950 mm, 142.6210 mm): Footprint RR1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(188.5950 mm, 137.7950 mm): Footprint RR2
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(188.5950 mm, 134.1120 mm): Footprint RR3
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(85.0900 mm, 142.8750 mm): Footprint RR4
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(85.0900 mm, 135.8900 mm): Footprint RR5
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(84.8000 mm, 127.0000 mm): Footprint RR6
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(92.0750 mm, 120.0150 mm): Footprint RR7
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(88.7730 mm, 79.3750 mm): Footprint RR8
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(108.5850 mm, 125.7300 mm): Footprint U1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(148.7170 mm, 63.2460 mm): Footprint U2
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(197.7390 mm, 138.8110 mm): Footprint U6
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(130.1750 mm, 61.5950 mm): Footprint U7
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(311.2770 mm, 112.6490 mm): Footprint U8
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(343.5350 mm, 114.9350 mm): Footprint U9
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(335.4070 mm, 76.3270 mm): Footprint U10
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(141.6050 mm, 129.4400 mm): Footprint U11
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(234.3150 mm, 108.5850 mm): Footprint U12
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(234.3150 mm, 126.3650 mm): Footprint U13
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(234.3150 mm, 117.4750 mm): Footprint U14
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(234.3150 mm, 90.8050 mm): Footprint U15
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(234.3150 mm, 99.6950 mm): Footprint U16
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(234.3150 mm, 81.9150 mm): Footprint U17
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(234.3150 mm, 73.0250 mm): Footprint U18
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(234.3150 mm, 64.1350 mm): Footprint U19
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(73.9140 mm, 85.0900 mm): Footprint U20
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(94.6150 mm, 73.0250 mm): Footprint U21
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(304.9270 mm, 74.4220 mm): Footprint U22
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(103.5050 mm, 86.8680 mm): Footprint U23
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(141.6050 mm, 88.1650 mm): Footprint U24
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(119.4000 mm, 125.2000 mm): Footprint W2
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(122.3000 mm, 125.2000 mm): Footprint W3
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(88.9000 mm, 147.9550 mm): Footprint W5
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(114.4270 mm, 59.6900 mm): Footprint X1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(357.6320 mm, 91.9480 mm): Footprint X2
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(75.5650 mm, 73.0250 mm): Footprint X3
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(353.5000 mm, 59.2925 mm): Footprint R35
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(109.2200 mm, 142.8750 mm): Footprint W4
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(70.7390 mm, 144.1450 mm): Footprint J4
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(345.5670 mm, 67.4370 mm): Footprint C2
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(355.9810 mm, 78.1050 mm): Footprint C4
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(346.2020 mm, 97.2820 mm): Footprint C5
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(345.5670 mm, 73.2790 mm): Footprint C6
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(338.2010 mm, 87.7570 mm): Footprint C7
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(349.1230 mm, 58.0390 mm): Footprint C8
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(333.8830 mm, 64.8970 mm): Footprint C9
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(344.2970 mm, 87.7570 mm): Footprint C10
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(319.2780 mm, 69.9770 mm): Footprint C11
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(345.5670 mm, 80.3910 mm): Footprint C12
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(326.0090 mm, 64.6430 mm): Footprint C13
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(324.2310 mm, 81.9150 mm): Footprint C14
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(325.7550 mm, 87.2490 mm): Footprint C15
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(338.2010 mm, 84.7090 mm): Footprint C16
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(155.1940 mm, 85.3440 mm): Footprint C17
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(157.4800 mm, 74.2950 mm): Footprint C18
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(140.9700 mm, 73.6600 mm): Footprint C19
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(130.8100 mm, 73.0250 mm): Footprint C20
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(124.7140 mm, 90.8050 mm): Footprint C21
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(127.0000 mm, 104.1400 mm): Footprint C22
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(130.1750 mm, 61.5950 mm): Footprint C23
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(138.0490 mm, 116.8400 mm): Footprint C24
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(146.4310 mm, 114.9350 mm): Footprint C25
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(150.6220 mm, 122.9360 mm): Footprint C26
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(132.3340 mm, 123.1900 mm): Footprint C27
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(150.2410 mm, 135.8900 mm): Footprint C28
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(147.0660 mm, 139.7000 mm): Footprint C29
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(136.7790 mm, 139.7000 mm): Footprint C30
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(357.7590 mm, 127.6350 mm): Footprint C32
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(345.3130 mm, 111.7600 mm): Footprint C33
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(343.7890 mm, 117.6020 mm): Footprint C34
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(353.9490 mm, 131.6990 mm): Footprint C35
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(313.9440 mm, 120.0150 mm): Footprint C36
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(318.9000 mm, 120.0150 mm): Footprint C37
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(150.2410 mm, 132.0800 mm): Footprint C38
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(343.9160 mm, 120.3960 mm): Footprint C42
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(79.1210 mm, 88.0110 mm): Footprint C43
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(74.0410 mm, 85.3440 mm): Footprint C44
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(79.1210 mm, 85.4710 mm): Footprint C45
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(80.3910 mm, 114.9350 mm): Footprint C46
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(79.1210 mm, 82.9310 mm): Footprint C48
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(345.4400 mm, 108.5850 mm): Footprint C51
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(310.2610 mm, 117.7290 mm): Footprint C52
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(80.3910 mm, 111.8870 mm): Footprint C53
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(78.6130 mm, 66.0400 mm): Footprint C54
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(75.9460 mm, 100.4570 mm): Footprint C55
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(82.1690 mm, 96.6470 mm): Footprint C59
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(356.2350 mm, 66.1670 mm): Footprint C62
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(84.2010 mm, 88.5190 mm): Footprint C64
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(351.4090 mm, 93.0910 mm): Footprint C65
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(351.4090 mm, 95.8850 mm): Footprint C66
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(99.4410 mm, 149.7330 mm): Footprint C67
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(117.9830 mm, 148.4630 mm): Footprint C68
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(151.6380 mm, 148.4630 mm): Footprint C69
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(97.5360 mm, 85.0900 mm): Footprint C70
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(106.4260 mm, 83.1850 mm): Footprint C71
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(110.2360 mm, 90.8050 mm): Footprint C72
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(94.6150 mm, 94.6150 mm): Footprint C73
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(79.6290 mm, 128.3970 mm): Footprint Q1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(75.0570 mm, 128.3970 mm): Footprint Q2
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(75.0570 mm, 94.6150 mm): Footprint Q3
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(355.9810 mm, 81.1530 mm): Footprint R2
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(358.1400 mm, 72.2630 mm): Footprint R3
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(163.4490 mm, 134.6200 mm): Footprint R5
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(114.9350 mm, 123.1900 mm): Footprint R6
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(118.7450 mm, 120.6500 mm): Footprint R7
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(67.9450 mm, 85.2170 mm): Footprint R9
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(355.7270 mm, 72.2630 mm): Footprint R12
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(85.8953 mm, 75.5412 mm): Footprint R13
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(321.4370 mm, 120.0150 mm): Footprint R15
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(79.8830 mm, 122.5550 mm): Footprint R16
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(75.5650 mm, 122.5550 mm): Footprint R17
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(70.7390 mm, 85.2170 mm): Footprint R18
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(343.4080 mm, 97.2820 mm): Footprint R19
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(343.0270 mm, 58.0390 mm): Footprint R20
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(109.8550 mm, 67.5640 mm): Footprint R21
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(355.3460 mm, 94.6150 mm): Footprint R25
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(111.8870 mm, 62.1030 mm): Footprint R26
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(344.2970 mm, 84.7090 mm): Footprint R27
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(81.4070 mm, 99.4410 mm): Footprint R30
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(81.4070 mm, 102.7430 mm): Footprint R31
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(80.3910 mm, 136.7790 mm): Footprint R32
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(80.3910 mm, 133.7310 mm): Footprint R33
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(68.7070 mm, 98.9330 mm): Footprint R34
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(316.3570 mm, 120.0150 mm): Footprint R36
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(309.3720 mm, 121.2850 mm): Footprint R37
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(304.1650 mm, 117.7290 mm): Footprint R38
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(75.0570 mm, 136.7790 mm): Footprint R39
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(75.0570 mm, 133.7310 mm): Footprint R40
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(68.7070 mm, 95.6310 mm): Footprint R41
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(75.0570 mm, 145.9230 mm): Footprint R42
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(75.0570 mm, 142.8750 mm): Footprint R43
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(75.0570 mm, 139.8270 mm): Footprint R44
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(66.5480 mm, 107.6960 mm): Footprint R46
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(67.9450 mm, 114.0460 mm): Footprint R47
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(108.3310 mm, 86.7410 mm): Footprint R48
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(168.7830 mm, 106.5530 mm): Footprint U3
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(168.7830 mm, 91.5670 mm): Footprint U4
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(168.7830 mm, 121.0310 mm): Footprint U5
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(162.6870 mm, 132.0800 mm): Footprint W1
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(148.5900 mm, 61.3410 mm): Footprint C57
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(132.3340 mm, 136.5250 mm): Footprint C31
+[lib_footprint_issues]: The current configuration does not include the footprint library 'footprints'
+    Local override; warning
+    @(125.7300 mm, 85.0900 mm): Footprint C56
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(68.5800 mm, 154.9400 mm): Segment on Edge.Cuts
+    @(94.3610 mm, 154.9400 mm): Segment of BUS1 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(157.2260 mm, 154.9400 mm): Segment on Edge.Cuts
+    @(157.2260 mm, 154.9400 mm): Segment of BUS1 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(94.3610 mm, 163.1950 mm): Segment on Edge.Cuts
+    @(157.2260 mm, 163.1950 mm): Segment of BUS1 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(157.2260 mm, 154.9400 mm): Segment on Edge.Cuts
+    @(159.0040 mm, 154.9400 mm): Segment of BUS1 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(173.6090 mm, 154.9400 mm): Segment on Edge.Cuts
+    @(173.6090 mm, 163.1950 mm): Segment of BUS1 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(224.1550 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(358.5210 mm, 56.4730 mm): Reference field of C1
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(290.9570 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(300.3550 mm, 133.8520 mm): Reference field of C41
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(290.9570 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(326.0090 mm, 134.2220 mm): Reference field of L5
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(53.5940 mm, 163.1950 mm): Segment on Edge.Cuts
+    @(45.2120 mm, 102.2350 mm): Segment of P1 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(53.5940 mm, 163.1950 mm): Segment on Edge.Cuts
+    @(54.2290 mm, 107.3150 mm): Segment of P1 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(53.5940 mm, 163.1950 mm): Segment on Edge.Cuts
+    @(45.2120 mm, 113.6650 mm): Segment of P2 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(53.5940 mm, 163.1950 mm): Segment on Edge.Cuts
+    @(54.2290 mm, 118.7450 mm): Segment of P2 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(53.5940 mm, 163.1950 mm): Segment on Edge.Cuts
+    @(45.2120 mm, 90.8050 mm): Segment of P3 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(53.5940 mm, 163.1950 mm): Segment on Edge.Cuts
+    @(54.2290 mm, 95.8850 mm): Segment of P3 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(53.5940 mm, 163.1950 mm): Segment on Edge.Cuts
+    @(45.2120 mm, 79.3750 mm): Segment of P8 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(53.5940 mm, 163.1950 mm): Segment on Edge.Cuts
+    @(54.2290 mm, 84.4550 mm): Segment of P8 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(290.9570 mm, 134.3660 mm): Segment on Edge.Cuts
+    @(313.6900 mm, 133.9000 mm): Reference field of R23
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(53.5940 mm, 163.1950 mm): Segment on Edge.Cuts
+    @(53.3990 mm, 123.1200 mm): Segment of J4 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(53.5940 mm, 163.1950 mm): Segment on Edge.Cuts
+    @(72.5990 mm, 154.0900 mm): Segment of J4 on F.Silkscreen
+[silk_edge_clearance]: Silkscreen clipped by board edge
+    Rule: board setup constraints silk; warning
+    @(224.1550 mm, 56.5150 mm): Segment on Edge.Cuts
+    @(349.1230 mm, 56.2190 mm): Reference field of C8
+
+** Found 0 unconnected pads **
+
+** Found 0 Footprint errors **
+
+** Ignored checks **
+    - Footprint has no courtyard defined
+    - Track endpoint not centered on via
+    - Tuning profile track geometries
+    - Footprint doesn't match symbol's footprint filters
+    - Footprint component type doesn't match footprint pads
+
+** End of Report **

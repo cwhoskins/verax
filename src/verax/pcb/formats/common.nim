@@ -22,6 +22,25 @@
 ## The `step` parameter exists because one ODB++ job may hold several steps
 ## (board, panel, coupon); readers that support only one step take the first
 ## and record its name in `Pcb.name`. Single-file formats ignore it.
+##
+## **The round-trip contract this stage actually delivers, first implemented
+## by `formats/kicad.nim`:** `read(f)` then `write()` reproduces an
+## *unmodified* board byte-for-byte, and every field this library does not
+## model still survives, verbatim, because the reader keeps the whole
+## source tree and the writer copies whatever it did not touch. Editing is a
+## **narrower** claim: `writePcb` on a board that changed since it was read
+## regenerates only what `kicad.nim`'s doc comment lists as regenerable
+## (tracks, vias, nets, zone scalars, a placement's position/side/reference/
+## pad nets) and **refuses by name** — naming the entity and the class —
+## everything else (a new footprint, a new pad, a reshaped zone outline, any
+## silkscreen/mask/courtyard/fabrication graphics edit, a stack-up edit)
+## rather than fabricating it or silently dropping it. A refusal is not a
+## missing feature report; it is the honest alternative to guessing what a
+## human meant by a change this format module cannot express back into
+## valid KiCad. `formats/odbpp.nim` is unwritten; nothing here assumes ODB++
+## will make the same trade — a directory-tree format with LZW-compressed
+## members has different constraints on what "regenerate in place" even
+## means.
 
 type
   PcbFormatError* = object of CatchableError

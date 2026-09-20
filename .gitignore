@@ -28,6 +28,14 @@ nimcache/
 # XSPICE code models for their `ModelSpec` and would otherwise try to build
 # their FFI against ngspice headers. It is source, not a build artefact.
 !/tests/*.nim.cfg
+# `tests/fixtures/` holds committed, non-`.nim` sample data (e.g. a trimmed
+# real `.kicad_pcb` board for `test_pcb_sexp.nim`/`test_pcb_kicad.nim`'s
+# byte-exactness proofs) -- `/tests/*` above would otherwise ignore it, since
+# nothing in that block un-ignores a data file. `listFiles("tests")` in the
+# `test` task is non-recursive, so nothing under this subdirectory is ever
+# picked up and compiled as a test on its own.
+!/tests/fixtures/
+!/tests/fixtures/*
 /designs/*
 !/designs/*.nim
 !/designs/README

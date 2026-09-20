@@ -5,20 +5,20 @@
 ## is why `fem` sits one rank above `pcb` in the dependency order -- the same
 ## relationship `spice` has to `netlist`.
 ##
-## **Two things block this subsystem today, and they are stated here rather
-## than worked around:**
-##
-## 1. **There is no `Pcb` reader.** `pcb/formats/` holds only a contract
-##    (`readPcb`/`writePcb`) with no implementation, so a board reaches this
-##    module only if it was built by hand in Nim. A KiCad or ODB++ reader is
-##    the prerequisite for `fem` being useful on a real design.
-## 2. **`Zone` carries only its authored outline** -- `Zone.fills` does not
-##    exist (`pcb/types.nim`). A plane's real copper, with its thermal
-##    reliefs and clearances, is not in the model. So `extrudeZones` refuses
-##    rather than meshing a solid slab where the board has a Swiss cheese:
-##    that is the class of wrong answer that looks plausible, and refusing
-##    beats guessing is the standing rule in `spice/CLAUDE.md`. Adding
-##    `Zone.fills` is documented as purely additive and is a separate task.
+## **The two blockers this module used to state here are both gone.**
+## `pcb/formats/kicad.readPcb` exists now, so a board reaches this module
+## from a real file, not only hand-built in Nim; and `Zone.fills` (added the
+## same stage) carries the *derived* fill geometry -- `extrudeZones` meshes
+## it directly instead of refusing unconditionally. It still refuses **per
+## zone** when a particular zone's `fills` is empty (an unfilled board, or
+## one read before a fill pass ran) -- meshing `Zone.outline` in that case
+## would model a plane without its thermal reliefs and clearances, the class
+## of wrong answer that looks plausible, and refusing beats guessing is the
+## standing rule in `spice/CLAUDE.md`. `extrudeCopper` skips every `ckZone`
+## record for the same reason from the other direction: `graph.addZone`
+## already pushes one onto each of the zone's layers as the *authored*
+## outline, and meshing that too would both get a plane's shape wrong and
+## double-count its copper against `extrudeZones`' own regions.
 ##
 ## What *does* work: `extrudeCopper` over tracks, pads and filled areas, and
 ## `extrudeStackup` for the dielectric between copper layers. A stroked track
@@ -30,7 +30,7 @@
 ## component bodies as thermal masses, via barrels as conductors (a via is a
 ## `Hole`, not a `Copper`, and bridging the annular rings is future work).
 
-import std/tables
+import std/[strutils, tables]
 import ../pcb
 import ../pcb/geometry as geo
 import ./types
@@ -109,6 +109,15 @@ proc extrudeCopper*(pcb: Pcb, spec = defaultExtrudeSpec()): seq[Region] =
     if not wanted(spec, layer.name): continue
     let band = bands.getOrDefault(layer.name, (lo: 0.0, hi: 35e-6))
     for i, cu in layer.copper:
+      if cu.kind == ckZone: continue
+        # `graph.addZone` pushes a `ckZone` record of the *authored* outline
+        # onto every layer the zone covers, and this loop would otherwise
+        # mesh that outline as solid copper -- omitting every thermal
+        # relief and clearance a real pour has, and doing so silently, since
+        # nothing here would say so. The real copper is `extrudeZones`'
+        # `ckFill` records (`Zone.fills`, landed on the same layers through
+        # `graph.addZoneFill`); meshing both would also double-count a
+        # plane's copper on top of getting its shape wrong.
       result.add Region(
         name: layer.name & "/" & $i,
         material: spec.conductor.name,
@@ -144,14 +153,42 @@ proc extrudeStackup*(pcb: Pcb, spec = defaultExtrudeSpec()): seq[Region] =
     z += t
 
 proc extrudeZones*(pcb: Pcb, spec = defaultExtrudeSpec()): seq[Region] =
-  ## **Refuses.** `Zone` holds only its authored outline; meshing that as
-  ## solid copper models a plane without its reliefs and clearances. Blocked
-  ## until `Zone.fills` exists -- see the module note.
-  if pcb.zones.len == 0: return
-  raise newException(FemError,
-    "cannot extrude " & $pcb.zones.len & " zone(s): pcb.Zone models only the " &
-    "authored outline, not the filled copper (needs Zone.fills). Meshing the " &
-    "outline as a solid plane would omit every thermal relief and clearance.")
+  ## One `Region` per filled polygon in `Zone.fills`, refusing **per zone**
+  ## rather than for the whole call when a zone has none. `Zone.fills` is
+  ## additive (a `formats/kicad` reader populates it from `filled_polygon`;
+  ## a board built by hand in Nim, or one read before a fill pass ran, has
+  ## none), and meshing `Zone.outline` in its place would model a plane
+  ## without its thermal reliefs and clearances -- the class of wrong answer
+  ## that *looks* plausible, which is exactly what this module exists to
+  ## refuse rather than produce. A board with a mix of filled and unfilled
+  ## zones gets `Region`s for the filled ones and one combined refusal
+  ## naming every zone that has none, so the caller sees every problem at
+  ## once instead of fixing one zone and re-running into the next.
+  let bands = zBands(pcb)
+  var unfilled: seq[string]
+  for z in pcb.zones:
+    if z.fills.len == 0:
+      unfilled.add(if z.name.len > 0: z.name else: "<unnamed>")
+      continue
+    for i, cu in z.fills:
+      let band = bands.getOrDefault(cu.layer.name, (lo: 0.0, hi: 35e-6))
+      result.add Region(
+        name: "zone/" & z.name & "/" & $i,
+        material: spec.conductor.name,
+        net: cu.net,
+        layer: cu.layer.name,
+        zLow: band.lo, zHigh: band.hi,
+        outline: shapeOutline(cu.shape))
+  if unfilled.len > 0:
+    raise newException(FemError,
+      "cannot extrude " & $unfilled.len & " zone(s) with no fill: " &
+      unfilled.join(", ") & ". pcb.Zone models only the authored outline in " &
+      "`outline`/`areas`; the filled copper (thermal reliefs, clearances, " &
+      "priority against other zones) lives in `Zone.fills`, populated by " &
+      "`formats/kicad.readPcb` from `(filled_polygon)` or left empty on a " &
+      "board built by hand or read before a fill pass ran. Meshing the " &
+      "outline as a solid plane in its place would omit every relief and " &
+      "clearance the real pour has.")
 
 proc problemFromPcb*(pcb: Pcb, kind: ProblemKind,
                      spec = defaultExtrudeSpec()): FemProblem =

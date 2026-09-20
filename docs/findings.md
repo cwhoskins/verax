@@ -296,14 +296,20 @@ prerequisites — the dependencies are stated where they exist.
     `pcb/graph.dielectricBetween` and a trace width read off geometry, or
     stated — closed form disagreeing with a fab's field solver is its own
     hazard, worth flagging in whatever role/quantity ships it rather than
-    presenting as exact. **The harder prerequisite both of those share**:
-    `Design` holds no `Pcb` at all, and no board-file reader exists
-    (`pcb/formats/kicad.nim`/`odbpp.nim` are unwritten) — so before either
-    quantity can measure a real board, something has to both read one in and
-    attach it to a `Design`. `EvalContext.scratch` (`contract/evaluate.nim`)
-    is the declared, already-typed route for a `Pcb` to reach an evaluator
-    without `contract` gaining an edge to `pcb`; nothing about registering
-    these three quantities early forecloses it.
+    presenting as exact. **Half the prerequisite is now done**:
+    `pcb/formats/kicad.nim` reads a real `.kicad_pcb` — byte-exact
+    round-trip for an unmodified board, `stackup`/`epsilonR` and trace
+    geometry both reachable off the resulting `Pcb` (`pcb/formats/odbpp.nim`
+    is still unwritten, and out of scope for this). **What remains is the
+    other half, materially more actionable now**: `Design` still holds no
+    `Pcb` at all, so a board read in has nowhere to attach to a design and
+    nothing wires the two together yet. `EvalContext.scratch`
+    (`contract/evaluate.nim`) is the declared, already-typed route for a
+    `Pcb` to reach an evaluator without `contract` gaining an edge to `pcb`
+    — the same slot `Pcb.source` itself already uses, one layer down, to
+    hold `formats/kicad`'s own round-trip state without `pcb/` gaining an
+    edge to a format module. Nothing about registering these three
+    quantities early forecloses it.
 
 ---
 

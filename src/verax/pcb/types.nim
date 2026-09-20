@@ -120,6 +120,14 @@ type
     totalThickness*: Nm
     copperFinish*: string
     attrs*: OrderedTable[string, string]
+    rev*: int
+      ## Whole-block granularity, deliberately **not** per-`StackEntry`:
+      ## `(setup (stackup))` is a block whose child order *is* the physical
+      ## stack (finding 3), so a per-entry override could let entries be
+      ## reordered in the model without the written block reflecting it --
+      ## the KiCad writer refuses on any stackup edit regardless (see the
+      ## refusal table in `formats/kicad.nim`), which is what this field is
+      ## actually for: detecting that an edit happened, not describing it.
 
   PcbLayer* = ref object
     name*: string
@@ -143,8 +151,21 @@ type
       ## Copper features in source order -- see the ordinal warning above.
     shapes*: seq[Shape]
       ## Non-copper graphics: silkscreen, mask, paste, fabrication, docs.
+      ## Mutate only through `graph.addShape`/`setShape`/`removeShape` --
+      ## direct `seq` access (how this field was written before a format
+      ## writer existed) cannot be dirty-tracked, and `formats/kicad.writePcb`
+      ## does not regenerate graphics at all (see `Copper.rev` below), so an
+      ## edit that bypasses those three procs is invisible to the writer and
+      ## silently kept stale on the next write.
     pcb*: Pcb
     attrs*: OrderedTable[string, string]
+    rev*: int
+      ## Stamped by `graph.touch(pcb, layer)` on every mutation that reaches
+      ## this layer (a copper add/remove, a shape edit). Compared against
+      ## `KicadDoc.snapshotRev` by `writePcb` to decide whether the layer's
+      ## graphics changed since the read -- and since the writer cannot
+      ## regenerate graphics, a change here is exactly what turns into a
+      ## refusal rather than a silently-stale write.
 
   Copper* = ref object
     ## One conductive (or, when `negative`, clearance-defining) feature.
@@ -164,15 +185,28 @@ type
     sourceIndex*: int
       ## Ordinal within `layer.copper` as read (ODB++ `FID` feature number).
     attrs*: OrderedTable[string, string]
+    rev*: int
+      ## See `PcbLayer.rev`. `formats/kicad.nim`'s correctness net compares a
+      ## regenerated `(segment)`/`(arc)`/`(via)` against this rather than
+      ## trusting `rev` alone, so a direct field write that bypassed
+      ## `graph.touch` is still caught -- but `rev` is still what decides
+      ## *whether to run that comparison at all* on the fast path.
 
   Zone* = ref object
     ## An authored copper pour, plane, or keepout/rule area.
     ##
-    ## Only the *authored* outline is modelled. Derived fill geometry (KiCad
-    ## `filled_polygon`, ODB++ `SNT PLN` surfaces) is deliberately out of
-    ## scope for now; adding a `fills` field later is purely additive. Until
-    ## then, plane-shape, return-path and power-integrity analysis cannot be
-    ## answered from this model.
+    ## The *authored* outline (`outline`, `areas`) and the *derived* fill
+    ## (`fills`) are both modelled, and are not the same claim: `outline` is
+    ## what the design says to pour, `fills` is what a router or `kicad-cli`
+    ## actually poured after clearances, thermal reliefs and priority against
+    ## other zones -- KiCad's `filled_polygon`, ODB++'s `SNT PLN` surface.
+    ## `fills` is empty on an unfilled board (nothing has run a fill pass)
+    ## and on a keepout (nothing is ever poured there); a caller must treat
+    ## empty as "not answerable" and never as "no copper", exactly as
+    ## `fem/extrude.extrudeZones` does -- meshing `outline` as if it were
+    ## `fills` would model a solid slab where the real board has a Swiss
+    ## cheese of clearances and thermal spokes, the class of wrong answer
+    ## that looks plausible.
     name*: string
     net*: Net
     isKeepout*: bool
@@ -182,8 +216,17 @@ type
     layers*: seq[PcbLayer]
       ## Multi-layer zones are normal in both formats.
     areas*: seq[Copper]
-      ## One `ckZone` record per layer.
+      ## One `ckZone` record per layer, holding the *authored* outline --
+      ## see `graph.addZone`'s "one hazard" note on why `extrudeCopper` must
+      ## skip these rather than meshing them as if they were real copper.
+    fills*: seq[Copper]
+      ## Derived fill geometry: one `ckFill`/`shFill` record per filled
+      ## polygon a reader found, added through `graph.addZoneFill` so each
+      ## lands in `Pcb.netCopper` and the spatial index exactly like any
+      ## other copper feature -- a plane-shape or return-path query should
+      ## not have to know a fill came from a zone rather than a track.
     attrs*: OrderedTable[string, string]
+    rev*: int
 
   Hole* = ref object
     ## A drilled hole: via, plated component hole, or non-plated mounting
@@ -215,6 +258,7 @@ type
     tool*: string
       ## ODB++ `.bit` / tool number.
     attrs*: OrderedTable[string, string]
+    rev*: int
 
   Placement* = ref object
     ## A component instance placed on the board.
@@ -248,6 +292,7 @@ type
     attrs*: OrderedTable[string, string]
       ## KiCad `property` nodes / ODB++ `PRP` records and `BOM DATA` block.
       ## This is where per-part BoM data from the board file lands.
+    rev*: int
 
   Outline* = ref object
     ## Board boundary and cutouts.
@@ -261,6 +306,14 @@ type
       ## More than one for a panel or a deliberately disjoint board.
     stitchTolerance*: Nm
     attrs*: OrderedTable[string, string]
+    rev*: int
+      ## A re-stitched outline is written back as a unit, not per-piece --
+      ## KiCad has no outline node to modify in the first place (it is
+      ## stitched from `Edge.Cuts` graphics), so any edit here is out of
+      ## scope for `formats/kicad.writePcb` regardless of `rev`; the field
+      ## exists so `touch` has somewhere to record the change happened at
+      ## all, for whichever format eventually does write it back (ODB++'s
+      ## `profile` is a direct node, unlike KiCad's stitched one).
 
   Pcb* = ref object
     name*: string
@@ -286,8 +339,31 @@ type
       ##   keep the raw one in `attrs` before registering here.
     index*: SpatialIndex
     origin*: Point
-      ## Source-file datum, retained for round-tripping.
+      ## Source-file datum, retained for round-tripping. KiCad's
+      ## `(setup (aux_axis_origin x y))`; `nm(0), nm(0)` when the source
+      ## states none.
     attrs*: OrderedTable[string, string]
+    source*: RootRef
+      ## Opaque, format-owned round-trip state -- a parsed `KicadDoc`
+      ## (`formats/kicad.nim`) today, an eventual ODB++ equivalent later.
+      ## `pcb/` never reads this field; only the format module that set it
+      ## downcasts it back. Same type-erasure move, for the same layering
+      ## reason, as `contract/evaluate.EvalContext.scratch`: `pcb/graph` must
+      ## not gain an edge to a format module just to hold onto what that
+      ## module needs to write the board back out.
+    rev*: int
+      ## Monotonic mutation counter, incremented by `graph.touch` on every
+      ## change and stamped into the mutated entity's own `rev` at the same
+      ## time -- so "has `e` changed since time T" is just `e.rev > T`, which
+      ## also identifies an entity *created* since T for free, with no
+      ## separate flag: a brand-new `Placement` has `rev` set to whatever
+      ## `pcb.rev` became at the moment it was added, which is by
+      ## construction greater than the `T` any earlier snapshot recorded.
+      ## `formats/kicad.readPcb` snapshots this value at the end of a read
+      ## (`KicadDoc.snapshotRev`) and `writePcb` compares against it to
+      ## decide whether anything changed at all -- `pcb.rev == snapshotRev`
+      ## is the fast path that skips the whole regenerate-and-compare walk
+      ## and just copies the original bytes.
 
 proc newSpatialIndex*(cell = mm(1.0), maxCells = 256): SpatialIndex =
   SpatialIndex(cell: cell, origin: pt(nm(0), nm(0)), maxCells: maxCells,

@@ -112,12 +112,22 @@ drag in `osproc` and the whole analysis tree.
 
 Two of those are worth stating plainly because it is easy to assume otherwise:
 
-* **`pcb/` does not participate in verification today.** Nothing in `src/`
-  imports it. It is a complete data model with no readers yet, waiting on
-  `formats/kicad.nim` and `formats/odbpp.nim`. When those land, the join is
-  already designed: a `Pcb` *owns* a `Netlist` and every PCB entity holds a
-  forward reference into it, so `netlist/types.nim` stays geometry-free and a
-  layout analysis can still walk from a trace to the pins it connects.
+* **`pcb/` has a real reader now, but still does not participate in
+  *verification*.** `formats/kicad.nim` reads and writes `.kicad_pcb`
+  (byte-exact for an unmodified board; a bounded set of edits -- tracks,
+  vias, nets, zone scalars, a placement's position/side/reference/pad nets
+  -- regenerated for a modified one, everything else refused by name rather
+  than fabricated or silently dropped). `formats/odbpp.nim` is still
+  unwritten. `fem/extrude.nim` imports `pcb` (see the `fem/` row above), so
+  a board reaches a field solve from a real file today -- but nothing in the
+  *verification* path (`verify.readiness`, the contract evaluators) reads a
+  `Pcb` yet. The join for that is already designed, not yet wired: a `Pcb`
+  *owns* a `Netlist` and every PCB entity holds a forward reference into it,
+  so `netlist/types.nim` stays geometry-free and a layout analysis can walk
+  from a trace to the pins it connects in one hop; the route in for a
+  `contract`-side check is `EvalContext.scratch`, the same type-erased slot
+  `Pcb.source` itself uses to hold `formats/kicad`'s round-trip state
+  without `pcb/` gaining an edge back to a format module.
 * **`parts/` is used by design libraries, not by the pipeline.** A
   parameterized module states a `CapRequest` carrying a value and a *use*; a
   board supplies a `PartPolicy` that answers with a `Choice`; `applyChoice`
@@ -992,9 +1002,12 @@ legible.
   figures are deliberately **not** passed to the deck as `.options temp`, which
   would change how every semiconductor behaves and silently move every number
   this repo has measured.
-* **`pcb/Zone` models only the authored outline.** Derived fill geometry is out
-  of scope, so plane-shape, return-path and power-integrity analysis are not
-  answerable from that model yet.
+* **`pcb/Zone` models both the authored outline and, now, the derived fill**
+  (`Zone.fills`, populated by `formats/kicad.readPcb` from `(filled_polygon)`).
+  `fills` is empty on an unfilled board or a keepout, and a caller must treat
+  empty as "not answerable", never "no copper" — plane-shape, return-path
+  and power-integrity analysis are answerable once a board has been read
+  with fills present, and `fem/extrude.extrudeZones` is the first consumer.
 * **Reading an XSPICE `A` line back into ports is not supported** and cannot be
   without the model's `.ifs` — with `%type` omitted the node count per port is
   unknowable from the deck alone. Writing works.

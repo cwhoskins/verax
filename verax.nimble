@@ -46,3 +46,14 @@ task verify, "check every design under designs/ and every template":
 task guide, "print the authoring guide":
   exec "nim c --hints:off --path:src --out:bin/verax src/verax/cli.nim"
   exec "bin/verax guide"
+
+task roundtrip, "sweep /usr/share/kicad/demos for byte-exact kicad_pcb round-tripping":
+  # `-d:release`, not `nim c -r`'s debug default: a debug-mode parse of the
+  # 81 MB jetson-agx-thor-baseboard.kicad_pcb is minutes, and this task
+  # exists precisely to sweep that file along with the rest of the corpus.
+  # A `-d:release` compile+run of the whole 18-board corpus is the ~45 s this
+  # is budgeted at; `nim c -r` (debug) is not.
+  exec "nim c -d:release --hints:off --path:src -r examples/pcb_roundtrip.nim"
+
+task kicadcheck, "kicad-cli acceptance gate for regenerated (edited) output":
+  exec "nim c -d:release --hints:off --path:src -r examples/pcb_editcheck.nim"
