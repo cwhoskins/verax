@@ -235,6 +235,38 @@ test "a KiCad 10 board with no net declarations still resolves nets by name":
   check pcb.netlist.nets.hasKey("VCC")
   check pcb.copperOn("VCC").len == 1
 
+test "trace extraction runs end to end from a real file":
+  # `trim.kicad_pcb` carries a real stackup (`epsilon_r 4.5`, `loss_tangent
+  # 0.02` on its core dielectric) and real copper -- two `(segment)`s on net
+  # `/CLK-D1` and one `(via)` on `GND` (`pcb/CLAUDE.md`'s worked example for
+  # this fixture). This is a smoke test, not a numeric one: the point is
+  # that a real board's geometry and stackup reach `extractRoutes` without
+  # raising, and that the pieces the fixture is known to carry show up as
+  # the right node kinds.
+  let pcb = readPcb(FixturePath)
+  check pcb.stackup != nil
+  var core: StackEntry = nil
+  for e in pcb.stackup.entries:
+    if e.material != nil and e.material.epsilonR > 0.0: core = e
+  check core != nil
+  check core.material.epsilonR == 4.5
+  check core.material.lossTangent == 0.02
+
+  let clkNet = pcb.netlist.nets["/CLK-D1"]
+  let clkGraphs = extractRoutes(pcb, clkNet)
+  check clkGraphs.len >= 1
+  for g in clkGraphs:
+    check g.net == clkNet
+
+  let gndNet = pcb.netlist.nets["GND"]
+  let gndGraphs = extractRoutes(pcb, gndNet)
+  check gndGraphs.len >= 1
+  var sawVia = false
+  for g in gndGraphs:
+    for n in g.nodes:
+      if n.kind == rnVia: sawVia = true
+  check sawVia
+
 test "RoyalBlue54L-Feather-shaped corruption is refused by readPcb":
   let src = "(kicad_pcb\n\t(version 20241229)\n\t(general\n\t\t(curved_edges no)filter_ratio 0.9)\n\t)\n\t(uuid \"x\")\n)\n(footprint \"stray\")\n"
   let tmp = getTempDir() / "verax_pcb_kicad_corrupt.kicad_pcb"

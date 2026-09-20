@@ -55,5 +55,12 @@ task roundtrip, "sweep /usr/share/kicad/demos for byte-exact kicad_pcb round-tri
   # is budgeted at; `nim c -r` (debug) is not.
   exec "nim c -d:release --hints:off --path:src -r examples/pcb_roundtrip.nim"
 
+task traces, "sweep /usr/share/kicad/demos for trace extraction and reference-plane resolution":
+  # Same `-d:release` reasoning as `task roundtrip`: this walks the same
+  # corpus (jetson-agx-thor-baseboard.kicad_pcb alone is 81 MB) and does
+  # real work per net -- a debug build would not finish in a budget worth
+  # running routinely.
+  exec "nim c -d:release --hints:off --path:src -r examples/pcb_traces.nim"
+
 task kicadcheck, "kicad-cli acceptance gate for regenerated (edited) output":
   exec "nim c -d:release --hints:off --path:src -r examples/pcb_editcheck.nim"

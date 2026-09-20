@@ -71,6 +71,23 @@ proc toMm*(a: Nm): float {.inline.} = a.raw.float / NmPerMm.float
 proc toMil*(a: Nm): float {.inline.} = a.raw.float / NmPerMil.float
 proc toInch*(a: Nm): float {.inline.} = a.raw.float / NmPerInch.float
 
+proc toMetres*(a: Nm): float {.inline.} =
+  ## Nanometres as a plain metre-valued `float`. The conversion
+  ## `fem/extrude.nim` used to open-code privately (`a.raw.float * 1e-9`) as
+  ## its own local `metres` proc; promoted here once `pcb/geometry.length`
+  ## needed the identical factor, so the two do not silently drift apart.
+  ##
+  ## Returns a bare `float`, not a new distinct type: `findings.md` §18 asked
+  ## whether a `Metres` type belongs here or in `verax/units`, and the answer
+  ## this stage lands on is neither -- a computed length is a real number
+  ## used in ordinary arithmetic (summed, divided by a velocity, squared into
+  ## an area), `pcb/units.Nm` stays integer nanometres for the geometry it
+  ## already serves, and `verax/units` stays electrical quantities
+  ## (`Volts`/`Ohms`/...), which a board length is not. Adding a third unit
+  ## type to carry one already-scaled `float` around would buy type safety
+  ## nothing else here has and cost every consumer an extra conversion.
+  a.raw.float * 1e-9
+
 proc toNm*(v: float, u: LengthUnit): Nm =
   ## Converts a source-file value in unit `u` to canonical nanometres.
   case u

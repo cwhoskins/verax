@@ -273,43 +273,56 @@ prerequisites — the dependencies are stated where they exist.
 18. **A differential pair's skew and impedance claims have nothing to
     measure against** (§72). `contract/evaluators/diff.nim` registers
     `intra_pair_skew`, `inter_pair_skew` and `z_diff` and every one of them
-    declines every claim — deliberately, so the quantities are discoverable
-    (`verax quantities`) and a claim naming one gets a true reason rather than
-    "no evaluator produces X" — but nothing backs them yet. This is a
-    different gap from §66's: §66 is RF *simulation* (a two-port S-parameter
-    device and evaluator, for insertion loss/isolation/VSWR on an already-laid
-    trace); this is board *geometry* — none of it exists yet either, in
-    either direction.
+    still declines every claim — but the two halves that used to be entirely
+    missing are now both built, as a *library* layer under `pcb/`, and the
+    gap has narrowed to exactly one thing: nothing wires a `Pcb` into a
+    `Design` or into this evaluator yet.
 
-    What each needs, roughly cheapest first. **Trace length**: `pcb/geometry`
-    has `flatten(Path)` and `distance(a, b)` and an arc already carries
-    `radius`/`sweep`, so summing segment and arc lengths over one
-    `Copper`/`ckTrack` is a short pure function; the harder half is stitching
-    a net's fragments end to end from `pcb/index`'s spatial candidates into
-    one pin-to-pin path, since nothing today joins copper into a route. A
-    `Metres` type does not obviously belong in `verax/units` (electrical
-    quantities) or stay in `pcb/units.Nm` (integer nanometres, geometry) —
-    that choice wants making before `intra_pair_skew`/`inter_pair_skew` can
-    report a number, since propagation delay is length over a velocity the
-    stackup's `epsilonR` already gives. **Z0**: a closed-form microstrip or
-    edge-coupled-differential formula (Hammerstad-Jensen or IPC-2141) against
-    `pcb/graph.dielectricBetween` and a trace width read off geometry, or
-    stated — closed form disagreeing with a fab's field solver is its own
-    hazard, worth flagging in whatever role/quantity ships it rather than
-    presenting as exact. **Half the prerequisite is now done**:
-    `pcb/formats/kicad.nim` reads a real `.kicad_pcb` — byte-exact
-    round-trip for an unmodified board, `stackup`/`epsilonR` and trace
-    geometry both reachable off the resulting `Pcb` (`pcb/formats/odbpp.nim`
-    is still unwritten, and out of scope for this). **What remains is the
-    other half, materially more actionable now**: `Design` still holds no
-    `Pcb` at all, so a board read in has nowhere to attach to a design and
-    nothing wires the two together yet. `EvalContext.scratch`
-    (`contract/evaluate.nim`) is the declared, already-typed route for a
-    `Pcb` to reach an evaluator without `contract` gaining an edge to `pcb`
-    — the same slot `Pcb.source` itself already uses, one layer down, to
-    hold `formats/kicad`'s own round-trip state without `pcb/` gaining an
-    edge to a format module. Nothing about registering these three
-    quantities early forecloses it.
+    **Both closed.** `pcb/trace.nim` stitches a net's copper into a
+    `RouteTree` that mirrors physical branching (a driver feeding two
+    receivers through a Y is one shared trunk edge and two branch edges, not
+    two independent point-to-point runs), with a length in metres
+    (`geometry.length`, exact — not routed through `flatten`, whose chord
+    tolerance would bias every arc short) and a resolved return path per run
+    (`ReferencePath`: which plane, its coverage, the intervening dielectric's
+    thickness-weighted `er`/`tand`). The `Metres` question this entry used to
+    leave open is answered by *not* adding a type: a computed length is a
+    plain `float` metres (`units.toMetres`), `pcb/units.Nm` stays integer
+    nanometres for geometry, `verax/units` stays electrical — see
+    `pcb/CLAUDE.md`'s own section for why a fourth unit type buys nothing
+    here. `pcb/impedance.nim` is the closed-form cross-section — quasi-static
+    Hammerstad-Jensen microstrip (with the thickness correction and a
+    solder-mask `er` correction for a covered trace) and IPC-2141 stripline,
+    plus odd/even-mode coupled-line impedance, RLGC per metre with skin and
+    roughness loss, and propagation. `pcb/tline.nim` joins the two: per-edge
+    Z0/loss/delay, a cascaded ABCD, and an `SParams` (reusing
+    `verax/touchstone`'s type and row-major convention, the one new edge
+    `pcb/` gains outside its own dependency tree — `touchstone` is a leaf, so
+    the dependency order is undisturbed). Roughness and conductor
+    resistivity have no source in any board format this library reads, so
+    both default (smooth copper, annealed copper at 20 degC) and
+    `tline.characterize` records both defaults as `Assumption`s naming the
+    edge they apply to, on the same discipline every `spice/models` expander
+    follows for an invented input.
+
+    **What remains is narrower still.** `Design` holds no `Pcb` at all, so a
+    board read in has nowhere to attach to a design and nothing wires the two
+    together. `EvalContext.scratch` (`contract/evaluate.nim`) is the
+    declared, already-typed route for a `Pcb` to reach an evaluator without
+    `contract` gaining an edge to `pcb` — the same slot `Pcb.source` itself
+    already uses, one layer down, to hold `formats/kicad`'s own round-trip
+    state without `pcb/` gaining an edge to a format module. Once that
+    wiring exists, `diff.nim`'s three evaluators are a thin adapter over code
+    that already exists: `trace.traceTree` + `tline.characterize`/`skew` for
+    `intra_pair_skew`/`inter_pair_skew`, and `tline.specFor` +
+    `impedance.z0Differential` for `z_diff` — none of it is an open question
+    about what the numbers even are anymore, only about where a `Pcb` comes
+    from at evaluation time. Two things that adapter will still have to
+    invent on its own, not answered by this stage: which two nets/pins *are*
+    a differential pair (a role parameter, not inferable from copper alone),
+    and the closed-form-vs-field-solver accuracy caveat `pcb/impedance.nim`'s
+    own doc comment already states, which a claim built on this evaluator
+    will need to carry forward rather than present as exact.
 
 ---
 
@@ -614,6 +627,59 @@ Both turned up while measuring why `nimble test` takes ~7 minutes (see the
     `repairTerminalClearance` to move a whole composite unit as one rigid
     body when every member is otherwise locked, the way `recoverRouting`'s
     candidate search already does.
+
+31. **`pcb/formats/kicad.nim` preserves several fields byte-exact that it
+    does not model** (§73). Deliberate for round-trip fidelity, but each of
+    these is data the file already carries that nothing in `verax/pcb` can
+    ask a question about yet. Ranked by what would actually feed an
+    analysis, not by ease of parsing:
+
+    **Pad `pintype`/`pinfunction`.** `pintype` is KiCad's schematic-derived
+    electrical type per pad (`passive`, `power_in`, `bidirectional`,
+    `no_connect`, ...) and is not read at all today -- `grep -c pintype
+    src/verax/pcb/formats/kicad.nim` is 0. A `Copper(ckLand)` built by a bare
+    `readPcb` (no netlist import alongside it) carries a `Pin` with no
+    `kind`, so nothing ERC-shaped can run on a board-only import: a floating
+    input or a shorted power/ground pair is invisible. This is the one
+    with real leverage -- mapping `pintype` onto `Pin.kind` is a few lines
+    at the same call site that already reads `(pad ...)`
+    (`src/verax/pcb/formats/kicad.nim` around the pad mapper), and it is
+    what would let `verax/analysis`'s existing ERC-style checks run against
+    a board that never had a hand-authored netlist behind it.
+
+    **`net_tie_pad_groups`.** Also unread (0 hits). This is the record that
+    makes two pads on *different* nets a legitimate touch -- a crystal
+    case, a differential-pair net tie -- rather than a short. Whatever
+    eventually builds a copper-adjacency or short-circuit check on top of
+    `pcb/index`'s spatial candidates will misfire on every net tie unless
+    this is modeled before that check is, not after.
+
+    **Zone keepout restriction flags.** `Zone.isKeepout` is set
+    (`kicad.nim:774`, `d.child(node, "keepout") >= 0`) but the *which*
+    -- `(keepout (tracks not_allowed) (vias ...) (pads ...) (copperpour
+    ...) (footprints ...))`, each independently `allowed`/`not_allowed` --
+    is preserved-only. `isKeepout` alone cannot answer "would a via here
+    violate this keepout"; that needs the per-type flags.
+
+    **Via `tenting`, 3D `(model ...)` refs, component height, teardrops.**
+    Lower priority, unread today: tenting (`front`/`back`/`none`) is a
+    DFM/reliability question (solder-mask-over-via); `(model ...)` and
+    footprint height feed mechanical-clearance/enclosure-fit checks and
+    would give `fem` a thermal mass it has nowhere to source today; teardrops
+    are a stress-relief signal at pad/track junctions, relevant mainly for
+    vibration/thermal-cycling designs.
+
+    **`(title_block ...)`.** Cheap, administrative only. The title/date/
+    revision/company fields are walked past in the canonical
+    section-ordering list (`kicad.nim:924`) but never read into `Pcb.name`
+    or `attrs` -- free to add, no engineering content.
+
+    **Not a gap in this reader, and worth stating so it isn't re-discovered
+    as one**: netclasses and design rules (`clearance`, `track_width`,
+    `via_diameter` per class) are not in `.kicad_pcb` at all -- they live in
+    the sibling `.kicad_pro` JSON file, a different format `kicad.nim` does
+    not touch. That file, not an extension of this one, is the real
+    prerequisite for a genuine trace-width/clearance DRC pass.
 
 ---
 

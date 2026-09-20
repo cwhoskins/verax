@@ -57,7 +57,10 @@ type
 
   ZBand = tuple[lo, hi: float]
 
-proc metres(a: Nm): float {.inline.} = a.raw.float * 1e-9
+proc metres(a: Nm): float {.inline.} = toMetres(a)
+  ## Was `a.raw.float * 1e-9` open-coded here before `pcb/units.toMetres`
+  ## existed to name it once; kept as a local alias so every call site below
+  ## stays unchanged.
 
 proc defaultExtrudeSpec*(): ExtrudeSpec =
   ## Copper and FR-4 with textbook constants, so a caller can extrude a board

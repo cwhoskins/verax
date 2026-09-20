@@ -162,3 +162,53 @@ test "flattening an arc stays within the chord tolerance":
   check pts.len > 8
   for p in pts:
     check approx(distance(pt(mm(0.0), mm(0.0)), p), mm(10.0).raw.float, 10.0)
+
+test "a quarter-circle arc measures pi*r/2, exactly, not through flatten":
+  # A segment is exact by construction (`distance`); an arc's `length` must
+  # be too, or summing thousands of them into a net's total would carry a
+  # systematic short bias -- a chord always undershoots the arc it spans.
+  let r = mm(5.0)
+  let quarter = arc(pt(mm(0.0), mm(0.0)), r, deg(0.0), deg(90.0))
+  let want = PI * r.toMm / 2.0 / 1000.0    # metres
+  check approx(length(quarter), want, 1e-9)
+
+  # A full circle is four quarters, and the direction of the sweep (CW vs
+  # CCW) must not change the magnitude.
+  let full = arc(pt(mm(0.0), mm(0.0)), r, deg(0.0), deg(360.0))
+  check approx(length(full), 2.0 * PI * r.toMm / 1000.0, 1e-9)
+  let reverse = arc(pt(mm(0.0), mm(0.0)), r, deg(90.0), deg(-90.0))
+  check approx(length(reverse), want, 1e-9)
+
+test "a segment's length is its endpoint distance, in metres":
+  let s = seg(pt(mm(0.0), mm(0.0)), pt(mm(3.0), mm(4.0)))
+  check approx(length(s), 0.005, 1e-9)    # 3-4-5 triangle, 5mm = 0.005m
+
+test "a path's length sums its curves":
+  let p = path(@[seg(pt(mm(0.0), mm(0.0)), pt(mm(3.0), mm(0.0))),
+                seg(pt(mm(3.0), mm(0.0)), pt(mm(3.0), mm(4.0)))])
+  check approx(length(p), 0.007, 1e-9)
+
+test "an arc's exact length differs from its flattened polyline, by less than the chord tolerance":
+  let r = mm(10.0)
+  let a = arc(pt(mm(0.0), mm(0.0)), r, deg(0.0), deg(180.0))
+  let exact = length(a)
+  var polyLen = 0.0
+  let pts = flatten(a, DefaultFlattenTol)
+  for i in 0 ..< pts.len - 1:
+    polyLen += distance(pts[i], pts[i + 1]) * 1e-9
+  # The polyline is strictly shorter (a chord undershoots its arc) but by
+  # less than the sagitta-bounding tolerance times the point count -- not
+  # equal, and not off by anything close to the tolerance summed unscaled.
+  check polyLen < exact
+  check exact - polyLen < DefaultFlattenTol.toMetres * pts.len.float
+
+test "endpoints reads a stroked shape's ends and raises on anything else":
+  let s = stroke(polyline([pt(mm(0.0), mm(0.0)), pt(mm(5.0), mm(0.0)),
+                           pt(mm(5.0), mm(5.0))]), mm(0.2))
+  let (a, b) = endpoints(s)
+  check a == pt(mm(0.0), mm(0.0))
+  check b == pt(mm(5.0), mm(5.0))
+
+  let filled = fill(rectPolygon(mm(1.0), mm(1.0)))
+  expect(GeometryError):
+    discard endpoints(filled)

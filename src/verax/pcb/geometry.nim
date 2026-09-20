@@ -329,6 +329,46 @@ proc flatten*(c: Curve, tol = DefaultFlattenTol): seq[Point] =
       let f = i.float / steps.float
       result.add(pointOnArc(c, c.startAngle + c.sweep * f))
 
+proc length*(c: Curve): float =
+  ## Metres of centreline, exact. Deliberately **not** routed through
+  ## `flatten`: a chord is always shorter than the arc it subtends, so
+  ## approximating an arc's length by summing its 2 micron-tolerance
+  ## polyline biases every arc short by a real (if small) amount -- fine for
+  ## a hit test, wrong for a length that gets summed over a whole net and
+  ## fed into a propagation-delay calculation. `cvSeg` is the straight-line
+  ## `distance`; `cvArc` is the textbook `radius * |sweep in radians|`. Both
+  ## convert nanometres to metres with the same `1e-9` factor `units.toMetres`
+  ## uses, inlined here because `distance` already returns a bare
+  ## nanometre-valued `float`, not an `Nm`, so there is nothing typed to hand
+  ## `toMetres` without a pointless round trip through `nm(int64(...))`.
+  case c.kind
+  of cvSeg:
+    distance(c.a, c.b) * 1e-9
+  of cvArc:
+    c.radius.raw.float * abs(c.sweep.toRadians) * 1e-9
+
+proc length*(p: Path): float =
+  ## Sum of every curve's length. Metres, exact, for the same reason
+  ## `length(Curve)` is.
+  for c in p.curves:
+    result += length(c)
+
+proc endpoints*(s: Shape): tuple[a, b: Point] =
+  ## The two ends of a stroked path -- what `pcb/trace.nim` needs to test
+  ## whether two track segments meet. Raises on every other shape kind: a
+  ## fill, a pad or text has no "ends", and handing back a box corner
+  ## instead of refusing would be exactly the silent-wrong-answer failure
+  ## mode `NaN`/`Issue` exist elsewhere in this codebase to prevent -- a
+  ## `Shape` has no not-found sentinel to return here, so a raise is the only
+  ## honest refusal available at this layer (`pcb/trace.nim` is where a
+  ## caller decides whether that raise becomes an `Issue`).
+  if s.kind != shStroke:
+    raise newException(GeometryError,
+      "endpoints: not a stroked shape (kind=" & $s.kind & ")")
+  if s.path.curves.len == 0:
+    raise newException(GeometryError, "endpoints: stroke has no curves")
+  (a: startPoint(s.path.curves[0]), b: endPoint(s.path.curves[^1]))
+
 proc distanceTo*(c: Curve, p: Point): float =
   ## Shortest distance from `p` to the curve, in nanometres.
   case c.kind
@@ -438,10 +478,44 @@ proc pointInRing(pts: seq[Point], p: Point): bool =
   inside
 
 proc contains*(poly: Polygon, p: Point, tol = DefaultFlattenTol): bool =
-  ## Inside the outer ring and outside every hole.
+  ## Inside the outer ring and outside every hole. Flattens fresh on every
+  ## call -- fine for the occasional point test, the wrong shape for testing
+  ## many points against the same polygon; see `FlattenedPolygon` for that
+  ## case.
   if not pointInRing(flatten(poly.outer, tol), p): return false
   for h in poly.holes:
     if pointInRing(flatten(h, tol), p): return false
+  true
+
+type
+  FlattenedPolygon* = object
+    ## A `Polygon`'s rings, flattened once and cached. `contains(Polygon,
+    ## Point)` re-flattens on every call, which is `O(circumference / tol)`
+    ## and the right cost for one point test; a reference-plane coverage
+    ## sweep tests hundreds of sample points against the *same* pour's
+    ## outline (`pcb/trace.resolveReference`), and re-flattening a zone fill
+    ## with thousands of thermal-relief vertices once per sample rather than
+    ## once per polygon was measured, against the real KiCad demo corpus, to
+    ## be the dominant cost of the whole sweep: summed over every net on
+    ## `video.kicad_pcb`, reference resolution measured at 159.6s without
+    ## this (with every other fix `pcb/trace.nim` needed already in place)
+    ## and 12.4s with it -- see `pcb/trace.sampleSideReference`'s own doc
+    ## comment for the full before/after breakdown across all three fixes
+    ## that stage made.
+    outer: seq[Point]
+    holes: seq[seq[Point]]
+
+proc flattenPolygon*(poly: Polygon, tol = DefaultFlattenTol): FlattenedPolygon =
+  result.outer = flatten(poly.outer, tol)
+  for h in poly.holes:
+    result.holes.add(flatten(h, tol))
+
+proc contains*(fp: FlattenedPolygon, p: Point): bool =
+  ## Same predicate as `contains(Polygon, Point)`, against an already-cached
+  ## flattening.
+  if not pointInRing(fp.outer, p): return false
+  for h in fp.holes:
+    if pointInRing(h, p): return false
   true
 
 proc distanceTo*(p: Path, q: Point): float =

@@ -104,7 +104,7 @@ drag in `osproc` and the whole analysis tree.
 | `spice/` | turning a netlist into something a simulator can solve, and running it | what question is being asked |
 | `analysis/` | asking a question and extracting a number from the answer | what claim the number is for |
 | `contract/` | what the circuit must do, and comparing a number against it | how any number is produced |
-| `pcb/` | the physical board: layers, copper, holes, placements, BoM | anything electrical beyond a forward reference into a `Netlist` |
+| `pcb/` | the physical board: layers, copper, holes, placements, BoM, routing and closed-form transmission-line characterization | anything electrical beyond a forward reference into a `Netlist` |
 | `parts/` | choosing a real part for a computed value | the circuit it lands in |
 | `ibis/` | reading what a vendor says a buffer does (`.ibs`: I/V curves, edge rates, package RLC) | how that behaviour gets simulated, or whether a design meets it |
 | `fem/` | stating a field problem over a board and running it through an external solver | what question the field answers |
@@ -112,22 +112,37 @@ drag in `osproc` and the whole analysis tree.
 
 Two of those are worth stating plainly because it is easy to assume otherwise:
 
-* **`pcb/` has a real reader now, but still does not participate in
-  *verification*.** `formats/kicad.nim` reads and writes `.kicad_pcb`
-  (byte-exact for an unmodified board; a bounded set of edits -- tracks,
-  vias, nets, zone scalars, a placement's position/side/reference/pad nets
-  -- regenerated for a modified one, everything else refused by name rather
-  than fabricated or silently dropped). `formats/odbpp.nim` is still
-  unwritten. `fem/extrude.nim` imports `pcb` (see the `fem/` row above), so
-  a board reaches a field solve from a real file today -- but nothing in the
-  *verification* path (`verify.readiness`, the contract evaluators) reads a
-  `Pcb` yet. The join for that is already designed, not yet wired: a `Pcb`
-  *owns* a `Netlist` and every PCB entity holds a forward reference into it,
-  so `netlist/types.nim` stays geometry-free and a layout analysis can walk
+* **`pcb/` has a real reader, a router and a closed-form solver now, but
+  still does not participate in *verification*.** `formats/kicad.nim` reads
+  and writes `.kicad_pcb` (byte-exact for an unmodified board; a bounded set
+  of edits -- tracks, vias, nets, zone scalars, a placement's
+  position/side/reference/pad nets -- regenerated for a modified one,
+  everything else refused by name rather than fabricated or silently
+  dropped); `formats/odbpp.nim` is still unwritten. `pcb/trace.nim` stitches
+  a net's copper into a routing tree that mirrors physical branching and
+  resolves each run's reference plane; `pcb/impedance.nim` solves a
+  microstrip or stripline cross-section in closed form (Hammerstad-Jensen,
+  IPC-2141); `pcb/tline.nim` joins the two into per-frequency Z0, loss,
+  propagation delay and an S-matrix. All three are read-only over a `Pcb`
+  and none of them registers a contract quantity or touches `Design` --
+  `intra_pair_skew`/`inter_pair_skew`/`z_diff` (`contract/evaluators/diff.nim`)
+  are now *computable* from a `Pcb` but still decline every claim, because
+  nothing wires a `Pcb` into a `Design` or into an evaluator yet. `fem/extrude.nim`
+  imports `pcb` (see the `fem/` row above), so a board reaches a field solve
+  from a real file today -- but nothing in the *verification* path
+  (`verify.readiness`, the contract evaluators) reads a `Pcb` yet. The join
+  for that is already designed, not yet wired: a `Pcb` *owns* a `Netlist`
+  and every PCB entity holds a forward reference into it, so
+  `netlist/types.nim` stays geometry-free and a layout analysis can walk
   from a trace to the pins it connects in one hop; the route in for a
   `contract`-side check is `EvalContext.scratch`, the same type-erased slot
   `Pcb.source` itself uses to hold `formats/kicad`'s round-trip state
-  without `pcb/` gaining an edge back to a format module.
+  without `pcb/` gaining an edge back to a format module. What that adapter
+  still needs, precisely: a `Pcb` reachable from a `Design` (nothing holds
+  one today), and a `diff.nim` evaluator that calls `trace.traceTree` +
+  `tline.characterize`/`skew` instead of declining -- both are now thin
+  wiring over code that exists, not open questions about what the numbers
+  even are.
 * **`parts/` is used by design libraries, not by the pipeline.** A
   parameterized module states a `CapRequest` carrying a value and a *use*; a
   board supplies a `PartPolicy` that answers with a `Choice`; `applyChoice`

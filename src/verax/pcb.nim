@@ -16,5 +16,8 @@ import verax/pcb/types
 import verax/pcb/graph
 import verax/pcb/index
 import verax/pcb/bom
+import verax/pcb/trace
+import verax/pcb/impedance
+import verax/pcb/tline
 
-export units, geometry, types, graph, index, bom
+export units, geometry, types, graph, index, bom, trace, impedance, tline

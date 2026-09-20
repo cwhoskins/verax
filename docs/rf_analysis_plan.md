@@ -253,19 +253,53 @@ datasheet-stated NF becomes a real contributor to a simulated cascade; if not,
 `nf_sim_db` stays honestly limited to the parts that have noise models and the
 budget's `cascade_nf_db` remains the headline.
 
-## Phase 5 — Board-derived characteristic impedance
+## Phase 5 — Board-derived characteristic impedance — **shipped**
 
-`pcb/impedance.nim`: closed-form Hammerstad-Jensen / IPC-2141 microstrip and
-stripline from a `Stackup`, making `z0` a *checkable* quantity ("this trace is
-50 Ω ±10%") and not merely an input to a solve. Gated on a `Pcb` reader
-existing — none does — and on the stackup being populated, which
-`pcb/types.nim:115-118` warns is routinely not the case on real KiCad boards.
+`pcb/impedance.nim`: closed-form Hammerstad-Jensen microstrip (with the
+thickness correction and a solder-mask correction for a covered trace) and
+IPC-2141 stripline from a `Stackup`, plus odd/even-mode coupled-line
+impedance, RLGC per metre with skin and roughness loss, and propagation —
+`z0` is now a *checkable* quantity ("this trace is 50 Ω ±10%") and not merely
+an input to a solve, at the pure-arithmetic layer. `pcb/trace.nim` is the
+other half this entry used to say was still missing: it stitches a net's
+copper into a routing tree that mirrors physical branching and resolves each
+run's reference plane (which layer, its coverage, the intervening
+dielectric's thickness-weighted `er`/`tand`) from a real `Stackup` and real
+geometry; `pcb/tline.nim` joins the two into per-edge Z0/loss/delay, a
+cascaded ABCD and an `SParams`. The dependency note above is now stale and
+corrected here: **the gate this phase was written against — "a `Pcb` reader
+existing — none does" — is open** (`formats/kicad.nim`, shipped the stage
+before this one); what was actually gating Phase 5 was routing existing at
+all, not the reader, and that gap is what this stage closed. The other half
+of the original gate, `pcb/types.nim`'s warning that a stackup is routinely
+absent on real KiCad boards, is still true and unchanged by this stage: every
+one of `pcb/trace.nim`'s reference-plane refusals (`route_no_reference`,
+`reference_unfilled`, `route_return_gap`) exists precisely because an
+unpopulated or unfilled board is the common case, not the exception, and a
+caller gets a named reason rather than an invented number.
 
-Until then a microstrip's substrate numbers are authored on the component,
-which is what makes phase 3 independent of this one. Also the natural place
-to revisit phase 0's deferred geometry-unit decision (`trace_width` etc. are
-registered with unit `""`, documented in prose as metres) if this phase ends
-up wanting typed length arithmetic.
+**Still open, narrower than before.** This landed as a *library* layer:
+`pcb/`'s hub gained `trace`/`impedance`/`tline`, but nothing here registers a
+contract quantity, attaches a `Pcb` to `Design`, adds a `microstrip`/`tline`
+device kind, or touches `formats/spice.nim` — those remain phase 3's and a
+follow-on's own surface. `contract/evaluators/diff.nim`'s `z_diff`,
+`intra_pair_skew` and `inter_pair_skew` are now *computable* (`tline.skew`,
+`tline.delayTo`, `impedance.z0Differential`) but still decline every claim
+until a `Pcb` reaches a `Design` (`EvalContext.scratch`, the same
+type-erased route `Pcb.source` already uses one layer down) and a thin
+adapter is written — see `docs/findings.md` §18 for the up-to-date account.
+Also worth carrying forward: `pcb/impedance.nim`'s asymmetric-stripline
+formula reuses the symmetric IPC-2141 form against the *total* plane spacing
+rather than Cohn's exact offset correction, and its coupled-line odd/even
+model is a lumped mutual-capacitance approximation, not a conformal-mapping
+solve — both documented as such at the point of code, and both real
+instances of the "closed-form disagreeing with a fab's field solver is its
+own hazard" caveat this plan has carried since Phase 0. Phase 0's deferred
+geometry-unit decision (`trace_width` etc. registered with unit `""`,
+documented in prose as metres) is now also settled, by *not* adding a type:
+`geometry.length`/`units.toMetres` return a bare `float` metres, and
+`pcb/CLAUDE.md` records why a fourth unit type alongside `pcb/units.Nm` and
+`verax/units` was rejected.
 
 ## Phase 6 — FEM full-wave, sequenced
 
@@ -277,10 +311,19 @@ up wanting typed length arithmetic.
 mesher → the MFEM backend → the full-wave port solve.**
 
 The interface obligation this plan carries for it is small and worth honouring
-now: `z0` and an S-matrix must be able to arrive from any of three
-provenances — authored, closed-form, `mlin`, or field-solved — through the
-same quantity names, so the solver drops in as a fourth without a vocabulary
-change.
+now: `z0` and an S-matrix must be able to arrive from any of four
+provenances — authored, closed-form (`pcb/impedance.nim`, Phase 5), `mlin`,
+or field-solved — through the same quantity names, so the solver drops in as
+a fourth without a vocabulary change. Phase 5 is what makes this obligation
+concrete rather than hypothetical: `pcb/impedance.nim`'s own doc comment
+already states the accuracy ceiling a closed-form `z0` carries (quasi-static,
+not dispersive, valid over the geometry range each formula's own paper
+covered), and a claim that can be satisfied by either the closed-form or the
+eventual field-solved value has to carry that provenance with it — "Z0 was
+50.3 Ω (closed-form, IPC-2141)" and "Z0 was 49.8 Ω (field-solved)" disagreeing
+by a percent is not a contradiction two equally-confident numbers cannot
+resolve, and a report that drops which one answered would make it look like
+one.
 
 ## Later, deliberately not scheduled
 
