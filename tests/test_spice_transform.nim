@@ -3,6 +3,8 @@ import std/[strutils, tables, unittest]
 import verax/netlist
 import verax/netlist/dsl
 import verax/spice/transform
+import verax/spice/flatten
+import verax/spice/xspice
 
 test "replaceComponent swaps kind and auto-derives a SPICE-correct designator":
   let nl = newNetlist("t")
@@ -227,6 +229,113 @@ test "clone carries every model, not just the default":
   check c.simModels.len == 2
   check selectSimModel(c, spSteadyState).name == "switching"
   check c.simReplace.name == "averaged"
+
+# --- pass ordering: flatten before applySimReplacements ------------------
+#
+# `materializeSimNetlist` (clone + replace, combined) is still correct and
+# still tested above -- a nested `simReplace` component survives it intact.
+# What changed is that every analysis in `verax/analysis/analyses/` no
+# longer calls it before flattening; each now does clone -> flatten ->
+# `applySimReplacements` as three explicit steps, because an XSPICE code
+# model's `attrs["xspice.ports"]` is a string frozen once at replacement
+# time (`spice/xspice/instance.addCodeModelInstance`) and never revisited --
+# replace before flatten freezes child-template-local net names that
+# flatten then renames the underlying `Net` objects out from under, without
+# ever touching the frozen string. See `spice/flatten.nim`'s module doc and
+# `applySimReplacements`'s own doc comment for the full account.
+
+proc gainSpec(): ModelSpec =
+  ## The minimal single-ended two-port model `test_xspice_instance.nim` uses,
+  ## reused here rather than invented again: one real ngspice-verified port
+  ## shape is enough to prove ports freeze correctly, and nothing about *this*
+  ## bug depends on the model's own behaviour.
+  ModelSpec(
+    name: "nimgain", cFunction: "cm_nimgain", description: "gain",
+    ports: @[
+      PortSpec(name: "inp", dir: xdIn, default: xpV, allowed: @[xpV]),
+      PortSpec(name: "outp", dir: xdOut, default: xpV, allowed: @[xpV])],
+    params: @[ParamSpec(name: "gain", dataType: xtReal, default: "1.0",
+                        nullAllowed: true)])
+
+proc buildGainStandin(nl: Netlist, old: Component): Component =
+  ## A `SimReplacement.build` shaped exactly like a real one
+  ## (`designs/lib/lt8640a.nim`'s `buildLt8640aAvg`): remove the real part,
+  ## add an `A` code-model instance wired to the same nets, under `"A" &
+  ## old.designator` -- the letter *prepended* to whatever designator `old`
+  ## has at build time, dotted and all, on the same "prepend, not
+  ## substitute" convention `formats/spice.deckDesignator` documents (so
+  ## post-flatten `"XA.U1"` becomes `"AXA.U1"`, one flat key, not a second
+  ## level of hierarchy). `addCodeModelInstance` freezes
+  ## `result.attrs["xspice.ports"]` from `nl`/`old`'s net names *at this
+  ## exact call* -- which is the whole bug, and the whole fix, in one line.
+  let inNet = old.pins["IN"].net
+  let outNet = old.pins["OUT"].net
+  let desig = old.designator
+  removeComponent(nl, desig)
+  result = addCodeModelInstance(nl, "A" & desig, gainSpec(), [inNet, outNet],
+                                {"gain": "2.0"})
+
+proc nestedCodeModelBoard(): tuple[nl: Netlist, globals: OrderedTable[string, Net]] =
+  ## `XA` wraps a one-part `STAGE` template whose part carries a
+  ## `SimReplacement.build`, one level deep -- the shape
+  ## `designs/lib/lt8640a_config.nim` describes finding this bug in.
+  var globalNets: OrderedTable[string, Net]
+  let templ = newNetlist("STAGE")
+  let inN = addNet(templ, newNet("IN"))
+  let outN = addNet(templ, newNet("OUT"))
+  addPort(templ, "IN", inN)
+  addPort(templ, "OUT", outN)
+  let u1 = addComponent(templ, newComponent("U1", kind = "amplifier"))
+  discard connect(u1, "IN", inN)
+  discard connect(u1, "OUT", outN)
+  u1.simReplace = newSimReplacement(buildGainStandin, name = "codemodel")
+
+  let top = newNetlist("TOP")
+  let vin = addNet(top, newNet("vin"))
+  let vout = addNet(top, newNet("vout"))
+  discard instantiate(top, "XA", templ, @[vin, vout], globalNets)
+  (top, globalNets)
+
+test "flatten before applySimReplacements: a nested code model's ports resolve to flat net names":
+  let (top, _) = nestedCodeModelBoard()
+  var cloneNets: OrderedTable[string, Net]
+  let work = clone(top, cloneNets)
+  discard flatten(work)
+  applySimReplacements(work)
+
+  check work.components.hasKey("AXA.U1")
+  let ports = work.components["AXA.U1"].attrs["xspice.ports"]
+  # Post-flatten names -- the port net objects were renamed to these by
+  # `flatten`'s `mergeNets`, and the frozen string was built *after* that,
+  # from the live `Net.name` at the time `addCodeModelInstance` ran.
+  check "vin" in ports
+  check "vout" in ports
+  check "IN" notin ports
+  check "OUT" notin ports
+
+test "the old order (replace before flatten) freezes child-template-local names instead":
+  ## Documents the bug this reorder fixes, on the exact same fixture: run
+  ## `materializeSimNetlist` (replace) and *then* flatten -- what every
+  ## analysis used to do -- and the frozen ports string never sees the
+  ## post-flatten names at all, because nothing revisits it once it is
+  ## written. This is what a deck's `A` line named nodes that did not exist
+  ## post-flatten, giving ngspice a singular matrix and "Timestep too
+  ## small" on what was actually a failed `.op`.
+  let (top, globalNets0) = nestedCodeModelBoard()
+  var globalNets = globalNets0
+  let work = materializeSimNetlist(top, globalNets)
+  discard flatten(work)
+
+  # Replaced while still nested (local designator "U1"), so the new part is
+  # "AU1" inside XA's own child netlist -- flatten renames *that* to
+  # "XA.AU1" afterward, but has no way to revisit the string already frozen
+  # onto it.
+  check work.components.hasKey("XA.AU1")
+  let ports = work.components["XA.AU1"].attrs["xspice.ports"]
+  check "IN" in ports
+  check "OUT" in ports
+  check "vin" notin ports
+  check "vout" notin ports
 
 test "materializeSimNetlist applies the model that suits the purpose":
   var nl = newNetlist("board")

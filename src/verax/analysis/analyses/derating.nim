@@ -117,9 +117,15 @@ proc analyzeDerating*(nl: Netlist, spec = defaultDeratingSpec()): AnalysisReport
   ## Like `contract_eval`'s `dc_voltage`, this **does not isolate**: a rating
   ## check is about the design as built, and a fragment terminated with ideal
   ## sources would be checking parts against voltages the boundary invented.
+  # Clone, flatten, *then* apply `simReplace` -- not the combined
+  # `materializeSimNetlist` -- so a nested XSPICE component's `A`-line ports
+  # are rendered from post-flatten net names rather than frozen at
+  # child-template-local ones flatten is about to rename out from under it
+  # (see `spice/flatten`'s module doc).
   var globalNets: OrderedTable[string, Net]
-  let simNl = materializeSimNetlist(root(nl), globalNets, purpose = spOperating)
+  let simNl = clone(root(nl), globalNets)
   if spec.flattenHierarchy: discard flatten(simNl)
+  applySimReplacements(simNl, purpose = spOperating)
   if spec.modelUnmodelledParts:
     result.assumptions.add expandPinModels(simNl, spec.pinModels)
 

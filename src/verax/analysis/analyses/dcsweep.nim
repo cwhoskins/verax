@@ -129,13 +129,18 @@ proc stepOf(spec: DcSweepSpec): float =
 
 proc prepare(nl: Netlist, spec: DcSweepSpec, rep: var AnalysisReport,
              namedParts: varargs[string]): Netlist =
-  ## The work copy every sweep here runs on: materialized for an operating
-  ## point (a `.dc` *is* a series of them), flattened, and with every part
-  ## carrying no model stood in for.
+  ## The work copy every sweep here runs on: cloned, flattened, and *then*
+  ## sim-replaced for an operating point (a `.dc` *is* a series of them) --
+  ## flatten before replace, not the other way round, so a nested XSPICE
+  ## component's frozen `xspice.ports` string is rendered from post-flatten
+  ## net names rather than child-template-local ones that stop existing the
+  ## moment flatten renames everything else (see `spice/flatten`'s module
+  ## doc). Also with every part carrying no model stood in for.
   var cloneNets: OrderedTable[string, Net]
-  result = materializeSimNetlist(nl, cloneNets, purpose = spOperating)
+  result = clone(nl, cloneNets)
   discard flattenForSim(result, spec.flattenHierarchy, spec.keepInstances,
                         namedParts)
+  applySimReplacements(result, purpose = spOperating)
   if spec.modelUnmodelledParts:
     rep.assumptions.add expandPinModels(result, spec.pinModels)
 

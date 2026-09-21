@@ -5,6 +5,8 @@ import verax/netlist/graph
 import verax/netlist/formats/spice as spiceFormat
 import verax/netlist/formats/common
 import verax/spice/flatten
+import verax/spice/transform
+import verax/spice/xspice
 
 proc rcBlock(): Netlist =
   subckt("RC", [IN, OUT, GND]):
@@ -275,3 +277,90 @@ suite "name collisions flattening produces, and the ones it cannot":
     let s = newStringStream()
     writeNetlist(nl, s)
     check "RXA.R1" in s.data
+
+suite "flatten before applySimReplacements, for a nested XSPICE component":
+  # The pairing that fixed the bug `designs/lib/lt8640a_config.nim` found and
+  # documented: `test_spice_transform.nim` proves the ports string freezes
+  # to the right names in isolation, and this proves the two passes
+  # actually compose into a deck ngspice can read -- no `.SUBCKT`, and the
+  # `A` line naming nets that exist.
+
+  proc gainSpec(): ModelSpec =
+    ModelSpec(
+      name: "nimgain", cFunction: "cm_nimgain", description: "gain",
+      ports: @[
+        PortSpec(name: "inp", dir: xdIn, default: xpV, allowed: @[xpV]),
+        PortSpec(name: "outp", dir: xdOut, default: xpV, allowed: @[xpV])],
+      params: @[ParamSpec(name: "gain", dataType: xtReal, default: "1.0",
+                          nullAllowed: true)])
+
+  proc buildGainStandin(nl: Netlist, old: Component): Component =
+    ## As `test_spice_transform.nim`'s: prepend `"A"` to whatever designator
+    ## `old` carries when this runs, dotted and all.
+    let inNet = old.pins["IN"].net
+    let outNet = old.pins["OUT"].net
+    let desig = old.designator
+    removeComponent(nl, desig)
+    result = addCodeModelInstance(nl, "A" & desig, gainSpec(), [inNet, outNet])
+
+  test "flatten then applySimReplacements produces a deck with a flat A line and no .SUBCKT":
+    let templ = subckt("AMP", [IN, OUT]):
+      net IN, kind = ntSignal
+      net OUT, kind = ntSignal
+      component U1, kind = "amplifier":
+        pin "IN", IN, kind = ptInput
+        pin "OUT", OUT, kind = ptOutput
+    templ.components["U1"].simReplace = newSimReplacement(buildGainStandin, name = "cm")
+
+    let nl = netlist("top"):
+      net vin, kind = ntSignal
+      net vout, kind = ntSignal
+      instance XA, templ, [vin, vout]
+
+    discard flatten(nl)
+    applySimReplacements(nl)
+
+    check nl.components.hasKey("AXA.U1")
+    let ports = nl.components["AXA.U1"].attrs["xspice.ports"]
+    check "vin" in ports and "vout" in ports
+    check "IN" notin ports and "OUT" notin ports
+
+    let s = newStringStream()
+    writeNetlist(nl, s)
+    let deck = s.data
+    check ".SUBCKT" notin deck.toUpperAscii
+    check "AXA.U1 vin vout" in deck
+
+  test "the old order (replace, then flatten) leaves the deck's A line naming nets that do not exist":
+    ## The bug, end to end through a written deck rather than the frozen
+    ## attribute alone: `materializeSimNetlist` (replace while still nested)
+    ## followed by `flatten` is what every analysis used to do, and this is
+    ## what an ngspice deck derived that way actually contained.
+    let templ = subckt("AMP2", [IN, OUT]):
+      net IN, kind = ntSignal
+      net OUT, kind = ntSignal
+      component U1, kind = "amplifier":
+        pin "IN", IN, kind = ptInput
+        pin "OUT", OUT, kind = ptOutput
+    templ.components["U1"].simReplace = newSimReplacement(buildGainStandin, name = "cm")
+
+    let nl = netlist("top2"):
+      net vin, kind = ntSignal
+      net vout, kind = ntSignal
+      instance XA, templ, [vin, vout]
+
+    var globalNets: OrderedTable[string, Net]
+    let work = materializeSimNetlist(nl, globalNets)
+    discard flatten(work)
+
+    check work.components.hasKey("XA.AU1")
+    let s = newStringStream()
+    writeNetlist(work, s)
+    let deck = s.data
+    # The A line is written verbatim from the frozen string -- "IN"/"OUT",
+    # not "vin"/"vout" -- so it names nodes nothing else in the flattened
+    # deck uses. `net.pins.len` accounting elsewhere in this suite is what
+    # would go wrong reading a deck like this into ngspice: two floating
+    # nodes and a duplicate "vin"/"vout" pair with no device on them.
+    check "XA.AU1 IN OUT" in deck
+    check "XA.AU1 vin vout" notin deck

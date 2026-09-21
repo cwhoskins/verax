@@ -110,17 +110,21 @@ proc buildLt8640aSw(nl: Netlist, old: Component): Component =
   ## the board sets the switching frequency with RT, and no model can read a
   ## frequency off a resistor. It is left at the model's own default here and
   ## overridden by `useLt8640a`'s `fsw` argument, so a design that changes RT
-  ## says so in one place.
+  ## says so in one place. `ilim`/`dmax` are the same shape for the two
+  ## behaviours this part actually exposes a way to change -- see
+  ## `useLt8640a`'s own doc comment for why those two and not a `MODE` pin.
   let nets = partNets(old)
   let desig = old.designator
-  let fsw = old.attrs.getOrDefault("lt8640a.fsw", "")
   removeComponent(nl, desig)
   var params: seq[(string, string)]
-  if fsw.len > 0: params.add ("fsw", fsw)
+  for key in ["fsw", "ilim", "dmax"]:
+    let v = old.attrs.getOrDefault("lt8640a." & key, "")
+    if v.len > 0: params.add (key, v)
   addCodeModelInstance(nl, "A" & desig, lt8640a_swSpec, nets, params,
                        cmPath = cmPathFor("lt8640a_sw"))
 
-proc useLt8640a*(d: Design, designator: string, fsw = 1.0e6) =
+proc useLt8640a*(d: Design, designator: string, fsw = 1.0e6,
+                 ilim = 0.0, dmax = 0.0) =
   ## Attaches both behavioural models to the named part. Call it after the
   ## `design(...)` block; it only adds to `simModels` and touches nothing
   ## else, so the design netlist still describes the board.
@@ -135,11 +139,26 @@ proc useLt8640a*(d: Design, designator: string, fsw = 1.0e6) =
   ## instance parameter and is recorded on the component, so it survives the
   ## clone -> flatten -> model -> isolate path that stands between a design
   ## and a deck.
+  ##
+  ## `ilim`/`dmax` are the closest this model comes to the real part's
+  ## `SYNC/MODE` pin: the real LT8640A has one (Burst Mode vs. pulse-skip vs.
+  ## an external sync clock) and `lt8640a_sw`'s port list does not model it
+  ## at all -- see that module's own doc comment on what is a datasheet
+  ## figure and what is a stand-in. What the model *does* expose as tunable
+  ## behaviour is its peak current limit (`ilim`, datasheet-adjacent: this
+  ## part's is fixed near 7 A, so a design asking for a different one is
+  ## stating a simulation choice, not a strap) and its maximum duty cycle
+  ## (`dmax`, which is what a dropout condition runs into). `0.0` for either
+  ## means "leave the model's own default" -- neither is written to `attrs`
+  ## unless a caller states one, so every existing design that never mentions
+  ## them is byte-for-byte unaffected.
   let c = findComponent(d.netlist, designator)
   if c == nil:
     raise newException(NetlistError,
       "no such component: " & designator & " (attaching the LT8640A models)")
   c.attrs["lt8640a.fsw"] = $fsw
+  if ilim > 0.0: c.attrs["lt8640a.ilim"] = $ilim
+  if dmax > 0.0: c.attrs["lt8640a.dmax"] = $dmax
   addSimModel(c, newSimReplacement(buildLt8640aAvg, name = "averaged"))
   addSimModel(c, newSimReplacement(buildLt8640aSw, name = "switching",
                                    suits = [spSteadyState]))

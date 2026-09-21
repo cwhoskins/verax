@@ -207,10 +207,16 @@ proc prepare(nl: Netlist, spec: PsrrSpec, rep: var AnalysisReport,
   ## part offers for that: on a converter carrying both, that is the
   ## switching one, and asking it for ripple rejection through the averaged
   ## model would measure the wrong half of the part.
+  # Clone, flatten, *then* apply `simReplace` -- not the combined
+  # `materializeSimNetlist` -- so a nested XSPICE component's `A`-line ports
+  # are rendered from post-flatten net names rather than frozen at
+  # child-template-local ones flatten is about to rename out from under it
+  # (see `spice/flatten`'s module doc).
   var cloneNets: OrderedTable[string, Net]
-  result = materializeSimNetlist(nl, cloneNets, purpose = purpose)
+  result = clone(nl, cloneNets)
   discard flattenForSim(result, spec.flattenHierarchy, spec.keepInstances,
                         namedParts)
+  applySimReplacements(result, purpose = purpose)
   if spec.modelUnmodelledParts:
     rep.assumptions.add expandPinModels(result, spec.pinModels)
   if spec.capacitorParasitics:

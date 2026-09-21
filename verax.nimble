@@ -36,7 +36,7 @@ task test, "compile and run every tests/t*.nim, failing if any of them does":
 
 task verify, "check every design under designs/ and every template":
   exec "nim c --hints:off --path:src --out:bin/verax src/verax/cli.nim"
-  for dir in ["designs", "templates"]:
+  for dir in ["designs", "designs/datalogger", "templates"]:
     if not dirExists(dir): continue
     for f in listFiles(dir):
       if f.endsWith(".nim"):

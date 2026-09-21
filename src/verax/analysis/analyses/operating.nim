@@ -83,9 +83,15 @@ proc solveOperatingPoint*(nl: Netlist, spec = defaultOperatingSpec()): Operating
   ## to find out. Isolating first would hand back the assumption. The whole
   ## design has to solve for itself, which is the same reasoning
   ## `contract_eval`'s `dc_voltage` has always run on.
+  # Clone, flatten, *then* apply `simReplace` -- not the combined
+  # `materializeSimNetlist` -- so a nested XSPICE component's `A`-line ports
+  # are rendered from post-flatten net names rather than frozen at
+  # child-template-local ones flatten is about to rename out from under it
+  # (see `spice/flatten`'s module doc).
   var globalNets: OrderedTable[string, Net]
-  let simNl = materializeSimNetlist(root(nl), globalNets, purpose = spOperating)
+  let simNl = clone(root(nl), globalNets)
   if spec.flattenHierarchy: discard flatten(simNl)
+  applySimReplacements(simNl, purpose = spOperating)
   if spec.modelUnmodelledParts:
     result.assumptions.add expandPinModels(simNl, spec.pinModels)
 

@@ -46,7 +46,7 @@
 ## otherwise get a ~1 Mohm stand-in to ground in parallel with `RDET`. `zin`
 ## is stated large on that pin to keep the signature divider clean.
 
-import std/tables
+import std/[strutils, tables]
 
 import verax/contract/dsl
 import verax/netlist/graph
@@ -69,10 +69,29 @@ proc buildSi3402(nl: Netlist, old: Component): Component {.nimcall.} =
   ## `K` card -- but inert. The barrier itself is checked statically by
   ## `dc_path_exists`, on the un-materialised netlist. `buildIdealBuck`'s
   ## pattern (`designs/xbar_power.nim`).
+  ##
+  ## **`gndiso`/`swp` are not `old`'s own pins, so they cannot be read off
+  ## `old.pins[...]` the safe way `outNet` is.** `build` now runs after
+  ## `spice/flatten` (`spice/transform.applySimReplacements`'s own doc
+  ## comment has the detail and the measured evidence), so `nl` here is the
+  ## fully-flattened top netlist, not this sheet's own local scope --
+  ## a bare `findNet(nl, "gndiso")` looks for a top-level net that no
+  ## longer exists once this sheet is nested under an instance (e.g.
+  ## `designs/xbar_switch.nim`'s `XPOE`), because flatten renamed every net
+  ## and designator that was purely local to that instance by prefixing it
+  ## with the same dotted instance path it gave `old.designator` itself
+  ## (`spice/flatten.nim`'s `hierName(d, ...)`, applied identically to both).
+  ## So the fix is to read that prefix back off `old.designator` -- already
+  ## correct, whether `old` sits at the top level (no dot, prefix empty, the
+  ## bench's own `when isMainModule` case) or nested arbitrarily deep (the
+  ## whole leading path up to and including the last `hierSep`) -- and apply
+  ## it to `gndiso`/`swp` before looking them up.
+  let i = old.designator.rfind(hierSep)
+  let prefix = if i < 0: "" else: old.designator[0 .. i]
   let outNet = old.pins.getOrDefault("OUT").net
   let gnd = findNet(nl, "0")
-  let gndiso = findNet(nl, "gndiso")
-  let swp = findNet(nl, "swp")
+  let gndiso = findNet(nl, prefix & "gndiso")
+  let swp = findNet(nl, prefix & "swp")
   if outNet == nil or gnd == nil or gndiso == nil:
     raise newException(NetlistError, "buildSi3402: missing OUT/0/gndiso")
   removeComponent(nl, old.designator)

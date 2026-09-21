@@ -228,12 +228,18 @@ proc runWindow(nl: Netlist, probes: openArray[Probe], spec: TransientSpec,
   ## every failure path -- a run that could not happen still has to say what
   ## it invented on the way to finding that out.
   var cloneNets: OrderedTable[string, Net]
-  # `materializeSimNetlist` with a purpose, not a bare `clone`: a part
-  # carrying more than one model gets the one that answers *this* question,
-  # and for a switching regulator that is the difference between a rail with
-  # ripple on it and a rail whose model has no ripple in it to find.
-  let work = materializeSimNetlist(nl, cloneNets, purpose = spSteadyState)
+  # Clone, flatten, *then* apply `simReplace` with a purpose -- not the
+  # combined `materializeSimNetlist` -- so a nested XSPICE component's
+  # `A`-line ports are rendered from post-flatten net names rather than
+  # frozen at child-template-local ones flatten is about to rename out from
+  # under it (see `spice/flatten`'s module doc). The purpose still matters:
+  # a part carrying more than one model gets the one that answers *this*
+  # question, and for a switching regulator that is the difference between a
+  # rail with ripple on it and a rail whose model has no ripple in it to
+  # find.
+  let work = clone(nl, cloneNets)
   discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances)
+  applySimReplacements(work, purpose = spSteadyState)
   if spec.modelUnmodelledParts:
     rep.assumptions.add expandPinModels(work, spec.pinModels)
   if spec.capacitorParasitics:

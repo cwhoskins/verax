@@ -174,6 +174,56 @@ proc mergeNets*(keep, gone: Net) =
     gone.netlist.nets.del(gone.name)
   gone.netlist = nil
 
+proc hierNetPeers*(n: Net): seq[Net] =
+  ## Every net that is the *same conductor* as `n` one hierarchy boundary
+  ## away, in either direction. Non-mutating counterpart to `mergeNets`:
+  ## `flatten.inline`'s `mergeNets(p.net, p.hierNet)` unifies a port net with
+  ## its caller's net by *merging the objects*, which is right for a
+  ## simulation copy about to be thrown away but wrong for a read-only
+  ## evaluator walking the design as authored -- there is no canonical flat
+  ## name until `spice/flatten` actually runs, and unifying identity here
+  ## would make two callers disagree about how many distinct `Net` objects a
+  ## design has depending on which one ran first.
+  ##
+  ## Down: for every pin on `n` whose component is itself a hierarchical
+  ## instance (`subNetlist != nil`), that pin's `hierNet` is the same
+  ## conductor one level inside the child.
+  ##
+  ## Up: if `n` is itself a port net *inside* an instance
+  ## (`n.netlist.instanceOf != nil`), the instance's own pin bound to that
+  ## port (`pp.hierNet == n`) contributes its outer `.net`.
+  ##
+  ## Both directions are needed because a pull-up nested inside a child
+  ## reached through a pass-through port has no other link to the net a
+  ## `Design.resolve` call actually returns -- `Design.resolve` finds the
+  ## *outer* net object, and the resistor's pin lives on the *inner* one.
+  for p in n.pins:
+    if p.component != nil and p.component.subNetlist != nil and p.hierNet != nil:
+      result.add p.hierNet
+  if n.netlist != nil and n.netlist.instanceOf != nil:
+    for _, pp in n.netlist.instanceOf.pins:
+      if pp.hierNet == n and pp.net != nil:
+        result.add pp.net
+
+proc hierNetGroup*(n: Net): seq[Net] =
+  ## `n` plus every net that is the same conductor through instance
+  ## boundaries, any depth, either direction -- the BFS closure of
+  ## `hierNetPeers`, generalizing the one-hop-in-one-direction walk
+  ## `contract/evaluators/static.dcConnected` already does inline for its own
+  ## boundary-crossing to a reusable, enumerable primitive.
+  ##
+  ## For a design with no hierarchy this is `@[n]`: `hierNetPeers` finds
+  ## nothing to add, so every caller of this degenerates to exactly its
+  ## pre-hierarchy-aware behaviour and nothing here changes a number for a
+  ## flat design.
+  result = @[n]
+  var qi = 0
+  while qi < result.len:
+    let cur = result[qi]
+    inc qi
+    for peer in hierNetPeers(cur):
+      if peer notin result: result.add peer
+
 const hierSep* = '.'
   ## Separates one level of hierarchy from the next in a flattened or
   ## hierarchically-addressed name: `R1` inside `XA` inside `XL` is

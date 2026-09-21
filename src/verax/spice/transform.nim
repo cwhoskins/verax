@@ -109,8 +109,69 @@ proc replaceComponent*(nl: Netlist, oldDesignator: string, kind: string,
   for (pinName, net) in pinNets:
     discard connect(result, pinName, net)
 
-proc applySimReplacements(nl: Netlist, exclude: openArray[string] = [],
+proc applySimReplacements*(nl: Netlist, exclude: openArray[string] = [],
                           purpose = "") =
+  ## Applies every component's stored `simReplace`, recursing into
+  ## `nl.children`. Exported so each analysis call site can run it *after*
+  ## `spice/flatten` rather than before -- see `flatten.nim`'s module doc for
+  ## why the ordering matters: an XSPICE `A` line's port text is rendered
+  ## once at replacement time and kept as a frozen string (`addCodeModelInstance`,
+  ## `probes.nim`), and flattening a nested instance afterward renames the
+  ## underlying `Net` objects without ever revisiting that string. Run
+  ## before flatten, a nested XSPICE component's ports stay stuck at
+  ## child-template-local net names that no longer exist once flatten has
+  ## renamed everything else, and the deck's `A` line names nodes nothing
+  ## else in the circuit uses -- floating/duplicate nodes, a singular
+  ## matrix, and ngspice reporting "Timestep too small" on what is actually
+  ## a failed `.op`. `materializeSimNetlist` (clone + replace, combined)
+  ## still exists and is still correct for a caller that never flattens --
+  ## `tests/test_spice_transform.nim` pins that contract down -- so this
+  ## does not fold flatten in; each of the nine analysis call sites now
+  ## does clone -> flatten -> `applySimReplacements` as three explicit
+  ## steps instead of `materializeSimNetlist` -> flatten as two.
+  ##
+  ## **`exclude` and `namedParts`-style designator matching stay
+  ## string-exact against whatever nesting level a component sits at when
+  ## this runs.** After the reorder that is *post-flatten*: a component
+  ## nested one level inside a *different* dissolving instance now has a
+  ## dotted designator (`"XL.U1"`), and a bare `exclude = ["U1"]` would
+  ## silently stop matching it. Checked against every current caller and
+  ## its tests -- none excludes or names a part that ends up nested inside
+  ## an instance other than its own -- so this is not a live regression,
+  ## only a narrower latent limitation the reorder exposes. Fixing it would
+  ## need dot-aware matching (compare against the trailing `hierSep`
+  ## segment as well as the whole string); out of scope here.
+  ##
+  ## **A second, live one, found by actually nesting every design that has
+  ## a `SimReplacement.build`: a `build` proc that looks up a *sibling* net
+  ## by bare name (`graph.findNet(nl, "gndiso")`, rather than through
+  ## `old.pins[...]`) breaks under this reorder, because `nl` is no longer
+  ## the sheet's own local scope by the time `build` runs -- it is the
+  ## fully-flattened top netlist, where that name is `"XPOE.gndiso"`, not
+  ## `"gndiso"`.** `designs/xbar_poe.nim`'s `buildSi3402` does exactly this
+  ## (for `gndiso` and `swp`) and, nested inside `designs/xbar_switch.nim`,
+  ## every one of that design's 15 assertions went from measured and
+  ## passing to `esNotEvaluated` with `evaluator 'spice.pdn' failed:
+  ## buildSi3402: missing OUT/0/gndiso` -- confirmed by isolating this
+  ## reorder alone (every other call site and every other nested design
+  ## byte-identical) and by reverting only `graph.nim`/`static.nim`'s
+  ## unrelated `[static]`-evaluator fix (no change). **Ground (`"0"`) is the
+  ## one bare name that stays safe** -- `graph.clone`'s `globalNets` and
+  ## `flatten`'s own doc comment both single it out as merged rather than
+  ## renamed, the one net shared by identity at every level of hierarchy --
+  ## which is why `xbar_power.nim`'s `buildIdealBuck` and
+  ## `designs/lib/adjreg.nim`'s `buildAdjRegLoop`, which only ever look up
+  ## `findNet(nl, "0")`, measured byte-identical before and after. Every
+  ## other net name is not safe to look up bare inside a `build` proc once
+  ## it might run post-flatten; deriving from `old.pins[...]` (as
+  ## `designs/lib/lt8640a.nim`'s `partNets` does) is safe because a `Pin`
+  ## is a direct object reference that `flatten` never invalidates, only
+  ## renames the `Net` it points at. Not fixed here: `designs/xbar_poe.nim`
+  ## is a design file, out of this fix's scope, and the honest fix is not
+  ## small -- `gndiso` is not one of `U1`'s own pins, so there is no
+  ## `old.pins[...]` to read it from, and `SimReplacement.build` is
+  ## `{.nimcall.}` with nothing to capture a sibling net in at declaration
+  ## time either.
   var designators: seq[string]
   for designator in nl.components.keys:
     designators.add designator

@@ -3,6 +3,7 @@ import std/[math, strutils, tables, unittest]
 import verax/contract/dsl
 import verax/contract/evaluate
 import verax/contract/evaluators/static
+import verax/netlist/interfaces
 
 # --- fixtures -----------------------------------------------------------
 
@@ -133,6 +134,163 @@ test "with no role on the net at all, the reason explains why topology cannot sa
   let r = resultFor(evaluate(d), "C")
   check r.status == esNotEvaluable
   check "inout" in r.reason
+
+# --- the static evaluators see through hierarchy ------------------------
+#
+# Before `allPins` (see `contract/evaluators/static.nim`), `pullupsOn` and
+# `capacitorsOn` walked only `net.pins` -- fine for a flat design, wrong for
+# a bus declared at the top level whose pull-up sits one level down inside a
+# child subckt, wired out through a pass-through port. `Design.resolve`
+# correctly finds the *outer* net object; the resistor's pin lives on the
+# distinct *inner* one, linked only by `Pin.hierNet` at the boundary.
+# Measured before the fix: `pullup_count == 0` on every fixture below.
+
+proc pullupBlock(): Netlist =
+  ## A one-resistor pull-up subckt, port `SDA` the only way in or out.
+  subckt("PULLUP", [SDA]):
+    net SDA, kind = ntSignal
+    net vdd, kind = ntPower:
+      spec:
+        voltage = 3.3.V
+    component R1, kind = "resistor", value = "2200":
+      pin "1", vdd, kind = ptPassive
+      pin "2", SDA, kind = ptPassive
+
+proc pullupBlockOuter(): Netlist =
+  ## `pullupBlock` nested one further level down, behind a second
+  ## pass-through port -- the transitive-closure case.
+  subckt("PULLUP_OUTER", [SDA]):
+    net SDA, kind = ntSignal
+    instance XI, pullupBlock(), [SDA]
+
+test "a pull-up nested one level inside an instance is seen through its pass-through port":
+  let d = design("nested_pullup"):
+    net sda, kind = ntSignal
+    instance XA, pullupBlock(), [sda]
+    require pullup_count(sda) == 1.0, id = "PU"
+  let r = resultFor(evaluate(d), "PU")
+  check r.status == esPass
+  check r.value == 1.0
+
+test "a bus fanned into two sibling instances, each with its own pull-up, counts both":
+  # The fan-out case is also where a second, independent bug surfaced:
+  # `pullupsOn`'s de-dup keyed on the bare designator string (`"R1"`),
+  # which is unique only *within* the netlist that assigned it. Two sibling
+  # instances' `R1`s are two distinct `Component` objects that collide in a
+  # `HashSet[string]` the moment `allPins` reaches into both scopes at once
+  # -- measured `pullup_count == 1` for two real pull-ups before switching
+  # the de-dup to component identity.
+  let d = design("fanout_pullup"):
+    net sda, kind = ntSignal
+    instance XA, pullupBlock(), [sda]
+    instance XB, pullupBlock(), [sda]
+    require pullup_count(sda) == 2.0, id = "PU"
+  let r = resultFor(evaluate(d), "PU")
+  check r.status == esPass
+  check r.value == 2.0
+
+test "a pull-up reached two hierarchy levels deep is found by the transitive closure":
+  let d = design("nested_two_deep"):
+    net sda, kind = ntSignal
+    instance XO, pullupBlockOuter(), [sda]
+    require pullup_count(sda) == 1.0, id = "PU"
+  let r = resultFor(evaluate(d), "PU")
+  check r.status == esPass
+  check r.value == 1.0
+
+test "rc_corner: the same bus authored flat or nested agrees to within the crossing's own assumed load":
+  # Not byte-identical, and that difference is itself worth pinning down
+  # rather than asserting away. `hierNetGroup` adds the instance's own
+  # boundary pin (`XA`'s `SDA` connector) to the group alongside the two
+  # real devices, so the nested topology's assumed bus capacitance is one
+  # `assumedPinCapacitance` (10 pF) heavier than the flat one's -- a
+  # structural artifact of authoring-time hierarchy that `spice/flatten`
+  # would remove (the instance component, and its connecting pin, dissolve
+  # entirely) but this evaluator never flattens. Measured: 723.286902 Hz
+  # flat against 723.214595 Hz nested, a relative difference of 9.997e-5 --
+  # the *strongest* regression pin the plan asked for is that a wrong pin
+  # count shifts this by a lot (before the fix, the nested case did not
+  # measure at all: `pullupsOn` found nothing to key a corner off).
+  proc pullupCapFlat(): Design =
+    design("flat_pullup_cap"):
+      net vdd, kind = ntPower:
+        spec:
+          voltage = 3.3.V
+      net gnd, kind = ntGround, name = "0"
+      net sda, kind = ntSignal
+      component R1, kind = "resistor", value = "2200":
+        pin "1", vdd, kind = ptPassive
+        pin "2", sda, kind = ptPassive
+      component C1, kind = "capacitor", value = "100n":
+        pin "1", sda, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+      require rc_corner(sda) >= 0.0.Hz, id = "RC"
+
+  proc pullupCapBlock(): Netlist =
+    subckt("PULLUP_CAP", [SDA]):
+      net SDA, kind = ntSignal
+      net vdd, kind = ntPower:
+        spec:
+          voltage = 3.3.V
+      net gnd, kind = ntGround, name = "0"
+      component R1, kind = "resistor", value = "2200":
+        pin "1", vdd, kind = ptPassive
+        pin "2", SDA, kind = ptPassive
+      component C1, kind = "capacitor", value = "100n":
+        pin "1", SDA, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+
+  proc pullupCapNested(): Design =
+    design("nested_pullup_cap"):
+      net sda, kind = ntSignal
+      instance XA, pullupCapBlock(), [sda]
+      require rc_corner(sda) >= 0.0.Hz, id = "RC"
+
+  let flat = resultFor(evaluate(pullupCapFlat()), "RC")
+  let nested = resultFor(evaluate(pullupCapNested()), "RC")
+  check flat.status == esPass
+  check nested.status == esPass
+  check abs(flat.value - 723.2869021281895) < 1.0e-4
+  check abs(nested.value - 723.2145951300761) < 1.0e-4
+  check abs(flat.value - nested.value) / flat.value < 2.0e-4
+
+let controllerIfaceDef = block:
+  ## A minimal single-signal interface def, registered once at module scope,
+  ## for `runControllerCount`'s *interface-metadata* fallback path -- the
+  ## other of the two sources it reads, alongside role bindings, and the one
+  ## whose `allPins(live)` swap this module's fix also touches.
+  var def: InterfaceDef
+  def.name = "test_ctrl_iface"
+  def.signals = @[SignalDef(name: "sda", width: 1)]
+  var m: Modport
+  m.name = "controller"
+  m.controller = true
+  m.dirs["sda"] = ptInOut
+  def.modports[m.name] = m
+  registerInterfaceDef(def)
+  def
+
+proc controllerBlock(): Netlist =
+  subckt("CTRL_BLOCK", [SDA]):
+    net SDA, kind = ntSignal
+    component U1, kind = "mcu":
+      pin "SDA", SDA, kind = ptInOut
+
+test "controller_count's interface fallback finds a controller reached through a pass-through port":
+  # `iface.def` lives on the *net* and is stamped only at the outer scope
+  # here (`addInterface` would stamp it the same way through the ordinary
+  # bus-authoring path); `iface.modport` lives on the *pin* that actually
+  # carries the controller modport, one hierarchy level down inside `XA`.
+  # Before the fix, `live.pins` never reached that pin at all.
+  let d = design("nested_controller"):
+    net sda, kind = ntSignal
+    instance XA, controllerBlock(), [sda]
+    require controller_count(sda) == 1.0, id = "CC"
+  d.netlist.nets["sda"].attrs["iface.def"] = controllerIfaceDef.name
+  d.netlist.children["XA"].components["U1"].pins["SDA"].attrs["iface.modport"] = "controller"
+  let r = resultFor(evaluate(d), "CC")
+  check r.status == esPass
+  check r.value == 1.0
 
 # --- the four statuses, each reached deliberately ------------------------
 

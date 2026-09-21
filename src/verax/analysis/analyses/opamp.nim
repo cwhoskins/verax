@@ -335,15 +335,19 @@ proc prepare(nl: Netlist, opamp, inputNet, outputNet: string,
   # that matters: cut away, the loop is open, and a loop-gain figure measured
   # over an open loop is a confident number about a different circuit.
   var cloneNets: OrderedTable[string, Net]
-  # `materializeSimNetlist` rather than a bare `clone`: a component's own
-  # `simReplace` is the design's statement of how it wants that part
-  # simulated, and this analysis used to ignore it entirely.
+  # Clone, flatten, *then* apply `simReplace` -- not the combined
+  # `materializeSimNetlist` -- so a nested XSPICE component's `A`-line ports
+  # are rendered from post-flatten net names rather than frozen at
+  # child-template-local ones flatten is about to rename out from under it
+  # (see `spice/flatten`'s module doc). `simReplace` is still honoured: a
+  # component's own stand-in is the design's statement of how it wants that
+  # part simulated, and this analysis used to ignore it entirely.
   # `bound` is what tells a large-signal caller apart from a small-signal
   # one, and it is also the only thing here that knows which purpose a part
   # carrying several models should be stood in for under.
-  let work = materializeSimNetlist(nl, cloneNets,
-    purpose = (if bound: spLargeSignal else: spSmallSignal))
+  let work = clone(nl, cloneNets)
   discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances, opamp)
+  applySimReplacements(work, purpose = (if bound: spLargeSignal else: spSmallSignal))
 
   # Read *after* flattening, and from the work copy. An amplifier inside a
   # subcircuit has pins on the child's own nets, whose names mean nothing at

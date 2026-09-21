@@ -137,11 +137,16 @@ proc analyzePdn*(nl: Netlist, powerNet: string, groundNet = "",
   # each becomes a per-pin impedance it is passive, and the rail sees what it
   # actually hangs off instead of an open circuit.
   var cloneNets: OrderedTable[string, Net]
-  # `materializeSimNetlist` rather than a bare `clone`: a component's own
-  # `simReplace` is the design's statement of how it wants that part
-  # simulated, and this analysis used to ignore it entirely.
-  let work = materializeSimNetlist(nl, cloneNets, purpose = spSmallSignal)
+  # Clone, flatten, *then* apply `simReplace` -- not the combined
+  # `materializeSimNetlist` -- so a nested XSPICE component's `A`-line ports
+  # are rendered from post-flatten net names rather than frozen at
+  # child-template-local ones flatten is about to rename out from under it
+  # (see `spice/flatten`'s module doc). `simReplace` is still honoured: a
+  # component's own stand-in is the design's statement of how it wants that
+  # part simulated, and this analysis used to ignore it entirely.
+  let work = clone(nl, cloneNets)
   discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances)
+  applySimReplacements(work, purpose = spSmallSignal)
   if spec.modelUnmodelledParts:
     result.assumptions.add expandPinModels(work, spec.pinModels)
 

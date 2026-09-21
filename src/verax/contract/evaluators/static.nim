@@ -36,6 +36,25 @@ const
     ## per pin is a common working figure; the I2C specification instead caps
     ## the *total* bus at 400 pF, which is a limit rather than a typical.
 
+proc allPins(net: Net): seq[Pin] =
+  ## `net.pins` widened to also see pins on any net that is the same
+  ## conductor through an instance boundary (`graph.hierNetGroup`).
+  ##
+  ## Why this exists and `dcConnected` below doesn't need it: `dcConnected`
+  ## already crosses hierarchy itself, one net at a time, as part of its own
+  ## BFS -- it asks "is there a path", so following `hierNet`/`instanceOf` as
+  ## it walks is the same amount of work either way. `pullupsOn`,
+  ## `capacitorsOn` and the bus-capacitance estimate in `runRcCorner` are not
+  ## walks; they inspect one net's pins directly, so without this a bus
+  ## declared at the top level with its pull-up nested one level down inside
+  ## a child subckt (wired out through a pass-through port) reported
+  ## `pullup_count == 0` -- `Design.resolve` correctly finds the outer `Net`
+  ## object, but the resistor's pin lives on the *inner* one, a distinct
+  ## object linked only by `Pin.hierNet` at the boundary. Measured before
+  ## this fix, on the nested fixture this module's tests now cover.
+  for n in hierNetGroup(net):
+    for p in n.pins: result.add p
+
 proc railOf(p: Pin): Net =
   ## The net on the far side of a two-terminal part from `p`, when it is a
   ## rail.
@@ -49,22 +68,34 @@ proc pullupsOn(net: Net): seq[Component] =
   ## Every resistor with one end on `net` and the other on a rail. A pull-up
   ## and a pull-down are the same shape here; which rail it terminates to is
   ## a separate question from whether the line is passively driven at all.
-  var seen: HashSet[string]
-  for p in net.pins:
+  ##
+  ## Dedup is by **component identity, not by bare designator string**. It
+  ## was the latter until a bus fanned out into two sibling instances made
+  ## the difference observable: `allPins` (above) correctly returns both
+  ## instances' `R1` -- two distinct `Component` objects, one per child
+  ## netlist -- but a designator is only unique *within* the netlist that
+  ## assigned it, not across the sibling scopes `allPins` now reaches into.
+  ## Measured: a `seen: HashSet[string]` here reported `pullup_count == 1`
+  ## for two real pull-ups on a fanned-out bus, because the second `R1`
+  ## collided with the first in the set and was silently dropped -- exactly
+  ## the fan-out case this module's tests now cover.
+  var seen: seq[Component]
+  for p in allPins(net):
     let c = p.component
     if c == nil or c.kind != "resistor": continue
-    if c.designator in seen: continue
+    if c in seen: continue
     if railOf(p) != nil:
-      seen.incl c.designator
+      seen.add c
       result.add c
 
 proc capacitorsOn(net: Net): seq[Component] =
-  var seen: HashSet[string]
-  for p in net.pins:
+  ## As `pullupsOn`'s dedup: by component identity, for the same reason.
+  var seen: seq[Component]
+  for p in allPins(net):
     let c = p.component
     if c == nil or c.kind != "capacitor": continue
-    if c.designator in seen: continue
-    seen.incl c.designator
+    if c in seen: continue
+    seen.add c
     result.add c
 
 proc magnitudeOf(c: Component, value: var float): bool =
@@ -199,12 +230,13 @@ proc runRcCorner(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] 
       var f: float
       if magnitudeOf(c, f) and f > 0.0: farads += f
 
-    let pinLoad = float(net.pins.len) * assumedPinCapacitance
+    let busPins = allPins(net)
+    let pinLoad = float(busPins.len) * assumedPinCapacitance
     farads += pinLoad
     assumptions.add assumption(net.name, "bus_capacitance", pinLoad, "F",
       annDefaulted,
       "assumed " & $(assumedPinCapacitance * 1.0e12) & " pF for each of " &
-      $net.pins.len & " connected pins; a netlist carries neither trace nor " &
+      $busPins.len & " connected pins; a netlist carries neither trace nor " &
       "device pin capacitance")
 
     let resistance = 1.0 / conductance
@@ -316,7 +348,7 @@ proc runControllerCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionR
       if defName.len > 0:
         try:
           let idef = interfaceDefOf(defName)
-          for p in live.pins:
+          for p in allPins(live):
             let mpName = p.attrs.getOrDefault("iface.modport")
             if idef.modports.hasKey(mpName) and idef.modports[mpName].controller:
               controllers.incl p.component.designator

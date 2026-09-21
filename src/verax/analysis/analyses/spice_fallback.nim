@@ -21,8 +21,13 @@
 ## proof of "no path".
 ##
 ## Like `verax/spice/transform` and `verax/spice/probes`, this operates on
-## a materialized clone (via `materializeSimNetlist`) -- the real design
-## netlist passed in is never mutated or simulated directly.
+## a clone, flattened and then sim-replaced -- the real design netlist
+## passed in is never mutated or simulated directly. Flatten runs *before*
+## `applySimReplacements` rather than the combined `materializeSimNetlist`,
+## so a nested XSPICE component's `A`-line ports are rendered from
+## post-flatten net names rather than frozen at child-template-local ones
+## flatten is about to rename out from under them (see `spice/flatten`'s
+## module doc).
 
 import std/tables
 import ../../netlist/types
@@ -55,8 +60,9 @@ proc resolveAmbiguousDCPaths*(nl: Netlist, issues: seq[Issue]): seq[Issue] =
     return issues
 
   var globalNets: OrderedTable[string, Net]
-  let simNl = materializeSimNetlist(root(nl), globalNets, purpose = spOperating)
+  let simNl = clone(root(nl), globalNets)
   discard flatten(simNl)
+  applySimReplacements(simNl, purpose = spOperating)
 
   var simResult: SimResult
   var simErrorMsg = ""

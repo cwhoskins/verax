@@ -47,6 +47,16 @@ nimcache/
 !/designs/lib/
 /designs/lib/*
 !/designs/lib/*.nim
+# `designs/datalogger/` is the first design nested in its own directory
+# (its binary would otherwise collide with the directory name) -- same
+# re-include-then-source-only-filter dance, one level deeper for its own
+# `lib/` of board-specific sheets.
+!/designs/datalogger/
+/designs/datalogger/*
+!/designs/datalogger/*.nim
+!/designs/datalogger/lib/
+/designs/datalogger/lib/*
+!/designs/datalogger/lib/*.nim
 /templates/*
 !/templates/*.nim
 

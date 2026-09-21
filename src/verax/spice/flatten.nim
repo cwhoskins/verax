@@ -182,6 +182,22 @@ proc flattenForSim*(work: Netlist, enabled: bool,
   ## reaches the deck as `U1` -- which ngspice reads as a uniformly-distributed
   ## RC line and rejects for having no model.
   ##
+  ## `spice/transform.applySimReplacements` is a model pass too, and every
+  ## analysis call site now runs it *after* this rather than folding it into
+  ## the clone step -- this claim was false for it until that reorder
+  ## landed. The failure was narrower than the three walks above (it only
+  ## bites an XSPICE code model, and only one nested inside a dissolving
+  ## instance) but the same shape: `addCodeModelInstance` renders a code
+  ## model's `A`-line port text once, from whatever net names are live at
+  ## replacement time, and freezes it into `attrs["xspice.ports"]` as a
+  ## string nothing revisits. Replacing before flatten froze
+  ## child-template-local names (`VIN`, `FB`...) that flatten then renamed
+  ## the underlying `Net` objects out from under, without ever touching the
+  ## frozen string -- the deck's `A` line ended up naming nodes that do not
+  ## exist post-flatten, and ngspice reported "Timestep too small" on what
+  ## was actually a failed `.op`. Flat (un-nested) XSPICE worked all along
+  ## purely because there was nothing for flatten to rename.
+  ##
   ## `namedParts` are the designators the caller was asked about. One is kept
   ## only if it names a **top-level instance**, which is precisely the "a
   ## design brought its own subcircuit macromodel" case: dissolving that would
