@@ -44,7 +44,16 @@ const
     ## `layout.y` reads as the same family.
   layoutMirrorKey* = "layout.mirror"
   layoutPowerKey* = "layout.power"
-  layoutHintKeys* = ["side", "mirror", "power"]
+  layoutVariantKey* = "layout.variant"
+    ## "This instance uses layout variant X" -- `pcb/variant.LayoutVariant`
+    ## names, per `Netlist.name`, live in that module's own registry
+    ## (`pcb/` must not be depended on from here), so this module only owns
+    ## the storage and the syntax, exactly as it owns `side`/`mirror`/
+    ## `power`. Unlike those three, a variant name is an open-ended string
+    ## a later `designs/lib/` module invents, not a closed set this module
+    ## could enumerate -- `parseLayoutVariant` below is the same one-parse-
+    ## point discipline applied to "non-empty string" instead of an enum.
+  layoutHintKeys* = ["side", "mirror", "power", "variant"]
     ## Bare keys the DSL's `layout:` block accepts, spelled without the
     ## `layout.` prefix the way the block's own name already supplies it.
     ## This is the extension point for a future hint.
@@ -178,6 +187,41 @@ proc layoutPower*(c: Component): LayoutPower =
   let (ok, power) = parseLayoutPower(c.attrs[layoutPowerKey])
   if ok: power else: powerAuto
 
+proc parseLayoutVariant*(s: string): tuple[ok: bool, variant: string] =
+  ## The one place that maps a stored string to a variant name. Unlike
+  ## `parseLayoutSide`/`parseLayoutMirror`/`parseLayoutPower`, there is no
+  ## closed set of legal spellings -- a variant name is whatever
+  ## `pcb/variant.registerLayoutVariant` was given, and this module cannot
+  ## see that registry (`netlist/` must not depend on `pcb/`). "Unparseable"
+  ## here means exactly one thing: an explicitly-*stated*, empty value,
+  ## reachable only through a raw `setRawAnnotation`-style write (the DSL's
+  ## `layout:` block requires a real string literal) -- `setLayoutVariant`'s
+  ## own "no override" spelling is the *absent* key, matching
+  ## `setLayoutSide`'s `sideAuto`-removes-the-key rule, so a stored empty
+  ## string can only be a foreign writer's mistake.
+  if s.len == 0: (false, "") else: (true, s)
+
+proc setLayoutVariant*(c: Component, name: string) =
+  ## States (or clears, with `""`) which `pcb/variant.LayoutVariant` this
+  ## instance uses. No enum to round-trip through, unlike
+  ## `setLayoutSide`/`setLayoutMirror`/`setLayoutPower` -- the stored string
+  ## *is* the value.
+  if name.len == 0:
+    c.attrs.del(layoutVariantKey)
+  else:
+    c.attrs[layoutVariantKey] = name
+
+proc layoutVariant*(c: Component): string =
+  ## The variant name to use for `c`, or `""` for "no override stated" --
+  ## pure and total like `layoutSide`/`layoutMirror`/`layoutPower`: an
+  ## explicitly-stored empty value also reads as `""` rather than raising,
+  ## since a rendering/layout hint must never be the reason a design fails
+  ## to check. `validateLayoutHints` is where that case is actually
+  ## reported.
+  if not c.attrs.hasKey(layoutVariantKey): return ""
+  let (ok, name) = parseLayoutVariant(c.attrs[layoutVariantKey])
+  if ok: name else: ""
+
 const
   KindLayoutHintUnparseable* = "layout_hint_unparseable"
 
@@ -212,6 +256,14 @@ proc validateLayoutHints*(nl: Netlist, recursive = true): seq[Issue] =
           c.designator & " states " & layoutPowerKey & " = \"" &
           c.attrs[layoutPowerKey] & "\", which is not true/false/auto and " &
           "will be read as no override at all.",
+          components = @[c])
+    if c.attrs.hasKey(layoutVariantKey):
+      let (ok, _) = parseLayoutVariant(c.attrs[layoutVariantKey])
+      if not ok:
+        result.add newIssue(KindLayoutHintUnparseable, sevWarning,
+          c.designator & " states " & layoutVariantKey & " = \"\", an " &
+          "explicitly empty variant name, which will be read as no " &
+          "override at all.",
           components = @[c])
   if recursive:
     for _, child in nl.children:

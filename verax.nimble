@@ -64,3 +64,10 @@ task traces, "sweep /usr/share/kicad/demos for trace extraction and reference-pl
 
 task kicadcheck, "kicad-cli acceptance gate for regenerated (edited) output":
   exec "nim c -d:release --hints:off --path:src -r examples/pcb_editcheck.nim"
+
+task generate, "kicad-cli acceptance gate for from-scratch (synthesized) output":
+  # `examples/pcb_generate.nim`'s own doc comment has the full reasoning;
+  # `-d:release` for the same reason `kicadcheck` and `roundtrip` use it --
+  # this shells out to `kicad-cli` several times per design and there is no
+  # reason to pay debug-build overhead for it.
+  exec "nim c -d:release --hints:off --path:src -r examples/pcb_generate.nim"

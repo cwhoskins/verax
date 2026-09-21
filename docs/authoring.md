@@ -132,6 +132,17 @@ or one used on the wrong kind of entity fails the build rather than being
 silently ignored. Run `verax annotations` for the live list. Values take unit
 literals, and the unit is checked: `esr = 20.nF` will not compile.
 
+**`footprint`.** `spec: footprint = "Lib:Name"` states which land pattern a
+part solders to — `"Resistor_SMD:R_0402_1005Metric"`, or a path to a
+`.kicad_mod` file. Distinct from `package`: `package` is a case size
+(`"0402"`) keying the parasitic-defaults table `spice/models` reads, and two
+parts can share a case size while needing different land patterns
+(hand-solder pads vs. reflow ones on the same 0402 body), so state both when
+both apply. `verax layout <file.nim> -o board.kicad_pcb` reads this key to
+resolve real copper for each part; a part with no `footprint` (and, for a
+multi-channel package, no `PackageDef.footprint` either) is reported by name
+as `footprint_unresolved` rather than silently left off the board.
+
 **Passive ratings.** `dielectric`, `voltage_rating`, `current_rating`, `isat`
 and `power_rating` join the `spec:` vocabulary. `dielectric` is the one that
 changes an answer rather than describing a part: a Class 2 ceramic (X7R, X5R,

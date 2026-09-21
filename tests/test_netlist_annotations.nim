@@ -152,6 +152,32 @@ test "a key on the wrong entity is reported":
   check issues.len == 1
   check issues[0].kind == "annotation_wrong_scope"
 
+test "footprint is registered, component-scope, and distinct from package":
+  check isRegistered("footprint")
+  check annDef("footprint").kind == akString
+  check annDef("footprint").scopes == {asComponent}
+  let nl = board()
+  setAnnotation(nl.components["C1"], "footprint", "Capacitor_SMD:C_0402_1005Metric")
+  check footprint(nl.components["C1"]).value == "Capacitor_SMD:C_0402_1005Metric"
+  # `package` (a case size) and `footprint` (a land pattern) are stored
+  # under separate keys and neither shadows the other.
+  setAnnotation(nl.components["C1"], "package", "0402")
+  check package(nl.components["C1"]).value == "0402"
+  check footprint(nl.components["C1"]).value == "Capacitor_SMD:C_0402_1005Metric"
+
+test "footprint is rejected at netlist scope":
+  let nl = board()
+  expect(NetlistError):
+    setAnnotation(nl, "footprint", "Capacitor_SMD:C_0402_1005Metric")
+
+test "a misspelling of footprint is reported as unknown_annotation":
+  let nl = board()
+  nl.components["C1"].attrs["footprnit"] = "Capacitor_SMD:C_0402_1005Metric"
+  let issues = validateAnnotations(nl)
+  check issues.len == 1
+  check issues[0].kind == "unknown_annotation"
+  check "footprnit" in issues[0].message
+
 test "validation recurses into child netlists":
   let nl = board()
   let child = newNetlist("sub")

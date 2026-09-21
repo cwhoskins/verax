@@ -748,6 +748,23 @@ suite "layout: block":
     check not c.attrs.hasKey("layout.power")
     check layoutPower(c) == powerAuto
 
+  test "layout: variant = \"name\" writes and reads back through layoutVariant":
+    # Unlike `side`/`mirror`/`power`, `variant` takes a string literal
+    # rather than a bare ident -- `pcb/variant.LayoutVariant` names are
+    # open-ended, not a closed set `netlist/dsl.nim` could enumerate.
+    let nl = netlist("variants"):
+      net gnd, kind = ntGround, name = "0"
+      net a, kind = ntSignal
+      component U1, kind = "mcu":
+        layout:
+          variant = "compact"
+        pin "1", a, kind = ptPassive
+      component U2, kind = "mcu":
+        pin "1", a, kind = ptPassive
+    check nl.components["U1"].attrs["layout.variant"] == "compact"
+    check layoutVariant(nl.components["U1"]) == "compact"
+    check not nl.components["U2"].attrs.hasKey("layout.variant")
+
 suite "traverse: block":
   test "one edge: \"A\" <-> \"B\" writes a single conducting path":
     let nl = netlist("t"):

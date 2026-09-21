@@ -29,10 +29,12 @@
 ## ("Found 283 violations, Found 0 unconnected items"), having read about 1%
 ## of it without complaint; refusing by name here is strictly better.
 
-import std/[tables, sets, hashes, random, strutils, os, math]
+import std/[tables, sets, hashes, random, strutils, os]
 
 import ./sexp
 import ./kicadfmt
+import ./kicadgeom
+import ./kicadgen
 import ./common
 import ../units
 import ../geometry
@@ -76,28 +78,13 @@ type
     insertCounter*: int
 
 # ---------------------------------------------------------------- small helpers
-
-proc refuse(msg: string) {.noreturn.} =
-  raise newException(PcbFormatError, msg)
-
-proc readMm(d: SexpDoc, n: int32): Nm =
-  var v: float
-  if n < 0 or not parseNumber(d, n, v):
-    refuse("kicad: line " & $lineOf(d, n) & ": expected a number, found '" &
-           (if n >= 0: raw(d, n) else: "<missing>") & "'")
-  mm(v)
-
-proc readDeg(d: SexpDoc, n: int32): Deg =
-  var v: float
-  if n < 0 or not parseNumber(d, n, v):
-    refuse("kicad: line " & $lineOf(d, n) & ": expected a number, found '" &
-           (if n >= 0: raw(d, n) else: "<missing>") & "'")
-  deg(v)
-
-proc readXy(d: SexpDoc, n: int32): Point =
-  ## A two-argument coordinate node (`(xy x y)`, `(start x y)`, ...):
-  ## KiCad Y-down to canonical Y-up (finding 5 -- exact, `int64` negation).
-  pt(readMm(d, arg(d, n, 0)), -readMm(d, arg(d, n, 1)))
+#
+# `refuse`, `readMm`, `readDeg`, `readXy`, `buildAperture`, `expandPadLayers`,
+# `graphicCurves` and `graphicNodeLayer` live in `kicadgeom.nim` now -- a
+# `.kicad_mod` library footprint (`formats/kicadmod.nim`) parses the exact
+# same node shapes a board's embedded footprint does, and two copies of "how
+# big is a roundrect corner" would eventually disagree (see that module's
+# doc comment).
 
 proc readAt(d: SexpDoc, n: int32): tuple[p: Point, rot: Deg] =
   ## `(at x y [rot])`. The angle field is absent for zero (1307-of-4152 case
@@ -342,70 +329,6 @@ proc readVia(pcb: Pcb, doc: KicadDoc, d: SexpDoc, node: int32) =
 
 # ---------------------------------------------------------------- footprints + pads
 
-proc classifyPadShape(name: string): ApertureKind =
-  case name
-  of "circle": akCircle
-  of "rect": akRect
-  of "oval": akOval
-  of "roundrect": akRoundRect
-  of "trapezoid": akTrapezoid
-  of "octagon": akOctagon
-  else: akCustom   # includes "custom" and anything this reader does not recognise
-
-proc buildAperture(d: SexpDoc, padNode: int32): Aperture =
-  let shapeNode = arg(d, padNode, 2)
-  let shapeName = if shapeNode >= 0: d.text(shapeNode) else: ""
-  let kind = classifyPadShape(shapeName)
-  let sizeChild = d.child(padNode, "size")
-  var w, h: Nm
-  if sizeChild >= 0:
-    w = readMm(d, arg(d, sizeChild, 0))
-    h = readMm(d, arg(d, sizeChild, 1))
-  result = Aperture(name: (if shapeName.len > 0: shapeName else: "custom"), kind: kind)
-  case kind
-  of akCircle: result.dia = w
-  of akRect, akOval: (result.w = w; result.h = h)
-  of akRoundRect, akChamferRect:
-    var ratio = 0.25
-    let ratioChild = d.child(padNode, "roundrect_rratio")
-    if ratioChild >= 0: discard parseNumber(d, arg(d, ratioChild, 0), ratio)
-    result.rw = w
-    result.rh = h
-    result.corner = (if w < h: w else: h) * ratio
-    result.corners = {cnTopRight, cnTopLeft, cnBottomLeft, cnBottomRight}
-  of akTrapezoid:
-    result.tw = w
-    result.th = h
-    let deltaChild = d.child(padNode, "rect_delta")
-    if deltaChild >= 0:
-      result.deltaX = readMm(d, arg(d, deltaChild, 0))
-      result.deltaY = readMm(d, arg(d, deltaChild, 1))
-  of akOctagon:
-    result.ow = w
-    result.oh = h
-  of akThermal, akPolygon, akCustom:
-    discard   # no general polygon reconstruction attempted for a custom pad shape yet
-
-proc expandPadLayers(pcb: Pcb, d: SexpDoc, padNode: int32): seq[PcbLayer] =
-  let layersChild = d.child(padNode, "layers")
-  if layersChild < 0: return
-  var seen: HashSet[string]
-  for ln in d.kids(layersChild):
-    if d.kind(ln) != skString: continue
-    let name = d.text(ln)
-    if name == "*.Cu":
-      for l in copperLayers(pcb):
-        if l.name notin seen: (seen.incl(l.name); result.add(l))
-    elif name.startsWith("*."):
-      let suffix = name[1 .. ^1]
-      for _, l in pcb.layers:
-        if l.name.endsWith(suffix) and l.name notin seen:
-          seen.incl(l.name); result.add(l)
-    else:
-      let l = pcb.layer(name)
-      if l != nil and l.name notin seen:
-        seen.incl(l.name); result.add(l)
-
 proc footprintTransform(p: Placement): Transform =
   ## KiCad's rule: `absolute = fp.at + Rotate(local, +fp.angle)`, no extra
   ## mirror term -- a side flip is already baked into local coordinates and
@@ -573,10 +496,6 @@ proc readFootprint(pcb: Pcb, doc: KicadDoc, d: SexpDoc, node: int32,
 
 # ---------------------------------------------------------------- graphics + outline
 
-proc graphicNodeLayer(d: SexpDoc, node: int32): string =
-  let lc = d.child(node, "layer")
-  if lc >= 0: d.text(arg(d, lc, 0)) else: ""
-
 proc graphicWidth(d: SexpDoc, node: int32): Nm =
   let strokeChild = d.child(node, "stroke")
   if strokeChild >= 0:
@@ -585,48 +504,6 @@ proc graphicWidth(d: SexpDoc, node: int32): Nm =
   let widthChild = d.child(node, "width")   # pre-stroke-block KiCad
   if widthChild >= 0: return readMm(d, arg(d, widthChild, 0))
   nm(0)
-
-proc graphicCurves(d: SexpDoc, node: int32): seq[Curve] =
-  ## The geometry of one graphics node, in the frame it was written --
-  ## board coordinates for a top-level `gr_*`, footprint-local for an
-  ## `fp_*` (its caller applies `footprintTransform` afterwards).
-  case d.head(node)
-  of "gr_line", "fp_line":
-    let s = d.child(node, "start")
-    let e = d.child(node, "end")
-    if s >= 0 and e >= 0: result.add(seg(readXy(d, s), readXy(d, e)))
-  of "gr_rect", "fp_rect":
-    let s = d.child(node, "start")
-    let e = d.child(node, "end")
-    if s >= 0 and e >= 0:
-      let a = readXy(d, s)
-      let c = readXy(d, e)
-      let b = pt(c.x, a.y)
-      let dd = pt(a.x, c.y)
-      result.add(seg(a, b)); result.add(seg(b, c))
-      result.add(seg(c, dd)); result.add(seg(dd, a))
-  of "gr_circle", "fp_circle":
-    let ctr = d.child(node, "center")
-    let e = d.child(node, "end")
-    if ctr >= 0 and e >= 0:
-      let c = readXy(d, ctr)
-      let ep = readXy(d, e)
-      result.add(circleCurve(c, nm(int64(round(distance(c, ep))))))
-  of "gr_arc", "fp_arc":
-    let s = d.child(node, "start")
-    let m = d.child(node, "mid")
-    let e = d.child(node, "end")
-    if s >= 0 and m >= 0 and e >= 0:
-      try: result.add(arcFrom3Points(readXy(d, s), readXy(d, m), readXy(d, e)))
-      except GeometryError: discard   # zero-radius arc: drop rather than raise
-  of "gr_poly", "fp_poly":
-    let ptsChild = d.child(node, "pts")
-    if ptsChild >= 0:
-      var pts: seq[Point]
-      for xyNode in d.kids(ptsChild):
-        if d.head(xyNode) == "xy": pts.add(readXy(d, xyNode))
-      result.add(polyline(pts, closed = true).curves)
-  else: discard
 
 proc shapeFromGraphic(d: SexpDoc, node: int32, t: Transform): Shape =
   let w = graphicWidth(d, node)
@@ -1252,6 +1129,35 @@ proc writePcb*(pcb: Pcb, path: string) =
   ## `path`, byte-exact if nothing changed and valid-but-not-byte-identical
   ## KiCad otherwise -- see this module's doc comment for what "valid" rests
   ## on and the refusal table in `checkRefusals` for what it will not do.
+  if pcb.source == nil and pcb.layers.len > 0:
+    # A board with no KiCad source at all but a real layer stack (built,
+    # never read) is exactly what `pcb/assemble.nim` hands back --
+    # `kicadgen.renderNewPcb` splices each placement's real footprint (see
+    # that module's doc comment) rather than regenerating KiCad's own
+    # graphics syntax by rule, the same bet this module already makes for
+    # an *edited* board, extended to cover "authored from nothing" too.
+    # `placements.len == 0` is not excluded from this branch (an earlier
+    # draft checked it): a design where every part's footprint went
+    # unresolved still has a real layer stack, stack-up and outline worth
+    # writing out, with the `footprint_unresolved` `Issue` for each missing
+    # part reported by `pcb/assemble.assemble` rather than by refusing to
+    # write anything at all -- refusing here would turn "no part placed
+    # yet" into a worse error message than the one that already names what
+    # to fix.
+    #
+    # Deliberately does **not** then re-read the written text back into
+    # `pcb.source`/`attrs["kicad.node"]` on every entity (the "elegant"
+    # graft a first draft of this stage considered): `pcb`'s own `Placement`/
+    # `Copper` objects were never the ones a re-parse would produce, and
+    # setting `pcb.source` to a freshly-parsed `KicadDoc` while leaving
+    # every entity's own `attrs` unmapped would make `checkRefusals` refuse
+    # a *second* `writeBoard` call outright ("cannot write a new footprint")
+    # for placements that had just been written successfully the first
+    # time. Leaving `pcb.source` nil keeps a second call idempotent: it
+    # re-synthesizes the whole file fresh again, which always works, rather
+    # than half-adopting a snapshot with no entity actually mapped into it.
+    writeFile(path, renderNewPcb(pcb))
+    return
   if not (pcb.source of KicadDoc):
     refuse("kicad.writePcb: '" & pcb.name & "' has no KiCad source to " &
            "write back to -- it was not produced by kicad.readPcb (or its " &

@@ -60,8 +60,17 @@ import ./netlist/traversal
 import ./schematic
 import ./analysis/io_check
 import ./analysis/evaluators/contract_eval
+import ./pcb/units
+import ./pcb/assemble
+# Registers the KiCad `FootprintSource` (`pcb/footprint.registerFootprintSource`)
+# so `verax layout` resolves real land patterns off
+# `/usr/share/kicad/footprints` (or `$VERAX_FOOTPRINT_PATH`) with no further
+# setup -- opt-in per import everywhere else in this codebase, and this is
+# the one call site that must actually opt in for the CLI command to do
+# anything but report every part `footprint_unresolved`.
+import ./pcb/formats/kicadmod
 
-export contract_eval, io_check, environment
+export contract_eval, io_check, environment, assemble, kicadmod
 
 type
   Check* = object
@@ -679,6 +688,19 @@ type
       ## Draw the `runFULL*` archive and stop -- no `readiness`, so no
       ## simulation runs. Needs `--keep-runs=<dir>`; nothing to draw into is
       ## a usage error, not a silent no-op.
+    layoutOut*: string
+      ## `pcb/assemble.writeBoard`'s target path. Empty means "not asked",
+      ## the same shape `keepRuns` takes -- `verax layout` is the CLI
+      ## surface, `--layout-out=<path>` is what actually reaches the design
+      ## binary through `cmdCheck`'s two-process shape (`cli.nim`'s
+      ## `cmdLayout` forwards it as an ordinary compiled-design flag rather
+      ## than adding a second entry point that would need its own copy of
+      ## `locateLib`/the compile step).
+    layoutLayers*: int
+      ## `0` means "not stated" -- `AssembleOptions`' own default (2) applies.
+    layoutSize*: tuple[w, h: Nm]
+      ## `(nm(0), nm(0))` means "not stated" -- `AssembleOptions`' own
+      ## default board size applies.
 
 proc parseCapabilities*(text: string): set[Capability] =
   ## `--caps=op,ac` and friends. `capStatic` is always included: withholding
@@ -718,6 +740,28 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
       result.schematicLayout = layoutPolicyName(parseLayoutPolicy(
         a["--schematic-layout=".len .. ^1]))
     elif a == "--schematic-only": result.schematicOnly = true
+    elif a.startsWith("--layout-out="):
+      result.layoutOut = absolutePath(a["--layout-out=".len .. ^1])
+    elif a.startsWith("--layout-layers="):
+      try: result.layoutLayers = parseInt(a["--layout-layers=".len .. ^1])
+      except ValueError:
+        raise newException(ValueError,
+          "--layout-layers wants an integer copper-layer count, got '" &
+          a["--layout-layers=".len .. ^1] & "'")
+    elif a.startsWith("--layout-size="):
+      let spec = a["--layout-size=".len .. ^1]
+      let x = spec.find('x')
+      if x < 0:
+        raise newException(ValueError,
+          "--layout-size wants WxH in millimetres, e.g. 100x80, got '" &
+          spec & "'")
+      try:
+        result.layoutSize = (mm(parseFloat(spec[0 ..< x])),
+                             mm(parseFloat(spec[x + 1 .. ^1])))
+      except ValueError:
+        raise newException(ValueError,
+          "--layout-size wants WxH in millimetres, e.g. 100x80, got '" &
+          spec & "'")
 
 # --- the catalog: what may be claimed ------------------------------------
 #
@@ -953,4 +997,21 @@ proc verifyMain*(d: Design, args = commandLineParams()): int =
     keepFullSchematic(d.netlist)
     echo "wrote runFULL.* to ", o.keepRuns
     return exitClean
+  if o.layoutOut.len > 0:
+    # `pcb/assemble.writeBoard` alone, the same "draw and stop, no
+    # `readiness`" shape `--schematic-only` already takes -- board
+    # generation itself lives in `pcb/`, not here, exactly as the
+    # `$VERAX_KEEP_RUNS` schematic job lives in `schematic/render` and not
+    # here either.
+    var opts = defaultAssembleOptions()
+    if o.layoutLayers > 0: opts.copperLayers = o.layoutLayers
+    if o.layoutSize.w > nm(0) and o.layoutSize.h > nm(0):
+      opts.boardSize = o.layoutSize
+    let issues = writeBoard(d.netlist, o.layoutOut, opts)
+    var worst = sevInfo
+    for i in issues:
+      echo "[" & $i.severity & "] " & i.kind & ": " & i.message
+      if i.severity > worst: worst = i.severity
+    echo "wrote ", o.layoutOut, "  (", issues.len, " issue(s))"
+    return (if worst == sevError: exitStructural else: exitClean)
   verify(d, o.allowed, o.verbose, o.strict)

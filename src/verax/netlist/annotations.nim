@@ -170,6 +170,13 @@ const builtinAnnotations* = [
   AnnDef(key: "package", kind: akString, scopes: {asComponent},
     doc: "Case size or package family (\"0402\", \"tantalum\"). Keys the " &
          "parasitic defaults table in spice/models."),
+  AnnDef(key: "footprint", kind: akString, scopes: {asComponent},
+    doc: "Land pattern this part solders to, as \"Lib:Name\" or a path to a " &
+         ".kicad_mod file. Distinct from `package`, which is a case size " &
+         "keying parasitic defaults; two parts may share a case size and " &
+         "need different land patterns (hand-solder vs. reflow). Read by " &
+         "pcb/assemble.nim, in resolution order: this key, then a multi-" &
+         "channel package's PackageDef.footprint, then unresolved."),
   AnnDef(key: "zin", kind: akFloat, unit: "ohm", scopes: {asComponent, asPin},
     doc: "Impedance this pin presents to the net it sits on. Overrides the " &
          "per-pin-kind default spice/models substitutes for a part that " &
@@ -630,6 +637,7 @@ proc setRailVoltage*(n: Net, v: Volts, source = annAuthored) =
 proc esr*(c: Component): AnnValue[float] = annotationFloat(c, "esr")
 proc esl*(c: Component): AnnValue[float] = annotationFloat(c, "esl")
 proc package*(c: Component): AnnValue[string] = annotation(c, "package")
+proc footprint*(c: Component): AnnValue[string] = annotation(c, "footprint")
 proc deviceValue*(c: Component): AnnValue[string] = annotation(c, "value")
 
 # --- validation --------------------------------------------------------

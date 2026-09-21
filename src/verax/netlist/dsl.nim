@@ -254,6 +254,16 @@ proc handleLayout(entityVar: NimNode, stmt: NimNode): NimNode =
       let call = newCall(ident"setLayoutPower", entityVar, layoutPowerNode(pair[1]))
       call.copyLineInfo(pair)
       result.add call
+    of "variant":
+      # Unlike `side`/`mirror`/`power`, a variant name is an open-ended
+      # string (`pcb/variant.LayoutVariant` names, a registry this module
+      # cannot see -- `netlist/` must not depend on `pcb/`), not a closed
+      # set of bare idents -- so `pair[1]` is handed to `setLayoutVariant`
+      # exactly as written, the same "value is an arbitrary expression"
+      # treatment `handleSpec` already gives `value =`/`designator =`.
+      let call = newCall(ident"setLayoutVariant", entityVar, pair[1])
+      call.copyLineInfo(pair)
+      result.add call
     else:
       error("unknown layout hint '" & key & "'", keyNode)
   result.copyLineInfo(stmt)

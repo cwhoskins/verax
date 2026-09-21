@@ -343,17 +343,46 @@ proc bindComponent*(p: Placement, c: Component) =
      else: "; a placement and a component join on the reference designator, " &
            "or on the component's package.ref for a multi-channel part"))
 
+proc bindComponent*(p: Placement, c: Component, path: string) =
+  ## Binds `p` to `c` by an explicit hierarchical path, for a leaf inside a
+  ## `subNetlist` instance whose own designator is *local* (`"U1"`) while the
+  ## placement is keyed by the board-global path `pcb/assemble.nim` computed
+  ## (`hierName("X1", "U1")` = `"X1.U1"`) -- the plain designator-join
+  ## overload above cannot see that path at all, since `c.designator` never
+  ## carries it.
+  ##
+  ## Raises when `path != p.designator` rather than trusting the caller
+  ## silently: `assemble` derives both `p` and `path` from the same walk, so
+  ## a mismatch here means a caller passed the wrong pair, not a real
+  ## multi-channel exception (that is what the two-argument overload's own
+  ## `package.ref` branch is for) -- and binding to a placement that does not
+  ## actually match would join the wrong copper to the wrong pins with no
+  ## error at all.
+  if c == nil: return
+  if p.designator != path:
+    raise newException(PcbError,
+      "bindComponent: path '" & path & "' does not match placement '" &
+      p.designator & "'")
+  p.component = c
+  touch(p.pcb, p)
+
 proc placementOf*(pcb: Pcb, c: Component): Placement =
   ## The placement for a netlist component, or `nil` if it was never placed.
   ## For a section of a multi-channel package the placement is keyed by the
   ## package's board designator, not the section's own, so fall back to a
-  ## scan of `Placement.sections`.
+  ## scan of `Placement.sections`. The same scan also checks `p.component`
+  ## directly, which is what makes a *hierarchical* bind
+  ## (`bindComponent(p, c, path)`, above) reverse-lookupable at all: `path`
+  ## is not `c.designator`, so the fast `getOrDefault(c.designator)` above
+  ## finds nothing, and without this the scan below only ever matched a
+  ## multi-channel section, never an ordinary hierarchical leaf.
   if c == nil: return nil
   result = pcb.placements.getOrDefault(c.designator)
   if result != nil and result.component == c: return
   if result != nil and result.component == nil and result.sections.len == 0:
     return   # an unbound footprint that shares the designator, as before
   for _, p in pcb.placements:
+    if p.component == c: return p
     for _, sc in p.sections:
       if sc == c: return p
   result = nil

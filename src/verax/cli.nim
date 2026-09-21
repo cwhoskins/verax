@@ -147,6 +147,23 @@ proc cmdCheck(file: string, pathFlag: string, forward: seq[string]): int =
   result = run.waitForExit()
   run.close()
 
+# --- layout -----------------------------------------------------------
+
+proc cmdLayout(file, pathFlag, outPath: string, layers: int, size: string,
+               extra: seq[string]): int =
+  ## `cmdCheck`'s exact two-process shape, reused rather than duplicated:
+  ## the design *is* a Nim program, only the compiled design binary holds
+  ## the `Design`, and `--schematic-only` is already exactly this mechanism
+  ## (a flag `verify.parseVerifyArgs` reads inside the running design).
+  ## `--layout-out`/`--layout-layers`/`--layout-size` are the same kind of
+  ## flag, so this only has to build the forwarded argument list and hand it
+  ## to `cmdCheck` -- there is no second compile step to write.
+  var forward = @["--layout-out=" & outPath]
+  if layers > 0: forward.add "--layout-layers=" & $layers
+  if size.len > 0: forward.add "--layout-size=" & size
+  forward.add extra
+  cmdCheck(file, pathFlag, forward)
+
 # --- discovery ------------------------------------------------------------
 
 proc cmdInterfaces(): int =
@@ -211,6 +228,8 @@ verax -- state what a circuit must do, and check it
 
 usage:
   verax check <file.nim> [flags]   compile and check a design file
+  verax layout <file.nim> -o <out.kicad_pcb> [--layers=N] [--layout-size=WxH]
+                                    assemble a board from a design's footprints
   verax new <template> [path]      write a starter design ("-" for stdout)
   verax roles                      the bundles of claims available
   verax interfaces                 declared interface definitions
@@ -275,6 +294,38 @@ proc main(): int =
     if file.len == 0:
       raise newException(ValueError, "check needs a file: verax check <file.nim>")
     cmdCheck(file, pathFlag, forward)
+  of "layout":
+    var file = ""
+    var outPath = ""
+    var layers = 0
+    var size = ""
+    var forward: seq[string]
+    var i = 0
+    while i < rest.len:
+      let a = rest[i]
+      if a == "-o" or a == "--out":
+        inc i
+        if i >= rest.len:
+          raise newException(ValueError, "-o needs a path: verax layout <file.nim> -o <out.kicad_pcb>")
+        outPath = rest[i]
+      elif a.startsWith("--layers="):
+        try: layers = parseInt(a["--layers=".len .. ^1])
+        except ValueError:
+          raise newException(ValueError, "--layers wants an integer, got '" & a & "'")
+      elif a.startsWith("--layout-size="):
+        size = a["--layout-size=".len .. ^1]
+      elif file.len == 0 and not a.startsWith("-"):
+        file = a
+      else:
+        forward.add a
+      inc i
+    if file.len == 0:
+      raise newException(ValueError,
+        "layout needs a file: verax layout <file.nim> -o <out.kicad_pcb>")
+    if outPath.len == 0:
+      raise newException(ValueError,
+        "layout needs -o <out.kicad_pcb>: verax layout <file.nim> -o <out.kicad_pcb>")
+    cmdLayout(file, pathFlag, outPath, layers, size, forward)
   of "new":
     if rest.len == 0:
       raise newException(ValueError, "new needs a template name; try `blank`")

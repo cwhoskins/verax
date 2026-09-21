@@ -215,3 +215,55 @@ test "a SPICE round trip loses layout.power, exactly like layout.side":
   let back = readNetlist(newStringStream(text), "t")
   for _, c in back.components:
     check not c.attrs.hasKey(layoutPowerKey)
+
+test "\"variant\" joins side/mirror/power as a registered layout hint key":
+  check "variant" in layoutHintKeys
+
+test "parseLayoutVariant accepts any non-empty string and rejects only empty":
+  check parseLayoutVariant("compact") == (true, "compact")
+  check parseLayoutVariant("A-B_2") == (true, "A-B_2")
+  check parseLayoutVariant("") == (false, "")
+
+test "setLayoutVariant/layoutVariant round-trip, and \"\" clears the key":
+  let nl = board()
+  let c = nl.components["R1"]
+  check layoutVariant(c) == ""
+  check not c.attrs.hasKey(layoutVariantKey)
+
+  setLayoutVariant(c, "compact")
+  check c.attrs[layoutVariantKey] == "compact"
+  check layoutVariant(c) == "compact"
+
+  setLayoutVariant(c, "")
+  check not c.attrs.hasKey(layoutVariantKey)
+  check layoutVariant(c) == ""
+
+test "an explicitly-stored empty variant reads back as \"\", not an error":
+  let nl = board()
+  nl.components["R1"].attrs[layoutVariantKey] = ""
+  check layoutVariant(nl.components["R1"]) == ""
+
+test "validateLayoutHints reports an explicitly-empty variant, naming the component":
+  let nl = board()
+  nl.components["R1"].attrs[layoutVariantKey] = ""
+  let issues = validateLayoutHints(nl)
+  check issues.len == 1
+  check issues[0].kind == KindLayoutHintUnparseable
+  check issues[0].severity == sevWarning
+  check issues[0].components == @[nl.components["R1"]]
+
+test "layout.variant survives clone":
+  let nl = board()
+  setLayoutVariant(nl.components["R1"], "compact")
+  var globals: OrderedTable[string, Net]
+  let cloned = clone(nl, globals)
+  check layoutVariant(cloned.components["R1"]) == "compact"
+
+test "a SPICE round trip loses layout.variant, exactly like layout.side":
+  let nl = board()
+  setLayoutVariant(nl.components["R1"], "compact")
+  let text = render(nl)
+  check "layout" notin text
+  let back = readNetlist(newStringStream(text), "t")
+  for _, c in back.components:
+    check not c.attrs.hasKey(layoutVariantKey)

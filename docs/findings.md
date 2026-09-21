@@ -537,8 +537,11 @@ intentionally. Four things were left out on purpose:
 - **Unused-section tie-off.** An unused half of a dual op-amp must have its
   inputs tied off or it rails into the used half — a real board defect nothing
   here sees. The obvious next `validatePackages` check.
-- **Package pin count vs. footprint.** Needs a board reader `pcb/formats` does
-  not have yet.
+- ~~**Package pin count vs. footprint.**~~ **Shipped, §72.** `pcb/assemble.nim`'s
+  `footprint_pad_unmatched` checks both directions — a component pin with no
+  matching footprint pad, and a footprint pad matching no component pin — the
+  board reader this entry was waiting on (`pcb/formats/kicadmod.nim`) now
+  exists. See `docs/RESOLVED_FINDINGS.md` §72.
 - **Intra-`subckt` packaging.** A `subckt` is deep-cloned per instance, so a
   package declared *inside* one would be a different physical part in every
   instance while a package designator is a board-global join key. Which chip a

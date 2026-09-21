@@ -2496,3 +2496,36 @@ to width 1 in pure value space, wired by name as
 — a `seq[Net]`/`Bus`/whole-`InterfaceView` argument member-suffixes now
 (`label_0 …`) instead of repeating the bare label, which made
 `docs/buses_and_interfaces.md` item 9 true.
+
+---
+
+## 72. Package pin count vs. footprint
+
+§70's list of what multi-channel packaging left out named this directly:
+"Package pin count vs. footprint. Needs a board reader `pcb/formats` does not
+have yet." At the time nothing in the library could read a footprint's own
+pad list at all, so the check had no second list to compare the netlist's
+pins against.
+
+**The fix.** The schematic->board stage (`pcb/footprint.nim`,
+`pcb/formats/kicadmod.nim`, `pcb/assemble.nim`, `pcb/formats/kicadgen.nim`,
+`pcb/variant.nim`) built the missing reader as part of a larger piece of
+work — a component states a `footprint` annotation (`netlist/annotations.nim`,
+deliberately separate from `package`, a case size), `pcb/formats/kicadmod.nim`
+resolves it against a real `.kicad_mod` library search path, and
+`pcb/assemble.nim` walks a netlist to place every resolved footprint's real
+pads. `footprint_pad_unmatched` (`sevWarning`) is the check §540 asked for,
+run both directions: a component pin with no matching footprint pad id, and
+a footprint pad id matching no component pin — a real mismatch on either
+side is exactly a datasheet-vs-land-pattern transcription error, the same
+class `validatePackages`' own pin-map checks catch for a package definition.
+`footprint_unresolved` (`sevError`) is the companion finding for a part with
+no footprint at all, naming the component, the spec it stated (if any), and
+the footprint sources tried.
+
+**Not modelled, on purpose, this stage:** placement quality, routing, and any
+selection policy over more than one physical layout of a subcircuit — see
+`docs/layout_variants.md` for the data model (`pcb/variant.nim`) committed so
+that stage has nothing left to re-litigate about a variant's *shape* when it
+arrives, and for the OpenSCAD footprint-body obstacle this stage ran into and
+did not solve.
