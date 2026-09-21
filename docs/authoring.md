@@ -1002,6 +1002,87 @@ capability here. The default is fifty-one steps across the range; state
 a threshold crossing rather than off the endpoints, so its precision *is* the
 step.
 
+## Device sheets
+
+Most non-trivial parts deserve a **device sheet**: a `subckt`-returning proc
+in `designs/lib/` (or `designs/<board>/lib/` — see below) that wraps the
+part's own supporting circuitry and exposes ports, rather than a `component`
+block copy-pasted into every design that uses the part.
+`designs/lib/lt8640a.nim`'s `buckSheet` is the worked example: one call —
+
+```nim
+instance Xbuck, buckSheet(buckCfg),
+  {"VIN": vbus, "VOUT": vdd, "GND": gnd, "PG": open, "EN": en}
+```
+
+— stands in for the feedback divider, RT, boost cap, soft-start cap, and
+ripple-sized input/output capacitor banks the datasheet reference design
+needs, wired and sized correctly, rather than fourteen `component` statements
+a caller has to get right by hand every time the part is used.
+
+**Test first: does the part need one.** A device sheet earns its keep when a
+part has real supporting circuitry to get right (a regulator's feedback
+network, a crystal's load caps, a decoupling scheme) *and* that circuitry is
+mostly fixed by the part rather than by the board using it. The datalogger's
+MCU sheet (`designs/datalogger/lib/mcu.nim`) is the counter-example: an
+STM32H563 has almost no supporting circuitry beyond an NRST RC and decoupling
+caps, and which pins carry which peripheral is a board decision, not a fact
+about the part — the sheet exists (board-specific, in
+`designs/datalogger/lib/` rather than `designs/lib/`) to hold *this board's*
+pin assignment, not because the part needed one. What generalises across
+every board using an STM32H563 is its pin capability table
+(`designs/lib/stm32h563.nim`'s `registerPartPinmux`), and that is a data
+table, not a sheet — see "What a pin is allowed to be" below.
+
+### State intent, not values
+
+A device sheet's parameter is what you want the part to *do*, not a resistor
+value you had to compute by hand first. `buckSheet` takes a `BuckConfig` —
+output voltage, switching frequency, ripple targets — built by
+`buckConfig(...)`, and its own helper procs turn that into hardware:
+`feedbackPair` solves the two feedback resistors from the part's own
+reference voltage, `rtForFsw` solves RT from the part's gm-oscillator
+constant, `inductorForRipple`/`outputCapForRipple`/`inputCapForRipple` size
+the reactive parts from the stated ripple budget. Nothing in a design file
+that instances `buckSheet` states a component value at all — the claims check
+the design equations rather than checking that somebody did the arithmetic
+twice, the same discipline `designs/lib/filters.sallenKeyLP` and
+`designs/lib/opamp_stages.nonInvertingAmp` already establish.
+
+### Split out what is not about the part
+
+A helper belongs in the device sheet's own module only while it is actually
+about that part. `designs/lib/lt8640a.nim` used to hold the ripple-sizing
+equations directly; they moved out to `designs/lib/buck.nim` once it became
+clear they were buck-topology math (input/output cap sizing, inductor sizing
+from ripple) with nothing LT8640A-specific in it — a second buck IC's sheet
+reads the same procs rather than re-deriving them. `capBank` (splitting a
+ripple-sized total into real, voltage-derated parts) is the same move one
+level further out: neither the buck sheet nor buck topology needs it
+specifically, any bulk capacitance does, so it lives in its own
+`designs/lib/capbank.nim`. `crystal.nim`'s load-cap network is the same kind
+of split on the MCU side — generic crystal physics, reused by `mcuSheet` but
+living outside it, in the shared library rather than next to the
+board-specific sheet that calls it. The test in each case is the same as the
+top-level one: would a *different* part's sheet want this too? If yes, it is
+not that part's code.
+
+### Bring every port out
+
+A device sheet's `subckt` port list should include every pin a caller might
+plausibly need to reach, even ones most callers will strap to a fixed net or
+leave alone. `buckSheet` exposes both `PG` (power-good) and `EN` (enable) as
+ports rather than only wiring the ones the first caller needed:
+`designs/datalogger/datalogger.nim` leaves `PG` unconnected — `{"PG": open}`
+— because this board has no use for it, and ties `EN` to `vbus` through a
+resistor rather than the sheet hardwiring it straight to `VIN` internally.
+The difference matters: a pin the sheet never exposes is a pin no caller can
+ever reach without editing the library module, while an exposed-and-unused
+pin costs the caller nothing (`open` on an `instance` binding is exactly
+`verax layout`'s and the schematic's ordinary picture of "nothing here").
+Decide what to do with a control or monitor pin at the call site, not inside
+the sheet.
+
 ## More than one model for one part
 
 `simReplace` says how a part should be simulated. A part may carry **several**,

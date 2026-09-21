@@ -278,7 +278,8 @@ proc buildGainStandin(nl: Netlist, old: Component): Component =
 proc nestedCodeModelBoard(): tuple[nl: Netlist, globals: OrderedTable[string, Net]] =
   ## `XA` wraps a one-part `STAGE` template whose part carries a
   ## `SimReplacement.build`, one level deep -- the shape
-  ## `designs/lib/lt8640a_config.nim` describes finding this bug in.
+  ## `designs/lib/lt8640a.nim`'s `buckConfig` doc comment describes finding
+  ## this bug in.
   var globalNets: OrderedTable[string, Net]
   let templ = newNetlist("STAGE")
   let inN = addNet(templ, newNet("IN"))

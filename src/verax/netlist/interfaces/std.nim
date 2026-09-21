@@ -63,8 +63,28 @@ proc usb2Interface*(): InterfaceDef =
   result.implies = @[RoleClaim(role: "diff_pair",
     params: {"z_diff": "90", "z_diff_tol": "0.15"}.toOrderedTable)]
 
+proc jtagInterface*(): InterfaceDef =
+  ## The four-wire JTAG test-access port -- `tck`/`tms`/`tdi`/`tdo` -- plus
+  ## the optional hardware TAP reset `ntrst`. ARM's SWJ-DP shares this same
+  ## physical port with SWD (`tms` doubles as `swdio`, `tck` as `swclk`), so
+  ## one interface covers either rather than a second whose signals would
+  ## just be renamed copies. **No `implies`**: unlike `i2cInterface`, nothing
+  ## in `contract/evaluators` can check a scan chain yet, and `implies`-ing a
+  ## role that checks nothing would be worse than no role at all -- the same
+  ## restraint `gainStageExpand`'s doc comment states for an uninvented gain
+  ## default.
+  result.name = "jtag"
+  result.signals = @[SignalDef(name: "tck", width: 1), SignalDef(name: "tms", width: 1),
+                     SignalDef(name: "tdi", width: 1), SignalDef(name: "tdo", width: 1),
+                     SignalDef(name: "ntrst", width: 1)]
+  result.modports["controller"] = modport("controller",
+    [("tck", ptOutput), ("tms", ptOutput), ("tdi", ptOutput), ("tdo", ptInput), ("ntrst", ptOutput)], true)
+  result.modports["target"] = modport("target",
+    [("tck", ptInput), ("tms", ptInput), ("tdi", ptInput), ("tdo", ptOutput), ("ntrst", ptInput)])
+
 registerInterfaceDef(i2cInterface())
 registerInterfaceDef(spiInterface())
 registerInterfaceDef(uartInterface())
 registerInterfaceDef(diffPairInterface())
 registerInterfaceDef(usb2Interface())
+registerInterfaceDef(jtagInterface())

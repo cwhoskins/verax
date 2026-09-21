@@ -9,36 +9,81 @@
 ## `designs/datalogger/`, so it lives at `designs/datalogger/lib/mcu.nim`
 ## rather than the shared library.
 ##
-## Ports: `VDD`, `GND`, `SDA`, `SCL`, `DP`, `DM`.
+## Ports: `VDD`, `GND`, `DP`, `DM`, `AIN`, `NRST`, plus the `i2c`/`jtag`
+## interface groups below, exposed as `i2c_sda`/`i2c_scl` and
+## `jtag_tck`/`jtag_tms`/`jtag_tdi`/`jtag_tdo`/`jtag_ntrst`.
 ##
-## **I2C1 is checked by `validatePinmux` without needing an `iface`.**
-## `port ..., peripheral = "I2C1"` is the usual way to bind a peripheral (see
-## `designs/spi_memories.nim`), but that macro needs an `iface`-bound
-## interface value in the same DSL block, and this sheet's I2C bus is a
-## plain two-wire pair passed in from its caller rather than a declared
-## interface. `pin "PB9", SDA, kind = ptInOut, function = "I2C1.sda"` is the
-## documented alternative for exactly this case --
-## `netlist/pinmux.nim`'s own doc comment: "`pin ..., function = "ADC1.in3"`
-## stamps them for a non-interface pin" -- and it drives the identical
-## `validatePinmux` check.
+## **I2C1 and JTAG are both declared `iface`s, exposed straight as this
+## sheet's own port groups** (`i2c.controller`/`jtag.target` in the `subckt`
+## port bracket) rather than plain nets wired with a bare
+## `pin ..., function = "..."` stamp, which is what this sheet (and
+## `designs/spi_memories.nim`'s own `port ..., peripheral =`) used to need
+## for exactly this case -- `port`'s macro wants an `iface`-bound value in
+## the same DSL block, and these were plain pairs passed in from the caller.
+## Declaring the interface *here*, and exposing it as the port group itself
+## (`addPorts(nl, label, view(iface, modport))` names each resulting port
+## `<label>_<signal>`), sidesteps that: U1 genuinely *is* the I2C1 controller
+## and the JTAG target, so `i2c.controller`/`jtag.target` state a real fact,
+## and both `PB9`/`PB8`, and `PA14`/`PA13`/`PA15`/`PB3`/`PB4`, still carry
+## their own `function = "I2C1.sda"`/`"JTAG.tck"` etc. `pin` stamps for
+## `validatePinmux` exactly as before -- that check reads pin attrs a bare
+## `pin` statement sets regardless of what the bound net is. The payoff is
+## schematic-only: U1's seven separate I2C/JTAG pins now draw as two merged
+## pins on this sheet's own box (`schematic/bundles.nim` collapses a
+## port-bound bundle with only one *other* entity, the same as a two-entity
+## one), instead of seven pin/port pairs cluttering it.
 ##
-## **USB is not in `lib/stm32h563.nim`'s capability table at all** -- that
-## table's own header says so ("The timer, ADC, SAI, FMC, OCTOSPI, SDMMC,
-## DCMI and Ethernet functions are left out on purpose"), and USB is the
-## same kind of gap. So `PA11`/`PA12` are wired with **no `function =`**,
-## which the pinmux check never looks at (`validatePinmux` only inspects a
-## pin carrying `pinmux.signal`) -- silent to the checker rather than
-## incorrectly validated against a table that says nothing about USB.
-## PA11 = D-, PA12 = D+ is the standard OTG_FS pin assignment across the
-## whole STM32 family (F1 through H5); stated here rather than sourced from
-## this specific part's own alternate-function table, which was not
-## reachable to confirm bit-for-bit.
+## **`AIN` (`PA3`) and USB (`PA11`/`PA12`) are both checked now.**
+## `lib/stm32h563.nim`'s table used to leave out ADC and USB entirely, which
+## made both of these silent to `validatePinmux` -- no `function =` at all,
+## the same as an unmodelled peripheral. The table now carries `ADC1`/`ADC2`
+## (bare, non-interface channels) and `USB` (bound to `usb2Interface()`'s
+## `p`/`n`), sourced from ST's own `STM32H563ZITx.xml` pin database, so
+## these three pins are stamped like any other alternate function here:
+## `pin "PA3", AIN, kind = ptInput, function = "ADC1.in15"` -- **channel 15,
+## not 3**; `docs/authoring.md`'s `"ADC1.in3"` example is illustrative of the
+## mechanism, not this part's real map, and PA3's actual channel (confirmed
+## against the datasheet XML) is `ADC1_INP15`. `PA11`/`PA12` carry
+## `function = "USB.n"`/`"USB.p"` -- D-/D+ respectively, the datasheet's own
+## `USB_DM`/`USB_DP` naming, matching the standard OTG_FS assignment already
+## used across the STM32 family.
+##
+## **JTAG's `NTRST` is `PB4`**, the TAP's own dedicated reset pin -- distinct
+## from `NRST`, which resets the whole MCU, stays a plain port of its own,
+## and was already wired internally to `R_NRST`/`C_NRST`; `datalogger.nim`'s
+## J-Link header wires its `nRESET` line to that same net a plain reset
+## button would.
 
+import std/tables
 import verax/contract/dsl
 import verax/netlist/formats/spice as spiceFormat
+import verax/netlist/interfaces/std
+import verax/netlist/graph
 
 import ../../lib/stm32h563
 import ../../lib/crystal
+
+proc tagDiffPairMember(n: Net, ifaceName, signal: string) =
+  ## Marks a *pre-existing* net as a `diff_pair` interface member, the exact
+  ## `iface.*` attrs `netlist/interfaces.addInterface` stamps on a signal it
+  ## creates fresh -- `iface` itself cannot do this, since every one of its
+  ## signals is a brand-new net. `DP`/`DM` below have to stay the literal
+  ## nets this sheet already exposes as its own `DP`/`DM` ports (`subckt`'s
+  ## port bracket only accepts a bound identifier or an `iface` modport
+  ## view, never an indexed expression like `dp["p"]`), so tagging them in
+  ## place -- rather than replacing them with a fresh interface and renaming
+  ## the port -- is the only way to give this pass-through pair the same
+  ## purple `wkInterface` drawing `usbMcu` gets, instead of a `bus` tag's
+  ## blue. No `iface.dir`: `DP`/`DM` are genuinely bidirectional here, and
+  ## `diffPairInterface()`'s `driver`/`receiver` modports both claim a fixed
+  ## direction neither pin actually has, so this deliberately sets only the
+  ## three membership attrs `bundlePlan` reads, exactly as `addInterface`
+  ## does, and leaves direction to each pin's own stated `kind` untouched
+  ## (`schematic/bundles.nim`'s "net attrs only, never a pin attr" doc bullet
+  ## is what makes this safe -- direction is per-pin, membership is per-net).
+  n.attrs["iface.instance"] = ifaceName
+  n.attrs["iface.def"] = "diff_pair"
+  n.attrs["iface.signal"] = signal
 
 proc mcuSheet*(xtal = hse8MHz(), boardCurrentMa = 150.0): Netlist =
   ## `boardCurrentMa` sizes `VDD`'s `zin` stand-in the same way
@@ -47,36 +92,58 @@ proc mcuSheet*(xtal = hse8MHz(), boardCurrentMa = 150.0): Netlist =
   ## exists here to measure it.
   let vddZin = spiceValue(3.3 / (boardCurrentMa / 1000.0))
 
-  result = subckt("MCU", [VDD, GND, SDA, SCL, DP, DM]):
+  result = subckt("MCU", [VDD, GND, i2c.controller, DP, DM, AIN, NRST, jtag.target]):
     net GND, kind = ntGround, name = "0"
     net VDD, kind = ntPower
-    net SDA, kind = ntSignal
-    net SCL, kind = ntSignal
+    # `i2c`/`jtag` are declared interfaces exposed straight as this sheet's
+    # own port groups (`i2c.controller`/`jtag.target` above), not plain nets
+    # wrapped from outside -- U1 is genuinely the I2C1 controller and the
+    # JTAG target, so those modports state a real fact rather than an
+    # arbitrary pick, and `addPorts` names the resulting ports `i2c_sda`/
+    # `i2c_scl`/`jtag_tck`/`jtag_tms`/`jtag_tdi`/`jtag_tdo`/`jtag_ntrst` --
+    # `datalogger.nim`'s `instance Xmcu, ...` table keys on those. This also
+    # gives U1's own SDA/SCL and TAP pins one merged pin on this sheet's own
+    # box instead of seven separate ones (`bundlePlan` collapses a port-net
+    # bundle with only one *other* entity, exactly like a two-entity one).
+    iface i2c, i2cInterface()
+    iface jtag, jtagInterface()
     net DP,  kind = ntSignal
     net DM,  kind = ntSignal
-    net nrst, kind = ntSignal
+    net AIN, kind = ntSignal
+    net NRST,  kind = ntSignal
     net xin,  kind = ntSignal
     net xout, kind = ntSignal
-    net dpMcu, kind = ntSignal
-    net dmMcu, kind = ntSignal
+    # The series-termination-to-U1 half of the USB pair. Its own `iface`
+    # (rather than plain nets, as this sheet used before) so this inner run
+    # bundles on the MCU's own sub-sheet the same way the board sheet's `usb`
+    # bundles `Xusbc`/`Xmcu` -- bare `diffPairInterface()`, not
+    # `usb2Interface()`, for the reason stated where `datalogger.nim`
+    # declares its own `usb`.
+    iface usbMcu, diffPairInterface()
 
     component U1, kind = "mcu", partNumber = "STM32H563ZIT6":
       pin "VDD", VDD, kind = ptPower, zin = vddZin
       pin "VSS", GND, kind = ptGround
-      pin "PB9", SDA, kind = ptInOut, function = "I2C1.sda"
-      pin "PB8", SCL, kind = ptInOut, function = "I2C1.scl"
-      pin "PA11", dmMcu, kind = ptInOut
-      pin "PA12", dpMcu, kind = ptInOut
-      pin "NRST",  nrst, kind = ptInput
+      pin "PB9", i2c["sda"], kind = ptInOut, function = "I2C1.sda"
+      pin "PB8", i2c["scl"], kind = ptInOut, function = "I2C1.scl"
+      pin "PA3", AIN, kind = ptInput, function = "ADC1.in15"
+      pin "PA11", usbMcu["n"], kind = ptInOut, function = "USB.n"
+      pin "PA12", usbMcu["p"], kind = ptInOut, function = "USB.p"
+      pin "NRST",  NRST, kind = ptInput
       pin "BOOT0", GND,  kind = ptInput
       pin "PH0", xin,  kind = ptPassive
       pin "PH1", xout, kind = ptPassive
+      pin "PA14", jtag["tck"],   kind = ptInput,  function = "JTAG.tck"
+      pin "PA13", jtag["tms"],   kind = ptInput,  function = "JTAG.tms"
+      pin "PA15", jtag["tdi"],   kind = ptInput,  function = "JTAG.tdi"
+      pin "PB3",  jtag["tdo"],   kind = ptOutput, function = "JTAG.tdo"
+      pin "PB4",  jtag["ntrst"], kind = ptInput,  function = "JTAG.ntrst"
 
     component R_NRST, kind = "resistor", value = "10k":
       pin "1", VDD,  kind = ptPassive
-      pin "2", nrst, kind = ptPassive
+      pin "2", NRST, kind = ptPassive
     component C_NRST, kind = "capacitor", value = "100n":
-      pin "1", nrst, kind = ptPassive
+      pin "1", NRST, kind = ptPassive
       pin "2", GND,  kind = ptPassive
       spec:
         package = "0402"
@@ -84,11 +151,11 @@ proc mcuSheet*(xtal = hse8MHz(), boardCurrentMa = 150.0): Netlist =
     # Series termination at the MCU end of the USB FS pair -- the usual
     # placement in ST's own USB hardware/PCB guidelines application note.
     component R_DP, kind = "resistor", value = "27":
-      pin "1", DP,    kind = ptPassive
-      pin "2", dpMcu, kind = ptPassive
+      pin "1", DP,          kind = ptPassive
+      pin "2", usbMcu["p"], kind = ptPassive
     component R_DM, kind = "resistor", value = "27":
-      pin "1", DM,    kind = ptPassive
-      pin "2", dmMcu, kind = ptPassive
+      pin "1", DM,          kind = ptPassive
+      pin "2", usbMcu["n"], kind = ptPassive
 
     component C_VDD1, kind = "capacitor", value = "100n":
       pin "1", VDD, kind = ptPassive
@@ -102,3 +169,6 @@ proc mcuSheet*(xtal = hse8MHz(), boardCurrentMa = 150.0): Netlist =
         package = "0603"
 
     instance Xxtal, crystalNetwork(xtal), [xin, xout, GND]
+
+  tagDiffPairMember(findNet(result, "DP"), "dp", "p")
+  tagDiffPairMember(findNet(result, "DM"), "dp", "n")

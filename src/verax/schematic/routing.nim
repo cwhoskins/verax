@@ -712,7 +712,16 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
           kind: (if b.tag == btInterface: wkInterface else: wkBus),
           members: b.members, points: poly)
       elif arrGroup:
-        result.wires.add SchematicWire(net: ar.tag, kind: wkBus,
+        # `ar.tag` is `ArrayPort.display`, which is the *bundle's* own
+        # `Bundle.display` whenever this group is bundle-owned (see
+        # `arrayOwnsDistributedPin`'s doc) -- so its colour must follow the
+        # same bundle, exactly like the `coll` branch above, not default to
+        # `wkBus`. `bi` (computed earlier in this loop, for this same net)
+        # is the matching `Bundle` when there is one; a plain array group
+        # with no bundle behind it at all (`bi < 0`, e.g. an undeclared
+        # distributed port) keeps the historical `wkBus`.
+        let arKind = if bi >= 0 and bundles.bundles[bi].tag == btInterface: wkInterface else: wkBus
+        result.wires.add SchematicWire(net: ar.tag, kind: arKind,
           members: ar.members, points: poly)
       else:
         result.wires.add SchematicWire(net: net.name,

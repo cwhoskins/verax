@@ -45,3 +45,14 @@ does not know the supply, and does not need to — `spice/models` computes the D
 across each capacitor from the netlist at simulation time, when rail voltages are
 stated. The policy answers "what kind of part", the netlist answers "what is across
 it", and neither has to know the other's business.
+
+`policy.ceramicLadder`/`smallestCeramicPackage`/`maxCeramicCapacitance` are one
+case-size-by-voltage-tier table read in both directions -- capacitance in, case
+out, or case and rating in, largest single part out -- so the two lookups can
+never disagree with each other, and `standardVoltageRating` is the rounding step
+both `defaultCapacitor` and a caller with its own working voltage need. A
+capacitor-*bank* splitter (one target split into several real parts under a
+package/count constraint) is not here: it needs `spice/models/derating`'s DC-bias
+curve to size against, and this submodule sits beside `netlist`/`units` and may
+not import `spice/` — so `designs/lib/capbank.nim`, which can import both, is
+where that lives.

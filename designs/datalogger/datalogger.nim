@@ -1,32 +1,30 @@
 ## A first non-trivial board, in five sheets: USB-C in, a buck-regulated
 ## 3.3 V system rail, an STM32H563 MCU (with its HSE crystal nested as its
 ## own sub-sheet) talking to an M24C64 EEPROM over I2C1, and a single-supply
-## analog input channel.
+## analog input channel -- plus a JTAG debug header (`J3`) broken straight
+## off the MCU sheet, ARM's standard 20-pin pinout so a stock J-Link plugs in
+## with no adapter.
 ##
 ##   verax check designs/datalogger/datalogger.nim
 ##
 ## Two of the five sheets (`mcu`, `analog`) are specific to this board and
-## live alongside it in `designs/datalogger/lib/`; the other three
-## (USB-C, crystal, EEPROM) are generic building blocks -- built from pure
+## live alongside it in `designs/datalogger/lib/`; the other four (USB-C,
+## buck, crystal, EEPROM) are generic building blocks -- built from pure
 ## physics or a specific part's own spec, nothing about *this* design -- and
-## live in the shared `designs/lib/`. **The buck converter is the
-## exception**, and deliberately so: `designs/lib/lt8640a_config.nim`'s own
-## header records a real, previously-unexercised limit this design found --
-## nesting the LT8640A's XSPICE behavioural model one level inside an
-## `instance` bakes the wrong (pre-flatten, template-local) node names into
-## the deck, because the model pass runs before `spice/flatten.nim` has
-## resolved them. So the buck's components are declared here, flat, exactly
-## where `designs/lt8640a_buck.nim`'s always have been, driven by that
-## module's `BuckConfig`/`feedbackPair`/`rtForFsw` instead of by literals
-## (once that ordering bug is fixed, `lt8640a_config.nim` can grow a
-## `subckt`-returning sheet proc like every other generic building block
-## here). The I2C pull-ups and bus capacitance are flat for a related,
-## separately-measured reason: see `designs/lib/m24c64_sheet.nim`'s header.
+## live in the shared `designs/lib/`. **The buck converter was the
+## exception** until nesting an XSPICE-modelled part inside an `instance`
+## was fixed: `designs/lib/lt8640a.nim`'s own `buckConfig` doc comment
+## records the real, previously-unexercised limit this design found, and why
+## the buck's components lived here, flat, at the same level
+## `designs/lt8640a_buck.nim`'s always have. Now `lt8640a.buckSheet` is an
+## ordinary `instance` like every other sheet below. The I2C pull-ups and bus
+## capacitance stay flat for a related, separately-measured reason: see
+## `designs/lib/m24c64_sheet.nim`'s header.
 ##
 ## | Sheet | Proc | Where | Parameterized by |
 ## | --- | --- | --- | --- |
 ## | USB-C | `usbc_sink.usbCSink` | `designs/lib/` (generic) | expected advertised current (sizes VBUS bulk) |
-## | Buck converter | `lt8640a_config` (flat, see above) | `designs/lib/` (generic) | output voltage, switching frequency, `ilim`/`dmax` |
+## | Buck converter | `lt8640a.buckSheet` | `designs/lib/` (generic) | output voltage, switching frequency, `ilim`/`dmax` |
 ## | MCU | `lib/mcu.mcuSheet` | `designs/datalogger/lib/` (board-specific) | crystal spec, board current budget |
 ## | ↳ crystal | `crystal.crystalNetwork` | `designs/lib/` (generic) | load capacitance, computed from the crystal's own `CL` |
 ## | EEPROM | `m24c64_sheet.eepromSheet` | `designs/lib/` (generic) | -- (one part; the bus is flat) |
@@ -60,30 +58,30 @@
 import verax/contract/dsl
 import verax/verify
 import verax/spice/boundary
-import verax/netlist/formats/spice as spiceFormat
+import verax/netlist/interfaces/std
 
 import ../lib/lt8640a
 import ../lib/usbc_sink
-import ../lib/lt8640a_config
 import ../lib/m24c64_sheet
 import ./lib/mcu
 import ./lib/analog
 
 const
-  buckCfg = buckConfig(voltage = 3.298.V, freq = 1.0.MHz)
+  buckCfg = buckConfig(voltage = 3.298.V, freq = 1.0.MHz, vin = 5.0.V)
     ## 3.298 V: `0.970 * (1 + 240k/100k)`, refit from
     ## `designs/lt8640a_buck.nim`'s own 4.962 V rail to what this board's
     ## logic actually runs at. `feedbackPair`/`rtForFsw` compute the exact
     ## resistors for whatever voltage/frequency is stated here -- this file
-    ## names only the rail and the rate, never a resistor.
+    ## names only the rail and the rate, never a resistor. `vin = 5.0.V`:
+    ## this board's input is the USB-C `vbus` rail below, not `buckConfig`'s
+    ## 12 V default -- stated so the input-side bypass caps size against
+    ## what they actually see rather than a rail this board doesn't have.
   advertise = usb3000mA
     ## What this board expects the USB-C source to offer. Changing it moves
     ## `ccsns`'s claimed voltage below and `usbCSink`'s own VBUS bulk sizing
     ## with it -- see `../lib/usbc_sink.nim`'s header for why the
     ## board's own `Rd` never changes.
 
-let (r1, r2) = feedbackPair(buckCfg)
-let rt = rtForFsw(buckCfg.freq)
 let ccTarget = ccSenseTarget(advertise)
   ## Bound to a `let` rather than inlined into the `require` below:
   ## `contract/dsl.require`'s "the unit comes from the literal" trick walks
@@ -104,113 +102,68 @@ let d = design("datalogger"):
   net vdd, kind = ntPower:
     spec:
       voltage = buckCfg.voltage
-  net sda, kind = ntSignal
-  net scl, kind = ntSignal
-  net dp,  kind = ntSignal
-  net dm,  kind = ntSignal
   net cc1, kind = ntSignal
   net cc2, kind = ntSignal
   net ccsns, kind = ntSignal
   net ain,  kind = ntSignal
   net aout, kind = ntSignal
+  net en,   kind = ntSignal
+  net nrst,  kind = ntSignal
+  # `nrst` is the system reset, not part of `jtag` below -- distinct from the
+  # TAP's own `ntrst`, and driven by both `R_NRST`/`C_NRST` inside `Xmcu` and
+  # `J3`'s `NRESET` pin, so it stays a plain net like any other.
+
+  # SDA/SCL, USB D+/D-, and the four TAP signals are declared interfaces
+  # rather than plain nets -- the only thing that changes is that
+  # `schematic/bundles.nim` can now see them as one thing: each is wired flat
+  # to at least two component entities at this level (the pull-ups/EEPROM for
+  # `bus`, `Xusbc`/`Xmcu` for `usb`, `J3`/`Xmcu` for `jtag`), which is exactly
+  # what `bundlePlan` needs to draw a merged bus tree or a grouped net-label
+  # tag instead of N separate thin wires. `bus` is named to match the `role
+  # "i2c", bus, ...` instance below on purpose: `addImpliedRoles` skips an
+  # interface's implied role when a role of that name already exists, and
+  # `i2cInterface()` implies plain `"i2c"` with no params -- reusing the name
+  # is what keeps this from also registering a second, redundant i2c role
+  # instance duplicating the explicit one's claims. `diffPairInterface()`,
+  # not `usb2Interface()`, for the same reason `usb_hs_link.nim` picks it:
+  # `usb2Interface()` additionally implies a 90-ohm `z_diff` claim that
+  # `pcb/` cannot check yet, and a design meant to check clean should not
+  # carry a claim nothing can measure. `jtagInterface()` implies nothing at
+  # all, so it needs no such care.
+  iface bus, i2cInterface()
+  iface usb, diffPairInterface()
+  iface jtag, jtagInterface()
 
   # --- USB-C sheet ---------------------------------------------------------
 
-  instance Xusbc, usbCSink(advertise), [vbus, gnd, cc1, cc2, ccsns, dp, dm]
+  instance Xusbc, usbCSink(advertise), [vbus, gnd, cc1, cc2, ccsns, usb["p"], usb["n"]]
 
-  # --- buck converter, flat -- see this file's own header -----------------
+  # --- buck converter sheet -------------------------------------------------
 
-  net sw,   kind = ntSignal
-  net fb,   kind = ntSignal
-  net trss, kind = ntSignal
-  net pg,   kind = ntSignal
-  net bst,  kind = ntSignal
-  net vcc,  kind = ntPower
+  instance Xbuck, buckSheet(buckCfg),
+    {"VIN": vbus, "VOUT": vdd, "GND": gnd, "PG": open, "EN": en}
 
-  component CB1, kind = "capacitor", value = "4.7u":
+  # EN tied to vbus through a resistor rather than straight to VIN -- same
+  # rail, but the resistor is a real strap a bench can break to force a
+  # shutdown, where a direct wire would not be.
+  component R_EN, kind = "resistor", value = "100k":
     pin "1", vbus, kind = ptPassive
-    pin "2", gnd,  kind = ptPassive
+    pin "2", en,   kind = ptPassive
     spec:
-      package = "1210"
-  component CB2, kind = "capacitor", value = "1u":
-    pin "1", vbus, kind = ptPassive
-    pin "2", gnd,  kind = ptPassive
-    spec:
-      package = "0603"
-
-  component U1, kind = "buck", partNumber = "LT8640A":
-    pin "VIN",   vbus, kind = ptPower
-    pin "SW",    sw,   kind = ptOutput
-    pin "FB",    fb,   kind = ptInput
-    pin "EN",    vbus, kind = ptInput   # always on: no shutdown control
-    pin "TR/SS", trss, kind = ptPassive
-    pin "PG",    pg,   kind = ptOutput
-    pin "BST",   bst,  kind = ptPassive
-    pin "INTVCC", vcc, kind = ptPower
-    pin "GND",   gnd,  kind = ptGround
-    spec:
-      voltage = buckCfg.voltage
-      current_rating = 2.0.A
-
-  component CBST, kind = "capacitor", value = "100n":
-    pin "1", bst, kind = ptPassive
-    pin "2", sw,  kind = ptPassive
-    spec:
-      package = "0402"
-  component CVCC, kind = "capacitor", value = "1u":
-    pin "1", vcc, kind = ptPassive
-    pin "2", gnd, kind = ptPassive
-    spec:
-      package = "0603"
-  component CSS, kind = "capacitor", value = "10n":
-    pin "1", trss, kind = ptPassive
-    pin "2", gnd,  kind = ptPassive
-    spec:
-      package = "0402"
-
-  component L1, kind = "inductor", value = spiceValue(float(buckCfg.inductor)):
-    pin "1", sw,  kind = ptPassive
-    pin "2", vdd, kind = ptPassive
-    spec:
-      isat = buckCfg.isat
-      current_rating = buckCfg.inductorRating
-
-  component COUT, kind = "capacitor", value = spiceValue(float(buckCfg.outCap)):
-    pin "1", vdd, kind = ptPassive
-    pin "2", gnd, kind = ptPassive
-    spec:
-      package = "1206"
-      esr = 5.mohm
-      esl = 1.nH
-  component COUT2, kind = "capacitor", value = "100n":
-    pin "1", vdd, kind = ptPassive
-    pin "2", gnd, kind = ptPassive
-    spec:
-      package = "0402"
-
-  component R1, kind = "resistor", value = spiceValue(float(r1)):
-    pin "1", vdd, kind = ptPassive
-    pin "2", fb,  kind = ptPassive
-    spec:
-      tolerance = 1.pct
-  component R2, kind = "resistor", value = spiceValue(float(r2)):
-    pin "1", fb,  kind = ptPassive
-    pin "2", gnd, kind = ptPassive
-    spec:
-      tolerance = 1.pct
-  component CFF, kind = "capacitor", value = "10p":
-    pin "1", vdd, kind = ptPassive
-    pin "2", fb,  kind = ptPassive
-    spec:
-      package = "0402"
-
-  component RT, kind = "resistor", value = spiceValue(float(rt)):
-    pin "1", vcc, kind = ptPassive
-    pin "2", gnd, kind = ptPassive
+      tolerance = 5.pct
 
   # --- MCU sheet (crystal nested inside it) --------------------------------
 
-  instance Xmcu, mcuSheet(boardCurrentMa = 150.0), [vdd, gnd, sda, scl, dp, dm]
+  # `mcuSheet`'s I2C1/JTAG ports are its own declared `i2c`/`jtag` interface
+  # groups now, named `i2c_sda`/`i2c_scl`/`jtag_tck`/`jtag_tms`/`jtag_tdi`/
+  # `jtag_tdo`/`jtag_ntrst` by `addPorts` (see `lib/mcu.nim`'s header) --
+  # `DP`/`DM` keep their bare names, since that pair stays a plain schematic
+  # tag on the MCU sheet rather than an exposed interface (see `lib/mcu.nim`).
+  instance Xmcu, mcuSheet(boardCurrentMa = 150.0),
+    {"VDD": vdd, "GND": gnd, "i2c_sda": bus["sda"], "i2c_scl": bus["scl"],
+     "DP": usb["p"], "DM": usb["n"], "AIN": aout, "NRST": nrst,
+     "jtag_tck": jtag["tck"], "jtag_tms": jtag["tms"], "jtag_tdi": jtag["tdi"],
+     "jtag_tdo": jtag["tdo"], "jtag_ntrst": jtag["ntrst"]}
 
   # --- I2C bus: flat -- see ../lib/m24c64_sheet.nim's header ---------------
   #
@@ -228,23 +181,23 @@ let d = design("datalogger"):
 
   component R_SDA, kind = "resistor", value = "1.2k":
     pin "1", vdd, kind = ptPassive
-    pin "2", sda, kind = ptPassive
+    pin "2", bus["sda"], kind = ptPassive
     spec:
       tolerance = 1.pct
   component R_SCL, kind = "resistor", value = "1.2k":
     pin "1", vdd, kind = ptPassive
-    pin "2", scl, kind = ptPassive
+    pin "2", bus["scl"], kind = ptPassive
     spec:
       tolerance = 1.pct
   component C_SDA, kind = "capacitor", value = "47p":
-    pin "1", sda, kind = ptPassive
+    pin "1", bus["sda"], kind = ptPassive
     pin "2", gnd, kind = ptPassive
     spec:
       package = "0402"
       dielectric = "C0G"
       voltage_rating = 16.0.V
   component C_SCL, kind = "capacitor", value = "47p":
-    pin "1", scl, kind = ptPassive
+    pin "1", bus["scl"], kind = ptPassive
     pin "2", gnd, kind = ptPassive
     spec:
       package = "0402"
@@ -253,7 +206,7 @@ let d = design("datalogger"):
 
   # --- EEPROM sheet ---------------------------------------------------------
 
-  instance Xeeprom, eepromSheet(), [vdd, gnd, sda, scl]
+  instance Xeeprom, eepromSheet(), [vdd, gnd, bus["sda"], bus["scl"]]
 
   # --- analog input sheet ---------------------------------------------------
 
@@ -265,13 +218,27 @@ let d = design("datalogger"):
     pin "AIN", ain, kind = ptInput
     pin "GND", gnd, kind = ptGround
 
-  # A steady bulk load standing in for "the rest of the board" -- sensors,
-  # an SD card, whatever this logger is actually logging to. The MCU/EEPROM
-  # `zin` stand-ins alone are light enough to put the buck's switching model
-  # into discontinuous conduction, which its `.tran` is not fitted for.
-  component RLOAD, kind = "resistor", value = "15":
-    pin "1", vdd, kind = ptPassive
-    pin "2", gnd, kind = ptPassive
+  # ARM/MIPI 20-pin JTAG (2x10, 0.1"), the connector SEGGER documents as
+  # J-Link's own standard pinout, so a stock 20-pin ribbon/adapter plugs in
+  # with no translation. Only the pins this design actually drives are
+  # declared, the same convention `J2`/`usbc_sink.J1` already follow for a
+  # connector's unused physical pins -- `RTCK` (11, adaptive clocking, which
+  # the STM32H563 does not drive back), `DBGRQ`/`DBGACK` (17/19, unused on
+  # every ARM target) and the `VSupply` pin (2) are left undeclared rather
+  # than wired to anything. `VTREF` (1) still has to connect, though: it is
+  # how the probe reads the target's own I/O voltage rather than assuming
+  # one, and a J-Link left floating there refuses to talk to the board at
+  # all. Every physical GND pin (4/6/8/10/12/14/16/18/20) collapses onto one
+  # logical `GND` pin, same as `usbc_sink.usbCSink`'s `J1`.
+  component J3, kind = "connector", partNumber = "ARM-JTAG-20":
+    pin "VTREF",  vdd,          kind = ptPower
+    pin "NTRST",  jtag["ntrst"], kind = ptInput
+    pin "TDI",    jtag["tdi"],   kind = ptInput
+    pin "TMS",    jtag["tms"],   kind = ptInput
+    pin "TCK",    jtag["tck"],   kind = ptInput
+    pin "TDO",    jtag["tdo"],   kind = ptPassive
+    pin "NRESET", nrst,          kind = ptInOut
+    pin "GND",    gnd,          kind = ptGround
 
   # --- claims ---------------------------------------------------------
 
@@ -280,20 +247,25 @@ let d = design("datalogger"):
   role "power_rail", sys, rail = vdd, voltage = buckCfg.voltage, band = 3.pct,
        targetZ = 300.mohm, targetFrom = 100.kHz, targetTo = 10.MHz
 
-  role "switching_regulator", buck,
-       regulator = U1, output = vdd, switch = sw, inductor = L1, sense = L1,
-
-       voltage = buckCfg.voltage, band = 3.pct, tRun = 8.0.ms,
-       maxRiseTime = 10.0.ms, maxOvershoot = 5.0,
-
-       tSettle = 300.0.us, tWindow = 20.0.us
-
-  role "i2c", bus, sda = sda, scl = scl, pullupRail = vdd,
+  role "i2c", bus, sda = bus["sda"], scl = bus["scl"], pullupRail = vdd,
        controller = Xmcu.innerComponent("U1"), frequency = 100.kHz
 
-  role "opamp_stage", achan, opamp = Xanalog.innerComponent("U1"),
+  # `opamp_stage`/`gain_stage` split the same way they do on `ts808_drive`:
+  # this stage is single-supply and AC-coupled (`analog.analogInputChannel`
+  # blocks DC into IN+ with `C_IN`), so `peaking_db` and `bw_3db` are both
+  # referenced to the *first swept point* -- unity gain here by construction
+  # -- and would flag the coupling network's own rolloff as instability.
+  # `without = "peaking"` declines that claim; `gain_stage` below states what
+  # the stage is actually specified by, referenced to the response's
+  # maximum instead.
+  role "opamp_stage", achan, opamp = Xanalog.innerComponent("Xamp", "U1"),
        input = ain, output = aout,
-       minBandwidth = 5.0.MHz, maxPeaking = 1.0.dB
+       minPhaseMargin = 45.0.deg, without = "peaking"
+
+  role "gain_stage", achanGain, opamp = Xanalog.innerComponent("Xamp", "U1"),
+       input = ain, output = aout,
+       minGain = 5.0.dB, maxGain = 7.0.dB,
+       fLoMax = 10.0.Hz, fHiMin = 5.0.MHz
 
   require dc_voltage(ccsns) == ccTarget, band = 3.pct,
           id = "REQ-DL-CCSNS-001",
@@ -301,10 +273,11 @@ let d = design("datalogger"):
                     "is the only thing that tells the MCU what current the " &
                     "port actually offers"
 
-# Attach the buck's behavioural models. After the block: `useLt8640a` needs
-# `d`, which does not exist while the block above was being built.
-useLt8640a(d, "U1", fsw = float(buckCfg.freq),
-           ilim = float(buckCfg.ilim), dmax = buckCfg.dmax)
+# The buck's `switching_regulator` role. After the block, like `useLt8640a`
+# used to be: the role names `Xbuck`'s own internal `U1`/`L1`/`sw`, which
+# `switchingRegulatorRole` knows and this file does not have to.
+switchingRegulatorRole(d, "Xbuck", "buck", buckCfg, findNet(d.netlist, "vdd"),
+                        tSettle = 300.0.us, tWindow = 20.0.us)
 
 # What is plugged into each connector. The source's own CC pull-up
 # (`rpFor(advertise)`) is what actually makes the advertisement -- without

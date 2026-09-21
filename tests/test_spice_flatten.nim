@@ -279,8 +279,9 @@ suite "name collisions flattening produces, and the ones it cannot":
     check "RXA.R1" in s.data
 
 suite "flatten before applySimReplacements, for a nested XSPICE component":
-  # The pairing that fixed the bug `designs/lib/lt8640a_config.nim` found and
-  # documented: `test_spice_transform.nim` proves the ports string freezes
+  # The pairing that fixed the bug `designs/lib/lt8640a.nim`'s `buckConfig`
+  # doc comment describes finding and documenting:
+  # `test_spice_transform.nim` proves the ports string freezes
   # to the right names in isolation, and this proves the two passes
   # actually compose into a deck ngspice can read -- no `.SUBCKT`, and the
   # `A` line naming nets that exist.

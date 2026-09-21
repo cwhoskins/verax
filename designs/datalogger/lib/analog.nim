@@ -1,73 +1,53 @@
-## The analog input sheet: a single-supply non-inverting gain stage, biased
-## at VDD/2 the way `designs/ts808_drive.nim` biases its whole signal chain.
+## The analog input sheet: a single-supply non-inverting gain stage built
+## from `designs/lib/opamp_stages.nonInvertingAmp`, with the VDD/2 bias
+## circuitry that makes it work on a single supply pulled out into its own
+## subcircuit, `designs/lib/bias.biasNetwork` -- generic, like `opamp_stages`,
+## and not specific to this board -- wired separately ahead of it, onto
+## the non-inverting *input*, not onto `REF`. `REF` stays tied straight to
+## true `GND`, the way `opamp_stages`'s own doc comment says a dual-supply
+## board would wire it: this stage's gain-setting leg (`RG`, `REF` to the
+## feedback node) is a real ground return, not a bias rail, so
+## `gain = 1 + Rf/Rg` holds with no bias term folded in. What makes the
+## stage single-supply instead is entirely upstream of `IN` -- `biasNetwork`
+## AC-couples `AIN` onto a node held at `VDD/2`, so the op-amp's
+## non-inverting input sees a DC-biased, AC-coupled version of the input
+## signal and the feedback network never sees the bias at all.
 ##
 ## Ports: `AIN`, `AOUT`, `VDD`, `GND`.
 ##
-## Built directly (component by component, `designs/aa_filter.nim`'s style)
-## rather than through `designs/lib/opamp_stages.nonInvertingAmp`, so the
-## op-amp this sheet's `opamp_stage` role claims sits at `<instance>.U1`
-## with no extra nesting to walk through.
+## The op-amp `datalogger.nim`'s `opamp_stage`/`gain_stage` roles claim sits
+## two levels deeper than it once did, at `<instance>.Xamp.U1` --
+## `innerComponent` walks a multi-segment path exactly as readily as a
+## single one (see `design.innerComponent`), so the nesting `nonInvertingAmp`
+## brings along costs the role binding nothing but one more path segment.
+## Real AC coupling ahead of the amplifier is also why `datalogger.nim`
+## claims this stage with *both* roles rather than one: `opamp_stage` alone
+## would claim `peaking_db`, referenced to the sweep's first point, and that
+## point sits in `biasNetwork`'s own stopband -- see
+## `contract/roles/analog.gainStageExpand`'s doc comment for why that pair
+## exists.
 
 import verax/contract/dsl
 import verax/netlist/formats/spice as spiceFormat
+import ../../lib/opamp_stages
+import ../../lib/bias
 
 proc analogInputChannel*(gain = 2.0, gbw = 20.0.MHz,
-                         partNumber = "OPA320"): Netlist =
+                         partNumber = "OPA320",
+                         biasCornerHz = 1.6.Hz): Netlist =
   doAssert gain >= 1.0, "non-inverting gain is >= 1 (1.0 is a unity buffer)"
-  # 100k, not 10k: `designs/lib/opamp_stages.defaultNonInvertingGain`'s own
-  # default, matched deliberately -- measured a real, reproducible
-  # difference between the two (13.5 MHz/1.5 dB of peaking at 10k against
-  # this proc's own topology at gain 2, versus 10.4 MHz/0.192 dB at 100k,
-  # both against the identical `OPA320`/20 MHz part), so this is not a
-  # cosmetic choice.
-  let rf = 100.0.kohm
-  let rg = Ohms(float(rf) / (gain - 1.0))
 
   result = subckt("ANALOG_IN", [AIN, AOUT, VDD, GND]):
     net GND,  kind = ntGround, name = "0"
     net VDD,  kind = ntPower
     net AIN,  kind = ntSignal
     net AOUT, kind = ntSignal
-    net vref, kind = ntSignal
-    net fb,   kind = ntSignal
+    net vin,  kind = ntSignal
 
-    # VDD/2 bias for a single-supply stage.
-    component R_BIAS1, kind = "resistor", value = "10k":
-      pin "1", VDD,  kind = ptPassive
-      pin "2", vref, kind = ptPassive
-    component R_BIAS2, kind = "resistor", value = "10k":
-      pin "1", vref, kind = ptPassive
-      pin "2", GND,  kind = ptPassive
-    component C_BIAS, kind = "capacitor", value = "10u":
-      pin "1", vref, kind = ptPassive
-      pin "2", GND,  kind = ptPassive
-      spec:
-        package = "0805"
+    instance Xbias, biasNetwork(cornerHz = biasCornerHz),
+      {"IN": AIN, "OUT": vin, "VDD": VDD, "GND": GND}
 
-    component U1, kind = "opamp", partNumber = partNumber:
-      pin "IN+", AIN,  kind = ptInput
-      pin "IN-", fb,   kind = ptInput
-      pin "OUT", AOUT, kind = ptOutput
-      pin "V+",  VDD,  kind = ptPower
-      pin "V-",  GND,  kind = ptGround
-      spec:
-        gbw = gbw
-
-    if gain == 1.0:
-      discard
-    else:
-      component RF, kind = "resistor", value = spiceValue(float(rf)):
-        pin "1", AOUT, kind = ptPassive
-        pin "2", fb,   kind = ptPassive
-      component RG, kind = "resistor", value = spiceValue(float(rg)):
-        pin "1", fb,   kind = ptPassive
-        pin "2", vref, kind = ptPassive
-
-    component CD1, kind = "capacitor", value = "100n":
-      pin "1", VDD, kind = ptPassive
-      pin "2", GND, kind = ptPassive
-      spec:
-        package = "0402"
-
-  if gain == 1.0:
-    mergeNets(findNet(result, "AOUT"), findNet(result, "fb"))
+    # --- gain stage: the shared non-inverting amplifier, REF tied to true
+    # ground -- see the module doc comment for why that is right here.
+    instance Xamp, nonInvertingAmp(defaultOpAmp(partNumber, gbw), gain),
+      {"IN": vin, "OUT": AOUT, "VP": VDD, "VN": GND, "REF": GND, "GND": GND}

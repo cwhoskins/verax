@@ -34,21 +34,64 @@ const
   electrolyticDeratingFactor* = 1.5
   filmDeratingFactor* = 2.0
 
-proc smallestCeramicPackage(c: Farads): string =
-  ## The smallest case size that plausibly holds this capacitance. Coarse on
+proc ceramicLadder*(voltage = 0.V): seq[(string, float)] =
+  ## Case size -> the largest capacitance (farads) that case plausibly holds
+  ## at this voltage tier, smallest case first, 0402 up through 1206 --
+  ## `smallestCeramicPackage` and `maxCeramicCapacitance` are the one table
+  ## read in each direction, so the two can never disagree with each other.
+  ##
+  ## Voltage-aware because a higher-voltage MLCC needs a thicker dielectric
+  ## per layer for the same capacitance, so the same farad figure needs a
+  ## bigger case as the rating climbs -- a 50 V-rated 100 nF part is not the
+  ## same size as a 16 V-rated one. Typical X7R volumetric density by case
+  ## size and voltage tier; not any one vendor's line, just a plausible
+  ## default. `voltage = 0` (unstated) reads as the most permissive tier, the
+  ## same "don't know, don't invent" rule `defaultCapacitor` uses for the
+  ## rating itself -- this is a package lookup, not a rating claim, so there
+  ## is nothing to caveat.
+  let v = abs(float(voltage))
+  if v <= 16.0:
+    @[("0402", 100e-9), ("0603", 1e-6), ("0805", 10e-6), ("1206", 47e-6)]
+  elif v <= 25.0:
+    @[("0402", 10e-9), ("0603", 100e-9), ("0805", 2.2e-6), ("1206", 10e-6)]
+  elif v <= 50.0:
+    @[("0402", 1e-9), ("0603", 10e-9), ("0805", 1e-6), ("1206", 4.7e-6)]
+  else:
+    @[("0402", 100e-12), ("0603", 1e-9), ("0805", 100e-9), ("1206", 1e-6)]
+
+proc smallestCeramicPackage*(c: Farads, voltage = 0.V): string =
+  ## The smallest standard MLCC case -- this module's ceiling is 1206 -- that
+  ## plausibly holds this capacitance at this voltage rating. Coarse on
   ## purpose -- it exists so a module's capacitor gets *some* package and
   ## therefore some ESR/ESL rather than the global fallback, and any board
   ## that cares should state one.
   let f = float(c)
-  if f <= 100e-12: "0402"
-  elif f <= 10e-9: "0402"
-  elif f <= 220e-9: "0402"
-  elif f <= 2.2e-6: "0603"
-  elif f <= 22e-6: "0805"
-  else: "1210"
+  let ladder = ceramicLadder(voltage)
+  for (pkg, maxCap) in ladder:
+    if f <= maxCap: return pkg
+  ladder[^1][0]  # nothing here is bigger than 1206 -- that is as far as this goes
+
+proc maxCeramicCapacitance*(package: string, voltage = 0.V): Farads =
+  ## The inverse of `smallestCeramicPackage`: the largest single part in this
+  ## case size at this voltage tier. `0.F` for a name `ceramicLadder` does not
+  ## carry (a non-ceramic family, or a typo) -- refused rather than guessed,
+  ## since a caller sizing a bank against this needs to know it asked for
+  ## something the table cannot answer, not silently get zero parts.
+  for (pkg, maxCap) in ceramicLadder(voltage):
+    if pkg == package: return Farads(maxCap)
+  Farads(0.0)
+
+proc standardVoltageRating*(want: Volts): Volts =
+  ## The next standard MLCC voltage rating at or above `want`, rather than a
+  ## figure like 8.6 V nothing sells. Shared by `defaultCapacitor` (which
+  ## derives `want` from a working voltage and a derating factor) and any
+  ## caller, such as a bank splitter, that already has its own `want`.
+  let w = abs(float(want))
+  for std in [4.0, 6.3, 10.0, 16.0, 25.0, 35.0, 50.0, 63.0, 100.0]:
+    if std >= w: return Volts(std)
+  Volts(w)
 
 proc defaultCapacitor*(r: CapRequest): Choice =
-  result.package = smallestCeramicPackage(r.value)
   case r.use
   of cuTiming, cuCoupling:
     # Forced, not chosen. A Class 2 part here moves the thing the capacitor
@@ -60,7 +103,6 @@ proc defaultCapacitor*(r: CapRequest): Choice =
         "if this is a coupling capacitor rather than a timing one, a film " &
         "part is the usual answer -- state `dielectric` to override"
       result.dielectric = "film"
-      result.package = "film"
   of cuDecoupling:
     result.dielectric = "X7R"
     result.tolerance = 10.pct
@@ -70,7 +112,6 @@ proc defaultCapacitor*(r: CapRequest): Choice =
       "1.23 ohm of rail impedance where its nominal values said 173 mohm"
   of cuBulk:
     result.dielectric = "tantalum"
-    result.package = "tantalum"
     result.tolerance = 20.pct
 
   # A rating, derived rather than looked up. Zero working voltage means the
@@ -81,14 +122,16 @@ proc defaultCapacitor*(r: CapRequest): Choice =
       if isCeramic(result.dielectric): ceramicDeratingFactor
       elif result.dielectric == "electrolytic": electrolyticDeratingFactor
       else: filmDeratingFactor
-    # Round up to a standard-ish rating rather than emitting 8.6 V.
-    let want = abs(float(r.working)) * factor
-    var chosen = 0.0
-    for std in [4.0, 6.3, 10.0, 16.0, 25.0, 35.0, 50.0, 63.0, 100.0]:
-      if std >= want:
-        chosen = std
-        break
-    result.voltageRating = Volts(if chosen > 0.0: chosen else: want)
+    result.voltageRating = standardVoltageRating(Volts(abs(float(r.working)) * factor))
+
+  # Package last, once the rating that actually decides it is known. A
+  # tantalum or film part isn't a ceramic case size at all; everything else
+  # is looked up by capacitance *and* rating together.
+  result.package =
+    case result.dielectric
+    of "tantalum": "tantalum"
+    of "film": "film"
+    else: smallestCeramicPackage(r.value, result.voltageRating)
 
 proc defaultResistor*(r: ResRequest): Choice =
   result.package = "0402"

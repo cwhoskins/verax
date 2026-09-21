@@ -51,6 +51,19 @@ suite "a module asks by function, a board answers by part":
     check float(ch.currentRating) > 5.0
     check float(ch.isat) > float(ch.currentRating)
 
+  test "package sizing climbs with capacitance, and with voltage rating too":
+    # Same capacitance, higher rating -> a physically bigger case, because a
+    # higher-voltage MLCC needs a thicker dielectric per layer.
+    check smallestCeramicPackage(100.nF, 16.V) == "0603"
+    check smallestCeramicPackage(100.nF, 50.V) == "0805"
+    # The lookup never returns anything bigger than 1206, this module's
+    # ceiling -- a capacitance beyond what 1206 plausibly holds still gets
+    # 1206 back, not a guess at something larger.
+    check smallestCeramicPackage(1.F, 100.V) == "1206"
+    # Unstated voltage reads as the most permissive tier, the same
+    # "don't know, don't invent" rule the voltage rating itself follows.
+    check smallestCeramicPackage(100.nF) == smallestCeramicPackage(100.nF, 16.V)
+
   test "a policy is ordinary data, so a project's own is not second class":
     proc allFilm(r: CapRequest): Choice =
       result = defaultCapacitor(r)
