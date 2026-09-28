@@ -2704,7 +2704,8 @@ test "the public json api exposes ports additively, each with its direction":
     check d in dirs
 
 test "renderSvg draws one polygon per port, each named":
-  let text = renderSvg(portedSubckt())
+  let s = layout(portedSubckt())
+  let text = renderSvg(s)
   var polys = 0
   var i = 0
   while true:
@@ -2712,10 +2713,15 @@ test "renderSvg draws one polygon per port, each named":
     if n < 0: break
     inc polys
     i = n + 1
-  check polys == 4
+  # One polygon per drawn port (`s.ports.len`, per "rail, ground and pinless
+  # ports draw no port symbol" above) plus one for U1's own triangular opamp
+  # body -- `svg.nim` draws that symbol as a `<polygon>` too, so it is not
+  # only ports that contribute one.
+  check polys == s.ports.len + 1
   check ">IN</text>" in text
   check ">OUT</text>" in text
   check ">BUS</text>" in text
+  check ">DRV</text>" in text
 
 test "the default pipeline and its reserved no-op stages are byte-stable":
   let nl = divider()
@@ -3414,15 +3420,14 @@ suite "bundle plan (bus/interface grouping)":
     let off = sceneToJsonString(layout(nl, opts))
     check on == off
 
-  test "the i2c shared-bus shape: merged tags on the boxes, bare tags on the pull-ups":
+  test "the i2c shared-bus shape: merged tags on the boxes, one x2 pull-up array":
     let nl = i2cUnpublishedSheet()
     let rep = bundleReport(nl)
     check rep.len == 1
     check rep[0].role == "netlabel"
     check rep[0].labels.sorted == @["R1=", "R2=", "U1=i2c", "U2=i2c"]
     let s = layout(nl)
-    # The two boxes carry one merged "i2c" pin each; the pull-ups keep a bare
-    # member tag.
+    # The two boxes carry one merged "i2c" pin each.
     var mergedBoxes = 0
     for p in s.parts:
       if p.designator notin ["U1", "U2"]: continue
@@ -3431,13 +3436,27 @@ suite "bundle plan (bus/interface grouping)":
           check pin.members.len == 2
           inc mergedBoxes
     check mergedBoxes == 2
+    # R1/R2 are two identical pull-ups whose only varying pin is a member of
+    # the same declared bus merged elsewhere (U1/U2) -- arrays.nim's 2-member
+    # `mergedByBundle` rule (`designs/lib/usb_hs_link.nim`'s termination-
+    # resistor pair is the same shape) collapses them into one x2 box rather
+    # than drawing two.
+    var pullupArray = false
+    for p in s.parts:
+      if p.designator == "R1" and p.count == 2 and p.members == @["R1", "R2"]:
+        pullupArray = true
+    check pullupArray
     var tags = initCountTable[string]()
     for f in s.fallbacks:
       check f.kind == fbNetLabel
       tags.inc f.net
-    check tags["i2c"] == 2
-    check tags["i2c_sda"] == 1
-    check tags["i2c_scl"] == 1
+    # U1, U2 and the collapsed R1/R2 array each carry one "i2c" net-label tag
+    # -- the array's own bundled pin defers to the ordinary fallback pass
+    # because "i2c" is also merged elsewhere (a mixed bundle), so no separate
+    # bare "i2c_sda"/"i2c_scl" tag is drawn anymore.
+    check tags["i2c"] == 3
+    check "i2c_sda" notin tags
+    check "i2c_scl" notin tags
     # No member-net wires.
     for w in s.wires:
       check w.net notin ["i2c_sda", "i2c_scl", "i2c"]
