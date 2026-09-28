@@ -371,24 +371,9 @@ proc primaryLabel(node: NimNode): (NimNode, NimNode) =
   else:
     error("expected an identifier or string literal name", node)
 
-proc handleNet(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
-  var args: seq[NimNode]
-  for i in 1 ..< stmt.len: args.add stmt[i]
-  let (rest, blk) = stripTrailingBlock(args)
-  if rest.len == 0:
-    error("`net` requires a name", stmt)
-
-  let (identSym, initialNameStr) = primaryLabel(rest[0])
-  var nameStrNode = initialNameStr
-  var isGlobal = false
-  var fieldPairs: seq[NimNode]
-  for a in rest[1 ..^ 1]:
-    a.expectKind(nnkExprEqExpr)
-    case a[0].strVal
-    of "name": nameStrNode = a[1]
-    of "global": isGlobal = a[1].eqIdent("true")
-    else: fieldPairs.add(a)
-
+proc handleOneNet(nlSym, globalsSym: NimNode, identSym, nameStrNode: NimNode,
+                   fieldPairs: seq[NimNode], isGlobal: bool,
+                   blk: NimNode): NimNode =
   let netVar = if identSym != nil: identSym else: genSym(nskLet, "net")
   result = newStmtList()
   result.add newLetStmt(netVar, newCall(ident"addNet", nlSym, newCall(ident"newNet", nameStrNode)))
@@ -403,6 +388,59 @@ proc handleNet(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
         result.add handleSpec(netVar, asNet, inner)
       else:
         error("only `spec` statements are allowed inside a `net` block", inner)
+
+proc handleNet(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
+  var args: seq[NimNode]
+  for i in 1 ..< stmt.len: args.add stmt[i]
+  let (rest, blk) = stripTrailingBlock(args)
+  if rest.len == 0:
+    error("`net` requires a name", stmt)
+
+  # `net [a, b, c], kind = ntSignal` -- a bracketed group of otherwise
+  # identical nets, read the same way a bracket already reads everywhere
+  # else in this DSL (`traverse:`'s pin lists, `instance`'s port list): "one
+  # of these per entry". Each entry gets its own `addNet` call and its own
+  # bound identifier -- a real `let` per name, not a runtime loop, so unlike
+  # a `for` over a seq of names every one of them stays addressable by
+  # identifier for the rest of the block. `name =` is refused rather than
+  # silently applied to every net in the group: it would give all of them
+  # the same SPICE name, which `addNet` would only catch as a duplicate-net
+  # error pointing at the wrong line.
+  if rest[0].kind == nnkBracket:
+    if rest[0].len == 0:
+      error("`net [...]` requires at least one name", rest[0])
+    var isGlobal = false
+    var fieldPairs: seq[NimNode]
+    for a in rest[1 ..^ 1]:
+      a.expectKind(nnkExprEqExpr)
+      case a[0].strVal
+      of "name":
+        error("`net [a, b, ...], name = ...` would give every net in the " &
+              "group the same SPICE name -- state a net that needs its " &
+              "own name separately", a)
+      of "global": isGlobal = a[1].eqIdent("true")
+      else: fieldPairs.add(a)
+    result = newStmtList()
+    for label in rest[0]:
+      let (identSym, nameStrNode) = primaryLabel(label)
+      result.add handleOneNet(nlSym, globalsSym, identSym, nameStrNode,
+                               fieldPairs, isGlobal, blk)
+    result.copyLineInfo(stmt)
+    return
+
+  let (identSym, initialNameStr) = primaryLabel(rest[0])
+  var nameStrNode = initialNameStr
+  var isGlobal = false
+  var fieldPairs: seq[NimNode]
+  for a in rest[1 ..^ 1]:
+    a.expectKind(nnkExprEqExpr)
+    case a[0].strVal
+    of "name": nameStrNode = a[1]
+    of "global": isGlobal = a[1].eqIdent("true")
+    else: fieldPairs.add(a)
+
+  result = handleOneNet(nlSym, globalsSym, identSym, nameStrNode, fieldPairs,
+                         isGlobal, blk)
   result.copyLineInfo(stmt)
 
 macro interfaceDef*(name: untyped, body: untyped): untyped =

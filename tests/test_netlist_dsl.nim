@@ -56,6 +56,50 @@ test "a multi-dimensional bus needs no macro change, only a new addBus overload"
   check nl.nets.hasKey("a_3_1")
   check findBus(nl, "a").dims == @[8, 2]
 
+test "net [a, b, c], kind = ... declares a group sharing one kind":
+  let nl = netlist("group"):
+    net [a, b, c], kind = ntSignal
+    net gnd, kind = ntGround, name = "0"
+    component R1, kind = "resistor", value = "1k":
+      pin "1", a, kind = ptPassive
+      pin "2", b, kind = ptPassive
+
+  check nl.nets.len == 4
+  for n in ["a", "b", "c"]:
+    check nl.nets[n].kind == ntSignal
+  # Each name is a real bound identifier, not a runtime loop variable, so it
+  # stays addressable for the rest of the block -- `a`/`b` above wired R1.
+  check nl.components["R1"].pins["1"].net.name == "a"
+
+test "net [...] entries may be string literals too, with no identifier bound":
+  let nl = netlist("group"):
+    net ["odd name 1", "odd name 2"], kind = ntSignal
+  check nl.nets.hasKey("odd name 1")
+  check nl.nets.hasKey("odd name 2")
+
+test "net [...], global = true registers every net in the group globally":
+  let GATE = subckt("GATE", [A, B]):
+    net A, kind = ntSignal
+    net B, kind = ntSignal
+    component U1, kind = "ic":
+      pin "A", A, kind = ptInput
+      pin "B", B, kind = ptInput
+  let top = netlist("top"):
+    net [ga, gb], kind = ntSignal, global = true
+    instance "X1", GATE, [ga, gb]
+  check top.components["X1"].pins["A"].net == top.nets["ga"]
+  check top.components["X1"].pins["B"].net == top.nets["gb"]
+
+test "net [...], name = ... is refused: it would name every net alike":
+  check(not compiles(block:
+    discard netlist("bad"):
+      net [a, b], kind = ntSignal, name = "shared"))
+
+test "an empty net [] is refused rather than silently declaring nothing":
+  check(not compiles(block:
+    discard netlist("bad"):
+      net [], kind = ntSignal))
+
 test "unknown key on net/component/pin lands in attrs, not a compile error":
   let nl = netlist("t"):
     net n1, tolerance = "1%"

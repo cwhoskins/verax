@@ -41,6 +41,11 @@ a silently-created second net.
 
 **`net <name>, kind = ...`** — `ntPower`, `ntGround`, `ntSignal`, `ntUnknown`.
 Add `name = "0"` to give the net a different SPICE name from its identifier.
+`net [a, b, c], kind = ntSignal` declares a group of otherwise-identical nets
+in one line — each entry gets its own `addNet` call and its own bound
+identifier, so `a`, `b` and `c` stay addressable afterward the same as if
+written separately. `name =` is refused on a group: it would give every net
+in it the same SPICE name.
 
 **`component <ref>, kind = "...", value = "...":`** — with nested `pin "name",
 <net>, kind = ...` (`ptPassive`, `ptPower`, `ptGround`, `ptInput`, `ptOutput`,
@@ -77,6 +82,54 @@ come first, as above — so `verax check`'s structural section is where an
 unknown pin name is caught. Directionality is out of scope: a signal-path
 part that only passes a signal one way (an op-amp, a buffer) is already
 better served by `spice/models/behavioral.passesSignal`.
+
+### Components first, wiring after
+
+`pin` only ever nests inside a `component` block, so inside the macro itself
+a net still has to exist as a bound Nim identifier before a `pin` line can
+name it. But a `component` statement may carry no block at all — no pins —
+which is enough to declare every component, then every net, with no wiring
+stated yet:
+
+```nim
+import verax/netlist/dsl
+
+let nl = netlist("divider"):
+  # 1. components, no pins yet
+  component R1, kind = "resistor", value = "1k"
+  component R2, kind = "resistor", value = "1k"
+
+  # 2. nets
+  net vin, kind = ntSignal
+  net vout, kind = ntSignal
+  net gnd, kind = ntGround, name = "0"
+```
+
+The macro wraps its whole body in a `block:`, so `R1`/`R2`/`vin`/`vout`/`gnd`
+are Nim `let`s scoped to that block, not visible afterward — the same rule
+that applies to a `let` a `net`/`component` binds inside a `for`/`if`/`case`
+branch. Reach them back by name through `graph.findComponent`/`findNet`
+(re-exported by `dsl.nim`, so no second import), then wire with the plain
+`connect(component, pinName, net, kind)` call:
+
+```nim
+let r1 = nl.findComponent("R1")
+let r2 = nl.findComponent("R2")
+let vin = nl.findNet("vin")
+let vout = nl.findNet("vout")
+let gnd = nl.findNet("0")
+
+discard connect(r1, "1", vin, ptPassive)
+discard connect(r1, "2", vout, ptPassive)
+discard connect(r2, "1", vout, ptPassive)
+discard connect(r2, "2", gnd, ptPassive)
+```
+
+Useful when a generator builds components and nets from two separate passes
+over some external description and only knows the wiring once both passes
+are done. `discard <expression>` is refused *inside* the `netlist(...)`
+block itself (only a bare `discard` as an empty branch is accepted there),
+which is why the `connect` calls have to come after it closes.
 
 ### Interfaces
 
