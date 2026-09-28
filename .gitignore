@@ -64,3 +64,8 @@ nimcache/
 nimble.develop
 nimble.paths
 /nimbledeps/
+
+# python/: the nimpy extension (`*.so` above already covers verax_py.so)
+# plus ordinary Python build byproducts.
+python/**/__pycache__/
+python/nimcache/
