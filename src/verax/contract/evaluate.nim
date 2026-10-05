@@ -859,6 +859,73 @@ proc evaluate*(d: Design, allowed: set[Capability] = offlineCapabilities): seq[A
 
 # --- reading the results ------------------------------------------------
 
+type
+  Margin* = object
+    ## How much room a checked claim had, computed from `Expectation.bounds`
+    ## rather than carried by the evaluator -- every evaluator already
+    ## produces a bare `value`, so this is the same arithmetic `acceptance`
+    ## does for rendering, done once here for every consumer that wants a
+    ## number rather than a picture (`--format=json`'s `margin` field, a
+    ## future regression gate). A pass/fail gate alone cannot see the defect
+    ## class this exists for: a part substitution that halves a phase margin
+    ## while leaving it above the 45 degree floor reports identically to one
+    ## that leaves it at 89 degrees, until something reads how far from the
+    ## edge each one actually sat.
+    abs*: float
+      ## Distance to the nearest limit, in the measurement's own unit.
+      ## Negative when the claim failed -- `value` sits past the limit, not
+      ## short of it, and clamping that to zero would say a failure and a
+      ## bare pass were equally close to the edge.
+    frac*: float
+      ## `abs` as a fraction; meaningless unless `hasFrac`.
+    hasFrac*: bool
+      ## False when there is no sane denominator to divide by -- a one-sided
+      ## limit of exactly zero, or (see `bounds`) a relative/predicate claim,
+      ## which never reaches this proc at all.
+    twoSided*: bool
+      ## True when `frac` is a fraction of the *half-band* (an `ekNominal`
+      ## tolerance or an `ekRange`, where 1.0 means dead centre and 0.0 means
+      ## sitting exactly on either edge); false when it is a fraction of a
+      ## single one-sided limit (`ekMin`/`ekMax`), where a fraction has no
+      ## natural ceiling -- a measurement can clear a floor by 500%.
+
+proc marginOf*(r: AssertionResult): Option[Margin] =
+  ## `none` for exactly the two cases `acceptance` and `renderClaim` already
+  ## special-case: a claim nothing measured (`r.status` outside
+  ## `{esPass, esFail}`, so there is no `value` to measure a distance from),
+  ## and `ekRelative`/`ekPredicate`, whose `bounds` is `(NaN, NaN)` because
+  ## the limit is another measurement rather than a constant interval.
+  if r.status notin {esPass, esFail}: return none(Margin)
+  let e = r.assertion.expect
+  if e.kind in {ekRelative, ekPredicate}: return none(Margin)
+  let (lo, hi) = e.bounds
+  var m: Margin
+  case e.kind
+  of ekNominal, ekRange:
+    m.twoSided = true
+    m.abs = min(r.value - lo, hi - r.value)
+    let half = (hi - lo) / 2.0
+    # `ekNominal` with no stated tolerance has `lo == hi`, so `half` is zero
+    # -- a target hit exactly has no band to be a fraction *of*, and dividing
+    # by zero would print a `Margin` for a claim `acceptance` itself declines
+    # to spell as an interval.
+    if half != 0.0:
+      m.frac = m.abs / half
+      m.hasFrac = true
+  of ekMin:
+    m.abs = r.value - lo
+    if lo != 0.0:
+      m.frac = m.abs / abs(lo)
+      m.hasFrac = true
+  of ekMax:
+    m.abs = hi - r.value
+    if hi != 0.0:
+      m.frac = m.abs / abs(hi)
+      m.hasFrac = true
+  of ekRelative, ekPredicate:
+    return none(Margin)  # unreachable; excluded above, kept for the compiler
+  some(m)
+
 proc count*(results: seq[AssertionResult], status: EvalStatus): int =
   for r in results:
     if r.status == status: inc result

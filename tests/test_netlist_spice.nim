@@ -77,6 +77,39 @@ X2 c d BUF
       inc xLines
   check xLines == 2
 
+test "an instance's own partNumber never changes which SUBCKT block its X line names":
+  # `graph.instantiate` used to stamp a new instance's `partNumber` with the
+  # template netlist's name, and the deck writer read that field back to
+  # spell both the `X` card and the `collectTemplates` dedup key -- so the
+  # two agreed only because `instantiate` kept them in lockstep. A design
+  # stating its own `partNumber` on an instance (the DSL's `instance ...,
+  # partNumber = "..."` field-override path) must not be able to desync the
+  # two: the deck always names the block the writer actually wrote
+  # (`child.name`), independent of whatever `partNumber` now says.
+  var tmpl = newNetlist("BUF")
+  let inNet = addNet(tmpl, newNet("IN"))
+  let outNet = addNet(tmpl, newNet("OUT"))
+  addPort(tmpl, "IN", inNet)
+  addPort(tmpl, "OUT", outNet)
+  let r1 = addComponent(tmpl, newComponent("R1", kind = "resistor"))
+  discard connect(r1, "1", inNet)
+  discard connect(r1, "2", outNet)
+  r1.attrs["value"] = "100"
+
+  var nl = newNetlist("Top")
+  let netA = addNet(nl, newNet("a"))
+  let netB = addNet(nl, newNet("b"))
+  var globalNets: OrderedTable[string, Net]
+  let comp = instantiate(nl, "X1", tmpl, @[netA, netB], globalNets)
+  check comp.partNumber.len == 0  # no longer stamped with the template's name
+
+  comp.partNumber = "LT8640A"  # the hazard: an author-stated part number
+
+  let text = render(nl)
+  check ".SUBCKT BUF IN OUT" in text
+  check "X1 a b BUF" in text
+  check "LT8640A" notin text
+
 test "ground net '0' is identity-shared across hierarchy levels":
   let deck = """Ground Test
 .SUBCKT GATE VDD 0

@@ -2529,3 +2529,95 @@ selection policy over more than one physical layout of a subcircuit — see
 that stage has nothing left to re-litigate about a variant's *shape* when it
 arrives, and for the OpenSCAD footprint-body obstacle this stage ran into and
 did not solve.
+
+## 48. No machine-readable report output
+
+**What it was.** `verify.readiness` rendered one text report and there was no
+other shape. `grep` for `--format`/`json`/`junit` in `verify.nim` and
+`cli.nim` returned nothing, so `verax check` could not be consumed by a CI
+job — a build system wanting to diff two runs, or gate on a specific
+category of failure, had to scrape the text report.
+
+**The fix.** `verify.nim` gained `ReportFormat` (`rfText`/`rfJson`/`rfJunit`),
+`VerifyOptions.format`/`.baseline`, and `--format=text|json|junit` /
+`--baseline=<path>` on `parseVerifyArgs`; `cli.nim` needed no parsing change,
+since `cmdCheck` already forwards unrecognised flags to the design binary
+verbatim. `renderJson` writes `schema: "verax.readiness/1"`, versioned so a
+consumer can branch on it, with `capabilities`, `environment`, `exit`,
+`summary`, `structural[]`, `checks[]` (run metadata only) and the flat
+`results[]`, each result naming which `checks[]` entry it came from by index
+rather than being nested inside it. Built by hand with `newJObject`/
+`newJArray` (`std/json`, no dependency added) rather than through the `%*`
+macro, matching `schematic/json.nim`'s existing style for a public,
+versioned document. One shared `jnum` helper writes every float field, so
+`NaN`/`Inf` (an unevaluated or unevaluable claim's `value`, or a margin that
+does not apply) always serialise as JSON `null` rather than the bare,
+invalid-JSON literal `nan` — verified against `designs/sensor_node.nim`'s
+own unevaluable claims, and pinned by
+`tests/test_verify_report_formats.nim`'s `parseJson` round trip, which
+raises on exactly the malformed document a hand-rolled float writer would
+have produced. `renderJunit` writes one `<testsuite>` (with an `exitCode`/
+`exitLabel` `<properties>` block, since `tests`/`failures`/`skipped` alone
+cannot tell "clean" from "capability unavailable") and one `<testcase>` per
+result plus one per structural issue, `<failure>` for `esFail`, `<skipped>`
+for `esNotEvaluated`/`esNotEvaluable` (message is the `NOT CHECKED` reason,
+so it does not silently vanish from a CI job's output the way an ordinary
+skip would), escaped throughout with `xmltree.escape` rather than by hand.
+Checked with `xmllint --noout` against `designs/sensor_node.nim`'s own
+report — well-formed. **`--format=json` is verified to print pure JSON on
+stdout and nothing else**: `./bin/verax check designs/sensor_node.nim
+--format=json | jq .` succeeds, which is the real test of the property —
+anything a nested tool prints to stdout during `readiness` would corrupt the
+document, and it would not be visible in the text format.
+
+## 49. A claim that passes by 40% and one that passes by 0.5% printed identically
+
+**What it was.** The report said `PASS` and moved on, so the single most
+useful piece of information about a healthy design — how close it is to not
+being one — was computed by `acceptance` and thrown away on every run. A
+pass/fail gate alone also cannot see a real defect class: a part
+substitution that halves a phase margin while leaving it above 45° reports
+identically to one that leaves it at 89°.
+
+**The fix.** `contract/evaluate.Margin`/`marginOf` compute the number (next
+to `count`/`failed`/`summary`, since they need `AssertionResult`); `verify.
+marginText` puts it into words, the same split `acceptance` (which computes)
+and `renderClaim` (which formats) already use. Two finite bounds (`ekNominal`
+with a tolerance, `ekRange`) read as a fraction of the half-band — 1.0 dead
+centre, 0.0 on either edge, verified by
+`tests/test_verify_report_formats.nim` against exactly those two points. One
+finite bound (`ekMin`/`ekMax`) reads as a fraction of the limit instead,
+since a one-sided margin has no natural ceiling — a measurement can clear a
+floor by 500% — with the absolute headroom leading and the percentage in
+parentheses: measured live against `designs/sensor_node.nim`,
+`core.impedance`'s `z_max_in_band(vdd) <= 200 mohm` came back `measured
+125 mohm   margin 75.0 mohm (37.5% under the maximum)`. A zero one-sided
+limit (`hasFrac = false`) reports the absolute headroom alone, since
+dividing by zero has no sane reading — `bus.controllers`'
+`controller_count(sda) == 1` came back `margin 0 of band` on the same
+design, correctly zero rather than a manufactured percentage. `ekRelative`
+and `ekPredicate` never reach `marginOf` at all (`none`, matching `bounds`'
+own `(NaN, NaN)` for those two kinds), so a relative or predicate claim's
+line in the text report, and its `"margin"` field in JSON, carry no number
+that was never real.
+
+`--baseline=<path>` closes the loop: `loadBaseline` parses a prior
+`--format=json` document (a missing or unparseable one is a usage error,
+`exitCompile`, never a silently skipped comparison — the same discipline
+`--schematic-only` with no `--keep-runs` already follows), and
+`baselineDiff` reports, per claim id, a numeric move (relative change over
+1e-6, or any change off a zero prior value), a status transition (`pass ->
+fail`, or a checked claim going unchecked, both flagged `regressed` and
+listed first), a claim new since the baseline, or one gone since it. A unit
+change is reported as a move that cannot be compared, never silently
+differenced against a number in a different unit. The text report's `MOVED`
+section sits after `NOT CHECKED` and before the summary, matching the
+report's existing ordering doctrine — informational relative to structure,
+a failure or an unchecked claim. Round-tripped live: writing
+`designs/sensor_node.nim`'s own `--format=json` report and then checking the
+same design against it as `--baseline` reports nothing moved, which is the
+real test of the diff (a report compared against itself has nothing to say).
+
+Both landed together, as planned: §48 alone would have made the tool
+CI-native with no margin in the document at all, and §49's arithmetic alone
+would have had nowhere machine-readable to write its answer.

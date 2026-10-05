@@ -78,9 +78,11 @@ import ./interfaces
 import ./pinmux
 import ./layouthints
 import ./traversal
+import ./bomdefaults
+import ../units
 
 export types, graph, annotations, packages, interfaces, pinmux, layouthints,
-       traversal
+       traversal, bomdefaults
 
 const
   netKnownFields = ["kind"]
@@ -103,15 +105,49 @@ proc stripTrailingBlock(args: seq[NimNode]): (seq[NimNode], NimNode) =
   else:
     (args, nil)
 
+proc deckSafeValue*(x: float): string =
+  ## Mirrors `netlist/formats/spice.spiceValue` deliberately, not by
+  ## importing it: a format module may depend on `netlist/`, never the other
+  ## way, so this core module cannot reach into `formats/spice.nim` for it.
+  ## Always scientific notation with an explicit exponent, because SPICE
+  ## reads a trailing letter as a unit multiplier (`1m` is milli, `1MEG` is
+  ## mega) and `value` is the one annotation key that reaches a device line
+  ## verbatim -- any format that could end in a letter is a silent-misread
+  ## hazard there. `dispatchField` is the one caller.
+  formatFloat(x, ffScientific, 9)
+
 proc dispatchField(entityVar: NimNode, knownFields: openArray[string], pair: NimNode): NimNode =
   ## Known field name -> direct, type-checked field assignment.
-  ## Anything else -> `.attrs[key] = $value`.
+  ## Anything else -> `.attrs[key] = $value` -- except the `value` key with a
+  ## `Quantity`-typed right-hand side (`value = 2.2.kohm`), which is written
+  ## through `deckSafeValue` instead.
+  ##
+  ## `value` is the one annotation that reaches a SPICE device line verbatim
+  ## (`formats/spice.formatDeviceLine` appends `attrs["value"]` after the
+  ## nodes with no parsing), and `units.nim`'s own `$` renders a `Quantity`
+  ## as a human-readable string with a space and a unit suffix (`"2.2
+  ## kohm"`) -- exactly the extra tokens on a deck line that corrupt it.
+  ## `2.2.kohm` is not a string to disambiguate, only a typed Nim expression,
+  ## so nothing here parses RKM or any other ambiguous notation: the `when`
+  ## branch below is chosen once, at the call site's own compile time, by the
+  ## expression's *static* type, the identical idiom
+  ## `contract/dsl.handleRole` already uses to tell a role binding from a
+  ## parameter (`when compiles(subjectOf(value))`). A plain string (a model
+  ## name, a source spec such as `"DC 5"`) takes the untouched `$value`
+  ## branch exactly as before.
   pair.expectKind(nnkExprEqExpr)
   let key = pair[0]
   key.expectKind(nnkIdent)
   let value = pair[1]
   if key.strVal in knownFields:
     result = newAssignment(newDotExpr(entityVar, key), value)
+  elif key.strVal == "value":
+    let quantityTy = bindSym("Quantity")
+    result = quote do:
+      when `value` is `quantityTy`:
+        setRawAnnotation(`entityVar`, "value", deckSafeValue(float(`value`)))
+      else:
+        setRawAnnotation(`entityVar`, "value", $(`value`))
   else:
     # Through `setRawAnnotation` rather than `attrs[k] = v` directly, so a DSL
     # user does not need `import std/tables` just to set an unrecognised key.
@@ -266,6 +302,57 @@ proc handleLayout(entityVar: NimNode, stmt: NimNode): NimNode =
       result.add call
     else:
       error("unknown layout hint '" & key & "'", keyNode)
+  result.copyLineInfo(stmt)
+
+proc handleBom(nlSym: NimNode, stmt: NimNode): NimNode =
+  ## `bom:` at netlist scope -- board-level procurement defaults for a BOM
+  ## compiler (`docs/bom_compiler_plan.md`), `layout:`'s shape rather than
+  ## `environment:`'s: `bom.*` keys are namespaced, owned by
+  ## `netlist/bomdefaults` rather than registered in
+  ## `netlist/annotations.builtinAnnotations`, so they cannot go through
+  ## `handleSpec`'s registered-annotation path the way `environment:`'s
+  ## `t_ambient_min`/`t_ambient_max` do. Strict at this syntax boundary,
+  ## where an unknown key can only be a mistake -- a compile error naming the
+  ## real keys, `handleLayout`'s rule -- and permissive underneath, in the
+  ## `attrs` bag `bomdefaults` itself owns, where a file reader may one day
+  ## write something this DSL block does not yet parse. `bomDefaultKeys` is
+  ## the one list both this `case` and `bomdefaults.bomDefaults`/
+  ## `validateBomDefaults` read, so a future key is added there once rather
+  ## than drifting between a DSL copy and the runtime one.
+  var args: seq[NimNode]
+  for i in 1 ..< stmt.len: args.add stmt[i]
+  let (rest, blk) = stripTrailingBlock(args)
+  if rest.len > 0:
+    error("`bom` takes no arguments, only a block", stmt)
+  if blk == nil:
+    error("`bom` requires a block", stmt)
+
+  result = newStmtList()
+  for pair in blk:
+    if pair.kind == nnkCommentStmt: continue
+    if pair.kind != nnkAsgn and pair.kind != nnkExprEqExpr:
+      error("expected `key = value` inside `bom`", pair)
+    let keyNode = pair[0]
+    if keyNode.kind != nnkIdent:
+      error("a `bom` key must be a bare identifier", keyNode)
+    let key = keyNode.strVal
+    if key notin bomDefaultKeys:
+      error("unknown bom default '" & key & "'. Registered keys are: " &
+            bomDefaultKeys.join(", ") & ".", keyNode)
+    let setterName =
+      case key
+      of "tolerance": "setBomTolerance"
+      of "dielectric": "setBomDielectric"
+      of "series": "setBomSeries"
+      of "derating": "setBomDerating"
+      of "resistor_package": "setBomResistorPackage"
+      of "capacitor_package": "setBomCapacitorPackage"
+      of "inductor_package": "setBomInductorPackage"
+      of "manufacturers": "setBomManufacturers"
+      else: ""  # unreachable: `key notin bomDefaultKeys` already errored
+    let call = newCall(ident(setterName), nlSym, pair[1])
+    call.copyLineInfo(pair)
+    result.add call
   result.copyLineInfo(stmt)
 
 proc traversalPinList(node: NimNode): seq[NimNode] =
@@ -967,6 +1054,13 @@ proc buildNetlistBody*(nlSym, globalsSym: NimNode, body: NimNode): NimNode =
       # is what makes a design file legible at the point somebody adds
       # humidity or altitude beside it.
       result.add handleSpec(nlSym, asNetlist, stmt, "environment")
+    elif head.eqIdent("bom"):
+      # The board's procurement defaults -- see `handleBom`'s own doc
+      # comment for why this is a dedicated strict handler rather than
+      # another `handleSpec` call: `bom.*` is a namespaced family
+      # `netlist/bomdefaults` owns, not part of the registered annotation
+      # vocabulary `environment:` reads from.
+      result.add handleBom(nlSym, stmt)
     elif head.eqIdent("role") or head.eqIdent("require"):
       # Reachable only from inside control flow: `design`'s splitter hoists
       # these out at the top level, so seeing one here means it was nested.

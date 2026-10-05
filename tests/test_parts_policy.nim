@@ -64,6 +64,24 @@ suite "a module asks by function, a board answers by part":
     # "don't know, don't invent" rule the voltage rating itself follows.
     check smallestCeramicPackage(100.nF) == smallestCeramicPackage(100.nF, 16.V)
 
+  test "a Choice carries the use that produced it, spelled for part_use":
+    # `Choice.use` is what closes `docs/bom_compiler_plan.md`'s fact 4 --
+    # without it, a policy's output carried a capacitor's dielectric and
+    # tolerance but not *why* that dielectric was picked, so a timing part
+    # and a bypass part reading "C0G" looked identical downstream.
+    check defaultCapacitor(CapRequest(value: 22.nF, use: cuTiming)).use == "timing"
+    check defaultCapacitor(CapRequest(value: 100.nF, use: cuCoupling)).use == "coupling"
+    check defaultCapacitor(CapRequest(value: 100.nF, use: cuDecoupling)).use == "decoupling"
+    check defaultCapacitor(CapRequest(value: 10.uF, use: cuBulk)).use == "bulk"
+    check defaultResistor(ResRequest(value: 1.kohm, use: ruPrecision)).use == "precision"
+    check defaultResistor(ResRequest(value: 1.kohm, use: ruGeneral)).use == "general"
+    check defaultResistor(ResRequest(value: 1.kohm, use: ruPower)).use == "power"
+    check defaultInductor(IndRequest(value: 10.uH, use: iuFilter)).use == "filter"
+    # Both `ResUse.ruPower` and `IndUse.iuPower` spell "power" -- `part_use`'s
+    # allowed list is the union of what the three enums mean, not three
+    # disjoint vocabularies.
+    check defaultInductor(IndRequest(value: 10.uH, use: iuPower)).use == "power"
+
   test "a policy is ordinary data, so a project's own is not second class":
     proc allFilm(r: CapRequest): Choice =
       result = defaultCapacitor(r)
@@ -95,6 +113,33 @@ suite "a choice lands as ordinary registered annotations":
     # ...and with provenance, so nobody mistakes a derived choice for a
     # datasheet figure.
     check annotation(c, "dielectric").source == annDerived
+    # The use that decided the dielectric is visible too, not just its
+    # consequence -- `part_use`, alongside `dielectric`/`tolerance`, is what
+    # lets a BOM compiler (or a reviewer) tell a timing capacitor from a
+    # bypass one on a finished netlist.
+    check c.attrs["part_use"] == "decoupling"
+    check partUse(c).value == "decoupling"
+    check partUse(c).source == annDerived
+
+  test "a bad part_use that reaches attrs some other way is caught at readiness":
+    # `setAnnotation` refuses a bad `part_use` immediately (see
+    # `test_netlist_annotations.nim`), so this is reachable only the way a
+    # file reader or hand-written attrs could reach it -- bypassing the
+    # setter, `test_netlist_annotations.nim`'s own convention for exercising
+    # `validateAnnotations` on a value nothing typed goes through checks for.
+    let nl = netlist("t"):
+      net gnd, kind = ntGround, name = "0"
+      net vdd, kind = ntPower
+      component C1, kind = "capacitor", value = "100n":
+        pin "1", vdd, kind = ptPassive
+        pin "2", gnd, kind = ptPassive
+    let c = nl.components["C1"]
+    c.attrs["part_use"] = "timming"
+    let issues = validateAnnotations(nl)
+    check issues.len == 1
+    check issues[0].kind == "annotation_not_allowed"
+    check issues[0].severity == sevError
+    check "timming" in issues[0].message
 
   test "a field the policy said nothing about is left unsaid":
     let nl = netlist("t"):

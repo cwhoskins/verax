@@ -361,3 +361,46 @@ suite "relative and predicate claims in the report":
     let text = render(r)
     check "REQ-PRED" in text
     check "predicate" in text
+
+suite "margin in the text report":
+  test "a passing claim's comparison line also states its margin":
+    # `bus.sda.pullup` is `pullup_count(sda) >= 1`, measured 1 -- a one-sided
+    # minimum with a zero limit, so `hasFrac` is false and only the absolute
+    # headroom prints; `bus.sda.rc_corner` has a real limit and prints a
+    # percentage.
+    let text = render(readiness(bus("2.2k"), offlineCapabilities))
+    check "margin" in text
+    var sawPercent = false
+    for line in text.splitLines():
+      if "measured" in line and "margin" in line and "% over the minimum" in line:
+        sawPercent = true
+    check sawPercent
+
+  test "a relative claim's line carries no margin -- there is no constant interval":
+    var d = bus("2.2k")
+    d.assertThat relAssertion("pullup_count",
+      @[Subject(kind: skNet, name: "sda")], roGe, 2.0,
+      "pullup_count", @[Subject(kind: skNet, name: "scl")],
+      id = "REQ-REL-NOMARGIN")
+    let text = render(readiness(d, offlineCapabilities))
+    var found = false
+    for line in text.splitLines():
+      if "REQ-REL-NOMARGIN" in line: found = true
+    check found
+    # The comparison line for a relative claim is `expect ... <reason>`, with
+    # no measured/margin suffix at all -- `marginOf` returns `none` for
+    # `ekRelative` before `renderClaim` ever computes one.
+    for line in text.splitLines():
+      if "expect >=" in line and "pullup_count" in line:
+        check "margin" notin line
+
+  test "a predicate claim's line carries no margin either":
+    var d = bus("2.2k")
+    d.assertThat predicateAssertion(
+      @[dep("sda_pullups", "pullup_count", @[Subject(kind: skNet, name: "sda")]),
+        dep("scl_pullups", "pullup_count", @[Subject(kind: skNet, name: "scl")])],
+      proc (values: seq[float]): bool {.nimcall.} = values[0] == values[1],
+      id = "REQ-PRED-NOMARGIN")
+    let text = render(readiness(d, offlineCapabilities))
+    for line in text.splitLines():
+      if "predicate" in line: check "margin" notin line

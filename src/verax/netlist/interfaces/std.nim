@@ -25,6 +25,11 @@ proc spiInterface*(nCs = 1): InterfaceDef =
     SignalDef(name:"miso", width:1, shared:true), SignalDef(name:"cs", width:nCs)]
   result.modports["controller"] = modport("controller", [("sclk",ptOutput),("mosi",ptOutput),("miso",ptInput),("cs",ptOutput)], true)
   result.modports["peripheral"] = modport("peripheral", [("sclk",ptInput),("mosi",ptInput),("miso",ptInOut),("cs",ptInput)])
+  # `cs` is commonly wide (`spiInterface(3)`'s three-member chip-select bus
+  # on `designs/spi_memories.nim`), and `contract/design.addImpliedRoles`
+  # fans a wide role part out into one `spi` instance per member rather than
+  # refusing, so this reaches every chip select rather than only the first.
+  result.implies = @[RoleClaim(role: "spi")]
 
 proc uartInterface*(): InterfaceDef =
   result.name = "uart"

@@ -69,6 +69,39 @@ proc registerBuiltinRoles*() =
     expand: i2cExpand))
 
   registerRole(RoleDef(
+    name: "spi",
+    # No `expects`, deliberately: `i2c` above sets it to `"i2c"` because that
+    # name is stable, but `diff_pair` does not, precisely so a differently
+    # named def (`usb2Interface`) can still imply it -- and this role needs
+    # the same latitude. `designs/lib/spi_memory.nim` defines its own
+    # `spi_memory_link` interface for the child-sheet side of an SPI bus, and
+    # a design author should be able to point that def at this role without
+    # a name check standing in the way.
+    doc: "A four-wire SPI bus, fanned out to one instance per chip select.",
+    parts: @[
+      RolePart(name: "sclk", kind: skNet, doc: "clock, driven by the controller"),
+      RolePart(name: "mosi", kind: skNet, doc: "controller-out, peripheral-in"),
+      RolePart(name: "miso", kind: skNet, doc: "controller-in, peripheral-out"),
+      RolePart(name: "cs", kind: skNet, doc: "this instance's chip select"),
+      RolePart(name: "controller", kind: skComponent, optional: true,
+               doc: "the bus controller, when there is a single known one"),
+    ],
+    params: @[
+      AnnDef(key: "frequency", kind: akFloat, unit: "Hz", scopes: {asNet},
+             doc: "bus clock frequency; recorded on every claim's " &
+                  "condition, not yet checked against anything -- setup/" &
+                  "hold margin needs per-part timing this catalogue does " &
+                  "not have yet"),
+      AnnDef(key: "csPullup", kind: akFloat, scopes: {asNet},
+             doc: "state to claim a pull-up holding this chip select " &
+                  "inactive between transactions; omitted claims nothing, " &
+                  "since plenty of correct boards drive a select from a " &
+                  "GPIO instead"),
+    ],
+    apply: nil,
+    expand: spiExpand))
+
+  registerRole(RoleDef(
     name: "regulator",
     doc: "A supply: how it comes up, how it holds up, and what it delivers.",
     parts: regulatorParts,

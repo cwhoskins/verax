@@ -42,6 +42,7 @@ proc applyChoice*(c: Component, ch: Choice, source = annDerived) =
   if float(ch.tolerance) > 0.0: setAnnotation(c, "tolerance", ch.tolerance, source)
   if float(ch.esr) > 0.0: setAnnotation(c, "esr", ch.esr, source)
   if float(ch.esl) > 0.0: setAnnotation(c, "esl", ch.esl, source)
+  if ch.use.len > 0: setAnnotation(c, "part_use", ch.use, source)
 
 proc choiceNotes*(designator: string, ch: Choice): seq[Assumption] =
   ## A policy's `notes` as `Assumption`s, so they surface where every other

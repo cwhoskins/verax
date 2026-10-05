@@ -1,10 +1,14 @@
 ## Built-in roles for digital buses.
 ##
-## `i2c` is the only one so far. It is a multi-subject role -- `sda` and `scl`
-## are two nets judged together -- so it is where role part binding is
-## actually exercised, and `designs/lib/i2c_parts.nim`'s user-written
-## `i2c_transaction` is its counterpart outside this library.
+## `i2c` and `spi` are the two so far. `i2c` is a multi-subject role --
+## `sda` and `scl` are two nets judged together -- so it is where role part
+## binding is actually exercised, and `designs/lib/i2c_parts.nim`'s
+## user-written `i2c_transaction` is its counterpart outside this library.
+## `spi` is the one whose fan-out is worth reading (`design.addImpliedRoles`):
+## a chip-select bus is usually wide, so one `spiInterface` instance becomes
+## one `spi` role instance *per chip select*, each judged locally.
 
+import std/tables
 import ./core
 import ../../units
 
@@ -70,4 +74,64 @@ proc i2cExpand*(inst: RoleInstance): seq[Assertion] =
       severity: sevWarning,
       rationale: "more than one controller needs multi-controller " &
                  "arbitration, which is rarely intended",
+      origin: inst.name)
+
+proc spiExpand*(inst: RoleInstance): seq[Assertion] =
+  ## `sclk`/`mosi`/`miso`/`cs` are always claimed scalar, even though the
+  ## interface this role rides on (`netlist/interfaces/std.spiInterface`)
+  ## usually declares `cs` as an N-member bus: `design.addImpliedRoles` fans
+  ## a wide `cs` out into one `spi` instance per member before this expander
+  ## ever runs, each with its own `cs` narrowed to width 1 -- so a claim here
+  ## is always about one chip select, and "two peripherals on one select"
+  ## becomes a claim local to that instance rather than a cross-instance
+  ## comparison. `inst.member` is which one, `0` for the first (or the only
+  ## one, when the interface was never wide to begin with).
+  var cond: OrderedTable[string, string]
+  if hasParam(inst, "frequency"): cond["frequency"] = inst.params["frequency"]
+
+  if inst.member == 0:
+    # Claimed once per *bus*, not once per chip select -- SCLK/MOSI/MISO are
+    # shared across every member of the fan-out, so asking three times would
+    # be the identical question asked three times over the identical wire.
+    let sclk = inst.subject("sclk")
+    result.add Assertion(
+      id: assertionId(inst, "controllers"),
+      subjects: @[sclk],
+      quantity: "controller_count",
+      expect: nominal(1.0, absTol = 0.0),
+      condition: cond,
+      severity: sevWarning,
+      rationale: "more than one controller driving one SPI bus needs " &
+                 "arbitration the protocol has none of",
+      origin: inst.name)
+
+  let miso = inst.subject("miso")
+  let cs = inst.subject("cs")
+  result.add Assertion(
+    id: assertionId(inst, "miso_drivers"),
+    subjects: @[miso, cs],
+    quantity: "miso_driver_count",
+    expect: atMost(1.0),
+    condition: cond,
+    severity: sevError,
+    rationale: "two peripherals sharing MISO must not also share this " &
+               "chip select, or both drive the line at once when it is " &
+               "asserted",
+    origin: inst.name)
+
+  # Opt-in, following `power_rail`'s `targetZ` doctrine: an unselected chip
+  # select floating between transactions is a real risk, but plenty of
+  # boards hold it from a GPIO rather than a resistor (every select in
+  # `designs/spi_memories.nim` does), and claiming a pull-up unconditionally
+  # would fail nine times on a correct board and turn `nimble verify` red.
+  if hasParam(inst, "csPullup"):
+    result.add Assertion(
+      id: assertionId(inst, "cs.pullup"),
+      subjects: @[cs],
+      quantity: "pullup_count",
+      expect: atLeast(1.0),
+      condition: cond,
+      severity: sevWarning,
+      rationale: "an unselected chip select must be held inactive while " &
+                 "nothing drives it, or the bus floats between transactions",
       origin: inst.name)

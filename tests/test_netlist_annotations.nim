@@ -41,6 +41,21 @@ test "bare means registered, dotted means owned":
   expect(NetlistError):
     setAnnotation(nl.components["C1"], "esrr", "0.02")
 
+test "an akEnum value outside `allowed` is rejected at the setter, not just at readiness":
+  # `part_use` is this registry's first `akEnum` builtin. Before this check
+  # existed a typo'd value sat silently in `attrs` until the next full
+  # `validateAnnotations` run -- an `akFloat` typo never had that gap,
+  # because `parseAnnFloat` already raises immediately below. `part_use` is
+  # applied by `parts/annotate.applyChoice` far more often than a design is
+  # re-checked, so catching it here matters more than it would for a key
+  # only ever hand-typed once.
+  check annDef("part_use").kind == akEnum
+  let nl = board()
+  setAnnotation(nl.components["C1"], "part_use", "decoupling")
+  check nl.components["C1"].attrs["part_use"] == "decoupling"
+  expect(NetlistError):
+    setAnnotation(nl.components["C1"], "part_use", "timming")
+
 # --- units -------------------------------------------------------------
 
 test "a unit literal and a bare SI number store identically":

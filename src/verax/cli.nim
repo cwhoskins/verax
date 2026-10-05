@@ -258,6 +258,12 @@ check flags (forwarded to the design file):
                      (constrained-layered is the only policy and the default)
   --schematic-only   with --keep-runs, draw the runFULL.* archive and stop --
                      no simulation runs
+  --format=text|json|junit
+                     text (default) for a terminal; json/junit for a CI job.
+                     --format=json prints pure JSON on stdout -- nothing
+                     else is written there
+  --baseline=<path>  a prior --format=json report; report what moved since
+                     it (a missing or unparseable file is a usage error)
   --path:<dir>       where verax's sources live (usually found automatically)
 
 exit codes:

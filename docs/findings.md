@@ -188,27 +188,6 @@ prerequisites — the dependencies are stated where they exist.
    its first consumer, gives `delta_t` something to be checked against rather
    than merely authored, and leaves §28 exactly where it is.
 
-10. **No machine-readable report output** (§48). `verify.readiness` renders one
-   text report and there is no other shape. A `--format=json` (or `--junit`)
-   carrying each claim's id, quantity, subjects, expectation, measurement,
-   status and assumptions makes the tool CI-native, costs nothing electrical,
-   and cannot move a number. It is also the precondition for §49, which is
-   where the real value is. Smallest item on this list.
-
-11. **A claim that passes by 40% and one that passes by 0.5% print
-    identically** (§49). The report says `PASS` and moves on, so the single
-    most useful piece of information about a healthy design — how close it is
-    to not being one — is computed and thrown away on every run. `acceptance`
-    already renders the interval and the measurement is already in hand, so the
-    margin is a subtraction.
-
-    Two features fall out. A **margin column** on each passing claim in
-    `CHECKS`. And `--baseline=prev.json` (on §48) reporting which measurements
-    moved since the last run and by how much, which catches the class of defect
-    a pass/fail gate structurally cannot see: a part substitution that halves
-    the phase margin while leaving it above 45°. Neither is worth much without
-    the other.
-
 12. **`explainPlan` is written and has no caller** (§50). `plan` is pure and
     `explainPlan` renders it, both for the stated reason that an assertion set
     you cannot inspect before it executes is the failure mode this layer
@@ -688,9 +667,10 @@ Both turned up while measuring why `nimble test` takes ~7 minutes (see the
 
 ## If the order is up for grabs
 
-**Cheapest real value:** §48 then §49. No circuit knowledge, no new analysis,
-and margin-to-limit is information the tool computes and discards on every
-passing claim today.
+**Cheapest real value:** was §48 then §49, and it was spent — `--format=json`/
+`--format=junit`, a margin on every checked claim, and `--baseline=prev.json`
+diffing what moved since the last run, all landing together since neither
+half was worth much without the other.
 
 **Best leverage from one small change:** was §45, and it was spent — one
 capability enum member and one analysis module, and it unblocked §63 and §65

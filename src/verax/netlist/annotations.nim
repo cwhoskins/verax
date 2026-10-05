@@ -461,6 +461,40 @@ const builtinAnnotations* = [
          "`return_loss_db` alone cannot see the difference between power " &
          "radiated and power lost as heat in the element -- this is the " &
          "other half of the number an EIRP claim needs."),
+
+  # --- BOM vocabulary ------------------------------------------------------
+  # `docs/bom_compiler_plan.md`'s fact 2: `Component.partNumber` is already
+  # overloaded four ways (a real MPN, an internal house part number, a
+  # subcircuit template name, and -- confirmed live in ~20 design sites -- a
+  # free-text descriptive label like "USB-C receptacle"). A BOM compiler
+  # cannot treat `partNumber` as the MPN without presenting every one of
+  # those free-text sites as a confident, wrong part number, so `mpn` is its
+  # own key rather than a second meaning layered onto an already-overloaded
+  # one.
+  AnnDef(key: "mpn", kind: akString, scopes: {asComponent},
+    doc: "Manufacturer part number, authorable as `spec: mpn = \"...\"`. " &
+         "Distinct from `Component.partNumber`, which remains split " &
+         "between a real MPN, an internal/house part number, and a free-" &
+         "text descriptive label -- a BOM resolver treats this key as " &
+         "authoritative and `partNumber` only as an unverified fallback " &
+         "it must confirm against a catalogue before trusting."),
+  AnnDef(key: "manufacturer", kind: akString, scopes: {asComponent},
+    doc: "Pairs with `mpn` -- an MPN is only unique within a manufacturer " &
+         "(two vendors can and do reuse the same part number for unrelated " &
+         "parts)."),
+  AnnDef(key: "part_use", kind: akEnum, scopes: {asComponent},
+    allowed: @["timing", "coupling", "decoupling", "bulk", "precision",
+               "general", "power", "filter"],
+    doc: "What this part is *for* -- the union of `parts.CapUse`/`ResUse`/" &
+         "`IndUse`, spelled without the enum prefixes, so a BOM compiler " &
+         "reading a finished netlist can tell a timing capacitor from a " &
+         "bypass one. `parts/annotate.applyChoice` writes this from " &
+         "whichever request the module stated; a hand-authored part states " &
+         "it directly. Without it, the distinction `parts/CLAUDE.md` exists " &
+         "for -- a Class 2 dielectric in a filter moving the corner by tens " &
+         "of percent -- is visible in `dielectric` but not in *why* that " &
+         "dielectric was chosen, which is what a reviewer actually needs to " &
+         "confirm a policy decision was the right one for this part."),
 ]
 
 var registry: OrderedTable[string, AnnDef]
@@ -607,9 +641,23 @@ proc setRawAnnotation*[E](e: E, key, text: string) =
 
 proc setAnnotation*[E](e: E, key: string, v: string, source = annAuthored) =
   ## Validates the text against the key's declared type before storing it.
+  ##
+  ## `akEnum` is checked here too, not only by `validateAnnotations` at
+  ## `readiness` -- `part_use` is this registry's first `akEnum` builtin, and
+  ## leaving it unchecked at write time would mean a typo'd
+  ## `part_use = "timming"` sits silently in `attrs` until the next full
+  ## check runs, the exact gap an `akFloat` typo never has (`parseAnnFloat`
+  ## already raises immediately, below). Checking here instead closes that
+  ## gap for every future `akEnum` key too, not just this one.
   checkKey(e, key)
-  if not isNamespaced(key) and registry[key].kind == akFloat:
-    discard parseAnnFloat(key, v)   # raises if it is not a plain SI value
+  if not isNamespaced(key):
+    let def = registry[key]
+    if def.kind == akFloat:
+      discard parseAnnFloat(key, v)   # raises if it is not a plain SI value
+    elif def.kind == akEnum and def.allowed.len > 0 and v notin def.allowed:
+      raise newException(NetlistError,
+        "annotation '" & key & "' = " & v.escape() & " is not one of " &
+        def.allowed.join(", "))
   putRaw(e, key, v, source)
 
 proc setAnnotation*[E](e: E, key: string, v: SomeNumber, source = annAuthored) =
@@ -639,6 +687,9 @@ proc esl*(c: Component): AnnValue[float] = annotationFloat(c, "esl")
 proc package*(c: Component): AnnValue[string] = annotation(c, "package")
 proc footprint*(c: Component): AnnValue[string] = annotation(c, "footprint")
 proc deviceValue*(c: Component): AnnValue[string] = annotation(c, "value")
+proc mpn*(c: Component): AnnValue[string] = annotation(c, "mpn")
+proc manufacturer*(c: Component): AnnValue[string] = annotation(c, "manufacturer")
+proc partUse*(c: Component): AnnValue[string] = annotation(c, "part_use")
 
 # --- validation --------------------------------------------------------
 

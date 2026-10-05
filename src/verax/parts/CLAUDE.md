@@ -40,6 +40,23 @@ a policy decided is visible exactly as a hand-typed `spec:` block would be, and 
 mechanism whose output could only be understood by re-reading the mechanism would
 be worse than typing the values out.
 
+`Choice.use` (a plain string, `parts/types.partUseName` spelling
+`CapUse`/`ResUse`/`IndUse` without their enum prefix -- `"timing"`,
+`"decoupling"`, ...) and `annotate.applyChoice` writing it into the
+component's `part_use` annotation close a gap `docs/bom_compiler_plan.md`
+names as fact 4: before this field existed, a `Choice` carried a capacitor's
+`dielectric` and `tolerance` but not *why* that dielectric was chosen, so a
+consumer reading a finished netlist (a BOM compiler, a review) could not tell
+a timing capacitor from a bypass one even though both would show, say,
+"C0G" -- the two claims read identically without the request that produced
+them. `part_use` is `netlist/annotations`' first `akEnum` built-in, and
+`setAnnotation`'s string overload checks `allowed` at write time for it (not
+only `validateAnnotations` at `readiness`, as every other `akEnum` in this
+registry historically would have been left to): a `Choice` is applied far
+more often than a design is re-checked, so a typo'd value from a
+runtime-built policy is caught at the point it happens rather than surfacing
+however much later `readiness` next runs.
+
 Note what the builder does **not** pass for its bypass capacitors: `working`. It
 does not know the supply, and does not need to — `spice/models` computes the DC
 across each capacitor from the netlist at simulation time, when rail voltages are

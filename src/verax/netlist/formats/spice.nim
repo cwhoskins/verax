@@ -462,11 +462,15 @@ proc formatInstanceLine(child: Netlist): string =
   for portName, _ in child.ports:
     let pin = comp.pins[portName]
     nodes.add(if pin.net != nil: pin.net.name else: "")
-  result = deckInstanceDesignator(comp) & " " & nodes.join(" ") & " " & comp.partNumber
+  # `child.name`, not `comp.partNumber`: this must name the `.SUBCKT` block
+  # `writeSubcktBlock` actually wrote (`templ.name`), and a design is free to
+  # state its own `partNumber` on an instance without that touching which
+  # block the `X` card references.
+  result = deckInstanceDesignator(comp) & " " & nodes.join(" ") & " " & child.name
 
 proc collectTemplates(nl: Netlist, seen: var OrderedTable[string, Netlist]) =
   for designator, child in nl.children:
-    let key = child.instanceOf.partNumber
+    let key = child.name
     if not seen.hasKey(key):
       seen[key] = child
     collectTemplates(child, seen)

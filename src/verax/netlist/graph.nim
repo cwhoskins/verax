@@ -481,18 +481,23 @@ proc instantiate*(parent: Netlist, instanceDesignator: string, defNetlist: Netli
                    portNets: seq[Net], globalNets: var OrderedTable[string, Net],
                    componentKind = "subcircuit"): Component =
   ## Clones `defNetlist` as a new child of `parent` (see `clone`), creates
-  ## the instance `Component` (designator = `instanceDesignator`,
-  ## `partNumber` = `defNetlist.name`), and for each port of `defNetlist`
-  ## (in declaration order) creates and connects a `Pin` to the matching
-  ## entry of `portNets`, setting `pin.hierNet` to the clone's corresponding
-  ## port net.
+  ## the instance `Component` (designator = `instanceDesignator`), and for
+  ## each port of `defNetlist` (in declaration order) creates and connects a
+  ## `Pin` to the matching entry of `portNets`, setting `pin.hierNet` to the
+  ## clone's corresponding port net.
+  ##
+  ## Deliberately leaves `partNumber` unset: it used to be stamped with
+  ## `defNetlist.name`, but that is the template's *name*, not a purchasable
+  ## part number, and `formats/spice.nim` reads `subNetlist.name` (via
+  ## `Netlist.instanceOf`) for the deck's `.SUBCKT` reference now, not this
+  ## field -- so a design assigning its own `partNumber` on an `instance`
+  ## statement no longer collides with anything the writer depends on.
   if portNets.len != defNetlist.ports.len:
     raise newException(NetlistError,
       "port count mismatch instantiating '" & defNetlist.name & "' as " & instanceDesignator &
       "': expected " & $defNetlist.ports.len & ", got " & $portNets.len)
   let child = clone(defNetlist, globalNets)
-  result = addComponent(parent, newComponent(instanceDesignator, kind = componentKind,
-                                              partNumber = defNetlist.name))
+  result = addComponent(parent, newComponent(instanceDesignator, kind = componentKind))
   addChild(parent, instanceDesignator, child)
   child.instanceOf = result
   result.subNetlist = child

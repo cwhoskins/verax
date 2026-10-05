@@ -367,6 +367,61 @@ proc runControllerCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionR
       continue
     result.add verdict(a, float(controllers.len), "", "static.controller_count")
 
+# --- miso_driver_count ---------------------------------------------------
+
+proc runMisoDriverCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  ## How many components drive MISO *and* sit on one chip select -- the
+  ## roadmap's "two peripherals sharing MISO must not also share CS" check,
+  ## made answerable per-instance by the `spi` role's chip-select fan-out: an
+  ## instance asks only about its own select, so catching two memories wired
+  ## to one CS with MISO tied together needs no cross-instance bookkeeping.
+  ##
+  ## Two filters, both load-bearing and both worth a test of their own:
+  ##
+  ## * **leaf components only** (`c.subNetlist == nil`) -- a hierarchical
+  ##   instance and the part inside it sit on the same conductor, so without
+  ##   this every memory on `designs/spi_memories.nim` counts twice, once as
+  ##   itself and once as the `SPI_MEMORY` instance wrapping it.
+  ## * **the MISO pin must actually drive** (`ptOutput`/`ptInOut`) -- the
+  ##   controller has a pin on MISO *and* on every chip select on the bus, and
+  ##   its MISO pin is `ptInput` (stamped by `promotePortDirections` off the
+  ##   `controller` modport), so without this filter the controller would
+  ##   count as a driver on every instance.
+  let d = ctx.design
+  const name = "static.miso_driver_count"
+  for a in batch:
+    let misoOpt = netSubject(d, a, 0)
+    let csOpt = netSubject(d, a, 1)
+    if misoOpt.isNone or csOpt.isNone:
+      result.add notEvaluable(a, name,
+        "miso_driver_count takes two nets that both exist in this design")
+      continue
+    let miso = misoOpt.get
+    let cs = csOpt.get
+
+    var csComponents: seq[Component]
+    for p in allPins(cs):
+      let c = p.component
+      if c == nil or c.subNetlist != nil: continue
+      if c notin csComponents: csComponents.add c
+
+    var statedDirection = false
+    var drivers: seq[Component]
+    for p in allPins(miso):
+      let c = p.component
+      if c == nil or c.subNetlist != nil: continue
+      if p.kind != ptUnknown: statedDirection = true
+      if p.kind notin {ptOutput, ptInOut}: continue
+      if c in csComponents and c notin drivers: drivers.add c
+
+    if not statedDirection:
+      result.add notEvaluable(a, name,
+        "no pin on '" & miso.name & "' states a direction, so a driver " &
+        "cannot be told from a receiver on it")
+      continue
+
+    result.add verdict(a, float(drivers.len), "", name)
+
 # --- what each walk is ---------------------------------------------------
 
 proc netOf(a: Assertion): string =
@@ -396,6 +451,14 @@ proc controllerCountDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   "a graph walk of net '" & netOf(batch[0]) &
   "', counting the parts the role named as controllers -- nothing in a " &
   "netlist tells a controller from a target, since both have an inout pin"
+
+proc misoDriverCountDoc(ctx: EvalContext, batch: seq[Assertion]): string =
+  var ns: seq[string]
+  for s in batch[0].subjects:
+    if s.kind == skNet: ns.add "'" & s.name & "'"
+  "a graph walk of " & (if ns.len == 2: ns[0] & " and " & ns[1] else: "two nets") &
+  ": leaf components with a driving pin on the first that also have a " &
+  "pin on the second"
 
 # --- registration -------------------------------------------------------
 
@@ -451,5 +514,14 @@ proc registerStaticEvaluators*() =
     binds: @["controller"],
     setupDoc: controllerCountDoc,
     run: runControllerCount))
+
+  registerEvaluator(Evaluator(
+    name: "static.miso_driver_count",
+    produces: @["miso_driver_count"],
+    needs: {capStatic},
+    arity: 2 .. 2,
+    subjectKinds: {skNet},
+    setupDoc: misoDriverCountDoc,
+    run: runMisoDriverCount))
 
 registerStaticEvaluators()

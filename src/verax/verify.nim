@@ -45,14 +45,15 @@
 ## evaluator's name but not its setup key, and two steps of one evaluator are
 ## two different runs of it.
 
-import std/[algorithm, editdistance, os, osproc, sets, strutils, tables,
-            wordwrap]
+import std/[algorithm, editdistance, json, math, os, osproc, sets, strutils,
+            tables, wordwrap, xmltree]
 
 import ./eng
 import ./netlist/types
 import ./netlist/annotations
 import ./netlist/environment
 import ./netlist/packages
+import ./netlist/bomdefaults
 import ./netlist/interfaces
 import ./netlist/pinmux
 import ./netlist/layouthints
@@ -159,6 +160,65 @@ const
     ## separate from every other code on purpose: told only "it failed", a
     ## reader edits the circuit to fix what is actually a syntax error.
 
+type
+  ReportFormat* = enum
+    ## `rfText` is the default and the only one a human reads directly;
+    ## `rfJson`/`rfJunit` exist for `verax check` to sit in a CI job rather
+    ## than only a terminal -- a pass/fail exit code alone cannot carry *why*,
+    ## and a build system that wants to diff two runs needs a document, not a
+    ## paragraph.
+    rfText, rfJson, rfJunit
+
+  BaselineEntry* = object
+    ## One remembered result, read back from a previous run's `--format=json`
+    ## document by `loadBaseline`. Only what a comparison needs -- `status`,
+    ## `value`, `unit` -- never the whole `AssertionResult`, since a baseline
+    ## is a stored fact about one earlier run, not a rehydrated one.
+    value*: float
+    unit*: string
+    status*: string
+
+  BaselineChange* = object
+    ## What differs about one claim between a baseline and this run. One
+    ## record per id, not one record per *kind* of difference, because a
+    ## claim can carry more than one at once (a status transition and a
+    ## value move together) and a reader wants them about the claim, not
+    ## scattered across separate entries that happen to share an id.
+    id*: string
+    isNew*: bool
+      ## This id was not in the baseline at all.
+    isGone*: bool
+      ## This id was in the baseline and is not among this run's results.
+    statusChanged*: bool
+    regressed*: bool
+      ## `pass -> fail`, or a checked claim (`pass`/`fail`) going to an
+      ## unchecked one (`not_evaluated`/`not_evaluable`) -- the direction a
+      ## reader has to see first, since the opposite motion (a claim that
+      ## started passing again, or one that started being checked) is good
+      ## news carried by the same two fields.
+    fromStatus*, toStatus*: string
+    valueChanged*: bool
+      ## A numeric move worth reporting: the relative change exceeds 1e-6,
+      ## or the prior value was exactly zero and the new one is not (where a
+      ## relative change is not a number at all). Never set when the units
+      ## disagree -- see `unitChanged`.
+    fromValue*, toValue*: float
+    unitChanged*: bool
+      ## The measurement's unit itself moved -- a role or an evaluator was
+      ## changed to report in different terms. Reported as a move that
+      ## cannot be numerically compared, never silently differenced against
+      ## a number in a different unit.
+    fromUnit*, toUnit*: string
+
+  BaselineError* = object of CatchableError
+    ## Raised by `loadBaseline` on anything short of a readable, parseable
+    ## `--format=json` document with a `results` array. `verify` turns this
+    ## into a usage error (`exitCompile`) rather than letting the exception
+    ## propagate as a stack trace, and never into a silently skipped
+    ## comparison -- a CI job whose baseline file went missing or got
+    ## corrupted and quietly stopped comparing is a worse failure than one
+    ## that stops and says why.
+
 # --- what this machine can do -------------------------------------------
 
 proc ngspiceVersion*(exe = "ngspice"): string =
@@ -260,6 +320,7 @@ proc readiness*(d: Design, allowed = allCapabilities): Readiness =
   for i in analyzeIO(d.netlist): result.structural.add i
   for i in validateEnvironment(d.netlist): result.structural.add i
   for i in validatePackages(d.netlist): result.structural.add i
+  for i in validateBomDefaults(d.netlist): result.structural.add i
   for i in validateInterfaces(d.netlist): result.structural.add i
   for i in validatePinmux(d.netlist): result.structural.add i
   for i in validateLayoutHints(d.netlist): result.structural.add i
@@ -382,6 +443,27 @@ proc sevLabel(s: Severity): string =
   of sevWarning: "warning"
   of sevError: "error"
 
+proc statusJsonName(s: EvalStatus): string =
+  ## The spelling `--format=json`, `loadBaseline` and `baselineDiff` all
+  ## share, so a status is never spelled two ways across a report and the
+  ## baseline it is compared against. Snake-cased rather than `$s`'s bare
+  ## enum identifier (`esNotEvaluated`), which is implementation vocabulary,
+  ## not a value a consuming tool should have to know this library's enum
+  ## names to match against.
+  case s
+  of esPass: "pass"
+  of esFail: "fail"
+  of esNotEvaluated: "not_evaluated"
+  of esNotEvaluable: "not_evaluable"
+
+proc annSourceName(s: AnnSource): string =
+  case s
+  of annAbsent: "absent"
+  of annAuthored: "authored"
+  of annImported: "imported"
+  of annDefaulted: "defaulted"
+  of annDerived: "derived"
+
 proc didYouMean*(quantity: string, limit = 3): seq[string] =
   ## The registered quantities closest to one nothing produces.
   ##
@@ -452,6 +534,27 @@ proc statusMark(st: EvalStatus): string =
   of esNotEvaluated: "----"
   of esNotEvaluable: "????"
 
+proc marginText(r: AssertionResult, m: Margin): string =
+  ## `contract/evaluate.marginOf` computes the number; this is the one place
+  ## it is put into words, matching `acceptance`'s split (types.nim computes
+  ## the interval, `renderClaim` here decides how to say it). A two-sided
+  ## band is read as a fraction of *itself* (1.0 = dead centre, 0.0 = right
+  ## on an edge) because "58% of band" needs nothing else to be understood; a
+  ## one-sided limit has no natural ceiling to be a fraction *of* -- a
+  ## measurement can clear a floor by 500% -- so the absolute headroom leads
+  ## and the fraction rides along in parentheses.
+  if m.twoSided:
+    if m.hasFrac: "margin " & eng(m.frac * 100.0) & "% of band"
+    else: "margin " & eng(m.abs, r.unit) & " of band"
+  else:
+    let side = if r.assertion.expect.kind == ekMin: "over the minimum"
+               else: "under the maximum"
+    if m.hasFrac:
+      "margin " & eng(m.abs, r.unit) & " (" & eng(m.frac * 100.0) & "% " &
+      side & ")"
+    else:
+      "margin " & eng(m.abs, r.unit)
+
 proc renderClaim(L: var seq[string], r: AssertionResult, indent: string,
                  verbose: bool) =
   ## One claim as *a comparison*: what was expected, what came back.
@@ -490,6 +593,8 @@ proc renderClaim(L: var seq[string], r: AssertionResult, indent: string,
       # the rail being charged, not on the net the claim judges.
       let at = r.reason.find(" at ")
       if at >= 0: cmpLine &= r.reason[at .. ^1]
+      let m = marginOf(r)
+      if m.isSome: cmpLine &= "   " & marginText(r, m.get)
   of esNotEvaluated, esNotEvaluable:
     cmpLine &= "   not measured"
   for line in indented(cmpLine, deep, deep & "  "): L.add line
@@ -588,7 +693,46 @@ proc renderChecks(L: var seq[string], r: Readiness, verbose: bool) =
     L.add "  " & $r.rejected.len & " further claim(s) reached no test at all" &
           " -- see NOT CHECKED below"
 
-proc render*(r: Readiness, verbose = false): string =
+proc describeBaselineChange(c: BaselineChange): string =
+  if c.isNew:
+    result = c.id & "   new claim, now " & c.toStatus
+    if c.toStatus in ["pass", "fail"]: result &= " (" & eng(c.toValue) & ")"
+    return
+  if c.isGone:
+    result = c.id & "   claim gone, was " & c.fromStatus
+    if c.fromStatus in ["pass", "fail"]: result &= " (" & eng(c.fromValue) & ")"
+    return
+  var parts: seq[string]
+  if c.statusChanged:
+    parts.add c.fromStatus & " -> " & c.toStatus &
+             (if c.regressed: " (regression)" else: "")
+  if c.unitChanged:
+    parts.add "unit " & c.fromUnit & " -> " & c.toUnit & ", cannot compare"
+  elif c.valueChanged:
+    parts.add eng(c.fromValue, c.fromUnit) & " -> " & eng(c.toValue, c.toUnit)
+  c.id & "   " & parts.join(", ")
+
+proc renderBaselineSection(L: var seq[string], changes: seq[BaselineChange],
+                           path: string) =
+  ## `MOVED`, placed by `render` after `NOT CHECKED` and before the summary:
+  ## informational relative to structure, a failure or an unchecked claim --
+  ## the report's existing ordering doctrine -- but still worth its own
+  ## section rather than folding into `FAILED`, since a value moving is not
+  ## itself a verdict; whether it should have moved is a question only the
+  ## reader can answer.
+  if changes.len == 0: return
+  L.add "MOVED  " & $changes.len & " measurement(s) changed since " & path
+  # `algorithm.sort` is a stable merge sort, so within each of the two
+  # buckets (regression / everything else) insertion order -- `results`
+  # order -- survives.
+  var ordered = changes
+  ordered.sort(proc (a, b: BaselineChange): int =
+    cmp((if a.regressed: 0 else: 1), (if b.regressed: 0 else: 1)))
+  for c in ordered:
+    for line in indented(describeBaselineChange(c), "  ", "    "): L.add line
+
+proc render*(r: Readiness, verbose = false, changes: seq[BaselineChange] = @[],
+            baselinePath = ""): string =
   ## The whole finding, ordered so the actionable part cannot be missed.
   var L: seq[string]
 
@@ -644,6 +788,10 @@ proc render*(r: Readiness, verbose = false): string =
         else:
           L.add "           run `verax quantities` for what can be measured"
 
+  if changes.len > 0:
+    L.add ""
+    renderBaselineSection(L, changes, baselinePath)
+
   L.add ""
   if r.results.len == 0:
     L.add "NO CLAIMS  this design states nothing that could be checked"
@@ -658,14 +806,386 @@ proc render*(r: Readiness, verbose = false): string =
   L.add "exit " & $code & " (" & exitLabel(code) & ")"
   L.join("\n")
 
+# --- JSON (--format=json) -------------------------------------------------
+#
+# `std/json` only, hand-assembled with `newJObject`/`newJArray` rather than
+# the `%*` macro -- the same explicit style `schematic/json.nim` already
+# uses for a public, versioned document. `jnum` is the one float-writing
+# path everything here goes through, because `NaN`/`Inf` written as the bare
+# Nim literal `nan`/`inf` is not valid JSON and would corrupt every `jq` or
+# parser call downstream of this format -- the whole reason `--format=json`
+# exists is to be machine-read, so this is the one place that cannot be
+# gotten away with fixing later.
+
+proc jnum(x: float): JsonNode =
+  if x.isNaN or x == Inf or x == -Inf: newJNull() else: newJFloat(x)
+
+proc capArrayJson(s: set[Capability]): JsonNode =
+  result = newJArray()
+  for c in s: result.add newJString(capLabel(c))
+
+proc subjectJsonNode(s: Subject): JsonNode =
+  result = newJObject()
+  result["kind"] = newJString((($s.kind))[2 .. ^1].toLowerAscii)
+  result["name"] = newJString(s.name)
+
+proc conditionJsonNode(a: Assertion): JsonNode =
+  result = newJObject()
+  for k, v in a.condition: result[k] = newJString(v)
+
+proc expectJsonNode(e: Expectation, unit: string): JsonNode =
+  result = newJObject()
+  case e.kind
+  of ekNominal:
+    result["kind"] = newJString("nominal")
+    result["nominal"] = jnum(e.nominal)
+    result["fracTol"] = jnum(e.fracTol)
+    result["absTol"] = jnum(e.absTol)
+  of ekMin:
+    result["kind"] = newJString("min")
+    result["lo"] = jnum(e.lo)
+    result["hi"] = newJNull()
+  of ekMax:
+    result["kind"] = newJString("max")
+    result["lo"] = newJNull()
+    result["hi"] = jnum(e.hi)
+  of ekRange:
+    result["kind"] = newJString("range")
+    result["lo"] = jnum(e.rlo)
+    result["hi"] = jnum(e.rhi)
+  of ekRelative:
+    result["kind"] = newJString("relative")
+  of ekPredicate:
+    result["kind"] = newJString("predicate")
+  result["unit"] = newJString(unit)
+  result["text"] = newJString(`$`(e, unit))
+
+proc assumptionJsonNode(a: Assumption): JsonNode =
+  result = newJObject()
+  result["entity"] = newJString(a.entity)
+  result["key"] = newJString(a.key)
+  result["value"] = jnum(a.value)
+  result["unit"] = newJString(a.unit)
+  result["source"] = newJString(annSourceName(a.source))
+  result["detail"] = newJString(a.detail)
+
+proc issueJsonNode(i: Issue): JsonNode =
+  result = newJObject()
+  result["kind"] = newJString(i.kind)
+  result["severity"] = newJString(sevLabel(i.severity))
+  result["message"] = newJString(i.message)
+
+proc marginJsonNode(mOpt: Option[Margin]): JsonNode =
+  if mOpt.isNone: return newJNull()
+  let m = mOpt.get
+  result = newJObject()
+  result["abs"] = jnum(m.abs)
+  result["frac"] = (if m.hasFrac: jnum(m.frac) else: newJNull())
+  result["twoSided"] = newJBool(m.twoSided)
+
+proc baselineChangeJsonNode(c: BaselineChange): JsonNode =
+  result = newJObject()
+  result["id"] = newJString(c.id)
+  result["new"] = newJBool(c.isNew)
+  result["gone"] = newJBool(c.isGone)
+  result["statusChanged"] = newJBool(c.statusChanged)
+  result["regressed"] = newJBool(c.regressed)
+  result["fromStatus"] = newJString(c.fromStatus)
+  result["toStatus"] = newJString(c.toStatus)
+  result["valueChanged"] = newJBool(c.valueChanged)
+  result["fromValue"] = jnum(c.fromValue)
+  result["toValue"] = jnum(c.toValue)
+  result["unitChanged"] = newJBool(c.unitChanged)
+  result["fromUnit"] = newJString(c.fromUnit)
+  result["toUnit"] = newJString(c.toUnit)
+
+proc renderJson*(r: Readiness, strict = false,
+                 changes: seq[BaselineChange] = @[],
+                 baselinePath = ""): string =
+  ## `verax.readiness/1`, versioned so a consumer can branch on it rather
+  ## than guess from field presence. `results` is the flat authoritative
+  ## list, mirroring `Readiness.results` (`checks` then `rejected`); `checks`
+  ## carries run metadata only, and each result names the check it came from
+  ## by index (`null` for a rejected claim) rather than being nested inside
+  ## it, so nothing is serialized twice.
+  var root = newJObject()
+  root["schema"] = newJString("verax.readiness/1")
+  root["design"] = newJString(r.design)
+  root["simulator"] = newJString(r.simulator)
+
+  var caps = newJObject()
+  caps["requested"] = capArrayJson(r.requested)
+  caps["available"] = capArrayJson(r.available)
+  caps["missing"] = capArrayJson(r.missing)
+  root["capabilities"] = caps
+
+  var env = newJObject()
+  env["stated"] = newJBool(r.environment.stated)
+  if r.environment.stated:
+    env["tAmbientMin"] = jnum(r.environment.tAmbientMin.value)
+    env["tAmbientMax"] = jnum(r.environment.tAmbientMax.value)
+  env["hottest"] = newJString(r.hottest)
+  root["environment"] = env
+
+  let code = exitCode(r, strict)
+  var exitNode = newJObject()
+  exitNode["code"] = newJInt(code)
+  exitNode["label"] = newJString(exitLabel(code))
+  root["exit"] = exitNode
+
+  var summaryNode = newJObject()
+  summaryNode["total"] = newJInt(r.results.len)
+  summaryNode["pass"] = newJInt(count(r.results, esPass))
+  summaryNode["fail"] = newJInt(count(r.results, esFail))
+  summaryNode["notEvaluated"] = newJInt(count(r.results, esNotEvaluated))
+  summaryNode["notEvaluable"] = newJInt(count(r.results, esNotEvaluable))
+  root["summary"] = summaryNode
+
+  var structural = newJArray()
+  for i in r.structural: structural.add issueJsonNode(i)
+  root["structural"] = structural
+
+  var checks = newJArray()
+  for c in r.checks:
+    var co = newJObject()
+    co["evaluator"] = newJString(c.evaluator)
+    co["needs"] = capArrayJson(c.needs)
+    co["key"] = newJString(c.key)
+    co["setup"] = newJString(c.setup)
+    var assumptions = newJArray()
+    for a in c.assumptions: assumptions.add assumptionJsonNode(a)
+    co["assumptions"] = assumptions
+    checks.add co
+  root["checks"] = checks
+
+  var checkOf = initTable[string, int]()
+  for i, c in r.checks:
+    for res in c.results: checkOf[label(res.assertion)] = i
+
+  var results = newJArray()
+  for res in r.results:
+    var ro = newJObject()
+    let id = label(res.assertion)
+    ro["id"] = newJString(id)
+    ro["quantity"] = newJString(res.assertion.quantity)
+    var subjects = newJArray()
+    for s in res.assertion.subjects: subjects.add subjectJsonNode(s)
+    ro["subjects"] = subjects
+    ro["condition"] = conditionJsonNode(res.assertion)
+    ro["expect"] = expectJsonNode(res.assertion.expect, res.assertion.unit)
+    ro["status"] = newJString(statusJsonName(res.status))
+    ro["value"] = jnum(res.value)
+    ro["unit"] = newJString(res.unit)
+    ro["margin"] = marginJsonNode(marginOf(res))
+    ro["evaluator"] = newJString(res.evaluator)
+    ro["check"] = (if checkOf.hasKey(id): newJInt(checkOf[id]) else: newJNull())
+    ro["severity"] = newJString(sevLabel(res.assertion.severity))
+    ro["reason"] = newJString(res.reason)
+    ro["rationale"] = newJString(res.assertion.rationale)
+    var assumptions = newJArray()
+    for a in res.assumptions: assumptions.add assumptionJsonNode(a)
+    ro["assumptions"] = assumptions
+    var issues = newJArray()
+    for i in res.issues: issues.add issueJsonNode(i)
+    ro["issues"] = issues
+    results.add ro
+  root["results"] = results
+
+  # Only when `--baseline` was given -- an absent key, not an empty object,
+  # is how a consumer tells "nothing changed" apart from "nothing was asked".
+  if baselinePath.len > 0:
+    var baselineNode = newJObject()
+    baselineNode["path"] = newJString(baselinePath)
+    var changesNode = newJArray()
+    for c in changes: changesNode.add baselineChangeJsonNode(c)
+    baselineNode["changes"] = changesNode
+    root["baseline"] = baselineNode
+
+  pretty(root)
+
+# --- JUnit (--format=junit) ------------------------------------------------
+
+proc renderJunit*(r: Readiness, strict = false): string =
+  ## One `<testsuite>`, one `<testcase>` per result plus one per structural
+  ## issue -- `classname="<design>.<evaluator>"` for a result,
+  ## `"<design>.structure"` for a structural finding, so a CI tool grouping
+  ## by classname gets the same grouping `CHECKS` uses. `esFail` becomes
+  ## `<failure>` (message is the expect/measured comparison, matching
+  ## `renderClaim`'s own line; the body is `reason` plus `rationale` plus
+  ## every issue, so the diagnosis a text report prints under `FAILED`
+  ## is not lost here); `esNotEvaluated`/`esNotEvaluable` become `<skipped>`
+  ## with `reason` as the message -- the `NOT CHECKED` content, which must
+  ## not silently vanish from a CI job the way an ordinary skip would; a
+  ## pass carries its margin, when it has one, as `<system-out>` rather than
+  ## dropping it, since a CI consumer that only reads JUnit should not have
+  ## to also fetch `--format=json` to see how close a claim ran.
+  ##
+  ## Escaped with `xmltree.escape`, never by hand -- a designator or a
+  ## rationale containing `<`, `>` or `&` is ordinary English, not an attack,
+  ## but it is exactly the character class that breaks hand-rolled XML.
+  let code = exitCode(r, strict)
+  var failures = count(r.results, esFail)
+  for i in r.structural:
+    if i.severity == sevError: inc failures
+  let skipped = count(r.results, esNotEvaluated) + count(r.results, esNotEvaluable)
+  let tests = r.results.len + r.structural.len
+
+  var body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+  body &= "<testsuite name=\"" & xmltree.escape(r.design) & "\" tests=\"" & $tests &
+          "\" failures=\"" & $failures & "\" skipped=\"" & $skipped &
+          "\">\n"
+  # The exit code a text or JSON run would have handed to the shell, carried
+  # as a JUnit `<properties>` extension rather than a bespoke attribute --
+  # `tests`/`failures`/`skipped` alone cannot distinguish "clean" from
+  # "capability unavailable", and a CI job branching on more than pass/fail
+  # needs somewhere to read that from without also fetching `--format=json`.
+  body &= "  <properties>\n"
+  body &= "    <property name=\"exitCode\" value=\"" & $code & "\"/>\n"
+  body &= "    <property name=\"exitLabel\" value=\"" &
+          xmltree.escape(exitLabel(code)) & "\"/>\n"
+  body &= "  </properties>\n"
+
+  for res in r.results:
+    let id = label(res.assertion)
+    let ev = if res.evaluator.len > 0: res.evaluator else: "unclaimed"
+    let cmp = "expect " & `$`(res.assertion.expect, res.assertion.unit) &
+              (if res.status in {esPass, esFail}:
+                 "   measured " & eng(res.value, res.unit)
+               else: "   not measured")
+    body &= "  <testcase name=\"" & xmltree.escape(id) & "\" classname=\"" &
+            xmltree.escape(r.design & "." & ev) & "\">\n"
+    case res.status
+    of esFail:
+      var detail = res.reason
+      if res.assertion.rationale.len > 0:
+        detail &= "\nbecause " & res.assertion.rationale
+      for i in res.issues:
+        detail &= "\n[" & sevLabel(i.severity) & "] " & i.kind & ": " & i.message
+      body &= "    <failure message=\"" & xmltree.escape(cmp) & "\">" &
+              xmltree.escape(detail) & "</failure>\n"
+    of esNotEvaluated, esNotEvaluable:
+      body &= "    <skipped message=\"" & xmltree.escape(res.reason) & "\"/>\n"
+    of esPass:
+      let m = marginOf(res)
+      if m.isSome:
+        body &= "    <system-out>" & xmltree.escape(marginText(res, m.get)) &
+                "</system-out>\n"
+    body &= "  </testcase>\n"
+
+  for i, iss in r.structural:
+    body &= "  <testcase name=\"" & xmltree.escape(iss.kind & " #" & $i) &
+            "\" classname=\"" & xmltree.escape(r.design & ".structure") & "\">\n"
+    if iss.severity == sevError:
+      body &= "    <failure message=\"" & xmltree.escape(iss.message) & "\"/>\n"
+    body &= "  </testcase>\n"
+
+  body &= "</testsuite>\n"
+  body
+
+# --- baseline (--baseline=<path>) ------------------------------------------
+
+proc loadBaseline*(path: string): Table[string, BaselineEntry] =
+  ## Parses a document this same module's `renderJson` wrote, indexed by
+  ## `id`. Anything short of that -- a missing file, invalid JSON, JSON that
+  ## is not a verax readiness report -- raises `BaselineError`; `verify`
+  ## turns that into a usage error rather than a silently skipped
+  ## comparison.
+  var text: string
+  try:
+    text = readFile(path)
+  except IOError as e:
+    raise newException(BaselineError,
+      "cannot read baseline '" & path & "': " & e.msg)
+  var j: JsonNode
+  try:
+    j = parseJson(text)
+  except CatchableError as e:
+    raise newException(BaselineError,
+      "cannot parse baseline '" & path & "' as JSON: " & e.msg)
+  if j.isNil or j.kind != JObject or j{"results"}.isNil or
+     j{"results"}.kind != JArray:
+    raise newException(BaselineError,
+      "'" & path & "' is not a verax readiness report (no 'results' " &
+      "array) -- pass a file this same binary wrote with `--format=json`")
+  for item in j["results"]:
+    let id = item{"id"}.getStr("")
+    if id.len == 0: continue
+    result[id] = BaselineEntry(
+      status: item{"status"}.getStr(""),
+      unit: item{"unit"}.getStr(""),
+      value: item{"value"}.getFloat(NaN))
+
+proc baselineDiff*(r: Readiness, baseline: Table[string, BaselineEntry]):
+                   seq[BaselineChange] =
+  ## Per id: a numeric move (the relative change exceeds 1e-6, or the prior
+  ## value was exactly zero and the new one is not), a status transition, a
+  ## claim new since the baseline, or one gone since it. A unit change is
+  ## reported as a move that cannot be compared -- never silently
+  ## differenced against a number in a different unit, which is worse than
+  ## not comparing at all.
+  var seen = initHashSet[string]()
+  for res in r.results:
+    let id = label(res.assertion)
+    seen.incl id
+    let toStatus = statusJsonName(res.status)
+    if not baseline.hasKey(id):
+      result.add BaselineChange(id: id, isNew: true, toStatus: toStatus,
+                                toValue: res.value, toUnit: res.unit)
+      continue
+    let b = baseline[id]
+    var c = BaselineChange(id: id, fromStatus: b.status, toStatus: toStatus,
+                           fromValue: b.value, toValue: res.value,
+                           fromUnit: b.unit, toUnit: res.unit)
+    if b.status != toStatus:
+      c.statusChanged = true
+      # `pass -> fail`, or a checked claim going unchecked: the direction a
+      # reader needs to see before anything else in this section.
+      let wasChecked = b.status in ["pass", "fail"]
+      let nowChecked = toStatus in ["pass", "fail"]
+      c.regressed = (b.status == "pass" and toStatus == "fail") or
+                    (wasChecked and not nowChecked)
+    if b.unit.len > 0 and res.unit.len > 0 and b.unit != res.unit:
+      c.unitChanged = true
+    elif b.status in ["pass", "fail"] and res.status in {esPass, esFail}:
+      if b.value == 0.0:
+        c.valueChanged = res.value != 0.0
+      else:
+        c.valueChanged = abs(res.value - b.value) / abs(b.value) > 1e-6
+    if c.statusChanged or c.valueChanged or c.unitChanged:
+      result.add c
+
+  for id, b in baseline:
+    if id notin seen:
+      result.add BaselineChange(id: id, isGone: true, fromStatus: b.status,
+                                fromValue: b.value, fromUnit: b.unit)
+
 proc verify*(d: Design, allowed = allCapabilities, verbose = false,
-             strict = false): int =
+             strict = false, format = rfText, baseline = ""): int =
   ## Check a design, print the report, and hand back the exit code.
   ##
-  ## The one line a design file ends with: `quit(verify(d))`.
+  ## The one line a design file ends with: `quit(verify(d))`. `format` and
+  ## `baseline` are appended at the end, with defaults, so every existing
+  ## call site (every design's `quit(verifyMain(d))`, every test calling
+  ## `verify` with the original four arguments) keeps compiling unchanged.
   keepFullSchematic(d.netlist)
   let r = readiness(d, allowed)
-  echo render(r, verbose)
+
+  var changes: seq[BaselineChange]
+  if baseline.len > 0:
+    # A usage error (`exitCompile`), not a silent skip -- caught here rather
+    # than left to propagate as a stack trace, and never swallowed: a CI job
+    # whose baseline went missing or got corrupted and quietly stopped
+    # comparing is a worse failure than one that stops and says why.
+    try:
+      changes = baselineDiff(r, loadBaseline(baseline))
+    except BaselineError as e:
+      stderr.writeLine "verax: " & e.msg
+      return exitCompile
+
+  case format
+  of rfText: echo render(r, verbose, changes, baseline)
+  of rfJson: echo renderJson(r, strict, changes, baseline)
+  of rfJunit: echo renderJunit(r, strict)
   exitCode(r, strict)
 
 # --- command-line entry --------------------------------------------------
@@ -701,6 +1221,14 @@ type
     layoutSize*: tuple[w, h: Nm]
       ## `(nm(0), nm(0))` means "not stated" -- `AssembleOptions`' own
       ## default board size applies.
+    format*: ReportFormat
+      ## `rfText` by default -- a human at a terminal is still the common
+      ## case, and every existing invocation with no `--format` flag must
+      ## keep printing exactly what it always has.
+    baseline*: string
+      ## `--baseline=<path>`, made absolute for the same reason `--keep-runs`
+      ## is: the design binary inherits the caller's working directory, not
+      ## necessarily the shell's.
 
 proc parseCapabilities*(text: string): set[Capability] =
   ## `--caps=op,ac` and friends. `capStatic` is always included: withholding
@@ -762,6 +1290,17 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
         raise newException(ValueError,
           "--layout-size wants WxH in millimetres, e.g. 100x80, got '" &
           spec & "'")
+    elif a.startsWith("--format="):
+      case a["--format=".len .. ^1]
+      of "text": result.format = rfText
+      of "json": result.format = rfJson
+      of "junit": result.format = rfJunit
+      else:
+        raise newException(ValueError,
+          "unknown --format '" & a["--format=".len .. ^1] &
+          "'; expected text, json or junit")
+    elif a.startsWith("--baseline="):
+      result.baseline = absolutePath(a["--baseline=".len .. ^1])
 
 # --- the catalog: what may be claimed ------------------------------------
 #
@@ -1014,4 +1553,4 @@ proc verifyMain*(d: Design, args = commandLineParams()): int =
       if i.severity > worst: worst = i.severity
     echo "wrote ", o.layoutOut, "  (", issues.len, " issue(s))"
     return (if worst == sevError: exitStructural else: exitClean)
-  verify(d, o.allowed, o.verbose, o.strict)
+  verify(d, o.allowed, o.verbose, o.strict, o.format, o.baseline)

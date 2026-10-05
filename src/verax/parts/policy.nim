@@ -92,6 +92,7 @@ proc standardVoltageRating*(want: Volts): Volts =
   Volts(w)
 
 proc defaultCapacitor*(r: CapRequest): Choice =
+  result.use = partUseName(r.use)
   case r.use
   of cuTiming, cuCoupling:
     # Forced, not chosen. A Class 2 part here moves the thing the capacitor
@@ -135,6 +136,7 @@ proc defaultCapacitor*(r: CapRequest): Choice =
 
 proc defaultResistor*(r: ResRequest): Choice =
   result.package = "0402"
+  result.use = partUseName(r.use)
   case r.use
   of ruPrecision: result.tolerance = 1.pct
   of ruGeneral:   result.tolerance = 5.pct
@@ -154,6 +156,7 @@ proc defaultResistor*(r: ResRequest): Choice =
 proc defaultInductor*(r: IndRequest): Choice =
   result.package = "inductor"
   result.tolerance = 20.pct
+  result.use = partUseName(r.use)
   if float(r.carrying) > 0.0:
     # Saturation current with headroom over the *peak* the caller stated. An
     # inductor run near saturation has less inductance than its label, so the

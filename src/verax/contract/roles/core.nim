@@ -60,6 +60,22 @@ type
       ## This instance: `"vdd_rail"`, `"i2c0"`.
     bindings*: OrderedTable[string, Subject]
     params*: OrderedTable[string, string]
+    member*: int
+      ## Which element of a fanned-out interface array this instance is, `0`
+      ## by default. Set by `design.addImpliedRoles` when an interface signal
+      ## wider than one bit forces one role instance per member (`spi`'s
+      ## per-chip-select fan-out) -- an expander reads it to gate a claim
+      ## that must appear once per *bus*, not once per member (`spi`'s
+      ## `controller_count`).
+      ##
+      ## A field, not a declared `params` entry, and that is deliberate:
+      ## `verify.claimingRoles` expands every role with each parameter stated
+      ## as the placeholder `"1"`, so a param-gated once-per-bus claim would
+      ## vanish from `verax quantities` the moment it was expressed as a
+      ## param instead -- the same trap this module's doc records for
+      ## `psrrMethod`. A field is invisible to that machinery, and
+      ## `previewRole` leaves it at its zero default, so `verax role spi`
+      ## still shows every claim the role can make.
     declined*: seq[string]
       ## Claim suffixes this instance does not make, from the reserved
       ## `without` parameter. A role's *always-claims* are otherwise

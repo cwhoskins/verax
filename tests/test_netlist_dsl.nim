@@ -3,6 +3,7 @@ import std/[strutils, streams, tables, unittest, streams]
 import verax/netlist/dsl
 import verax/netlist/kinds
 import verax/netlist/formats/spice
+import verax/units
 
 test "flat netlist built with the DSL matches hand-built structure":
   let nl = netlist("divider"):
@@ -237,6 +238,40 @@ test "a value that is a source spec is not mistaken for a model name":
       pin "+", a, kind = ptPower
       pin "-", gnd, kind = ptGround
   check not hasDeviceModel(nl.components["V1"])
+
+test "value = <Quantity> writes the identical text spiceValue would":
+  # `2.2.kohm` is a typed Nim expression, not a string to disambiguate, so it
+  # needs no RKM parser and cannot collide with a model name the way a
+  # string like "2k2" could. It must still reach the deck exactly as
+  # `spiceValue` would format it -- scientific notation, explicit exponent --
+  # since `value` is the one key `formatDeviceLine` appends verbatim.
+  let nl = netlist("d"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    component R1, kind = "resistor", value = 2.2.kohm:
+      pin "1", a
+      pin "2", b
+  check nl.components["R1"].attrs["value"] == spiceValue(2200.0)
+
+  let s = newStringStream()
+  writeNetlist(nl, s)
+  check ("R1 a b " & spiceValue(2200.0)) in s.data
+
+test "value = <string> is unaffected by the Quantity dispatch":
+  # A model name and a source spec must take the untouched `$value` branch
+  # exactly as before -- regression guard on the `else` side of the new
+  # `when value is Quantity` dispatch.
+  let nl = netlist("d"):
+    net a, kind = ntSignal
+    net gnd, kind = ntGround, name = "0"
+    component D1, kind = "diode", value = "1N4148":
+      pin "A", a, kind = ptPassive
+      pin "K", gnd, kind = ptPassive
+    component V1, kind = "voltage_source", value = "DC 5":
+      pin "+", a, kind = ptPower
+      pin "-", gnd, kind = ptGround
+  check nl.components["D1"].attrs["value"] == "1N4148"
+  check nl.components["V1"].attrs["value"] == "DC 5"
 
 test "a model needs a name":
   var nl = newNetlist("d")

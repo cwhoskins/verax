@@ -86,6 +86,17 @@ type
     esr*: Ohms
     esl*: Henries
     partNumber*: string
+    use*: string
+      ## What the part is *for* -- `partUseName(r.use)` of whichever request
+      ## produced this `Choice` (`"timing"`, `"decoupling"`, ...), matching
+      ## `netlist/annotations`' `part_use` key so `applyChoice` can write it
+      ## straight through. Added so `Choice` stops erasing the one fact that
+      ## decided everything else in it: before this field existed, a `Choice`
+      ## carried a capacitor's dielectric and tolerance but not *why* that
+      ## dielectric was picked, so a BOM compiler reading a finished netlist
+      ## could not tell a timing capacitor from a bypass one -- precisely the
+      ## distinction that makes a Class 2 dielectric in a filter move the
+      ## corner by tens of percent (`docs/bom_compiler_plan.md`, fact 4).
     notes*: seq[string]
       ## Anything the policy wants said out loud -- carried into the design's
       ## assumptions rather than swallowed.
@@ -98,6 +109,35 @@ type
     capacitor*: proc (r: CapRequest): Choice {.nimcall.}
     resistor*: proc (r: ResRequest): Choice {.nimcall.}
     inductor*: proc (r: IndRequest): Choice {.nimcall.}
+
+proc partUseName*(u: CapUse): string =
+  ## `CapUse`/`ResUse`/`IndUse` spelled without their enum prefix, matching
+  ## `netlist/annotations`' `part_use` key's `allowed` list exactly --
+  ## `$CapUse` would print `"cuTiming"`, which is a Nim identifier and not a
+  ## value that key accepts. One proc per enum rather than one generic
+  ## `$`-style overload, because the three enums are otherwise unrelated
+  ## types and a shared name here is only correct because the three
+  ## `case` bodies happen to agree on style, not because they share a type.
+  case u
+  of cuTiming: "timing"
+  of cuCoupling: "coupling"
+  of cuDecoupling: "decoupling"
+  of cuBulk: "bulk"
+
+proc partUseName*(u: ResUse): string =
+  case u
+  of ruPrecision: "precision"
+  of ruGeneral: "general"
+  of ruPower: "power"
+
+proc partUseName*(u: IndUse): string =
+  ## `iuPower` maps to the same `"power"` string `ResUse.ruPower` does --
+  ## deliberate, not a collision: `part_use`'s allowed list is the *union* of
+  ## what the three enums mean, spelled once, and "power" reads the same
+  ## whether the part carries current as a resistor or as an inductor.
+  case u
+  of iuFilter: "filter"
+  of iuPower: "power"
 
 proc isClass1*(dielectric: string): bool =
   ## Class 1 ceramics (C0G, NP0) are paraelectric: their capacitance does not

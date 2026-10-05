@@ -287,7 +287,6 @@ proc addRoleFromInterface*(d: Design, roleName, instanceName: string,
 proc addImpliedRoles*(d: Design) =
   for iface in interfacesOf(d.netlist):
     for claim in iface.def.implies:
-      if d.roles.hasKey(iface.name): continue
       var params: seq[(string, string)]
       for key, value in claim.params: params.add (key, value)
       # `claim.binds` maps a role part name to the interface signal it reads
@@ -307,7 +306,61 @@ proc addImpliedRoles*(d: Design) =
           raise newException(NetlistError, "interface signal '" & signalName &
             "' is wide and cannot bind scalar role part '" & partName & "'")
         bindings.add (partName, Subject(kind: skNet, name: b[0].name))
-      discard addRoleFromInterface(d, claim.role, iface.name, iface, bindings, params)
+
+      # Fan-out: a role part is bound to an interface signal wider than one
+      # bit (`spiInterface(3)`'s `cs`) when a scalar `skNet` role part shares
+      # its name -- or its `claim.binds` target -- with a wide signal.
+      # `addRoleFromInterface`'s own same-name matching raises on that (a
+      # wide signal cannot bind a scalar part), so this has to happen here,
+      # before that call, rather than by loosening it: loosening it would
+      # let a non-implied, hand-written `addRoleFromInterface` call silently
+      # bind only member 0 of a wide bus instead of refusing.
+      #
+      # `interfaces.narrow` is exactly the tool this needs and already
+      # exists for the opposite direction (a design narrowing its own
+      # interface onto a child sheet): a pure value-space copy of `iface`
+      # with one signal cut to a single member, touching neither the netlist
+      # nor the interface registry, so it is free to call once per member.
+      let def = roleDef(claim.role)
+      var wideSignal = ""
+      var width = 0
+      for part in def.parts:
+        if part.kind != skNet: continue
+        var signalName = part.name
+        for pn, sn in claim.binds:
+          if pn == part.name: signalName = sn
+        if not iface.signals.hasKey(signalName): continue
+        let b = iface.bus(signalName)
+        if b.len == 1: continue
+        if wideSignal.len == 0:
+          wideSignal = signalName
+          width = b.len
+        elif b.len != width:
+          raise newException(NetlistError, "interface '" & iface.def.name &
+            "' implies role '" & claim.role & "': signal '" & signalName &
+            "' has width " & $b.len & " but '" & wideSignal & "' has width " &
+            $width & " -- an interface whose selects and data lanes " &
+            "disagree in width is a real error, not something to guess " &
+            "through")
+
+      if wideSignal.len == 0:
+        # The historical, unfanned path -- byte-identical for `i2c`,
+        # `diff_pair` and `usb2`, whose every signal is width 1.
+        if d.roles.hasKey(iface.name): continue
+        discard addRoleFromInterface(d, claim.role, iface.name, iface,
+                                      bindings, params)
+      else:
+        for k in 0 ..< width:
+          # `<iface>_<signal><k>`: `spi_0_cs0`, `spi_0_cs1`, `spi_0_cs2` for
+          # the first bus of `designs/spi_memories.nim`. The "an explicitly
+          # declared role of this name wins" guard applies per member name
+          # here, exactly as it applies to the base name above.
+          let instName = iface.name & "_" & wideSignal & $k
+          if d.roles.hasKey(instName): continue
+          discard addRoleFromInterface(d, claim.role, instName,
+                                       iface.narrow(wideSignal, k),
+                                       bindings, params)
+          d.roles[instName].member = k
 
 proc expandInstance*(inst: RoleInstance): seq[Assertion] =
   ## One role instance's claims, minus the ones it declined. Everything that
