@@ -495,6 +495,17 @@ const builtinAnnotations* = [
          "of percent -- is visible in `dielectric` but not in *why* that " &
          "dielectric was chosen, which is what a reviewer actually needs to " &
          "confirm a policy decision was the right one for this part."),
+  AnnDef(key: "dnp", kind: akBool, scopes: {asComponent},
+    doc: "Do not populate: the part is on the board and on the BOM, but " &
+         "not fitted at assembly. Still a real BOM line -- a DNP part keeps " &
+         "its own line rather than vanishing, because dropping it hides an " &
+         "assembly decision -- and one that needs no orderable MPN."),
+  AnnDef(key: "bom_exclude", kind: akBool, scopes: {asComponent},
+    doc: "Leave this part off the bill of materials entirely -- a part that " &
+         "is not bought (a net tie, a board-edge connector that is just " &
+         "copper, a fiducial). Distinct from `dnp`, which keeps the line. " &
+         "Simulation-only kinds (sources, controlled sources, couplings) " &
+         "need no flag: `verax/bom` leaves them out by kind."),
 ]
 
 var registry: OrderedTable[string, AnnDef]
@@ -607,6 +618,15 @@ proc annotationFloat*[E](e: E, key: string): AnnValue[float] =
     return AnnValue[float](source: annAbsent)
   AnnValue[float](source: raw.source, value: parseAnnFloat(key, raw.value))
 
+proc annotationBool*[E](e: E, key: string): AnnValue[bool] =
+  ## `"true"` is true; anything else stated reads as false. Only
+  ## `validateAnnotations` reports a value that is neither, the way every
+  ## other accessor here stays pure and total.
+  let raw = annotation(e, key)
+  if not raw.has:
+    return AnnValue[bool](source: annAbsent)
+  AnnValue[bool](source: raw.source, value: raw.value == "true")
+
 # --- writing -----------------------------------------------------------
 
 proc putRaw[E](e: E, key, text: string, source: AnnSource) =
@@ -654,11 +674,23 @@ proc setAnnotation*[E](e: E, key: string, v: string, source = annAuthored) =
     let def = registry[key]
     if def.kind == akFloat:
       discard parseAnnFloat(key, v)   # raises if it is not a plain SI value
+    elif def.kind == akBool and v notin ["true", "false"]:
+      raise newException(NetlistError,
+        "annotation '" & key & "' = " & v.escape() & " is not true or false")
     elif def.kind == akEnum and def.allowed.len > 0 and v notin def.allowed:
       raise newException(NetlistError,
         "annotation '" & key & "' = " & v.escape() & " is not one of " &
         def.allowed.join(", "))
   putRaw(e, key, v, source)
+
+proc setAnnotation*[E](e: E, key: string, v: bool, source = annAuthored) =
+  ## `spec: dnp = true` lands here. Stored as `"true"`/`"false"`, the
+  ## spelling `annotationBool` and `validateAnnotations` both accept.
+  checkKey(e, key)
+  if not isNamespaced(key) and registry[key].kind != akBool:
+    raise newException(NetlistError,
+      "annotation '" & key & "' is not a true/false key, but was given " & $v)
+  putRaw(e, key, $v, source)
 
 proc setAnnotation*[E](e: E, key: string, v: SomeNumber, source = annAuthored) =
   checkKey(e, key)
@@ -690,6 +722,8 @@ proc deviceValue*(c: Component): AnnValue[string] = annotation(c, "value")
 proc mpn*(c: Component): AnnValue[string] = annotation(c, "mpn")
 proc manufacturer*(c: Component): AnnValue[string] = annotation(c, "manufacturer")
 proc partUse*(c: Component): AnnValue[string] = annotation(c, "part_use")
+proc dnp*(c: Component): AnnValue[bool] = annotationBool(c, "dnp")
+proc bomExclude*(c: Component): AnnValue[bool] = annotationBool(c, "bom_exclude")
 
 # --- validation --------------------------------------------------------
 
@@ -723,6 +757,12 @@ proc checkEntity[E](e: E, label: string, net: Net, comp: Component,
           label & ": " & err.msg,
           net = net, pins = (if pin != nil: @[pin] else: @[]),
           components = (if comp != nil: @[comp] else: @[]))
+    elif def.kind == akBool and raw notin ["true", "false"]:
+      issues.add newIssue("annotation_unparseable", sevError,
+        label & ": annotation '" & key & "' = " & raw.escape() &
+        " is not true or false",
+        net = net, pins = (if pin != nil: @[pin] else: @[]),
+        components = (if comp != nil: @[comp] else: @[]))
     elif def.kind == akEnum and def.allowed.len > 0 and raw notin def.allowed:
       issues.add newIssue("annotation_not_allowed", sevError,
         label & ": annotation '" & key & "' = " & raw.escape() &

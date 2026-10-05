@@ -18,7 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `verax` is a proprietary-licensed Nim library for describing a circuit, stating what it must do, and checking that by simulation.
 
-Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, `netlist` <- `schematic`, `pcb` <- `fem`, `netlist`/`pcb` <- `ibis`, and nothing depends backwards.
+Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, `netlist` <- `schematic`, `netlist`/`parts` <- `bom`, `pcb` <- `fem`, `netlist`/`pcb` <- `ibis`, and nothing depends backwards.
 
 | Submodule | What it is |
 | --- | --- |
@@ -29,6 +29,7 @@ Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `net
 | `src/verax/contract/` | Design *intent*: roles, assertions and the evaluator registry. Depends only on `netlist`, so a design stays inspectable with no simulator in the build. |
 | `src/verax/pcb/` | The *physical* board — layers, stack-up, copper, holes, placements, outline. Where DRC/DFM/SI/PI work lands. |
 | `src/verax/parts/` | Which real part a computed value is: requests, policies and preferred-value series. |
+| `src/verax/bom/` | Which *orderable* part each component is: collection and classification so far (`collect` -> one `BomItem` per physical part); the catalogue resolver, report and CLI are still to come (`docs/bom_compiler_plan.md`). Takes a `Netlist`, never a `Pcb`. |
 | `src/verax/ibis/` | Interface to IBIS: reads a vendor's `.ibs` buffer model (I/V curves, edge rates, package RLC) into a typed model. No-op past parsing so far. Depends on `netlist` and `pcb`. |
 | `src/verax/fem/` | Interface to an external finite-element field solver (electromagnetic + thermal). Skeleton — problem/mesh/backend types only, no backend (MFEM intended). Depends on `pcb`. |
 
@@ -41,7 +42,7 @@ The library has no dependencies beyond the Nim standard library (`requires "nim 
 Read the `CLAUDE.md` in the directory you are working in — each holds the design decisions, invariants and traps for that submodule, and they are where new detail belongs.
 
 - `src/verax/CLAUDE.md` — the package-root modules: `units.nim`, `eng.nim`, `verify.nim`, `cli.nim`
-- `src/verax/netlist/CLAUDE.md`, `src/verax/spice/CLAUDE.md`, `src/verax/spice/xspice/CLAUDE.md`, `src/verax/analysis/CLAUDE.md`, `src/verax/contract/CLAUDE.md`, `src/verax/pcb/CLAUDE.md`, `src/verax/parts/CLAUDE.md`, `src/verax/ibis/CLAUDE.md`, `src/verax/fem/CLAUDE.md`
+- `src/verax/netlist/CLAUDE.md`, `src/verax/spice/CLAUDE.md`, `src/verax/spice/xspice/CLAUDE.md`, `src/verax/analysis/CLAUDE.md`, `src/verax/contract/CLAUDE.md`, `src/verax/pcb/CLAUDE.md`, `src/verax/parts/CLAUDE.md`, `src/verax/bom/CLAUDE.md`, `src/verax/ibis/CLAUDE.md`, `src/verax/fem/CLAUDE.md`
 - `designs/CLAUDE.md` — the worked designs, exit codes, and how to see the deck that actually ran
 - `docs/architecture.md` — how the submodules relate, and what happens between `verax check board.nim` and the report
 - `docs/authoring.md` — writing a design (also `nimble guide`)

@@ -1,12 +1,12 @@
 # The BOM compiler: plan for `src/verax/bom/`
 
-**Status: Stage 0a, Stage 0b and Stage 1 shipped (2026-09-30). Stages 2–6 not
-started.** This document is the implementation plan for a parametric
+**Status: Stage 0a, Stage 0b and Stage 1 shipped (2026-09-30); Stage 2 shipped
+(2026-10-04). Stages 3–6 not started.** This document is the implementation plan for a parametric
 bill-of-materials compiler — the submodule three existing comments already
 reserve a slot for — carried from exploration and the approved design
-decisions. `src/verax/bom/` itself does not exist yet; what has landed so far
-are the two prerequisite fixes to `netlist/` the design depends on, plus the
-vocabulary and board-defaults layer Stage 1 adds (see Stage 0a/0b/1 below for
+decisions. `src/verax/bom/` now holds collection and classification (Stage 2); before
+it landed the two prerequisite fixes to `netlist/` the design depends on, plus
+the vocabulary and board-defaults layer Stage 1 adds (see each stage below for
 what shipped and where).
 
 **Revision note.** Four codebase limitations surfaced during design were each
@@ -21,8 +21,8 @@ is **shipped, as Stage 1**. Fact 3 (`spec:`'s compile-time registry) is real
 but costs nothing today and is recorded as deferred, not built.
 
 *Eight stages. 0a, 0b and 1–4 are offline and hermetic; Stage 5 is the only one
-that touches a network, and it is opt-in per import. 0a, 0b and 1 are done;
-2–6 remain.*
+that touches a network, and it is opt-in per import. 0a, 0b, 1 and 2 are done;
+3–6 remain.*
 
 ---
 
@@ -487,7 +487,52 @@ structural issues beside `validateEnvironment`/`validatePackages`.
 
 ---
 
-## Stage 2 — collection and classification (no network)
+## Stage 2 — collection and classification (no network) — **shipped**
+
+Shipped 2026-10-04. Where it differs from the design below, and why
+(`src/verax/bom/CLAUDE.md` is the standing record):
+
+- **Two gaps the plan left open, decided before building.** *Simulation-only
+  kinds:* `PartFamily` gains `pfNotAPart`, seeded in `classify.familyOf`'s
+  table with `voltage_source`/`current_source`/`vcvs`/`vccs`/`ccvs`/`cccs`/
+  `mutual_inductance`/`vswitch`/`iswitch`; those are left off silently, and
+  `registerPartFamily` lets a project add its own. Without it, every design's
+  stimulus source (39 `voltage_source`s across `designs/`) would have reached
+  Stage 3 as an IC with no MPN — `sevError`. *DNP/exclude:* `BomItem` had
+  the fields but no netlist component could state either. They are now
+  registered `akBool` builtins `dnp` and `bom_exclude` (so `spec: dnp = true`
+  is compile-time checked), which needed the registry's first `akBool`
+  plumbing: a `bool` `setAnnotation` overload, `annotationBool`, and the
+  check in the string setter and `validateAnnotations`.
+- **`collect(nl)` takes no `BomDefaults`.** Defaults became per-netlist, most
+  specific first, after the plan was written (see Stage 1's `bomDefaults`
+  note), so each item reads `bomDefaults` of the netlist its first member
+  lives in.
+- **`types.nim` holds `PartFamily` and `BomItem` only.** `Candidate`,
+  `Resolution`, `BomResult` and `BomLine` move to Stage 3, the first code
+  that reads them.
+- **`BomItem` additions:** `members`/`components` (every section's path and
+  object — `designators` holds the printed designator, so a packaged part is
+  `U9`, not `U9A,U9B`); `partNumber` (verbatim, never promoted to `mpn`, for
+  Stage 3's guarded fallback); `issues` (each part's own findings, carried
+  into its `Resolution` later rather than kept in a side list). Floats a part
+  can leave unstated are `NaN` when unstated, not 0.
+- **`bom_package_dnp_conflict`** (sevWarning) when only some sections of a
+  package are marked `dnp`; the package is treated as DNP whole.
+- **A default package is applied only when the part states neither
+  `package` nor `footprint`**, and `caseCodeOf` reads a footprint name only
+  when the imperial code sits beside its own metric twin (metric 0603 is
+  imperial 0201).
+- **`value` is parsed only for the four parametric families** — any other
+  kind's `value` is a model name, and `1N4148` is lexically valid RKM.
+
+Verified: `tests/test_bom_collect.nim` (new, 16 cases) and the new
+`dnp`/`bom_exclude` case in `tests/test_netlist_annotations.nim` pass;
+`collect` smoke-run against `designs/ts808_drive.nim` (17 items) and
+`designs/xbar_control.nim` (34 items) with no stimulus source collected and
+no spurious finding.
+
+*The design as originally planned:*
 
 **`src/verax/bom/types.nim`** (new)
 

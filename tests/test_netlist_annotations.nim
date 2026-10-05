@@ -255,3 +255,21 @@ test "a key can be registered at runtime, keeping the plugin path open":
   let nl = board()
   setAnnotation(nl.components["C1"], "slew_rate", 1.5.V)
   check validateAnnotations(nl).len == 0
+
+test "dnp and bom_exclude are true/false keys":
+  let nl = board()
+  let c = nl.components["C1"]
+  check not dnp(c).has
+  setAnnotation(c, "dnp", true)
+  check dnp(c).has and dnp(c).value
+  setAnnotation(c, "bom_exclude", "false")
+  check bomExclude(c).has and not bomExclude(c).value
+  check validateAnnotations(nl).len == 0
+  # Written through the setters, a non-boolean never lands.
+  expect NetlistError: setAnnotation(c, "dnp", "yes")
+  expect NetlistError: setAnnotation(c, "tolerance", true)
+  # Written raw, the validator reports it.
+  setRawAnnotation(c, "dnp", "yes")
+  var kinds: seq[string]
+  for i in validateAnnotations(nl): kinds.add i.kind
+  check "annotation_unparseable" in kinds
