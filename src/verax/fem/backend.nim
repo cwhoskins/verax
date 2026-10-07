@@ -9,7 +9,8 @@
 ##
 ## `available()` keeps the "is the toolchain here?" check in one place.
 ##
-## The intended first backend is MFEM (not yet written), opt-in per import.
+## The first backend is MFEM (`verax/fem/mfem`, stage 0: call path only), opt-in
+## per import; it does not yet implement `solve(FemProblem, Mesh)`.
 ##
 ## **`Field` is a variant over real/complex** (static/thermal vs
 ## full-wave); `[]`/`cplx`/`mag`/`db` mirror `spice/backend`.

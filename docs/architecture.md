@@ -68,7 +68,7 @@ external finite-element field solver, EM + thermal) are the two newest
 submodules. Both sit above `pcb/`: `fem/` meshes board geometry, `ibis/`
 binds a parsed buffer model to a `Placement`. Neither is imported by anything
 above them, and both are opt-in per import like every other hub. `fem/` has
-no backend yet (MFEM is intended); `ibis/` is a no-op past its parser.
+an MFEM call path only (`fem/mfem`, opt-in, stage 0: load + a validation Laplace solve; no meshing or physics yet); `ibis/` is a no-op past its parser.
 
 Three rules produce that picture.
 

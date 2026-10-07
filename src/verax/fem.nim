@@ -5,8 +5,9 @@
 ## EM (electrostatic, magnetostatic, full-wave) and thermal (steady,
 ## transient) share one contract.
 ##
-## **A skeleton**: types and backend contract are settled, but there is no
-## backend (MFEM planned, opt-in per import) and no mesher.
+## **A skeleton**: types and backend contract are settled. The only backend is
+## `verax/fem/mfem` (stage 0: call path only; opt-in, deliberately not
+## re-exported here) and there is no mesher.
 ## `verax/fem/extrude` turns a `Pcb` into a `FemProblem`.
 
 import verax/fem/types

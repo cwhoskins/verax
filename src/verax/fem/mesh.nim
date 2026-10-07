@@ -24,6 +24,12 @@ type
     kind*: ElementKind
     nodes*: seq[int]
       ## Indices into `Mesh.nodes`, in the backend's canonical local order.
+      ## MFEM (`fem/mfem.toMfem`): Tri3 and Quad4 counter-clockwise from any
+      ## corner; Tet4 is any 4 vertices; Hex8 is bottom face 0-3 counter-
+      ## clockwise then top face 4-7 above them. Orientation is not required:
+      ## the shim re-orients negative-Jacobian elements (measured for Tri3
+      ## and Tet4 -- half the elements of the test meshes were reversed and fixed;
+      ## Quad4/Hex8 translate but are not yet exercised by a test).
     region*: int
       ## Index into `Mesh.regionNames`; -1 for an element with no `FemProblem`
       ## region (air-box filler).

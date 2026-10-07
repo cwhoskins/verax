@@ -71,3 +71,13 @@ task generate, "kicad-cli acceptance gate for from-scratch (synthesized) output"
   # this shells out to `kicad-cli` several times per design and there is no
   # reason to pay debug-build overhead for it.
   exec "nim c -d:release --hints:off --path:src -r examples/pcb_generate.nim"
+
+task mfem, "fetch (pinned, sha256-verified) and build serial MFEM + the verax C shim into ~/.cache/verax":
+  # Not part of `test`/`verify`: a from-source MFEM build is minutes of C++ and
+  # needs cmake and a compiler. `tests/test_fem_mfem*.nim` skip when it has not
+  # been run. `$MFEM_DIR` pointing at an existing install skips the MFEM build
+  # and only compiles the shim.
+  exec "nim c --hints:off --path:src -r src/verax/fem/mfem/build.nim"
+
+task mfemcheck, "is MFEM wired up? prints the load report and asserts it if a toolchain is found":
+  exec "nim c --hints:off --path:src -r tests/test_fem_mfem_load.nim"

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Run all tests**: `nimble test` — **read the output, never the exit code.** `nimble` exits 0 whether or not the suite passed; the real check is `nimble test 2>&1 | grep -cE "FAILED|Error:"` returning 0. The hand-written `test` task in `verax.nimble` aborts at the first failing file and names it. Tests compile via `tests/config.nims`, which adds `src` to the path.
 - **Run a single test file**: `nim c -r --path:./src tests/test_netlist_core.nim`.
-- **Skipped, not failed**, when the toolchain is absent: `tests/test_spice_ngspice.nim` needs `ngspice` on `PATH`; `tests/test_xspice_build.nim` and `tests/test_xspice_digital.nim` need `$NGSPICE_SRC` pointing at a *configured* ngspice source tree.
+- **Skipped, not failed**, when the toolchain is absent: `tests/test_spice_ngspice.nim` needs `ngspice` on `PATH`; `tests/test_xspice_build.nim` and `tests/test_xspice_digital.nim` need `$NGSPICE_SRC` pointing at a *configured* ngspice source tree. `tests/test_fem_mfem.nim` needs `$MFEM_DIR` (an MFEM install prefix) or `nimble mfem` (fetches, builds and caches serial MFEM + the C shim; minutes of C++). `tests/test_fem_mfem_load.nim` (`nimble mfemcheck`) skips only when *no* toolchain is found — a found-but-unloadable install fails.
 - **Type-check a module**: `nim check --path:./src src/verax/netlist.nim`
 - **Build the binary**: `nimble build` → `./bin/verax`.
 - **Check a design**: `./bin/verax check designs/foo.nim`. `nimble verify` checks every design under `designs/` and every file under `templates/` — template health is `verify`'s job, not `test`'s. `nimble guide` prints the authoring guide. See `designs/CLAUDE.md`.
