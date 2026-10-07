@@ -27,7 +27,7 @@ let d = design("diff_pair"):
 
   net p_in, kind = ntSignal
   net n_in, kind = ntSignal
-  component J1, kind = "connector", partNumber = "differential link":
+  component J1, kind = "connector", description = "differential link":
     pin "P", p_in, kind = ptPassive
     pin "N", n_in, kind = ptPassive
 
@@ -42,7 +42,7 @@ let d = design("diff_pair"):
     pin "1", n_in,       kind = ptPassive
     pin "2", pair["n"],  kind = ptPassive
 
-  component U1, kind = "mcu", partNumber = "differential receiver":
+  component U1, kind = "mcu", description = "differential receiver":
     pin "P", pair["p"], kind = ptInOut
     pin "N", pair["n"], kind = ptInOut
 

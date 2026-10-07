@@ -56,7 +56,7 @@ let d = design("sensor_node"):
   # one net, so there is nothing to pass through *to*, and its behaviour is
   # entirely whatever is plugged in. So the part stays a connector and what
   # is plugged into it is stated separately, at the bottom of this file.
-  component J1, kind = "connector", partNumber = "USB-C":
+  component J1, kind = "connector", description = "USB-C":
     pin "VBUS", vbus, kind = ptPower
     pin "GND",  gnd,  kind = ptGround
 

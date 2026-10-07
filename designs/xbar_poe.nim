@@ -150,7 +150,7 @@ proc xbarPoe*(): Netlist =
     # PHY and are not on this chunk -- what is here is the PoE tap. `VPSE` is
     # a floating source: a PSE references neither conductor to anything, and
     # the PD makes its own 0 V at the bridge.
-    component J1, kind = "connector", partNumber = "RJ45-MagJack":
+    component J1, kind = "connector", description = "RJ45-MagJack":
       pin "POEP", feedp, kind = ptPassive
       pin "POEN", feedn, kind = ptPassive
     component VPSE, kind = "voltage_source", value = "DC 48":
@@ -327,7 +327,7 @@ proc xbarPoe*(): Netlist =
 
     # The output edge: a header the power chunk plugs into. Made a connector
     # so `asSubcircuit` promotes `poe5v` to a port for the system.
-    component J2, kind = "connector", partNumber = "hdr-2":
+    component J2, kind = "connector", description = "hdr-2":
       pin "VOUT", poe5v, kind = ptPower
       pin "GND", gnd, kind = ptGround
 

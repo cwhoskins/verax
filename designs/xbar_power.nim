@@ -120,10 +120,10 @@ proc xbarPower*(): Netlist =
         voltage = 3.4.V
 
     # --- the inlets, as headers the PoE and USB chunks plug into --------
-    component J1, kind = "connector", partNumber = "hdr-2":
+    component J1, kind = "connector", description = "hdr-2":
       pin "VIN", poein, kind = ptPower
       pin "GND", gnd, kind = ptGround
-    component J2, kind = "connector", partNumber = "hdr-2":
+    component J2, kind = "connector", description = "hdr-2":
       pin "VIN", usbin, kind = ptPower
       pin "GND", gnd, kind = ptGround
 
@@ -296,10 +296,10 @@ proc xbarPower*(): Netlist =
         dielectric = "X7R"
         voltage_rating = 10.0.V
 
-    component J3, kind = "connector", partNumber = "hdr-2":
+    component J3, kind = "connector", description = "hdr-2":
       pin "VOUT", v3v3, kind = ptPower
       pin "GND", gnd, kind = ptGround
-    component J4, kind = "connector", partNumber = "hdr-2":
+    component J4, kind = "connector", description = "hdr-2":
       pin "VOUT", v3v3rf, kind = ptPower
       pin "GND", gnd, kind = ptGround
 

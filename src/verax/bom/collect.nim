@@ -72,6 +72,7 @@ proc fill(item: BomItem, c: Component, path: string) =
   firstStr(use, "part_use")
   firstStr(mpn, "mpn")
   firstStr(manufacturer, "manufacturer")
+  firstStr(description, "description")
   if item.partNumber.len == 0: item.partNumber = c.partNumber
   if c.attrs.getOrDefault(generatedDesignatorAttr) == "true":
     item.generated = true

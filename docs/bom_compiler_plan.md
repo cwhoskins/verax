@@ -1,7 +1,8 @@
 # The BOM compiler: plan for `src/verax/bom/`
 
 **Status: Stage 0a, Stage 0b and Stage 1 shipped (2026-09-30); Stage 2 shipped
-(2026-10-04). Stages 3–6 not started.** This document is the implementation plan for a parametric
+(2026-10-04); Stages 3 and 4 shipped
+(2026-10-06), Stage 3's disk cache moved to Stage 5 — Stages 5–6 not started.** This document is the implementation plan for a parametric
 bill-of-materials compiler — the submodule three existing comments already
 reserve a slot for — carried from exploration and the approved design
 decisions. `src/verax/bom/` now holds collection and classification (Stage 2); before
@@ -16,13 +17,17 @@ all — a value-space `when` dispatch makes `value = 2.2.kohm` deck-safe, which
 superseded the original "add typed `resistance`/`capacitance`/`inductance`
 keys" direction. **Shipped, as Stage 0a.** Fact 2 (`partNumber` overloading)'s
 template-name half is fixed — **shipped, as Stage 0b** — its IPN/free-text
-half still waits on Stage 3's resolver. Fact 4 (`Choice` erasing part `use`)
+half is handled by Stage 3's resolver, which falls back to `partNumber`
+when no `mpn` is stated and always says so — info when a source recognises
+it, a warning when it is ordered unverified (changed 2026-10-06; it was
+originally only *tried*) — and the labels moved to a new `description` annotation in every
+design and template, so `partNumber` is no longer overloaded with them. Fact 4 (`Choice` erasing part `use`)
 is **shipped, as Stage 1**. Fact 3 (`spec:`'s compile-time registry) is real
 but costs nothing today and is recorded as deferred, not built.
 
 *Eight stages. 0a, 0b and 1–4 are offline and hermetic; Stage 5 is the only one
-that touches a network, and it is opt-in per import. 0a, 0b, 1 and 2 are done;
-3–6 remain.*
+that touches a network, and it is opt-in per import. 0a, 0b and 1–4 are done
+(3's disk cache moved to Stage 5); 5–6 remain.*
 
 ---
 
@@ -633,6 +638,19 @@ seq[BomItem]`:
 
 ## Stage 3 — source interface, offline catalogue, resolver
 
+*`source.nim`, `sources/local.nim` and `resolve.nim` shipped 2026-10-06.
+`cache.nim` moves to Stage 5 — it caches network answers and there is no
+network source yet. Resolver deviations: the MPN path applies to every
+family, with `bom_mpn_spec_mismatch`; ranking puts lifecycle first; a
+candidate's whole tolerance band must fit the item's; `bom_no_match`,
+`bom_excluded`, `bom_no_sources` are new kinds; `bom_low_stock` is per line;
+`series`/`derating` are not read. Other deviations from the sketch below,
+all recorded in `src/verax/bom/CLAUDE.md`: the source procs are closures, not `nimcall`;
+`Candidate` gained `family`; unknown stock/MOQ is `-1`; the catalogue
+`value` is a number in SI base units only; the local source is not
+registered on import (`registerCatalogFile` instead); the fixture lives at
+`tests/fixtures/catalog.json`, not `tests/data/`.*
+
 **`src/verax/bom/source.nim`** (new) — a provider registry copied from
 `pcb/footprint.FootprintSource` (`footprint.nim:97-129`): procs on a data
 object, first-registered-that-answers wins, registration order is resolution
@@ -738,6 +756,28 @@ BomResult`. Per item:
 ---
 
 ## Stage 4 — report, lockfile, CLI
+
+*Shipped 2026-10-06. Deviations from the sketch below, all recorded in
+`src/verax/bom/CLAUDE.md`: `renderJson` writes `parts[]` (one entry per item,
+excluded included) and `lines[]` naming parts by index, so nothing is
+serialized twice; `parseLock` (text) sits beside `loadLock` (file), and a lock
+tying one signature to two parts is refused; only searched parts are locked,
+since a part bought by MPN is already named by the design. `--bom` (or any
+`--bom-*` flag) selects BOM mode, and an unknown `--bom-*` flag is an error
+rather than left for the design; `--bom-catalog=` is repeatable, defaulting to
+`$VERAX_BOM_CATALOG`; output goes to `--bom-out=` (the CLI's `-o`) or stdout,
+with findings on stderr when the document on stdout is CSV or JSON.
+**`--bom-offline` is not added** — there is no network source to withhold
+until Stage 5, so it would be a flag that does nothing. `cmdEnv`'s credential
+lines likewise wait for Stage 5; it prints `$VERAX_BOM_CATALOG` instead. A bad
+flag value anywhere in `parseVerifyArgs` (`--format=xml` too) is now a usage
+error (`exitCompile`), where it used to escape as an unhandled exception
+exiting 1. A line's value prints through `eng` for a parsed passive.
+**Acceptance not met by the datalogger as it stands**: of its 53 parts only
+the 100 nF and 10 nF capacitors resolve against the fixture — most of its
+resistors state no package (`bom_nonstandard_footprint`), its ICs state
+`partNumber` but no `mpn`, and the fixture holds few of its values. That is
+the design's footprint stage and catalogue coverage, not the compiler.*
 
 **`src/verax/bom/report.nim`** (new) — three renderers, the
 `verify.render`/`renderJson`/`renderJunit` split:
@@ -978,11 +1018,11 @@ nimble verify 2>&1 | tail -40
 
 # End to end, offline, against a fixture catalogue.
 nimble build
-./bin/verax bom designs/datalogger/datalogger.nim --bom-catalog=tests/data/catalog.json
-./bin/verax bom designs/datalogger/datalogger.nim --bom-catalog=tests/data/catalog.json \
+./bin/verax bom designs/datalogger/datalogger.nim --bom-catalog=tests/fixtures/catalog.json
+./bin/verax bom designs/datalogger/datalogger.nim --bom-catalog=tests/fixtures/catalog.json \
     --bom-format=json -o /tmp/bom.json
 jq . /tmp/bom.json >/dev/null    # proves nothing else wrote to stdout, and no bare `nan`
-./bin/verax bom designs/datalogger/datalogger.nim --bom-catalog=tests/data/catalog.json \
+./bin/verax bom designs/datalogger/datalogger.nim --bom-catalog=tests/fixtures/catalog.json \
     --bom-lock=/tmp/bom.json     # every line should now report `locked`
 ./bin/verax bom designs/datalogger/datalogger.nim --bom-format=csv -o /tmp/bom.csv
 

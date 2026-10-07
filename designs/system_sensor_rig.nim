@@ -86,7 +86,7 @@ let d = design("system_sensor_rig"):
 
   # The system's own edge: the host cable plugging into the carrier. What is
   # on the other side of it is stated at the bottom of this file.
-  component J0, kind = "connector", partNumber = "USB-C host cable":
+  component J0, kind = "connector", description = "USB-C host cable":
     pin "VBUS", usb, kind = ptPower
     pin "GND",  gnd, kind = ptGround
 

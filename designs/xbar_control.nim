@@ -75,13 +75,13 @@ proc xbarControl*(): Netlist =
     net en8, kind = ntSignal
 
     # --- power / control headers -------------------------------------
-    component J0, kind = "connector", partNumber = "hdr-2":
+    component J0, kind = "connector", description = "hdr-2":
       pin "V33", v3v3, kind = ptPower
       pin "GND", gnd, kind = ptGround
-    component JI2C, kind = "connector", partNumber = "hdr-2":
+    component JI2C, kind = "connector", description = "hdr-2":
       pin "SDA", sda, kind = ptInOut
       pin "SCL", scl, kind = ptInOut
-    component JCTL, kind = "connector", partNumber = "hdr-8":
+    component JCTL, kind = "connector", description = "hdr-8":
       pin "EN1", en1, kind = ptPassive
       pin "EN2", en2, kind = ptPassive
       pin "EN3", en3, kind = ptPassive
@@ -90,7 +90,7 @@ proc xbarControl*(): Netlist =
       pin "EN6", en6, kind = ptPassive
       pin "EN7", en7, kind = ptPassive
       pin "EN8", en8, kind = ptPassive
-    component JMDI, kind = "connector", partNumber = "hdr-4":
+    component JMDI, kind = "connector", description = "hdr-4":
       pin "TP", mdi_tp, kind = ptPassive
       pin "TN", mdi_tn, kind = ptPassive
       pin "RP", mdi_rp, kind = ptPassive
@@ -116,7 +116,7 @@ proc xbarControl*(): Netlist =
       pin "MDC",  mdc,  kind = ptOutput
 
     # 25 MHz crystal for the MCU / RMII reference.
-    component Y1, kind = "crystal", partNumber = "25MHz-8pF":
+    component Y1, kind = "crystal", description = "25MHz-8pF":
       pin "1", xin,  kind = ptPassive
       pin "2", xout, kind = ptPassive
     component CX1, kind = "capacitor", value = "8p":

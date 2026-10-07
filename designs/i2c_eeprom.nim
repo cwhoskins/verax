@@ -108,7 +108,7 @@ let d = design("i2c_eeprom"):
   # bottom of this file: a connector has no electrical behaviour of its own,
   # since each pin touches exactly one net and what it does is entirely
   # whatever is on the other side.
-  component J1, kind = "connector", partNumber = "2p-header":
+  component J1, kind = "connector", description = "2p-header":
     pin "VDD", vdd, kind = ptPower
     pin "GND", gnd, kind = ptGround
 
@@ -156,7 +156,7 @@ let d = design("i2c_eeprom"):
       voltage_rating = 50.0.V
 
   # --- the two talkers --------------------------------------------------
-  component U1, kind = "mcu", partNumber = "dummy-i2c-controller":
+  component U1, kind = "mcu", description = "dummy-i2c-controller":
     pin "VDD", vdd, kind = ptPower
     pin "VSS", gnd, kind = ptGround
     port i2c, controller, pins = {"sda": "SDA", "scl": "SCL"}

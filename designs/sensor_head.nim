@@ -24,7 +24,7 @@ proc sensorHead*(): Netlist =
     net gnd, kind = ntGround, name = "0"
     net vin, kind = ntPower
 
-    component J3, kind = "connector", partNumber = "JST-PH 4-way":
+    component J3, kind = "connector", description = "JST-PH 4-way":
       pin "VIN", vin, kind = ptPower
       pin "GND", gnd, kind = ptGround
 

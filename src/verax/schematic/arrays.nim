@@ -41,7 +41,7 @@
 ## qualifies below three.
 ##
 ## The plan is a pure function of the netlist and the bundle plan. It reads
-## `Component.subNetlist` identity, `Component.kind`/`value`/`partNumber`/
+## `Component.subNetlist` identity, `Component.kind`/`value`/`partNumber`/`description`/
 ## `name`, pin structure, and the instance pins' parent nets (`Pin.net`); it
 ## never mutates. `recoverRouting`'s candidate part moves never rebuild it. A
 ## zero-value `ArrayPlan` (no subsheet has >= 3 instances, and no raw
@@ -56,7 +56,7 @@
 ## drawn entirely by the bundle plan.
 ##
 ## **The identity key for a component candidate** is
-## `kind \x1f value \x1f partNumber \x1f name \x1f <pin names> \x1f <pin kinds>`.
+## `kind \x1f value \x1f partNumber \x1f description \x1f name \x1f <pin names> \x1f <pin kinds>`.
 ## `value` is in the key deliberately: the collapsed symbol shows one value, so
 ## a 10k and a 2k bank must never merge. Other attrs (`package`, `dielectric`,
 ## `voltage_rating`, ...) are **not** in the key -- they do not change the
@@ -67,7 +67,7 @@
 ## value, and a blank one asserts nothing about the N real parts it stands
 ## for. Every worked example states one or the other (`xbar_rf`'s termination
 ## resistors state `value`; its SMA connectors and ADG904 switches carry no
-## `value` at all but state `partNumber` -- a part identified by what it *is*
+## `value` at all but state `partNumber` or `description` -- a part identified by what it *is*
 ## rather than what it measures is just as real an identity); a bare topology
 ## fixture that states neither is not modelling a real part, and without this
 ## guard three same-kind, same-pin-shape parts wired for an unrelated purpose
@@ -893,30 +893,33 @@ proc buildComponentArrays(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan)
     if c.subNetlist != nil: continue          # the subsheet pass owns those
     if isPackaged(c): continue                # a section already has "U10A"
     let value = c.attrs.getOrDefault("value", "")
-    # A component with *neither* a stated value nor a part number is excluded
+    # A component with *neither* a stated value, a part number nor a
+    # description is excluded
     # from candidacy entirely, not merely one whose value fails to match: the
     # collapsed symbol shows one value, and a blank one asserts nothing about
     # the N real parts it stands for -- worse than not collapsing. Every part
     # that draws as a symbol with a printed value (a resistor, a capacitor)
     # states one; a part identified instead by what it *is* (`xbar_rf`'s
-    # `kind = "connector", partNumber = "SMA-50"` SMA edges and
+    # `kind = "connector", description = "SMA-50"` SMA edges and
     # `kind = "rf_switch", partNumber = "ADG904"` switches carry no `value`
-    # at all) states a part number instead, which is just as much a real
-    # identity as a value is. A bare topology fixture that states neither
+    # at all) states a part number or a description instead, which is just
+    # as much a real identity as a value is. A bare topology fixture that states neither
     # (this schematic test file's own
     # `starNet`/`resistorChain`/`parallelPairChain`/`portedSubckt`, none of
     # which are testing this feature) is not modelling a real part, and
     # without this guard dozens of same-kind, same-pin-shape resistors wired
     # for an unrelated placement/routing property would silently collapse
     # into a phantom array the moment three of them shared two empty strings.
-    if value.len == 0 and c.partNumber.len == 0: continue
+    let desc = c.attrs.getOrDefault("description", "")
+    if value.len == 0 and c.partNumber.len == 0 and desc.len == 0: continue
     var keys, kinds: seq[string]
     for pn, p in c.pins:
       keys.add pn
       kinds.add $p.kind
     if keys.len == 0: continue
     let sig = c.kind & "\x1f" & value & "\x1f" &
-              c.partNumber & "\x1f" & c.name & "\x1f" & keys.join("\x1f") &
+              c.partNumber & "\x1f" & desc & "\x1f" & c.name & "\x1f" &
+              keys.join("\x1f") &
               "\x1f" & kinds.join("\x1f")
     if sig notin sigMembers:
       sigOrder.add sig

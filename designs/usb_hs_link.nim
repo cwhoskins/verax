@@ -50,7 +50,7 @@ let d = design("usb_hs_link"):
   net dp_ext, kind = ntSignal
   net dn_ext, kind = ntSignal
   bus hs_ext, nets = [dp_ext, dn_ext]
-  component J1, kind = "connector", partNumber = "USB-C receptacle":
+  component J1, kind = "connector", description = "USB-C receptacle":
     pin "DP", dp_ext, kind = ptPassive
     pin "DN", dn_ext, kind = ptPassive
 
@@ -103,7 +103,7 @@ let d = design("usb_hs_link"):
   net aux1n_ext, kind = ntSignal
   bus aux0_ext, nets = [aux0p_ext, aux0n_ext]
   bus aux1_ext, nets = [aux1p_ext, aux1n_ext]
-  component J2, kind = "connector", partNumber = "JST-GH 4-way":
+  component J2, kind = "connector", description = "JST-GH 4-way":
     pin "1", aux0p_ext, kind = ptPassive
     pin "2", aux0n_ext, kind = ptPassive
     pin "3", aux1p_ext, kind = ptPassive
@@ -123,7 +123,7 @@ let d = design("usb_hs_link"):
     pin "2", aux[1]["n"], kind = ptPassive
 
   # --- the transceiver ----------------------------------------------------
-  component U1, kind = "mcu", partNumber = "dummy USB HS PHY":
+  component U1, kind = "mcu", description = "dummy USB HS PHY":
     pin "DP",    hs["p"],    kind = ptInOut
     pin "DN",    hs["n"],    kind = ptInOut
     pin "AUX0P", aux[0]["p"], kind = ptInOut

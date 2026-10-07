@@ -222,6 +222,35 @@ suite "capabilities":
     expect ValueError:
       discard parseVerifyArgs(["--schematic-layout=diagonal"])
 
+  test "the --bom flags parse, and any of them selects a BOM":
+    check not parseVerifyArgs(["--strict"]).bom
+    check parseVerifyArgs(["--bom"]).bom
+    let o = parseVerifyArgs(["--bom-format=csv", "--bom-catalog=a.json",
+                             "--bom-catalog=b.json", "--bom-min-candidates=0",
+                             "--bom-lock=l.json", "--bom-out=out.csv"])
+    check o.bom
+    check o.bomFormat == bfCsv
+    check o.bomCatalogs == @[absolutePath("a.json"), absolutePath("b.json")]
+    check o.bomMinCandidates == 0
+    check o.bomLock == absolutePath("l.json")
+    check o.bomOut == absolutePath("out.csv")
+    check parseVerifyArgs(["--bom"]).bomMinCandidates == -1
+    expect ValueError:
+      discard parseVerifyArgs(["--bom-format=xml"])
+    expect ValueError:
+      discard parseVerifyArgs(["--bom-min-candidates=many"])
+    expect ValueError:
+      discard parseVerifyArgs(["--bom-catalogue=a.json"])   # a typo, not ignored
+
+  test "a bad flag value or an unreadable BOM lock is a usage error":
+    check verifyMain(claimingNothing(), @["--format=xml"]) == exitCompile
+    check verifyMain(claimingNothing(),
+      @["--bom", "--bom-lock=" & getTempDir() / "verax-no-such-lock.json"]) ==
+      exitCompile
+    check verifyMain(claimingNothing(),
+      @["--bom", "--bom-catalog=" & getTempDir() / "verax-no-such.json"]) ==
+      exitCompile
+
   test "unrecognised flags are left for the design file":
     let o = parseVerifyArgs(["--something-else", "--strict"])
     check o.strict

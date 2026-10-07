@@ -73,7 +73,7 @@ proc usbCSink*(advertisedCurrent = usb3000mA): Netlist =
     net DP,   kind = ntSignal
     net DM,   kind = ntSignal
 
-    component J1, kind = "connector", partNumber = "USB-C 2.0 receptacle":
+    component J1, kind = "connector", description = "USB-C 2.0 receptacle":
       pin "VBUS", VBUS, kind = ptPower
       pin "GND",  GND,  kind = ptGround
       pin "CC1",  CC1,  kind = ptPassive

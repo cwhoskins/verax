@@ -70,6 +70,11 @@ import ./pcb/assemble
 # the one call site that must actually opt in for the CLI command to do
 # anything but report every part `footprint_unresolved`.
 import ./pcb/formats/kicadmod
+# `verax bom`. The hub registers no catalogue source; `--bom-catalog=` and
+# `$VERAX_BOM_CATALOG` name the files `sources/local` registers, so nothing
+# is read that the caller did not point at.
+import ./bom
+import ./bom/sources/local
 
 export contract_eval, io_check, environment, assemble, kicadmod
 
@@ -168,6 +173,11 @@ type
     ## and a build system that wants to diff two runs needs a document, not a
     ## paragraph.
     rfText, rfJson, rfJunit
+
+  BomFormat* = enum
+    ## `verax bom`'s output: text for a terminal, CSV for procurement, JSON
+    ## for a machine -- and as the next run's `--bom-lock`.
+    bfText, bfCsv, bfJson
 
   BaselineEntry* = object
     ## One remembered result, read back from a previous run's `--format=json`
@@ -1229,6 +1239,20 @@ type
       ## `--baseline=<path>`, made absolute for the same reason `--keep-runs`
       ## is: the design binary inherits the caller's working directory, not
       ## necessarily the shell's.
+    bom*: bool
+      ## Compile a BOM and stop -- no `readiness`, the `--layout-out` shape.
+      ## Set by `--bom` or by any `--bom-*` flag, so `verax check foo.nim
+      ## --bom-format=csv` cannot quietly run the checks and ignore it.
+    bomOut*: string
+      ## Where the rendered BOM goes; empty is stdout.
+    bomFormat*: BomFormat
+    bomLock*: string
+      ## A prior `--bom-format=json` document whose choices to keep.
+    bomCatalogs*: seq[string]
+      ## `--bom-catalog=`, repeatable, registered in the order given. Empty
+      ## falls back to `$VERAX_BOM_CATALOG` (a `PathSep`-separated list).
+    bomMinCandidates*: int
+      ## `-1` means "not stated" -- `defaultResolveOptions` applies.
 
 proc parseCapabilities*(text: string): set[Capability] =
   ## `--caps=op,ac` and friends. `capStatic` is always included: withholding
@@ -1253,7 +1277,9 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
   ## Flags a design file understands. Unrecognised arguments are left alone,
   ## so a design may take flags of its own without this stealing them.
   result.allowed = allCapabilities
+  result.bomMinCandidates = -1
   for a in args:
+    if a == "--bom" or a.startsWith("--bom-"): result.bom = true
     if a == "--offline": result.allowed = offlineCapabilities
     elif a == "--verbose" or a == "-v": result.verbose = true
     elif a == "--strict": result.strict = true
@@ -1301,6 +1327,32 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
           "'; expected text, json or junit")
     elif a.startsWith("--baseline="):
       result.baseline = absolutePath(a["--baseline=".len .. ^1])
+    elif a.startsWith("--bom-out="):
+      result.bomOut = absolutePath(a["--bom-out=".len .. ^1])
+    elif a.startsWith("--bom-format="):
+      case a["--bom-format=".len .. ^1]
+      of "text": result.bomFormat = bfText
+      of "csv": result.bomFormat = bfCsv
+      of "json": result.bomFormat = bfJson
+      else:
+        raise newException(ValueError,
+          "unknown --bom-format '" & a["--bom-format=".len .. ^1] &
+          "'; expected text, csv or json")
+    elif a.startsWith("--bom-lock="):
+      result.bomLock = absolutePath(a["--bom-lock=".len .. ^1])
+    elif a.startsWith("--bom-catalog="):
+      result.bomCatalogs.add absolutePath(a["--bom-catalog=".len .. ^1])
+    elif a.startsWith("--bom-min-candidates="):
+      let n = a["--bom-min-candidates=".len .. ^1]
+      try: result.bomMinCandidates = parseInt(n)
+      except ValueError: result.bomMinCandidates = -2
+      if result.bomMinCandidates < 0:
+        raise newException(ValueError,
+          "--bom-min-candidates wants a count, 0 to disable, got '" & n & "'")
+    elif a.startsWith("--bom-"):
+      raise newException(ValueError, "unknown flag '" & a & "'; the --bom " &
+        "flags are --bom-out, --bom-format, --bom-lock, --bom-catalog and " &
+        "--bom-min-candidates")
 
 # --- the catalog: what may be claimed ------------------------------------
 #
@@ -1510,13 +1562,72 @@ proc describeAnnotations*(): string =
   L.add "(`parasitics.q`, anything of your own) is namespaced and never is."
   L.join("\n")
 
+# --- bill of materials (--bom) ----------------------------------------------
+
+proc compileBom*(nl: Netlist, o: VerifyOptions): int =
+  ## Collect -> resolve -> render, and stop: `--layout-out`'s "build and
+  ## stop, no `readiness`" shape. A catalogue or lock that cannot be read is
+  ## a usage error (`exitCompile`), never a silently skipped source; a part
+  ## that reaches assembly unresolved is `exitStructural`.
+  ##
+  ## With the document on stdout and not text, findings go to stderr, so
+  ## `--bom-format=json | jq` sees JSON alone.
+  var catalogs = o.bomCatalogs
+  if catalogs.len == 0:
+    for p in getEnv("VERAX_BOM_CATALOG").split(PathSep):
+      if p.strip.len > 0: catalogs.add absolutePath(p.strip)
+  for path in catalogs:
+    try:
+      discard registerCatalogFile(path, path.splitFile.name)
+    except CatalogError as e:
+      stderr.writeLine "verax: " & e.msg
+      return exitCompile
+  var opts = defaultResolveOptions()
+  if o.bomMinCandidates >= 0: opts.minCandidates = o.bomMinCandidates
+  if o.bomLock.len > 0:
+    try:
+      opts.lock = loadLock(o.bomLock)
+    except LockError as e:
+      stderr.writeLine "verax: " & e.msg
+      return exitCompile
+  let res = resolve(collect(nl), opts)
+  let doc = case o.bomFormat
+    of bfText: render(res)
+    of bfCsv: renderCsv(res)
+    of bfJson: renderJson(res)
+  let issues = allIssues(res)
+  if o.bomOut.len > 0:
+    try:
+      createDir(o.bomOut.parentDir)
+      writeFile(o.bomOut, (if doc.endsWith("\n"): doc else: doc & "\n"))
+    except OSError, IOError:
+      stderr.writeLine "verax: cannot write " & o.bomOut & ": " &
+        getCurrentExceptionMsg()
+      return exitCompile
+    for i in issues: echo $i
+    echo "wrote ", o.bomOut, "  (", res.lines.len, " line(s), ",
+      issues.len, " issue(s))"
+  elif o.bomFormat == bfText:
+    echo doc
+  else:
+    stdout.write(if doc.endsWith("\n"): doc else: doc & "\n")
+    for i in issues: stderr.writeLine $i
+  if worstSeverity(res) == sevError: exitStructural else: exitClean
+
 proc verifyMain*(d: Design, args = commandLineParams()): int =
   ## What a design file's last line calls: `quit(verifyMain(d))`.
   ##
   ## Reading the flags here rather than baking them into the call means the
   ## compiled design can be re-run offline without being edited, which is what
   ## makes it usable as both a check and an artifact.
-  let o = parseVerifyArgs(args)
+  # A bad flag value is a usage error, not an unhandled exception: that
+  # exits 1, which reads as "a claim failed".
+  var o: VerifyOptions
+  try:
+    o = parseVerifyArgs(args)
+  except ValueError as e:
+    stderr.writeLine "verax: " & e.msg
+    return exitCompile
   # The parser stays pure; the environment is set here. An environment
   # variable is the right mechanism at the bottom of this stack: nothing
   # below `readiness` takes an options value, and only the capability set
@@ -1553,4 +1664,5 @@ proc verifyMain*(d: Design, args = commandLineParams()): int =
       if i.severity > worst: worst = i.severity
     echo "wrote ", o.layoutOut, "  (", issues.len, " issue(s))"
     return (if worst == sevError: exitStructural else: exitClean)
+  if o.bom: return compileBom(d.netlist, o)
   verify(d, o.allowed, o.verbose, o.strict, o.format, o.baseline)

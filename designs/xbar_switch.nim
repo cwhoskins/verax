@@ -169,7 +169,7 @@ let d = design("xbar_switch"):
   # The MagJack is described inside XPOE (the PoE tap) and here (the MDI
   # pairs); it is one physical part. The PoE conductors are energised by the
   # PSE model inside XPOE, so `enetA`/`enetB` need no drive here.
-  component J_ENET, kind = "connector", partNumber = "RJ45-MagJack":
+  component J_ENET, kind = "connector", description = "RJ45-MagJack":
     pin "POEP", enetA, kind = ptPassive
     pin "POEN", enetB, kind = ptPassive
     pin "TP", mdiTp, kind = ptPassive
@@ -180,7 +180,7 @@ let d = design("xbar_switch"):
   # The USB-C receptacle. `asSubcircuit` dropped the one inside XUSB, so the
   # system carries its own on the promoted port nets -- the same pattern
   # `designs/system_sensor_rig.nim` uses for its host cable.
-  component J_USB, kind = "connector", partNumber = "USB-C 2.0 receptacle":
+  component J_USB, kind = "connector", description = "USB-C 2.0 receptacle":
     pin "VBUS", usbvbus, kind = ptPower
     pin "GND",  gnd,     kind = ptGround
     pin "CC1",  cc1,     kind = ptPassive

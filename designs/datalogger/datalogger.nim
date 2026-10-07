@@ -95,6 +95,11 @@ let d = design("datalogger"):
     t_ambient_min = -10.degC
     t_ambient_max = 60.degC
 
+  # Board-wide procurement defaults: a resistor that states no package is
+  # bought as 0402. Every sheet inherits this unless it states its own.
+  bom:
+    resistor_package = "0402"
+
   net gnd, kind = ntGround, name = "0"
   net vbus, kind = ntPower:
     spec:
@@ -214,7 +219,7 @@ let d = design("datalogger"):
 
   # --- board-level parts ---------------------------------------------------
 
-  component J2, kind = "connector", partNumber = "3p-header":
+  component J2, kind = "connector", description = "3p-header":
     pin "AIN", ain, kind = ptInput
     pin "GND", gnd, kind = ptGround
 
@@ -230,7 +235,7 @@ let d = design("datalogger"):
   # one, and a J-Link left floating there refuses to talk to the board at
   # all. Every physical GND pin (4/6/8/10/12/14/16/18/20) collapses onto one
   # logical `GND` pin, same as `usbc_sink.usbCSink`'s `J1`.
-  component J3, kind = "connector", partNumber = "ARM-JTAG-20":
+  component J3, kind = "connector", description = "ARM-JTAG-20":
     pin "VTREF",  vdd,          kind = ptPower
     pin "NTRST",  jtag["ntrst"], kind = ptInput
     pin "TDI",    jtag["tdi"],   kind = ptInput

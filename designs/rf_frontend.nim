@@ -151,7 +151,7 @@ let RF_FRONTEND = subckt("RF_FRONTEND",
   # The transmit/receive switch: antenna to the PA output or to the LNA,
   # picked by `trx`. The RF pins carry no DC direction -- `ptPassive`, the
   # same convention `designs/xbar_rf.nim` uses for a 50-ohm path.
-  component U1, kind = "rf_switch", partNumber = "front-end T/R switch":
+  component U1, kind = "rf_switch", description = "front-end T/R switch":
     pin "VCC", vcc, kind = ptPower
     pin "GND", gnd, kind = ptGround
     pin "RFC", ant, kind = ptPassive
@@ -160,7 +160,7 @@ let RF_FRONTEND = subckt("RF_FRONTEND",
     pin "CTRL", rfc["trx"], kind = ptInput
 
   # The power amplifier: on only when `rf_en` is high.
-  component U2, kind = "power_amplifier", partNumber = "Tx PA":
+  component U2, kind = "power_amplifier", description = "Tx PA":
     pin "VCC", vcc, kind = ptPower
     pin "GND", gnd, kind = ptGround
     pin "RFIN", rf_tx, kind = ptPassive
@@ -168,7 +168,7 @@ let RF_FRONTEND = subckt("RF_FRONTEND",
     pin "EN", rfc["rf_en"], kind = ptInput
 
   # The low-noise amplifier, likewise gated by `rf_en`.
-  component U3, kind = "lna", partNumber = "Rx LNA":
+  component U3, kind = "lna", description = "Rx LNA":
     pin "VCC", vcc, kind = ptPower
     pin "GND", gnd, kind = ptGround
     pin "RFIN", sw_rx, kind = ptPassive
@@ -176,7 +176,7 @@ let RF_FRONTEND = subckt("RF_FRONTEND",
     pin "EN", rfc["rf_en"], kind = ptInput
 
   # The variable-gain amplifier on the receive path, set by the 4-bit word.
-  component U4, kind = "vga", partNumber = "Rx VGA":
+  component U4, kind = "vga", description = "Rx VGA":
     pin "VCC", vcc, kind = ptPower
     pin "GND", gnd, kind = ptGround
     pin "RFIN", lna_out, kind = ptPassive
@@ -200,7 +200,7 @@ let d = design("rf_frontend"):
   iface rfc, rfCtrl
 
   # The baseband MCU drives the whole bundle as the controller side.
-  component U10, kind = "mcu", partNumber = "baseband SoC":
+  component U10, kind = "mcu", description = "baseband SoC":
     pin "VDD", vdd, kind = ptPower
     pin "VSS", gnd, kind = ptGround
     port rfc, controller
@@ -218,13 +218,13 @@ let d = design("rf_frontend"):
       pin "2", gnd, kind = ptPassive
 
   # The RF edges of the board.
-  component J1, kind = "connector", partNumber = "SMA antenna":
+  component J1, kind = "connector", description = "SMA antenna":
     pin "RF", ant, kind = ptPassive
     pin "GND", gnd, kind = ptGround
-  component J2, kind = "connector", partNumber = "SMA Tx in":
+  component J2, kind = "connector", description = "SMA Tx in":
     pin "RF", rf_tx, kind = ptPassive
     pin "GND", gnd, kind = ptGround
-  component J3, kind = "connector", partNumber = "SMA Rx out":
+  component J3, kind = "connector", description = "SMA Rx out":
     pin "RF", rf_rx, kind = ptPassive
     pin "GND", gnd, kind = ptGround
 

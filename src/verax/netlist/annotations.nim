@@ -470,14 +470,21 @@ const builtinAnnotations* = [
   # cannot treat `partNumber` as the MPN without presenting every one of
   # those free-text sites as a confident, wrong part number, so `mpn` is its
   # own key rather than a second meaning layered onto an already-overloaded
-  # one.
+  # one -- and the labels moved to `description`, so `partNumber` holds
+  # part numbers and nothing else. A key is free; a field with two meanings
+  # costs every reader forever.
   AnnDef(key: "mpn", kind: akString, scopes: {asComponent},
     doc: "Manufacturer part number, authorable as `spec: mpn = \"...\"`. " &
-         "Distinct from `Component.partNumber`, which remains split " &
-         "between a real MPN, an internal/house part number, and a free-" &
-         "text descriptive label -- a BOM resolver treats this key as " &
-         "authoritative and `partNumber` only as an unverified fallback " &
-         "it must confirm against a catalogue before trusting."),
+         "Distinct from `Component.partNumber`, which may be an MPN or an " &
+         "internal/house part number -- a BOM resolver treats this key as " &
+         "authoritative and falls back to `partNumber`, unverified and " &
+         "said so, only when this is absent. A descriptive label belongs " &
+         "in `description`."),
+  AnnDef(key: "description", kind: akString, scopes: {asComponent},
+    doc: "What the part is, in words: `\"USB-C 2.0 receptacle\"`, " &
+         "`\"2-pin 0.1in header\"`. A label, never ordered by -- the BOM " &
+         "prints it when no catalogue describes the part, and " &
+         "`Component.partNumber` stays a part number."),
   AnnDef(key: "manufacturer", kind: akString, scopes: {asComponent},
     doc: "Pairs with `mpn` -- an MPN is only unique within a manufacturer " &
          "(two vendors can and do reuse the same part number for unrelated " &
@@ -721,6 +728,7 @@ proc footprint*(c: Component): AnnValue[string] = annotation(c, "footprint")
 proc deviceValue*(c: Component): AnnValue[string] = annotation(c, "value")
 proc mpn*(c: Component): AnnValue[string] = annotation(c, "mpn")
 proc manufacturer*(c: Component): AnnValue[string] = annotation(c, "manufacturer")
+proc description*(c: Component): AnnValue[string] = annotation(c, "description")
 proc partUse*(c: Component): AnnValue[string] = annotation(c, "part_use")
 proc dnp*(c: Component): AnnValue[bool] = annotationBool(c, "dnp")
 proc bomExclude*(c: Component): AnnValue[bool] = annotationBool(c, "bom_exclude")

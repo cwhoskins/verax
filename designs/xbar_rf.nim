@@ -75,7 +75,7 @@ proc xbarRf*(): Netlist =
     bus a, width = [8, 2]
 
     # --- power entry ----------------------------------------------------
-    component J0, kind = "connector", partNumber = "hdr-2":
+    component J0, kind = "connector", description = "hdr-2":
       pin "VRF", v3v3rf, kind = ptPower
       pin "GND", gnd, kind = ptGround
 
@@ -86,14 +86,14 @@ proc xbarRf*(): Netlist =
     # schematic already reads left to right.
     for (nm, rn) in [("JIN1", rin[0]), ("JIN2", rin[1]), ("JIN3", rin[2]),
                      ("JIN4", rin[3])]:
-      component J, designator = nm, kind = "connector", partNumber = "SMA-50":
+      component J, designator = nm, kind = "connector", description = "SMA-50":
         layout:
           side = left
         pin "RF", rn, kind = ptPassive
         pin "GND", gnd, kind = ptGround
     for (nm, rn) in [("JOUT1", rout[0]), ("JOUT2", rout[1]),
                      ("JOUT3", rout[2]), ("JOUT4", rout[3])]:
-      component J, designator = nm, kind = "connector", partNumber = "SMA-50":
+      component J, designator = nm, kind = "connector", description = "SMA-50":
         layout:
           side = right
         pin "RF", rn, kind = ptPassive

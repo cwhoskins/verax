@@ -164,6 +164,17 @@ proc cmdLayout(file, pathFlag, outPath: string, layers: int, size: string,
   forward.add extra
   cmdCheck(file, pathFlag, forward)
 
+# --- bom --------------------------------------------------------------
+
+proc cmdBom(file, pathFlag, outPath: string, extra: seq[string]): int =
+  ## `cmdLayout`'s shape: build the forwarded flags, hand them to `cmdCheck`.
+  ## `verify.parseVerifyArgs` reads them inside the design binary, the only
+  ## place a `Design` exists.
+  var forward = @["--bom"]
+  if outPath.len > 0: forward.add "--bom-out=" & outPath
+  forward.add extra
+  cmdCheck(file, pathFlag, forward)
+
 # --- discovery ------------------------------------------------------------
 
 proc cmdInterfaces(): int =
@@ -201,6 +212,9 @@ proc cmdEnv(): int =
   echo "roles       ", registeredRoles().len, " registered"
   echo "interfaces  ", registeredInterfaceDefs().len, " registered"
   echo "quantities  ", evaluableQuantities().len, " measurable"
+  let cat = getEnv("VERAX_BOM_CATALOG")
+  echo "bom catalog ", (if cat.len > 0: cat & "  -- $VERAX_BOM_CATALOG"
+                        else: "none (pass --bom-catalog=<file.json>)")
   exitClean
 
 proc cmdNew(kind, path: string): int =
@@ -230,6 +244,8 @@ usage:
   verax check <file.nim> [flags]   compile and check a design file
   verax layout <file.nim> -o <out.kicad_pcb> [--layers=N] [--layout-size=WxH]
                                     assemble a board from a design's footprints
+  verax bom <file.nim> [-o <out>] [--bom-*]
+                                    compile a bill of materials
   verax new <template> [path]      write a starter design ("-" for stdout)
   verax roles                      the bundles of claims available
   verax interfaces                 declared interface definitions
@@ -265,6 +281,25 @@ check flags (forwarded to the design file):
   --baseline=<path>  a prior --format=json report; report what moved since
                      it (a missing or unparseable file is a usage error)
   --path:<dir>       where verax's sources live (usually found automatically)
+
+bom flags (also accepted by check, where any --bom flag compiles a BOM
+instead of checking):
+  -o, --out <path>   write the BOM there instead of stdout
+  --bom-format=text|csv|json
+                     text (default), CSV for procurement, or verax.bom/1
+                     JSON -- which is also the lockfile. With JSON or CSV on
+                     stdout, findings go to stderr
+  --bom-catalog=<file.json>
+                     a verax.catalog/1 catalogue to resolve against;
+                     repeatable, searched in order. Default:
+                     $VERAX_BOM_CATALOG
+  --bom-lock=<file.json>
+                     a prior --bom-format=json report; keep its choices
+                     while they still qualify (a missing or unparseable
+                     file is a usage error)
+  --bom-min-candidates=N
+                     fewer matching parts than N is reported as uncommon
+                     (default 3, 0 disables)
 
 exit codes:
   0 clean   1 a claim failed   2 structural problem   3 a claim nothing checked
@@ -332,6 +367,26 @@ proc main(): int =
       raise newException(ValueError,
         "layout needs -o <out.kicad_pcb>: verax layout <file.nim> -o <out.kicad_pcb>")
     cmdLayout(file, pathFlag, outPath, layers, size, forward)
+  of "bom":
+    var file = ""
+    var outPath = ""
+    var forward: seq[string]
+    var i = 0
+    while i < rest.len:
+      let a = rest[i]
+      if a == "-o" or a == "--out":
+        inc i
+        if i >= rest.len:
+          raise newException(ValueError, "-o needs a path: verax bom <file.nim> -o <out>")
+        outPath = rest[i]
+      elif file.len == 0 and not a.startsWith("-"):
+        file = a
+      else:
+        forward.add a
+      inc i
+    if file.len == 0:
+      raise newException(ValueError, "bom needs a file: verax bom <file.nim>")
+    cmdBom(file, pathFlag, outPath, forward)
   of "new":
     if rest.len == 0:
       raise newException(ValueError, "new needs a template name; try `blank`")

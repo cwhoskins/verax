@@ -38,7 +38,7 @@ proc xbarUsbC*(): Netlist =
         voltage = 5.0.V
 
     # --- the receptacle ------------------------------------------------
-    component J1, kind = "connector", partNumber = "USB-C 2.0 receptacle":
+    component J1, kind = "connector", description = "USB-C 2.0 receptacle":
       pin "VBUS", usbvbus, kind = ptPower
       pin "GND",  gnd,     kind = ptGround
       pin "CC1",  cc1,     kind = ptPassive
@@ -112,7 +112,7 @@ proc xbarUsbC*(): Netlist =
         dielectric = "X7R"
         voltage_rating = 16.0.V
 
-    component J2, kind = "connector", partNumber = "hdr-2":
+    component J2, kind = "connector", description = "hdr-2":
       pin "VOUT", usb5v, kind = ptPower
       pin "GND", gnd, kind = ptGround
 

@@ -37,10 +37,10 @@ proc carrierBoard*(): Netlist =
     net vout, kind = ntPower                 # to the sensor head
 
     # --- the edges -----------------------------------------------------
-    component J1, kind = "connector", partNumber = "USB-C receptacle":
+    component J1, kind = "connector", description = "USB-C receptacle":
       pin "VBUS", vbus, kind = ptPower
       pin "GND",  gnd,  kind = ptGround
-    component J2, kind = "connector", partNumber = "JST-PH 4-way":
+    component J2, kind = "connector", description = "JST-PH 4-way":
       pin "VOUT", vout, kind = ptPower
       pin "GND",  gnd,  kind = ptGround
 
