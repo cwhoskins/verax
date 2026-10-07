@@ -11,6 +11,7 @@ import ./geometry
 import ./types
 import ../netlist/types as nltypes
 import ../netlist/packages
+import ../netlist/graph as nlgraph
 
 export types
 
@@ -405,3 +406,31 @@ proc boardBox*(pcb: Pcb): Box =
   for _, l in pcb.layers:
     for c in l.copper:
       result = union(result, c.box)
+
+proc bindLandPins*(pcb: Pcb): int =
+  ## A board read from a file carries pads, not netlist pins: the KiCad
+  ## reader creates each footprint's `Component` with no pins, so no land
+  ## points at one and `trace` has no pin to root a route at. Give every
+  ## bound placement's component one pin per land name, on the land's net,
+  ## and point the lands at it (findings §18: what lets a design's
+  ## `"U1.7"` find its copper on the board). Idempotent; returns the pins
+  ## created. Does not bump `rev`: no file content changes, so `writePcb`'s
+  ## fast path stays valid.
+  for _, pl in pcb.placements:
+    let comp = pl.component
+    if comp == nil: continue
+    for padName, coppers in pl.lands:
+      var pin: Pin = nil
+      if comp.pins.hasKey(padName):
+        pin = comp.pins[padName]
+      else:
+        var net: Net = nil
+        for c in coppers:
+          if c.net != nil:
+            net = c.net
+            break
+        if net == nil: continue
+        pin = nlgraph.connect(comp, padName, net)
+        inc result
+      for c in coppers:
+        if c.pin == nil: c.pin = pin

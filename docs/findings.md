@@ -303,6 +303,16 @@ prerequisites — the dependencies are stated where they exist.
     own doc comment already states, which a claim built on this evaluator
     will need to carry forward rather than present as exact.
 
+    **Update 2026-10-07: the board now reaches evaluators** (for SI). `verax
+    check --board=<file.kicad_pcb>` reads the board and
+    `verify.readiness(d, allowed, board)` stores it as
+    `scratch[boardScratchKey]` (`pcb/types.BoardRef`); `pcb/graph.bindLandPins`
+    supplies the netlist pins a KiCad-read board lacks (§32), so a design's
+    `"U1.7"` finds its copper. The `si.net` evaluator is the first reader.
+    What is left of this entry is the `diff.nim` side only: its three
+    evaluators still decline, and still need the pair-identity and accuracy
+    decisions above -- the board-delivery half is done.
+
 ---
 
 ## Roles not yet written
@@ -662,6 +672,28 @@ Both turned up while measuring why `nimble test` takes ~7 minutes (see the
     the sibling `.kicad_pro` JSON file, a different format `kicad.nim` does
     not touch. That file, not an extension of this one, is the real
     prerequisite for a genuine trace-width/clearance DRC pass.
+
+32. **Two `pcb` read-side gaps found building the SI board path** (2026-10-07).
+    Both are worked around where they bite, not fixed at the source.
+
+    **A KiCad-read board has footprints but no netlist pins.** `readPcb`
+    creates each footprint's `Component` with no `pins`, so `addLand` binds
+    no `Copper.pin`, no `RouteNode` is an `rnPin`, and `trace.traceTree`
+    has no pin to root at (finding 31's "a `Pin` with no `kind`" understates
+    it: there is no `Pin`). `pcb/graph.bindLandPins` now creates one pin per
+    land on the land's net, on demand (`verify --board=` and
+    `analysis/analyses/si` call it). Doing it in the reader would make every
+    read board routable and is the cleaner fix; `pintype` (finding 31) would
+    land on those same pins.
+
+    **`trace.rootedAt` flips an edge's ends but not its `sections`.** When a
+    BFS reaches an edge from its `b` end it builds a new edge with `a`/`b`
+    swapped and the original `sections` order, so walking sections from the
+    root visits them backwards. Delay and length sums don't care, which is
+    why nothing caught it; anything building a ladder from the root does.
+    `si/board.orderedSections` orders them geometrically. Reversing
+    `sections` in `rootedAt` (and testing a two-section edge reached from
+    its far end) is the fix.
 
 ---
 

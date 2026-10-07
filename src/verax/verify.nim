@@ -44,6 +44,11 @@ import ./pcb/formats/kicadmod
 # `--bom-catalog=` or `$VERAX_BOM_CATALOG` are read.
 import ./bom
 import ./bom/sources/local
+# `--board=` (findings §18: a board reaching evaluators through
+# `EvalContext.scratch`) and `verax constraints`.
+import ./pcb/types as pcbtypes
+import ./pcb/formats/kicad as kicadfmt
+import ./analysis/analyses/si as sianalysis
 
 export contract_eval, io_check, environment, assemble, kicadmod
 
@@ -170,7 +175,7 @@ proc ngspiceVersion*(exe = "ngspice"): string =
 proc availableCapabilities*(simulator = ""): set[Capability] =
   ## `capBench` is never included: nothing takes bench measurements, and
   ## offering it would turn "not offered" into "ran and produced nothing".
-  result = {capStatic}
+  result = {capStatic, capSiTran}   # the SI engine is native: always here
   let sim = if simulator.len > 0: simulator else: ngspiceVersion()
   if sim.len > 0:
     result = result + simCapabilities
@@ -217,9 +222,10 @@ proc previewRoleDelta*(def: RoleDef, param: string): seq[Assertion] =
 
 # --- running -------------------------------------------------------------
 
-proc readiness*(d: Design, allowed = allCapabilities): Readiness =
+proc readiness*(d: Design, allowed = allCapabilities, board: Pcb = nil): Readiness =
   ## Check a design as far as `allowed` and this machine permit. Does not
-  ## mutate `d`.
+  ## mutate `d`. `board`, when given, reaches evaluators as
+  ## `scratch[boardScratchKey]` (the SI evaluator reads it).
   result.design = if d.netlist.name.len > 0: d.netlist.name else: "(unnamed)"
   result.requested = allowed
   result.simulator = ngspiceVersion()
@@ -242,6 +248,7 @@ proc readiness*(d: Design, allowed = allCapabilities): Readiness =
   # One context per run: simulated evaluators share an operating point
   # through `EvalContext.scratch`, and nothing cached outlives this call.
   let ctx = newEvalContext(d, usable)
+  if board != nil: ctx.scratch[boardScratchKey] = BoardRef(pcb: board)
   result.plan = plan(ctx)
   let batches = runPlan(ctx, result.plan)
 
@@ -955,11 +962,11 @@ proc baselineDiff*(r: Readiness, baseline: Table[string, BaselineEntry]):
                                 fromValue: b.value, fromUnit: b.unit)
 
 proc verify*(d: Design, allowed = allCapabilities, verbose = false,
-             strict = false, format = rfText, baseline = ""): int =
+             strict = false, format = rfText, baseline = "", board: Pcb = nil): int =
   ## Check a design, print the report, and return the exit code: a design
   ## file ends with `quit(verify(d))`.
   keepFullSchematic(d.netlist)
-  let r = readiness(d, allowed)
+  let r = readiness(d, allowed, board)
 
   var changes: seq[BaselineChange]
   if baseline.len > 0:
@@ -1018,6 +1025,20 @@ type
       ## falls back to `$VERAX_BOM_CATALOG` (a `PathSep`-separated list).
     bomMinCandidates*: int
       ## `-1` means "not stated" -- `defaultResolveOptions` applies.
+    board*: string
+      ## `--board=<file.kicad_pcb>`: the routed board SI claims are checked
+      ## on. Empty: none (SI claims are unevaluable, pointing at
+      ## `verax constraints`).
+    siConstraints*: bool
+      ## Derive SI routing rules for every `si_net` and stop.
+    siNet*: string
+      ## `--net=`: only this `si_net`'s net.
+    siDru*: string
+      ## `--dru=`: also write the KiCad rules there.
+    siOut*: string
+    siJson*: bool
+    stackupLayers*: int
+      ## `0` means "not stated" (4).
 
 proc parseCapabilities*(text: string): set[Capability] =
   ## `--caps=op,ac` and friends. `capStatic` is always included.
@@ -1030,11 +1051,13 @@ proc parseCapabilities*(text: string): set[Capability] =
     of "dc": result.incl capSpiceDc
     of "ac": result.incl capSpiceAc
     of "tran": result.incl capSpiceTran
-    of "all", "sim": result = result + simCapabilities
+    of "si": result.incl capSiTran
+    of "sim": result = result + simCapabilities
+    of "all": result = result + allCapabilities
     else:
       raise newException(ValueError,
         "unknown capability '" & raw.strip() &
-        "'; expected any of static, op, dc, ac, tran, all")
+        "'; expected any of static, op, dc, ac, tran, si, all")
 
 proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
   ## Flags a design file understands. Unrecognised arguments are left for
@@ -1090,6 +1113,20 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
           "'; expected text, json or junit")
     elif a.startsWith("--baseline="):
       result.baseline = absolutePath(a["--baseline=".len .. ^1])
+    elif a.startsWith("--board="):
+      result.board = absolutePath(a["--board=".len .. ^1])
+    elif a == "--si-constraints": result.siConstraints = true
+    elif a.startsWith("--net="): result.siNet = a["--net=".len .. ^1]
+    elif a.startsWith("--dru="): result.siDru = absolutePath(a["--dru=".len .. ^1])
+    elif a.startsWith("--si-out="): result.siOut = absolutePath(a["--si-out=".len .. ^1])
+    elif a == "--si-format=json": result.siJson = true
+    elif a == "--si-format=text": result.siJson = false
+    elif a.startsWith("--stackup-layers="):
+      try: result.stackupLayers = parseInt(a["--stackup-layers=".len .. ^1])
+      except ValueError:
+        raise newException(ValueError,
+          "--stackup-layers wants an integer copper-layer count, got '" &
+          a["--stackup-layers=".len .. ^1] & "'")
     elif a.startsWith("--bom-out="):
       result.bomOut = absolutePath(a["--bom-out=".len .. ^1])
     elif a.startsWith("--bom-format="):
@@ -1346,6 +1383,62 @@ proc compileBom*(nl: Netlist, o: VerifyOptions): int =
     for i in issues: stderr.writeLine $i
   if worstSeverity(res) == sevError: exitStructural else: exitClean
 
+proc siCriteria*(inst: RoleInstance): Criteria =
+  ## The `si_net` claims as stage-5 pass criteria: one statement of intent
+  ## drives both deriving the rules and checking the board.
+  result = defaultCriteria()
+  result.requireMonotonic = false       # not an `si_net` claim
+  result.useOvershootLimits = false     # nor is the [Model Spec] limit
+  if inst.hasParam("max_flight_time"):
+    result.maxFlightTime = inst.paramFloat("max_flight_time", NaN)
+  if inst.hasParam("max_overshoot"):
+    result.maxOvershoot = inst.paramFloat("max_overshoot", NaN)
+  if inst.hasParam("max_undershoot"):
+    result.maxUndershoot = inst.paramFloat("max_undershoot", NaN)
+  if inst.hasParam("max_settle_time"):
+    result.maxSettleTime = inst.paramFloat("max_settle_time", NaN)
+  elif inst.hasParam("ui"):
+    result.maxSettleTime = inst.paramFloat("ui", NaN)
+
+proc siConstraints*(d: Design, o: VerifyOptions): int =
+  ## `verax constraints`: the routing rules every `si_net` needs, before
+  ## layout. Text or JSON on stdout (or `--si-out=`), KiCad rules with
+  ## `--dru=`.
+  var docs: seq[string]
+  var json = newJArray()
+  var rules: seq[DruRule]
+  var failed = false
+  var any = false
+  for name, inst in d.roles:
+    if inst.role != "si_net": continue
+    let netName = inst.subject("net").name
+    if o.siNet.len > 0 and netName != o.siNet: continue
+    any = true
+    var req = SiNetRequest(net: netName, driver: pinRef(inst.subject("driver").name))
+    for p in ["rx", "rx2", "rx3", "rx4"]:
+      if inst.hasPart(p): req.receivers.add pinRef(inst.subject(p).name)
+    let st = defaultStackup(if o.stackupLayers > 0: o.stackupLayers else: 4)
+    let (ok, why, rep) = deriveSiConstraints(d.netlist, req, siCriteria(inst), st)
+    if not ok:
+      failed = true
+      docs.add "SI constraints for net " & netName & ": not derivable -- " & why & "\n"
+      json.add %*{"net": netName, "error": why}
+      continue
+    docs.add renderText(rep)
+    json.add renderJson(rep)
+    rules.add druRules(rep, netName)
+  if not any:
+    stderr.writeLine "verax: no si_net role" &
+      (if o.siNet.len > 0: " on net '" & o.siNet & "'" else: "") & " in this design"
+    return exitStructural
+  let doc = if o.siJson: pretty(%*{"schema": "verax.si_constraints_set/1", "nets": json}) & "\n"
+            else: docs.join("\n")
+  if o.siOut.len > 0: writeFile(o.siOut, doc) else: stdout.write doc
+  if o.siDru.len > 0:
+    writeDru(rules, o.siDru)
+    stderr.writeLine "wrote " & o.siDru & " (" & $rules.len & " rule(s))"
+  if failed: exitUnchecked else: exitClean
+
 proc verifyMain*(d: Design, args = commandLineParams()): int =
   ## What a design file's last line calls: `quit(verifyMain(d))`. Flags are
   ## read here so the compiled design can be re-run without editing.
@@ -1386,4 +1479,12 @@ proc verifyMain*(d: Design, args = commandLineParams()): int =
     echo "wrote ", o.layoutOut, "  (", issues.len, " issue(s))"
     return (if worst == sevError: exitStructural else: exitClean)
   if o.bom: return compileBom(d.netlist, o)
-  verify(d, o.allowed, o.verbose, o.strict, o.format, o.baseline)
+  if o.siConstraints: return siConstraints(d, o)
+  var board: Pcb = nil
+  if o.board.len > 0:
+    try:
+      board = kicadfmt.readPcb(o.board)
+    except CatchableError as e:
+      stderr.writeLine "verax: --board: " & e.msg
+      return exitCompile
+  verify(d, o.allowed, o.verbose, o.strict, o.format, o.baseline, board)

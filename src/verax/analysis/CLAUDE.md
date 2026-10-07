@@ -1,6 +1,6 @@
 # `analysis` submodule
 
-Answers questions *about* a netlist, from graph walks to full simulation. Depends on `netlist` and `spice`.
+Answers questions *about* a netlist, from graph walks to full simulation. Depends on `netlist`, `spice` and `si` (the native SI engine).
 
 **Two result types.** `Issue` is a finding; a check **never raises** on a netlist-content problem — the problem is the return value. `AnalysisReport` is a measurement: `Measurement`s, implied `Issue`s, the `SimResult` curve, and `assumptions`.
 
@@ -21,7 +21,7 @@ Answers questions *about* a netlist, from graph walks to full simulation. Depend
 
 ## Modules
 
-- **`measure.nim`** — pure curve math, testable offline; most reasoning lives here. `harmonicAmplitudes`/`thd` integrate over the samples' **own timestamps** (no resampling — ngspice's small steps are where the harmonics are) across the **last whole number of periods**; < 2 periods → `NaN`. Frequency helpers pass `logX = true`. `corner3dB` references the first swept point (right for DC-coupled); `gainMax`/`bandEdges` reference the maximum (right for AC-coupled); no shape detection is attempted. `fundamentalFreq` counts rising crossings of the window **mean** with hysteresis (not an FFT — resolution); < 2 crossings → `NaN`. `timeMean`/`timeRms` weight by elapsed time; `timeRms` integrates the square exactly for piecewise-linear data. `maxDeviation` requires both curves on one axis. Malformed input (empty/mismatched arrays) raises.
+- **`measure.nim`** — re-exports `verax/waveform` (moved down so `si/` shares it; edit it there). Pure curve math, testable offline; most reasoning lives here. `harmonicAmplitudes`/`thd` integrate over the samples' **own timestamps** (no resampling — ngspice's small steps are where the harmonics are) across the **last whole number of periods**; < 2 periods → `NaN`. Frequency helpers pass `logX = true`. `corner3dB` references the first swept point (right for DC-coupled); `gainMax`/`bandEdges` reference the maximum (right for AC-coupled); no shape detection is attempted. `fundamentalFreq` counts rising crossings of the window **mean** with hysteresis (not an FFT — resolution); < 2 crossings → `NaN`. `timeMean`/`timeRms` weight by elapsed time; `timeRms` integrates the square exactly for piecewise-linear data. `maxDeviation` requires both curves on one axis. Malformed input (empty/mismatched arrays) raises.
 - **`io_check.nim`** — static checks (`analyzeIO`). **`checkRailVoltages` is a structural `sevWarning`, not an assumption**: a rail with no stated voltage is cut loose as a floating node at isolation, which changes topology (it once turned a gain-65 stage into a follower with every claim passing). The message names the components that lose their connection, skipping bypass caps. Classification tables are in `netlist/kinds` (re-exported).
 - **`analyses/operating.nim`** — one `.op`, solved once per `EvalContext` (`evaluators/common.sharedOperatingPoint`, under `scratch["spice.operating_point"]`). Straight-line, not a fixed point, because **the DC operating point doesn't depend on capacitance** — so derate ceramics from actual node voltages, then run `.ac`/`.tran`. `voltageAt` is `NaN` for an unseen node (≠ 0). Limit: a `.tran` bias moves with time.
 - **`analyses/derating.nim`** — part usage within ratings: one non-isolated `.op`; `voltage_rating` vs DC across, resistor `power_rating` vs V²/R. Ceilings per dielectric family (tantalum 50% — fails short; ceramics' capacitance loss is already modelled). **`current_rating`/`isat` are not checked here** (not in an `.op`) — `transient.analyzeCurrent` does it.
@@ -45,6 +45,8 @@ Answers questions *about* a netlist, from graph walks to full simulation. Depend
   - `detachDrivers` removes stiff drivers on the driven net (two ideal sources → singular matrix).
 - **`analyses/match.nim`** — `analyzeChannelMatch`: calls `analyzeOpAmpResponse` per channel. `gain_delta_max_db` (band) vs `gain_delta_at_f` (point) are separate names. Magnitudes / max-over-min ratios. **Frequency axes are checked identical** (Issue if not). Assumptions/issues merged and deduplicated. Either sweep failing → all `NaN`.
 
+- **`analyses/si.nim`** — the SI net, on `si/` (no ngspice). `analyzeSiNet(pcb, nl, req)`: every corner the IBIS data supports (min/max only when complete — no substitution policy), both edges, one report per receiver with the **worst** value and `at = "<pin>, worst at <corner> <edge>"`. A figure undefined in any run is `NaN` (an `si_undefined` issue), never the worst of the runs that produced one. Never-settles is `+Inf` (fails a budget), not `NaN`. IBIS files come from `ibis_file`/`ibis_component`/`ibis_model` (cached by absolute path). `deriveSiConstraints` is `verax constraints`: a template on `defaultStackup` (every figure an `Assumption`).
+
 ## Evaluator notes
 
 - `evaluators/common.nim`: `harvest`, `failBatch` (carries assumptions on failure so notes survive), `subjectNet`/`subjectComponent`/`bindingName`, `transientWindow`, `sharedOperatingPoint`.
@@ -52,3 +54,4 @@ Answers questions *about* a netlist, from graph walks to full simulation. Depend
 - `spice.channel_match`: `arity 2..2`, `subjectKinds {skClass}`, `binds` `opamp`/`input`/`output`.
 - `i_out_derating` is a `spice.current_path` quantity (batches into the same `.tran`); `NaN` without the regulator's `current_rating`.
 - Both PSRR evaluators bind `source`/`input`, so a bare `require` names the role it needs.
+- `si.net` (`evaluators/si.nim`): `needs {capSiTran}`, pin subjects, binds `net`/`driver`, one run per `si_net` instance (setup key = origin). The board comes from `scratch[boardScratchKey]`; none → `esNotEvaluable` pointing at `--board=` and `verax constraints`. Unsupported → notEvaluable, solver failure → notEvaluated.

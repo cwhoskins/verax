@@ -11,6 +11,8 @@ The physical board — layers, stack-up, copper, holes, placements, outline. Dep
 - **Lengths are plain `float` metres** (`geometry.length`, `units.toMetres`). Settled — don't add a `Metres` type without a concrete case.
 - **`geometry.nim`** — `Curve` (no area) vs `Shape` (`shStroke`/`shFill`/`shPad`/`shText`). **Arcs are canonically centre + radius + start angle + signed sweep**; convert at the reader. `Aperture` is a `ref` interned in `Pcb.apertures`; unknown names → `akCustom`.
 - **`types.nim`** — entities carry the same `attrs` bag as `netlist`.
+- **`BoardRef`/`boardScratchKey`** (`types.nim`): how a board reaches an evaluator through `EvalContext.scratch` (`verify --board=`).
+- **`graph.bindLandPins`**: a board read from a file has footprints but **no netlist pins** (the KiCad reader creates pinless components), so no land points at a pin and `trace` has nothing to root at. It creates one pin per land on the land's net; idempotent, doesn't bump `rev`.
 - **`graph.nim`** — **the only place allowed to mutate back-references and indexes** (`.pcb`, `.layer`, `.net`, `.pin`, `.hole`, `.pads`, `.lands`, `.box`, `.sourceIndex`, `.index`). `Pcb.rev` is bumped by `graph.touch`, which also stamps the entity's `rev`; a direct field write must `touch` itself.
 - **Layers are keyed by name, never ordinal** (KiCad v9 renumbered; ODB++ rows may be non-sequential). **`Pcb.layers` insertion order is physical stack order** — add top to bottom.
 - `PcbLayer.copper` is in source order and must never be re-sorted/deduped (ODB++ cross-references positionally). `Copper.sourceIndex` is only valid right after load.
@@ -46,7 +48,7 @@ Module doc comments hold the detail; these are the decisions.
 - **`writePcb` synthesis branch**: `pcb.source == nil` with ≥ 1 layer → `kicadgen.renderNewPcb` (splicing each footprint's source, editing only `at`/`layer`/`Reference`/pad `net`). `pcb.source` stays nil, so a second write re-synthesizes; to edit the result, `readPcb` the written file.
 - **`variant.nim`** — data model only (no placer/router/policy). `LayoutVariant` keyed by `Netlist.name` (the template). Instance binding is `attrs["layout.variant"]` on the netlist side. `selectVariant`/`instantiateVariant` **raise** naming what was asked and what exists — no stubs that look like they work.
 
-## Routing and transmission lines (`trace.nim`, `impedance.nim`, `tline.nim`)
+## Routing and transmission lines (`trace.nim`, `impedance.nim`, `tline.nim`, `via.nim`)
 
 Read-only over a `Pcb`; register no contract quantities yet.
 
@@ -55,4 +57,7 @@ Read-only over a `Pcb`; register no contract quantities yet.
 - The degree-2 collapse removes only pin-less, via-less, pour-less nodes with exactly two edges, so a Y comes back as trunk + two branches and a fragmented run as one edge.
 - No reference plane: `route_no_reference`; zones exist but `fills` empty: `reference_unfilled` (different fixes).
 - `impedance.nim` is closed-form quasi-static (Hammerstad-Jensen, IPC-2141), no dispersion — a few percent off a field solver is expected.
+- **`trace.rootedAt` flips an edge's ends but not its `sections`** (they stay in extraction order); anything that walks sections from the root must order them itself (`si/board.orderedSections`).
+- **`via.nim`** — closed-form via (Johnson & Graham: barrel L, pad/antipad C) plus the **stub** as an open line; backdrill shortens it. Pure numeric core (`viaModel`), one board step (`viaGeometryFor`, `NaN` + issue when the stack-up can't place a layer, a defaulted antipad as an `Assumption`). A transition between layers with different reference names is `via_reference_change`, never a silent barrel.
+- **`formats/kicaddru.nim`** — `.kicad_dru` writer (`length`, `via_count` per net/net class). Gate: `tests/test_pcb_kicaddru.nim` runs `kicad-cli pcb drc` on a fixture with a violating track that must be reported (proven on KiCad 10.0.6; skips without `kicad-cli`).
 - `TlineSpec.roughness` (default 0 → loss is a lower bound) and `rho` (annealed Cu at 20 °C) are recorded as `Assumption`s when defaulted.

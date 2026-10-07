@@ -36,6 +36,9 @@ nimcache/
 # picked up and compiled as a test on its own.
 !/tests/fixtures/
 !/tests/fixtures/*
+# Vendor `.ibs` files are licensed, never committed: drop them here for manual
+# runs against the SI engine (docs/ibis_simulator_plan.md, stage 0).
+/tests/fixtures/ibis/vendor/
 /designs/*
 !/designs/*.nim
 !/designs/README
@@ -57,6 +60,12 @@ nimcache/
 !/designs/datalogger/lib/
 /designs/datalogger/lib/*
 !/designs/datalogger/lib/*.nim
+# `designs/si_spi/` holds the SI demo's synthetic IBIS models and its
+# hand-written board -- data, not build output.
+!/designs/si_spi/
+/designs/si_spi/*
+!/designs/si_spi/*.ibs
+!/designs/si_spi/*.kicad_pcb
 /templates/*
 !/templates/*.nim
 

@@ -27,6 +27,7 @@ import ./load_step
 import ./opamp
 import ./match
 import ./psrr
+import ./si
 
 export evaluate, static, common
 
@@ -44,5 +45,6 @@ proc registerSimulatedEvaluators*() =
   registerOscillatorEvaluator()
   registerOpAmpEvaluators()
   registerChannelMatchEvaluator()
+  registerSiEvaluator()
 
 registerSimulatedEvaluators()

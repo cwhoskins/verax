@@ -290,6 +290,15 @@ type
       ## `writePcb` takes the byte-copy fast path when `pcb.rev ==
       ## KicadDoc.snapshotRev`.
 
+type
+  BoardRef* = ref object of RootObj
+    ## A board handed to evaluators through `EvalContext.scratch` under
+    ## `boardScratchKey`, so `contract` never gains an edge to `pcb`
+    ## (findings §18). `verify` stores it for `--board=`.
+    pcb*: Pcb
+
+const boardScratchKey* = "pcb.board"
+
 proc newSpatialIndex*(cell = mm(1.0), maxCells = 256): SpatialIndex =
   SpatialIndex(cell: cell, origin: pt(nm(0), nm(0)), maxCells: maxCells,
                dirty: true)

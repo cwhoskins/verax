@@ -1,6 +1,6 @@
 # Package-root modules
 
-`units.nim` and `eng.nim` sit *below* every submodule (several need them, none may own them). `verify.nim` sits *above* every submodule (it needs `contract` and `analysis` together, and neither may depend on it). `cli.nim` is the binary.
+`units.nim`, `eng.nim` and `waveform.nim` sit *below* every submodule (several need them, none may own them). `verify.nim` sits *above* every submodule (it needs `contract` and `analysis` together, and neither may depend on it). `cli.nim` is the binary.
 
 ## `units.nim`
 
@@ -16,6 +16,10 @@ Typed quantities (`Volts`/`Ohms`/`Farads`/…/`Fraction`, plus `Degrees`, `Decib
 
 `eng(x, unit)` renders engineering notation for **presentation only**. A value written into a deck must go through `netlist/formats/spice.spiceValue` — SPICE reads `15.9M` as 15.9 *milli*.
 
+## `waveform.nim`
+
+Curve math over sampled axes (crossings, extrema, rise/settle, harmonics), moved down from `analysis/measure` so the SI engine (`si/`, below `analysis`) shares it. `analysis/measure` re-exports it; its rules are in `analysis/CLAUDE.md`.
+
 ## `verify.nim`
 
 The runner: checks a `Design` and renders one *readiness report*.
@@ -30,6 +34,7 @@ The runner: checks a `Design` and renders one *readiness report*.
 - `didYouMean` ranks quantities by edit distance for an unknown quantity. `claimLint` flags a unitless claim against a quantity with a unit (e.g. `<= 5.pct` vs a measurement in percent is off by 100×) — a stopgap until `Evaluator` declares units.
 - **Catalog** (`describeRoles`/`describeRole`/`describeQuantities`/`describeAnnotations`) returns strings because both the CLI and MCP server use them. Reachability is *computed* by `claimingRoles()` — expanding every role with all params stated, then each param alone, because a param can *redirect* a claim (`gain_stage.atF`). Role params are stated as the placeholder `"1"`: a string-valued mode parameter therefore selects no branch and hides claims (see `contract/CLAUDE.md`). An expander that raises yields nothing rather than breaking `verax roles`.
 - With `$VERAX_KEEP_RUNS` set it calls `schematic/render.keepFullSchematic` (best-effort; the picture code lives in `schematic/`). `$VERAX_SCHEMATIC_LAYOUT`/`--schematic-layout` only accepts `constrained-layered` and never affects simulation.
+- **`--board=<file>`** reads a KiCad board and hands it to `readiness(d, allowed, board)`, which stores it in the eval context's scratch (findings §18). **`--si-constraints`** (what `verax constraints` forwards) derives SI routing rules for every `si_net` and stops; `siCriteria` turns the role's claims into the criteria so one statement of intent drives both.
 - `validateEnvironment`, `validatePackages`, `validateInterfaces`, `validatePinmux`, `validateBomDefaults` are wired into `readiness` as structural checks.
 
 ## `cli.nim`

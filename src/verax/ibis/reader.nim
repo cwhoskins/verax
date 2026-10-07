@@ -96,6 +96,12 @@ proc parseWaveform(sec: IbisSection): Waveform =
     case head
     of "r_fixture": scalar(result.rFixture)
     of "v_fixture": result.vFixture = parseTriplet(tk, 1)
+    of "v_fixture_min", "v_fixture_max":
+      var v: float
+      if tk.len < 2 or not parseIbisNumber(tk[1], v):
+        raise newException(IbisError,
+          "line " & $n & ": [" & sec.rawKeyword & "] " & tk[0] & " has no value")
+      result.vFixture.set((if head == "v_fixture_min": coMin else: coMax), v)
     of "c_fixture": scalar(result.cFixture)
     of "l_fixture": scalar(result.lFixture)
     of "r_dut": scalar(result.rDut)
@@ -105,6 +111,71 @@ proc parseWaveform(sec: IbisSection): Waveform =
       var t: float
       if parseIbisNumber(tk[0], t):
         result.points.add VtPoint(t: t, v: parseTriplet(tk, 1))
+
+proc parseModelSpec(sec: IbisSection): ModelSpec =
+  ## `[Model Spec]`: rows of `<subparameter> <typ> <min> <max>`. An unknown
+  ## subparameter stays in `raw`; a malformed number raises.
+  result.present = true
+  for (n, text) in sec.body:
+    let tk = tokens(text)
+    if tk.len == 0: continue
+    template row(dst: untyped) =
+      try:
+        dst = parseTriplet(tk, 1)
+      except IbisError as e:
+        raise newException(IbisError,
+          "line " & $n & ": [Model Spec] " & tk[0] & ": " & e.msg)
+    case canonicalKeyword(tk[0])
+    of "vinh": row(result.vinh)
+    of "vinl": row(result.vinl)
+    of "vinh+": row(result.vinhPlus)
+    of "vinh-": row(result.vinhMinus)
+    of "vinl+": row(result.vinlPlus)
+    of "vinl-": row(result.vinlMinus)
+    of "s_overshoot_high": row(result.sOvershootHigh)
+    of "s_overshoot_low": row(result.sOvershootLow)
+    of "d_overshoot_high": row(result.dOvershootHigh)
+    of "d_overshoot_low": row(result.dOvershootLow)
+    of "d_overshoot_time": row(result.dOvershootTime)
+    of "pulse_high": row(result.pulseHigh)
+    of "pulse_low": row(result.pulseLow)
+    of "pulse_time": row(result.pulseTime)
+    of "vmeas": row(result.vmeas)
+    of "vref": row(result.vref)
+    of "cref": row(result.cref)
+    of "rref": row(result.rref)
+    else: discard
+
+proc parseReceiverThresholds(sec: IbisSection): ReceiverThresholds =
+  ## `[Receiver Thresholds]`: `<subparameter> = <value>` rows.
+  result.present = true
+  for (n, text) in sec.body:
+    let tk = tokens(text)
+    if tk.len == 0: continue
+    template scalar(dst: ModelParam) =
+      var v: float
+      if tk.len < 2 or not parseIbisNumber(tk[1], v):
+        raise newException(IbisError,
+          "line " & $n & ": [Receiver Thresholds] " & tk[0] & " is not a number: " & text)
+      dst = ModelParam(present: true, value: v)
+    case canonicalKeyword(tk[0])
+    of "vth": scalar(result.vth)
+    of "vth_min": scalar(result.vthMin)
+    of "vth_max": scalar(result.vthMax)
+    of "vinh_ac": scalar(result.vinhAc)
+    of "vinh_dc": scalar(result.vinhDc)
+    of "vinl_ac": scalar(result.vinlAc)
+    of "vinl_dc": scalar(result.vinlDc)
+    of "threshold_sensitivity": scalar(result.thresholdSensitivity)
+    of "vcross_low": scalar(result.vcrossLow)
+    of "vcross_high": scalar(result.vcrossHigh)
+    of "vdiff_ac": scalar(result.vdiffAc)
+    of "vdiff_dc": scalar(result.vdiffDc)
+    of "tslew_ac": scalar(result.tslewAc)
+    of "tdiffslew_ac": scalar(result.tdiffslewAc)
+    of "reference_supply":
+      if tk.len > 1: result.referenceSupply = tk[1]
+    else: discard
 
 proc parsePackage(sec: IbisSection): Package =
   for (n, text) in sec.body:
@@ -190,6 +261,8 @@ proc parseModel(sec: IbisSection): IbisModel =
     of "ramp": result.ramp = parseRamp(ch)
     of "rising_waveform": result.risingWaveforms.add parseWaveform(ch)
     of "falling_waveform": result.fallingWaveforms.add parseWaveform(ch)
+    of "model_spec": result.modelSpec = parseModelSpec(ch)
+    of "receiver_thresholds": result.receiverThresholds = parseReceiverThresholds(ch)
     else: discard
 
 proc parseComponent(sec: IbisSection): IbisComponent =

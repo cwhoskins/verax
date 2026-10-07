@@ -2,7 +2,7 @@
 
 A design is a `.nim` file using `verax/contract/dsl` that ends with `quit(verifyMain(d))`, so `nim c -r --path:./src designs/foo.nim` is the same check as `./bin/verax check designs/foo.nim` minus the wrapper. That is the primary loop.
 
-Exit codes: `0` clean, `1` a claim failed, `2` structural problem, `3` a claim nothing could check, `4` a requested capability is unavailable, `5` the design did not compile (only `verax check` produces `5`). Flags forwarded to the design binary: `--offline`, `--caps=op,dc,ac,tran`, `--verbose`, `--strict`.
+Exit codes: `0` clean, `1` a claim failed, `2` structural problem, `3` a claim nothing could check, `4` a requested capability is unavailable, `5` the design did not compile (only `verax check` produces `5`). Flags forwarded to the design binary: `--offline`, `--caps=op,dc,ac,tran,si`, `--verbose`, `--strict`, `--board=<file.kicad_pcb>`.
 
 ## Layout and build traps
 
@@ -15,7 +15,7 @@ Exit codes: `0` clean, `1` a claim failed, `2` structural problem, `3` a claim n
 
 ## Worked examples by feature
 
-When looking for an example of a mechanism, start here: two-subject/`roleRef` claims and multi-channel packages → `riaa_preamp`, `aa_filter`; multiple sim models per part → `lt8640a_buck`; `SimReplacement.build` loop model → `adj_regulator`; parameterized subckts → `param_filter`, `divider_net`; event-driven XSPICE on a shared analog bus → `i2c_eeprom`; system of boards via `asSubcircuit` → `system_sensor_rig`, `xbar_switch`; user-defined role → `lib/xbar_parts.nim` (`safe_default`), `lib/i2c_parts.nim`; interface arrays and pinmux → `spi_memories` (`lib/stm32h563.nim`); interface defined in the design file → `rf_frontend`; differential pairs → `usb_hs_link`; magnetics + `dc_path_exists` barrier → `xbar_poe`; capacitor banks → `lib/capbank.nim`. `xbar_switch.nim`'s header lists what cannot yet be checked.
+When looking for an example of a mechanism, start here: two-subject/`roleRef` claims and multi-channel packages → `riaa_preamp`, `aa_filter`; multiple sim models per part → `lt8640a_buck`; `SimReplacement.build` loop model → `adj_regulator`; parameterized subckts → `param_filter`, `divider_net`; event-driven XSPICE on a shared analog bus → `i2c_eeprom`; system of boards via `asSubcircuit` → `system_sensor_rig`, `xbar_switch`; user-defined role → `lib/xbar_parts.nim` (`safe_default`), `lib/i2c_parts.nim`; interface arrays and pinmux → `spi_memories` (`lib/stm32h563.nim`); interface defined in the design file → `rf_frontend`; differential pairs → `usb_hs_link`; magnetics + `dc_path_exists` barrier → `xbar_poe`; capacitor banks → `lib/capbank.nim`; signal integrity on a routed board (`si_net`, IBIS files, `--board=`, `verax constraints`) → `si_spi` (it passes its own `si_spi/si_spi.kicad_pcb` when no `--board=` is given, so `nimble verify` checks the routed result). `xbar_switch.nim`'s header lists what cannot yet be checked.
 
 ## Seeing what was actually simulated
 

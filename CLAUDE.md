@@ -13,13 +13,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Compile a BOM**: `./bin/verax bom designs/foo.nim --bom-catalog=parts.json [-o bom.csv] [--bom-format=text|csv|json] [--bom-lock=prior.json]` (`$VERAX_BOM_CATALOG` if no flag). Runs no checks; the JSON output is also the next run's `--bom-lock`.
 - **Discovery** (reads live registries, writes nothing): `verax roles`, `verax role <name>`, `verax quantities`, `verax annotations`, `verax guide`, `verax env`, `verax new <blank|rail|i2c> <path>`.
 - **Generate a board**: `verax layout designs/foo.nim -o foo.kicad_pcb [--layout-layers=N] [--layout-size=WxH]` — a blank `Pcb` with real footprints (from `spec: footprint = "Lib:Name"`, resolved against `$VERAX_FOOTPRINT_PATH`/`/usr/share/kicad/footprints`), parts gridded outside the outline, unrouted. `nimble generate` is its `kicad-cli` acceptance gate; `nimble kicadcheck` is the edit path's.
-- **Examples** (not part of `nimble test`): `nim c -r --path:./src examples/<name>.nim` — `divider`, `pdn_sweep`, `opamp_bode`, `design_contract`, and `xspice_gain`/`xspice_dff`/`xspice_integrator` (need `$NGSPICE_SRC`).
+- **SI**: `./bin/verax check designs/foo.nim --board=foo.kicad_pcb` checks `si_net` claims on a routed board (native engine, no ngspice; `designs/si_spi.nim`). `./bin/verax constraints designs/foo.nim [--net=N] [--dru=out.kicad_dru] [--stackup-layers=N] [--format=json]` derives routing rules before layout. Plan and status: `docs/ibis_simulator_plan.md`.
+- **Examples** (not part of `nimble test`): `nim c -r --path:./src examples/<name>.nim` — `divider`, `pdn_sweep`, `opamp_bode`, `design_contract`, `si_bench` (`-d:release`), and `xspice_gain`/`xspice_dff`/`xspice_integrator` (need `$NGSPICE_SRC`).
 
 ## Architecture
 
 `verax` is a proprietary-licensed Nim library for describing a circuit, stating what it must do, and checking that by simulation.
 
-Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, `netlist` <- `schematic`, `netlist`/`parts` <- `bom`, `pcb` <- `fem`, `netlist`/`pcb` <- `ibis`. **Nothing depends backwards** — when a type is needed by two siblings it moves down, and when a module needs two siblings it moves up.
+Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, `netlist` <- `schematic`, `netlist`/`parts` <- `bom`, `pcb` <- `fem`, `netlist`/`pcb` <- `ibis`, `ibis`/`pcb` <- `si` <- `analysis` (no `si` -> `spice` edge). **Nothing depends backwards** — when a type is needed by two siblings it moves down, and when a module needs two siblings it moves up.
 
 | Submodule | What it is |
 | --- | --- |
@@ -31,10 +32,11 @@ Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `net
 | `pcb/` | The physical board — layers, stack-up, copper, holes, placements, outline; KiCad read/write. |
 | `parts/` | Which real part a computed value is: requests, policies, preferred-value series. |
 | `bom/` | Which *orderable* part each component is: collect, resolve against catalogues, report/lock. Takes a `Netlist`, never a `Pcb`. |
-| `ibis/` | IBIS `.ibs` reader. Parsing only. |
+| `ibis/` | IBIS `.ibs` reader, plus `behave`: a model interpreted as data (absolute curves, `Ku`/`Kd`). |
+| `si/` | Native SI transient engine: one net (IBIS driver, package, lines, vias, receivers) simulated, measured, and its routing constraints derived. No ngspice. |
 | `fem/` | Field-solver interface skeleton (no backend yet). |
 
-`units.nim`/`eng.nim` sit below everything, `verify.nim` above everything, `cli.nim` is the binary. `src/verax.nim` is deliberately **not** a re-export hub — import submodules by path (`import verax/netlist`). `namedBin["verax/cli"] = "verax"` builds the binary from `cli.nim` so `import verax` doesn't drag in the simulator.
+`units.nim`/`eng.nim`/`waveform.nim` sit below everything, `verify.nim` above everything, `cli.nim` is the binary. `src/verax.nim` is deliberately **not** a re-export hub — import submodules by path (`import verax/netlist`). `namedBin["verax/cli"] = "verax"` builds the binary from `cli.nim` so `import verax` doesn't drag in the simulator.
 
 No dependencies beyond the Nim stdlib (`nim >= 2.2.10`). The MCP server is a **separate package** under `mcp/` because a nimble dependency can only be opt-in per package.
 

@@ -53,22 +53,31 @@ back-edges: nothing below ever learns about anything above it.
                         /            \
                        /              \
               contract/            analysis/   (+ analysis/evaluators/, the join)
-                       \              /
-                        \          spice/  --> spice/xspice/
-                         \          /
+                       \              /     \
+                        \          spice/    si/  (native SI engine, over ibis + pcb)
+                         \          /        /  \
                           netlist/    schematic/    parts/     pcb/
                              |   \________|___________|________/ | \
                              |                          ibis/ <-/   \-> fem/
                              |                            (over pcb + netlist)
-                    units.nim   eng.nim       (below everything)
+                    units.nim   eng.nim   waveform.nim   (below everything)
 ```
 
-`ibis/` (reads a vendor `.ibs` buffer model) and `fem/` (interface to an
-external finite-element field solver, EM + thermal) are the two newest
-submodules. Both sit above `pcb/`: `fem/` meshes board geometry, `ibis/`
-binds a parsed buffer model to a `Placement`. Neither is imported by anything
-above them, and both are opt-in per import like every other hub. `fem/` has
-an MFEM call path only (`fem/mfem`, opt-in, stage 0: load + a validation Laplace solve; no meshing or physics yet); `ibis/` is a no-op past its parser.
+`ibis/` (reads a vendor `.ibs` buffer model and interprets it as a
+behaviour) and `fem/` (interface to an external finite-element field solver,
+EM + thermal) both sit above `pcb/`: `fem/` meshes board geometry, `ibis/`
+binds a parsed buffer model to a `Placement`. `fem/` has an MFEM call path
+only (`fem/mfem`, opt-in, stage 0: load + a validation Laplace solve; no
+meshing or physics yet).
+
+`si/` is the newest: a **native** transient engine that simulates a net as a
+signal-integrity problem (IBIS driver, package, board lines and vias, IBIS
+receivers) and derives routing constraints. It sits above `ibis/` and `pcb/`
+and below `analysis/`, and has **no edge to `spice/`**, so SI runs on a
+machine without ngspice (`capSiTran`, in `offlineCapabilities`). The plan and
+its decisions are `docs/ibis_simulator_plan.md`. `waveform.nim` (curve math:
+crossings, extrema, settling) moved below both `analysis/` and `si/` so they
+share it; `analysis/measure` re-exports it.
 
 Three rules produce that picture.
 
@@ -106,14 +115,22 @@ drag in `osproc` and the whole analysis tree.
 | `contract/` | what the circuit must do, and comparing a number against it | how any number is produced |
 | `pcb/` | the physical board: layers, copper, holes, placements, BoM, routing and closed-form transmission-line characterization | anything electrical beyond a forward reference into a `Netlist` |
 | `parts/` | choosing a real part for a computed value | the circuit it lands in |
-| `ibis/` | reading what a vendor says a buffer does (`.ibs`: I/V curves, edge rates, package RLC) | how that behaviour gets simulated, or whether a design meets it |
+| `ibis/` | reading what a vendor says a buffer does (`.ibs`: I/V curves, edge rates, package RLC) and interpreting it as data (`behave`: absolute curves, `Ku`/`Kd`) | how that behaviour gets simulated, or whether a design meets it |
+| `si/` | simulating one net as an SI problem on a native engine, measuring it, and deriving the routing rules that pass | what claim the number is for, or which design it came from |
 | `fem/` | stating a field problem over a board and running it through an external solver | what question the field answers |
 | `verify.nim` | joining the last two, and rendering | — |
 
 Two of those are worth stating plainly because it is easy to assume otherwise:
 
-* **`pcb/` has a real reader, a router and a closed-form solver now, but
-  still does not participate in *verification*.** `formats/kicad.nim` reads
+* **A board reaches verification through `--board=`** (findings §18, for
+  SI). `verify.readiness(d, allowed, board)` stores it as
+  `scratch[boardScratchKey]` (`pcb/types.BoardRef`), so `contract` still has
+  no edge to `pcb`; `pcb/graph.bindLandPins` gives a board read from a file
+  the netlist pins its footprints lack, which is what lets a design's
+  `"U1.7"` find its copper. The `si.net` evaluator is the first reader; the
+  `diff.nim` evaluators below are still not wired to it.
+* **`pcb/` has a real reader, a router and a closed-form solver, and
+  participates in verification only through SI so far.** `formats/kicad.nim` reads
   and writes `.kicad_pcb` (byte-exact for an unmodified board; a bounded set
   of edits -- tracks, vias, nets, zone scalars, a placement's
   position/side/reference/pad nets -- regenerated for a modified one,

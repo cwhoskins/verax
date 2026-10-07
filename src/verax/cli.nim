@@ -148,6 +148,12 @@ proc cmdBom(file, pathFlag, outPath: string, extra: seq[string]): int =
   forward.add extra
   cmdCheck(file, pathFlag, forward)
 
+# --- constraints --------------------------------------------------------
+
+proc cmdConstraints(file, pathFlag: string, extra: seq[string]): int =
+  ## As `cmdBom`: forward to the design binary, which derives the rules.
+  cmdCheck(file, pathFlag, @["--si-constraints"] & extra)
+
 # --- discovery ------------------------------------------------------------
 
 proc cmdInterfaces(): int =
@@ -219,6 +225,10 @@ usage:
                                     assemble a board from a design's footprints
   verax bom <file.nim> [-o <out>] [--bom-*]
                                     compile a bill of materials
+  verax constraints <file.nim> [--net=<n>] [--dru=<out.kicad_dru>]
+                    [--stackup-layers=N] [--format=json] [-o <out>]
+                                    SI routing rules for every si_net,
+                                    before layout
   verax new <template> [path]      write a starter design ("-" for stdout)
   verax roles                      the bundles of claims available
   verax interfaces                 declared interface definitions
@@ -232,8 +242,11 @@ usage:
 
 check flags (forwarded to the design file):
   --offline          graph walks only; do not simulate
-  --caps=op,dc,ac,tran
-                     offer a specific subset
+  --caps=op,dc,ac,tran,si
+                     offer a specific subset (si: the native SI engine,
+                     no ngspice needed; included by --offline)
+  --board=<file.kicad_pcb>
+                     the routed board si_net claims are checked on
   --verbose          show the full plan and the passing claims
   --strict           treat warnings and unevaluated claims as failures
   --keep-runs=<dir>  archive every simulation there: the deck handed to
@@ -358,6 +371,27 @@ proc main(): int =
     if file.len == 0:
       raise newException(ValueError, "bom needs a file: verax bom <file.nim>")
     cmdBom(file, pathFlag, outPath, forward)
+  of "constraints":
+    var file = ""
+    var forward: seq[string]
+    var i = 0
+    while i < rest.len:
+      let a = rest[i]
+      if a == "-o" or a == "--out":
+        inc i
+        if i >= rest.len:
+          raise newException(ValueError, "-o needs a path: verax constraints <file.nim> -o <out>")
+        forward.add "--si-out=" & rest[i]
+      elif a == "--format=json": forward.add "--si-format=json"
+      elif a == "--format=text": forward.add "--si-format=text"
+      elif file.len == 0 and not a.startsWith("-"):
+        file = a
+      else:
+        forward.add a
+      inc i
+    if file.len == 0:
+      raise newException(ValueError, "constraints needs a file: verax constraints <file.nim>")
+    cmdConstraints(file, pathFlag, forward)
   of "new":
     if rest.len == 0:
       raise newException(ValueError, "new needs a template name; try `blank`")

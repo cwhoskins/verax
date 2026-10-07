@@ -1,6 +1,6 @@
 import std/[math, strutils, unittest]
 
-import verax/analysis/measure
+import verax/waveform
 import verax/analysis/report
 
 # --- analytically generated curves -------------------------------------

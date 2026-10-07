@@ -16,9 +16,10 @@ import verax/pcb/bom
 import verax/pcb/trace
 import verax/pcb/impedance
 import verax/pcb/tline
+import verax/pcb/via
 import verax/pcb/footprint
 import verax/pcb/assemble
 import verax/pcb/variant
 
-export units, geometry, types, graph, index, bom, trace, impedance, tline,
+export units, geometry, types, graph, index, bom, trace, impedance, tline, via,
        footprint, assemble, variant

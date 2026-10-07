@@ -139,6 +139,18 @@ const builtinAnnotations* = [
          "need different land patterns (hand-solder vs. reflow). Read by " &
          "pcb/assemble.nim, in resolution order: this key, then a multi-" &
          "channel package's PackageDef.footprint, then unresolved."),
+  AnnDef(key: "ibis_file", kind: akString, scopes: {asComponent},
+    doc: "Path to the IBIS (.ibs) file modelling this part's buffers, " &
+         "relative to the working directory. Read by the SI evaluator " &
+         "(`si_net`) and `verax constraints`. Not `partNumber`: the file " &
+         "is a model, not an orderable part."),
+  AnnDef(key: "ibis_component", kind: akString, scopes: {asComponent},
+    doc: "Which IBIS [Component] in `ibis_file` this part is; optional " &
+         "when the file holds exactly one."),
+  AnnDef(key: "ibis_model", kind: akString, scopes: {asComponent},
+    doc: "The [Model Selector] choice for this part's selector pins (one " &
+         "[Model] name, e.g. a drive strength). Without it a selector pin " &
+         "on an SI net is unevaluable, never a guess."),
   AnnDef(key: "zin", kind: akFloat, unit: "ohm", scopes: {asComponent, asPin},
     doc: "Impedance this pin presents to the net it sits on. Overrides the " &
          "per-pin-kind default spice/models substitutes for a part that " &

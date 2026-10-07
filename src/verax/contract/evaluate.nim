@@ -41,13 +41,17 @@ type
     capSpiceDc    ## a source sweep: N operating points, one per swept value
     capSpiceAc
     capSpiceTran
+    capSiTran     ## the native SI transient engine (`si/`); no external tool
     capBench      ## a measurement on real hardware
 
 const
   simCapabilities* = {capSpiceOp, capSpiceDc, capSpiceAc, capSpiceTran}
-  offlineCapabilities* = {capStatic}
+    ## What needs ngspice. `capSiTran` is not here: the SI engine is native.
+  offlineCapabilities* = {capStatic, capSiTran}
+    ## No external tool. Includes `capSiTran` (plan open decision 4): the
+    ## cost is that a plain `--offline` check also runs SI simulations.
   allCapabilities* = {capStatic, capSpiceOp, capSpiceDc, capSpiceAc,
-                      capSpiceTran}
+                      capSpiceTran, capSiTran}
     ## Everything reachable without hardware. `capBench` is opt-in: it means
     ## someone is at a bench.
 
@@ -154,6 +158,7 @@ proc capLabel*(c: Capability): string =
   of capSpiceDc: ".dc"
   of capSpiceAc: ".ac"
   of capSpiceTran: ".tran"
+  of capSiTran: "si"
   of capBench: "bench"
 
 proc capLabel*(s: set[Capability]): string =

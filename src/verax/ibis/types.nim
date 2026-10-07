@@ -48,6 +48,8 @@ type
     ## samples.
     rFixture*: float
     vFixture*: Triplet
+      ## `V_fixture` is the typ column; `V_fixture_min`/`V_fixture_max` fill
+      ## the min/max corners.
     cFixture*, lFixture*, rDut*, lDut*, cDut*: float
     points*: seq[VtPoint]
 
@@ -57,6 +59,33 @@ type
     dvR*, dtR*, dvF*, dtF*: Triplet
     rLoad*: float
     rLoadPresent*: bool
+
+  ModelSpec* = object
+    ## `[Model Spec]`: per-corner receiver/timing figures that override the
+    ## `[Model]` scalars. Every field is a `Triplet`, absent unless stated.
+    present*: bool
+      ## The keyword appeared at all.
+    vinh*, vinl*: Triplet
+    vinhPlus*, vinhMinus*, vinlPlus*, vinlMinus*: Triplet
+      ## Hysteresis thresholds.
+    sOvershootHigh*, sOvershootLow*: Triplet
+      ## Static overshoot limits, **absolute volts** (not relative to a rail).
+    dOvershootHigh*, dOvershootLow*, dOvershootTime*: Triplet
+      ## Dynamic overshoot limits (absolute volts) and the time they may last.
+    pulseHigh*, pulseLow*, pulseTime*: Triplet
+    vmeas*, vref*, cref*, rref*: Triplet
+
+  ReceiverThresholds* = object
+    ## `[Receiver Thresholds]`: single values, not triplets. `Vinh_ac` and
+    ## friends are **offsets from `Vth`** as IBIS states them, kept as written.
+    present*: bool
+    vth*, vthMin*, vthMax*: ModelParam
+    vinhAc*, vinhDc*, vinlAc*, vinlDc*: ModelParam
+    thresholdSensitivity*: ModelParam
+    referenceSupply*: string
+    vcrossLow*, vcrossHigh*: ModelParam
+    vdiffAc*, vdiffDc*: ModelParam
+    tslewAc*, tdiffslewAc*: ModelParam
 
   ModelType* = enum
     ## `Model_type`. `mtOther` covers unknown spellings; `rawType` keeps the
@@ -84,6 +113,8 @@ type
     pulldown*, pullup*, gndClamp*, powerClamp*: IvTable
     ramp*: RampSpec
     risingWaveforms*, fallingWaveforms*: seq[Waveform]
+    modelSpec*: ModelSpec
+    receiverThresholds*: ReceiverThresholds
     raw*: IbisSection
       ## The whole block as lexed, so unmodelled subparameters stay reachable.
 
@@ -152,6 +183,13 @@ type
     modelSelectors*: seq[ModelSelector]
     sections*: seq[IbisSection]
       ## Every top-level keyword in file order, modelled or not.
+
+proc cornerName*(c: Corner): string =
+  ## `typ`/`min`/`max`, for messages (`$` keeps the enum spelling).
+  case c
+  of coTyp: "typ"
+  of coMin: "min"
+  of coMax: "max"
 
 proc newTriplet*(): Triplet = Triplet()
   ## An all-absent triplet, `NA` on every corner until filled.

@@ -1,6 +1,6 @@
-## Built-in roles for point-to-point interconnect: `diff_pair`. A pair is an
-## ordinary two-signal `InterfaceDef` with signals `p`/`n`, so parts bind by
-## name; this module holds only the claims.
+## Built-in roles for point-to-point interconnect: `diff_pair` and
+## `si_net`. A pair is an ordinary two-signal `InterfaceDef` with signals
+## `p`/`n`, so parts bind by name; this module holds only the claims.
 
 import ../../netlist/types
 import ../../netlist/annotations
@@ -53,6 +53,75 @@ proc diffPairExpand*(inst: RoleInstance): seq[Assertion] =
                  "signal at every discontinuity along the trace",
       origin: inst.name)
 
+const siReceiverParts = ["rx", "rx2", "rx3", "rx4"]
+
+proc siNetApply*(inst: RoleInstance, nl: Netlist) =
+  ## Validates at attach time: the driver is not also a receiver.
+  let d = inst.subject("driver")
+  for p in siReceiverParts:
+    if inst.hasPart(p) and inst.subject(p).name == d.name:
+      raise newException(NetlistError,
+        "role 'si_net' instance '" & inst.name & "': " & p & " is the driver (" & d.name & ")")
+
+proc siNetExpand*(inst: RoleInstance): seq[Assertion] =
+  ## Per receiver: the threshold and ringback margins always (the
+  ## receiver's own IBIS Vinh/Vinl are the limit, not an invented one);
+  ## flight time, overshoot, undershoot and settling only when stated.
+  for p in siReceiverParts:
+    if not inst.hasPart(p): continue
+    let rx = inst.subject(p)
+    let tag = p & "."
+    result.add Assertion(
+      id: assertionId(inst, tag & "threshold_margin"),
+      subjects: @[rx], quantity: "si_threshold_margin_v",
+      expect: atLeast(0.0), unit: "V", severity: sevError,
+      rationale: "after the edge the receiver must sit beyond its own " &
+                 "Vinh/Vinl (IBIS), or it never sees the new level",
+      origin: inst.name)
+    result.add Assertion(
+      id: assertionId(inst, tag & "ringback_margin"),
+      subjects: @[rx], quantity: "si_ringback_margin_v",
+      expect: atLeast(0.0), unit: "V", severity: sevError,
+      rationale: "ringing back into the receiver's threshold band can " &
+                 "double-clock an edge-sensitive input",
+      origin: inst.name)
+    if hasParam(inst, "max_flight_time"):
+      result.add Assertion(
+        id: assertionId(inst, tag & "flight_time"),
+        subjects: @[rx], quantity: "si_flight_time",
+        expect: atMost(paramFloat(inst, "max_flight_time", 0.0)), unit: "s",
+        severity: sevError,
+        rationale: "the interconnect's share of the timing budget: from the " &
+                   "driver's Vmeas into its IBIS test load to the receiver " &
+                   "settling past its threshold",
+        origin: inst.name)
+    if hasParam(inst, "max_overshoot"):
+      result.add Assertion(
+        id: assertionId(inst, tag & "overshoot"),
+        subjects: @[rx], quantity: "si_overshoot_v",
+        expect: atMost(paramFloat(inst, "max_overshoot", 0.0)), unit: "V",
+        severity: sevError,
+        rationale: "a receiver driven past its rail conducts into its clamps",
+        origin: inst.name)
+    if hasParam(inst, "max_undershoot"):
+      result.add Assertion(
+        id: assertionId(inst, tag & "undershoot"),
+        subjects: @[rx], quantity: "si_undershoot_v",
+        expect: atMost(paramFloat(inst, "max_undershoot", 0.0)), unit: "V",
+        severity: sevError,
+        rationale: "a receiver driven below ground conducts into its clamps",
+        origin: inst.name)
+    if hasParam(inst, "ui") or hasParam(inst, "max_settle_time"):
+      let lim = if hasParam(inst, "max_settle_time"): paramFloat(inst, "max_settle_time", 0.0)
+                else: paramFloat(inst, "ui", 0.0)
+      result.add Assertion(
+        id: assertionId(inst, tag & "settle_time"),
+        subjects: @[rx], quantity: "si_settle_time",
+        expect: atMost(lim), unit: "s", severity: sevError,
+        rationale: "an edge must settle within the unit interval or the " &
+                   "next bit starts from the previous one's ringing",
+        origin: inst.name)
+
 proc registerInterconnectRoles*() =
   registerRole(RoleDef(
     name: "diff_pair",
@@ -73,3 +142,34 @@ proc registerInterconnectRoles*() =
     ],
     apply: diffPairApply,
     expand: diffPairExpand))
+  registerRole(RoleDef(
+    name: "si_net",
+    doc: "One single-ended net checked as a signal-integrity problem: an " &
+         "IBIS driver, the routed board interconnect, IBIS receivers " &
+         "(each part's `ibis_file`). Needs a board (`--board=`); without " &
+         "one, `verax constraints` derives the routing rules instead.",
+    parts: @[
+      RolePart(name: "net", kind: skNet, doc: "the signal net"),
+      RolePart(name: "driver", kind: skPin, doc: "the driving pin"),
+      RolePart(name: "rx", kind: skPin, doc: "a receiving pin"),
+      RolePart(name: "rx2", kind: skPin, optional: true, doc: "a second receiver"),
+      RolePart(name: "rx3", kind: skPin, optional: true, doc: "a third receiver"),
+      RolePart(name: "rx4", kind: skPin, optional: true, doc: "a fourth receiver"),
+    ],
+    params: @[
+      AnnDef(key: "max_flight_time", kind: akFloat, unit: "s", scopes: {asNet},
+             doc: "most driver-to-receiver flight time (IBIS definition); " &
+                  "unclaimed unless stated"),
+      AnnDef(key: "max_overshoot", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "most a receiver may go above the driver's high rail; " &
+                  "unclaimed unless stated"),
+      AnnDef(key: "max_undershoot", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "most a receiver may go below the driver's low rail; " &
+                  "unclaimed unless stated"),
+      AnnDef(key: "ui", kind: akFloat, unit: "s", scopes: {asNet},
+             doc: "unit interval: each edge must settle within it"),
+      AnnDef(key: "max_settle_time", kind: akFloat, unit: "s", scopes: {asNet},
+             doc: "settling limit, overriding `ui` for the settle claim"),
+    ],
+    apply: siNetApply,
+    expand: siNetExpand))
