@@ -1,17 +1,9 @@
-## Public JSON API for a `Schematic`: writer *and* reader.
-##
-## The scene is serialized as plain JSON so the same placement/routing that
-## produces an SVG is also consumable by a future interactive frontend
-## (pan/zoom/hover, per the design notes) without re-parsing the SVG, and so a
-## scene archived beside an SVG (`runNNN.json`, `runFULL.json`, child sheets)
-## can be read back for diagnostics that need the routed geometry but not the
-## netlist graph. The writer emits `schemaVersion` 1 with every `Schematic`
-## field present; the reader is strict for version 1 (missing or mistyped
-## fields raise `SceneJsonError`) and also reads the legacy *unversioned*
-## archive format honestly: that format predates both `schemaVersion` and the
-## fallback `ex`/`ey` escape direction, so the reader reconstructs the escape
-## direction from the scene's own part/port geometry -- `(0, 0)` when the
-## scene cannot identify the owning pin or port, never an invented direction.
+## Public JSON API for a `Schematic`: writer and reader, so routed geometry
+## can be read back from archives (`runNNN.json`, `runFULL.json`) without
+## the netlist. Writes `schemaVersion` 1 with every field; the reader is
+## strict for version 1 (`SceneJsonError` on missing/mistyped fields) and
+## also reads the legacy unversioned format, reconstructing fallback
+## `ex`/`ey` from scene geometry (`(0, 0)` when the owner can't be found).
 
 import std/json
 import ../netlist/types
@@ -19,15 +11,13 @@ import ./scene
 import ./layout
 
 const sceneSchemaVersion* = 1
-  ## The JSON schema version this module writes and reads. Version 1 is the
-  ## complete scene (every `Schematic` field). JSON without `schemaVersion`
-  ## is the legacy unversioned archive format and is still read, with the one
-  ## missing piece (fallback `ex`/`ey`) reconstructed rather than invented.
+  ## The schema version written and read: 1 is the complete scene. JSON
+  ## without `schemaVersion` is the legacy format (fallback `ex`/`ey`
+  ## reconstructed).
 
 type
   SceneJsonError* = object of CatchableError
-    ## Raised by the strict reader on malformed or unsupported scene JSON.
-    ## `msg` names the offending field.
+    ## Raised by the strict reader; `msg` names the offending field.
 
 proc fail(msg: string) {.noreturn.} =
   raise newException(SceneJsonError, msg)
@@ -255,9 +245,8 @@ proc sceneToJson*(s: Schematic): JsonNode =
     fallbacks.add o
   result["fallbacks"] = fallbacks
 
-  # `dividers` is emitted only when non-empty -- the same "write when
-  # non-default" discipline the bus/array fields already follow -- so a
-  # power-free sheet's JSON stays byte-identical to a pre-feature archive.
+  # `dividers` only when non-empty, so power-free sheets match older
+  # archives.
   if s.dividers.len > 0:
     var dividers = newJArray()
     for d in s.dividers:
@@ -297,38 +286,28 @@ proc reqStr(n: JsonNode, key: string): string =
   n[key].str
 
 proc optStr(n: JsonNode, key: string): string =
-  ## An additive string field: `""` when absent (so an archive written before
-  ## the field existed still parses), but type-checked when present.
+  ## An additive string field: `""` when absent, type-checked when present.
   if not n.hasKey(key): return ""
   if n[key].kind != JString:
     fail("scene JSON: field \"" & key & "\" must be a string")
   n[key].str
 
 proc optInt(n: JsonNode, key: string): int =
-  ## An additive integer field: 0 when absent (so an archive written before
-  ## the field existed still parses), type-checked when present. Beside
-  ## `optStr`/`optArr` -- the same additive contract, for the subsheet-array
-  ## instance count.
+  ## An additive int field: 0 when absent, type-checked when present.
   if not n.hasKey(key): return 0
   if n[key].kind != JInt:
     fail("scene JSON: field \"" & key & "\" must be an integer")
   int(n[key].num)
 
 proc optArr(n: JsonNode, key: string): JsonNode =
-  ## An additive array field: an empty `JArray` when absent (so an archive
-  ## written before the field existed still parses), but type-checked when
-  ## present. Beside `optStr` -- the same additive contract, for the bundle
-  ## member lists added with buses/interfaces.
+  ## An additive array field: empty when absent, type-checked when present.
   if not n.hasKey(key): return newJArray()
   if n[key].kind != JArray:
     fail("scene JSON: field \"" & key & "\" must be an array")
   n[key]
 
 proc optBool(n: JsonNode, key: string): bool =
-  ## An additive boolean field: `false` when absent (so an archive written
-  ## before the field existed still parses), type-checked when present.
-  ## Beside `optStr`/`optInt`/`optArr` -- the same additive contract, for
-  ## `SchematicPart.mirror`.
+  ## An additive bool field: `false` when absent, type-checked when present.
   if not n.hasKey(key): return false
   if n[key].kind != JBool:
     fail("scene JSON: field \"" & key & "\" must be a boolean")
@@ -364,15 +343,10 @@ proc reqPoint(n: JsonNode): Point =
   Point(x: reqFloat(n, "x"), y: reqFloat(n, "y"))
 
 proc jsonToScene*(node: JsonNode): Schematic =
-  ## The strict inverse of `sceneToJson`: reads a version-1 scene, requiring
-  ## every field and checking every type, raising `SceneJsonError` on anything
-  ## malformed or on a `schemaVersion` this reader does not know.
-  ##
-  ## JSON without `schemaVersion` is read as the legacy unversioned archive
-  ## format: every field is still required except the fallback `ex`/`ey`
-  ## escape direction, which that format never stored and which is
-  ## reconstructed from the scene's part/port geometry (see
-  ## `layout.fallbackEscapeDir`).
+  ## The strict inverse of `sceneToJson`: every field required and typed;
+  ## unknown `schemaVersion` raises. Without `schemaVersion`, the legacy
+  ## format: fallback `ex`/`ey` are reconstructed
+  ## (`layout.fallbackEscapeDir`).
   if node.kind != JObject:
     fail("scene JSON: root must be an object")
 
@@ -492,8 +466,7 @@ proc jsonToScene*(node: JsonNode): Schematic =
       f.ey = d.y
     result.fallbacks.add f
 
-  # `dividers` is additive -- `optArr` reads an empty array when absent, so a
-  # pre-feature archive with no `dividers` key still reads.
+  # `dividers` is additive (empty when absent).
   for dn in optArr(node, "dividers"):
     if dn.kind != JObject: fail("scene JSON: divider must be an object")
     result.dividers.add SchematicDivider(
@@ -503,14 +476,12 @@ proc jsonToScene*(node: JsonNode): Schematic =
       label: optStr(dn, "label"))
 
 proc jsonToScene*(jsonString: string): Schematic =
-  ## Reads a scene from its JSON text (the strict inverse of
-  ## `sceneToJsonString`).
+  ## Reads a scene from JSON text (inverse of `sceneToJsonString`).
   try:
     jsonToScene(parseJson(jsonString))
   except JsonParsingError as e:
     fail("scene JSON: invalid JSON: " & e.msg)
 
 proc readSceneJsonFile*(path: string): Schematic =
-  ## Reads a scene from a JSON file, the strict inverse of
-  ## `writeSceneJsonFile`.
+  ## Reads a scene from a JSON file (inverse of `writeSceneJsonFile`).
   jsonToScene(readFile(path))

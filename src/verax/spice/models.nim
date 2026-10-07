@@ -1,20 +1,10 @@
-## Simulation-only device models: parasitic expansion of real components, and
-## synthesized macromodels for parts a netlist names but does not describe.
+## Simulation-only device models: parasitic expansion and synthesized
+## macromodels for parts a netlist names but doesn't describe. Everything
+## mutates its netlist (use a simulation clone) and returns the
+## `Assumption`s it invents.
 ##
-## Like `verax/spice/transform` and `verax/spice/probes`, everything here
-## mutates whatever `Netlist` it is given -- run it on a simulation clone
-## (`transform.materializeSimNetlist`, `extract.*` or `isolate.isolate`),
-## never on the real design netlist.
-##
-## Every proc here *invents numbers the netlist does not contain*, so each
-## returns a `seq[Assumption]` of human-readable assumption lines for the
-## caller to put in `AnalysisReport.assumptions`. A result derived from an
-## invented input has to say so where the reader will see it.
-##
-## This module is the hub: one file per model under `models/`, re-exported
-## here so `import verax/spice/models` (or `verax/spice`) still reaches
-## everything. What it keeps of its own is `registerBuiltinBehavioralModels`
-## and the call that wires the built-in behavioural stand-ins at init.
+## The hub: one file per model under `models/`, re-exported here, plus
+## `registerBuiltinBehavioralModels`.
 
 import ./models/common
 import ./models/derating
@@ -34,28 +24,20 @@ export common, derating, capacitor, ferrite_bead, passives, source_impedance
 export behavioral, regulator, buffer, opamp, magnetics, switch, pin_models
 
 proc registerBuiltinBehavioralModels*() =
-  ## Called at module init. Exposed so a test can prove re-registering is
-  ## idempotent, and so an application that clears the table can restore it.
+  ## Called at module init; exposed so re-registration can be tested and a
+  ## cleared table restored.
   for kind in ["regulator", "ldo", "vreg", "dcdc", "smps", "switcher",
                "buck", "boost"]:
     registerBehavioralModel(kind, regulatorModel)
   for kind in ["buffer", "voltage_follower", "unity_gain_buffer",
                "line_driver", "level_shifter"]:
     registerBehavioralModel(kind, bufferModel, passesSignal = true)
-  # `passesSignal` stays false, unlike a buffer's. It governs whether
-  # `analysis/opamp`'s static feedback walk may cross the part, and that walk
-  # is forwards-only through `signalPathPins` -- which cannot answer for an
-  # amplifier, because an op-amp has *two* inputs and nothing in a netlist
-  # says which one a path enters by. The simulated stand-in above still
-  # closes the path, so an `.ac` sees the cascade; only the static walk stays
-  # conservative, which is the direction to be wrong in.
-  # Deliberately not `comparator`: this macromodel is linear, and a
-  # comparator's entire behaviour is that it is not.
+  # `passesSignal` stays false: the static feedback walk can't know which of
+  # an op-amp's two inputs a path enters (the `.ac` still sees the
+  # cascade). Not `comparator`: this macromodel is linear.
   for kind in ["opamp", "op_amp", "operational_amplifier"]:
     registerBehavioralModel(kind, opampModel)
-  # A multi-throw analog mux / RF switch keeps a path from its common
-  # terminal to whichever throw the select pins decode -- so `passesSignal`,
-  # like a buffer and unlike a regulator.
+  # A mux passes signal from common to the selected throw.
   for kind in ["analog_switch", "rf_switch", "mux"]:
     registerBehavioralModel(kind, muxModel, passesSignal = true)
 

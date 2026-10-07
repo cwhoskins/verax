@@ -1,12 +1,9 @@
-## A `BomResult`, rendered three ways -- the `verify.render`/`renderJson`/
-## `renderJunit` split:
+## A `BomResult` rendered three ways:
 ##
-##   * `render` -- text, for a terminal: the lines, then every finding grouped
-##     by severity, then a summary.
-##   * `renderCsv` -- one row per line, procurement-ready.
-##   * `renderJson` -- `schema: "verax.bom/1"`, the machine-readable report
-##     **and the lockfile**: `loadLock` reads it back, keyed on each
-##     searched part's `signature`, into `ResolveOptions.lock`.
+##   * `render` -- text: lines, findings by severity, summary.
+##   * `renderCsv` -- one row per line.
+##   * `renderJson` -- `verax.bom/1`, which is **also the lockfile**
+##     (`loadLock` reads each searched part's `signature`).
 
 import std/[json, math, sequtils, strutils, tables]
 
@@ -17,8 +14,7 @@ const BomSchema* = "verax.bom/1"
 
 type
   LockError* = object of CatchableError
-    ## A `--bom-lock` file that cannot be used. A usage error, never a
-    ## silently skipped preference -- the rule `verify.loadBaseline` sets.
+    ## An unusable `--bom-lock` file: a usage error, never silently skipped.
 
 proc sevWord(s: Severity): string =
   case s
@@ -121,14 +117,13 @@ proc render*(r: BomResult): string =
 # --- CSV ---------------------------------------------------------------------
 
 proc csvField(s: string): string =
-  ## RFC 4180: quoted when it holds a comma, a quote or a line break, with
-  ## quotes doubled. Designators always hold commas.
+  ## RFC 4180 quoting (designators always contain commas).
   if s.contains({',', '"', '\n', '\r'}): "\"" & s.replace("\"", "\"\"") & "\""
   else: s
 
 proc renderCsv*(r: BomResult): string =
-  ## One header row and one row per line, CRLF-free. Quantities sum to the
-  ## populated and DNP part count; excluded parts are on no row.
+  ## A header plus one row per line. Quantities count populated and DNP
+  ## parts; excluded parts are on no row.
   var rows = @["Quantity,Designators,Value,Footprint,Manufacturer,MPN," &
                "Description,Datasheet,DNP"]
   for line in r.lines:
@@ -140,8 +135,7 @@ proc renderCsv*(r: BomResult): string =
 
 # --- JSON --------------------------------------------------------------------
 
-# A bare `nan` is not JSON and would corrupt every `jq` call downstream --
-# the same helper `verify.nim` uses, for the same reason.
+# Every float through `jnum`: bare `nan` isn't JSON.
 proc jnum(x: float): JsonNode =
   if x.isNaN or x == Inf or x == -Inf: newJNull() else: newJFloat(x)
 
@@ -221,9 +215,8 @@ proc partJson(x: Resolution): JsonNode =
   result["issues"] = iss
 
 proc renderJson*(r: BomResult): string =
-  ## `parts[]` is one entry per item, excluded ones included, in collection
-  ## order; a line names its parts by index into it, so nothing is
-  ## serialized twice.
+  ## `parts[]` has every item (excluded included) in collection order; lines
+  ## reference parts by index.
   var root = newJObject()
   root["schema"] = newJString(BomSchema)
   var index = initTable[pointer, int]()
@@ -281,11 +274,9 @@ proc renderJson*(r: BomResult): string =
 # --- the lockfile ------------------------------------------------------------
 
 proc parseLock*(text: string, origin = "<string>"): Table[string, LockEntry] =
-  ## Every resolved part with a `signature` -- one a parametric search chose
-  ## -- keyed on it. A part bought by MPN has none and is not locked: the
-  ## design already names it. Two parts with one signature must agree, since
-  ## one requirement buys one part; a hand-edited file where they do not is
-  ## refused rather than resolved by order.
+  ## Every resolved part with a `signature` (chosen by search), keyed on it.
+  ## MPN-bought parts aren't locked. Two parts sharing a signature must
+  ## agree, else the file is refused.
   var j: JsonNode
   try:
     j = parseJson(text)
@@ -320,8 +311,7 @@ proc parseLock*(text: string, origin = "<string>"): Table[string, LockEntry] =
                               designators: designators)
 
 proc loadLock*(path: string): Table[string, LockEntry] =
-  ## `parseLock` of a file. A missing or unreadable file is a `LockError`
-  ## too, so a caller has one exception to report.
+  ## `parseLock` of a file; an unreadable file is a `LockError` too.
   var text: string
   try:
     text = readFile(path)

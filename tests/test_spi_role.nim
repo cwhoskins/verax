@@ -1,6 +1,5 @@
-## The `spi` role: its per-chip-select fan-out (`design.addImpliedRoles`,
-## exercised end to end here through `spiInterface`) and the evaluator its
-## `miso_driver_count` claim rests on (`contract/evaluators/static`).
+## The `spi` role: its per-chip-select fan-out and the `miso_driver_count`
+## evaluator.
 
 import std/[sequtils, strutils, tables, unittest]
 
@@ -16,9 +15,7 @@ proc net(name: string): Subject = Subject(kind: skNet, name: name)
 proc comp(name: string): Subject = Subject(kind: skComponent, name: name)
 
 proc bus(): Design =
-  ## A bare SPI bus with a controller and no peripherals -- enough to attach
-  ## an `spi` role instance by hand and check what it claims, without going
-  ## through an interface's fan-out.
+  ## A controller-only SPI bus, for attaching an `spi` role by hand.
   let nl = newNetlist("board")
   let vdd = addNet(nl, newNet("vdd", ntPower))
   let gnd = addNet(nl, newNet("0", ntGround))
@@ -49,9 +46,8 @@ suite "the spi role":
     check "pullup_count" notin quantities
 
   test "cs.pullup is opt-in, claimed only when csPullup is stated":
-    # `designs/spi_memories.nim` drives every select from a GPIO with no
-    # pull-up, and an unconditional claim here would fail nine times on a
-    # correct board -- the same `power_rail`/`targetZ` doctrine.
+  # Selects driven from GPIOs with no pull-up are normal, so this claim is
+  # opt-in.
     let d = bus()
     discard d.addRole("spi", "sp0",
       {"sclk": net("sclk"), "mosi": net("mosi"), "miso": net("miso"),
@@ -111,10 +107,8 @@ suite "the spi role's chip-select fan-out":
 # --- miso_driver_count -----------------------------------------------------
 
 proc twoSelectBus(sharedCs: bool): Design =
-  ## A controller and two peripherals, each with its own chip select unless
-  ## `sharedCs`, in which case both sit on chip select 0 -- the defect
-  ## `miso_driver_count` exists to catch: two peripherals that will both
-  ## drive MISO the instant that one select is asserted.
+  ## A controller and two peripherals with their own selects, or both on
+  ## select 0 when `sharedCs` -- two MISO drivers at once.
   let nl = newNetlist("board")
   let sclk = addNet(nl, newNet("sclk", ntSignal))
   let mosi = addNet(nl, newNet("mosi", ntSignal))
@@ -175,11 +169,8 @@ suite "miso_driver_count":
     check "states a direction" in r[0].reason
 
   test "a hierarchical instance is not double-counted; only its leaf driver is":
-    # `designs/lib/spi_memory.SPI_MEMORY` is a real subckt: the boundary pin
-    # `X1` presents on the shared MISO bus sits on the identical conductor as
-    # the leaf 23LC1024's own driving pin, joined only through `Pin.hierNet`
-    # at the instance boundary (`allPins`'s reason for existing). Counting
-    # both would report 2 drivers behind one memory.
+  # A subckt's boundary pin and its leaf's driving pin are one conductor
+  # (joined by `Pin.hierNet`); counting both would report 2 drivers.
     let nl = newNetlist("board")
     let gnd = addNet(nl, newNet("0", ntGround))
     let vdd = addNet(nl, newNet("vdd", ntPower))

@@ -1,15 +1,10 @@
-## The separated power/decoupling band (`schematic/power`, `state
-## .enforcePowerBand`), the `layout.power` override, and the bypass-bank
-## collapse floor in `schematic/arrays.nim`.
+## The power/decoupling band (`schematic/power`, `enforcePowerBand`), the
+## `layout.power` override, and bypass-bank collapse.
 ##
-## The properties worth pinning here: a sheet with no power-classified unit
-## is byte-identical whether or not `lsPowerBand` runs; a placement unit
-## whose every external net is a rail or ground lands strictly below the
-## dashed divider `enforcePowerBand` draws, while an ordinary signal unit
-## stays strictly above it; `layout.power` overrides that classification
-## either way, per placement unit; and two-or-more identical decoupling caps
-## on one rail/ground pair collapse to one badged symbol, while an ordinary
-## same-valued pair wired into unrelated roles does not.
+## Pinned: with no power unit the sheet is identical with or without
+## `lsPowerBand`; pure-power units land below the divider and signal units
+## above; `layout.power` overrides per unit; identical decoupling caps on
+## one rail pair collapse, unrelated same-valued pairs don't.
 
 import std/[json, tables, unittest]
 
@@ -23,9 +18,8 @@ proc partOf(s: Schematic, desig: string): SchematicPart =
   doAssert false, "no part named " & desig
 
 proc opAmpStage(): Netlist =
-  ## A signal stage (an op-amp with a feedback resistor) plus a decoupling
-  ## cap and a ferrite bead between two rails -- one signal unit, two power
-  ## units, so the band has something on both sides of the divider.
+  ## A signal stage plus a decoupling cap and a ferrite bead between rails:
+  ## units on both sides of the divider.
   result = newNetlist("stage")
   let gnd = addNet(result, newNet("0", ntGround))
   let vdd = addNet(result, newNet("vdd", ntPower))
@@ -56,8 +50,7 @@ proc opAmpStage(): Netlist =
   discard connect(fbead, "2", vdd, ptPassive)
 
 proc signalOnly(): Netlist =
-  ## No rail or ground at all -- every unit is signal, so the band has
-  ## nothing to separate.
+  ## No rail or ground: all signal.
   result = newNetlist("signal_only")
   let a = addNet(result, newNet("a"))
   let b = addNet(result, newNet("b"))
@@ -67,7 +60,7 @@ proc signalOnly(): Netlist =
   discard connect(r1, "2", b, ptPassive)
 
 proc powerOnly(): Netlist =
-  ## Every unit is externally pure-power -- nothing to separate either.
+  ## All pure-power.
   result = newNetlist("power_only")
   let vdd = addNet(result, newNet("vdd", ntPower))
   let gnd = addNet(result, newNet("0", ntGround))

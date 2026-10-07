@@ -1,10 +1,8 @@
 proc fullyInternalComposite(physicalPins: seq[RoutePin],
                             composites: CompositePlan): bool =
-  ## True when every pin of a signal net is covered by one and the same
-  ## composite port -- the net has no endpoint outside the composite, so the
-  ## external router has nothing to do and `compositeInternalRoutes` owns its
-  ## wiring. An interface-port connection point (empty `pinName`) always
-  ## disqualifies it.
+  ## True when every pin of a signal net is covered by one composite port:
+  ## `compositeInternalRoutes` owns its wiring. An interface-port connection
+  ## point always disqualifies it.
   if physicalPins.len < 2: return false
   var key = (-1, -1)
   for p in physicalPins:
@@ -25,21 +23,13 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                 portY = initTable[string, float](),
                 mirrors: seq[bool] = @[]): RoutingState =
   ## Build the routed scene for the given centres/rotations. Pure and
-  ## deterministic. `ok` is false only when `routeNet` reports an unreachable
-  ## pin and `withFallbacks` is false -- the one recoverable routing failure,
-  ## which the placement-routing feedback loop may move out of. With
-  ## `withFallbacks` true a net that cannot be routed is not a failure: every
-  ## pin of it is recorded as a `SchematicFallback` and the remaining nets are
-  ## still routed normally, so an impossible route degrades to a dashed marker
-  ## instead of raising. Attempt zero (`layout`'s first call) passes through
-  ## this proc unchanged, so a netlist that already routes produces exactly
-  ## the scene it did before the feedback loop existed.
+  ## deterministic. `ok` is false only when a pin is unreachable and
+  ## `withFallbacks` is false (the recoverable failure the feedback loop
+  ## works on). With `withFallbacks`, an unroutable net becomes a
+  ## `SchematicFallback` per pin and the rest still route.
   ##
-  ## `portY` is the post-route override channel (`refinePortPlacement`): an
-  ## entry replaces a port's pre-route anchor-pin target in the column
-  ## relaxation. It is a spring target, not a hard y -- the min-gap projection
-  ## still runs, so two ports pulled to the same target stay `portMinGap`
-  ## apart.
+  ## `portY` (from `refinePortPlacement`) replaces a port's anchor target in
+  ## the column relaxation -- a spring target; `portMinGap` still applies.
   var pinPos = initTable[string, Point]()
   var partIdxByDesig = initTable[string, int]()
   for i, c in comps:
@@ -67,23 +57,18 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       let slot = rotatedSlot(slot0, rots[i])
       let px = pos[i].x + slot.x
       let py = pos[i].y + slot.y
-      # `pinPos` receives *every* member key (all -> the merged point), which
-      # is what keeps the escape-seed loop, port anchoring, finish's label
-      # anchors and diagnostics working with no per-consumer bundle knowledge.
+      # Every member key maps to the merged point, so downstream consumers
+      # need no bundle knowledge.
       pinPos[pinKey(c, pinName)] = Point(x: px, y: py)
       let bi = bundles.byPin.getOrDefault(pinKey(c, pinName), -1)
       if bi >= 0:
-        # One `SchematicPin` per merged lane: `SchematicPart.pins.len` then
-        # differs from `c.pins.len`, which every audited scene consumer
-        # (svg box branch, finish, diagnostics, render, json) tolerates.
+        # One `SchematicPin` per merged lane, so `pins.len` may differ from
+        # `c.pins.len`; scene consumers tolerate that.
         if bi notin groupPinDone:
           groupPinDone.incl bi
           let b = bundles.bundles[bi]
-          # `laneOf` gives a collapsed bundle `(b.pinName, b.sceneMembers)`
-          # unchanged, and a merged net-label group its own `(text, members)`.
-          # `net` stays `b.display` -- the group text would make
-          # `diagnostics.sceneRouterInputs` re-seed an escape stub under a tag
-          # routing never used.
+          # `net` stays `b.display`: the group text would make
+          # `diagnostics.sceneRouterInputs` seed a stub under an unused tag.
           let lane = laneOf(bundles, bi, c.designator)
           sp.pins.add SchematicPin(name: lane.name, x: px, y: py,
                                    net: b.display, members: lane.members)
@@ -101,31 +86,21 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     partIdxByDesig[c.designator] = result.parts.len
     result.parts.add sp
 
-  # Constrained parallel groups are private composites.  They preserve the
-  # public scene schema (all physical parts still appear above) while giving
-  # routing one endpoint per shared terminal and a combined footprint.
+  # Constrained parallel groups are private composites: the scene schema is
+  # unchanged, but routing gets one endpoint per shared terminal.
   let composites =
     if constrained: positionedCompositePlan(composites, result.parts, routingClearance)
     else: CompositePlan()
 
-  # A shared global net (SPICE node "0") accumulates pins from every sibling
-  # clone that wired into it, and sibling clones reuse designators, so a pin
-  # belongs to this sheet only when its component's owning netlist *is* this
-  # one -- identity, not name.
+  # A global net collects pins from sibling clones that reuse designators,
+  # so ownership is by netlist identity, not name.
   proc ownsPin(p: Pin): bool =
     p.component != nil and p.component.netlist == nl
 
-  # `isGroundHere` / `isRailHere` are module-level in `geometry.nim` now --
-  # `bundlePlan` is the third consumer of that one-liner.
-
-  # Every signal pin -- and every interface port's connection point -- leaves
-  # its body through a short fixed-direction stub to the routing grid. Those
-  # stubs are seeded here, tagged with their own net, and handed to the two
-  # consumers that must respect them: the rail/ground stub shortening test,
-  # and the signal route's occupancy check. They are never added to `occ`:
-  # `occ` is the emitted-wire set a fallback stub sizes itself against, and a
-  # pin's own escape seed must not read as a foreign wire there (it would
-  # zero every fallback marker).
+  # Every signal pin and port connection point leaves its body through a
+  # short stub, seeded here under its own net for the rail-stub shortening
+  # test and signal occupancy. Never added to `occ` (the emitted-wire set
+  # fallback stubs size against), or every fallback marker would be zero.
   var escapeSeeds: seq[OccSeg]
   var seededBundle: HashSet[string]      ## "<partIdx>\x1f<bundle>" seeded once
   var seededArray: HashSet[string]       ## "<x>,<y>\x1f<display>" seeded once
@@ -138,15 +113,12 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       if not (pinPos.hasKey(key) and
               partIdxByDesig.hasKey(p.component.designator)): continue
       let partIdx = partIdxByDesig[p.component.designator]
-      # Only the composite port is an external escape corridor.  Covered pins
-      # belong to the deterministic private fanout and must not become extra
-      # router endpoints or foreign-net blockers.
+      # Only the composite port is an external escape; covered pins belong to
+      # the private fanout.
       let cp = compositePort(composites, partIdx, p.name)
       if constrained and cp.found and not cp.representative: continue
-      # A collapsed bundle's members share one merged point. Seed it **once**,
-      # tagged `b.display` -- three foreign seeds lying along the bundle's own
-      # first hop would make `edgeAllowed` forbid it forever, so the bundle
-      # could never route. `seededBundle` guards the loop.
+      # A collapsed bundle's members share one point: seed it **once** under
+      # `b.display`, or foreign seeds on its first hop block it forever.
       let bi = bundles.byPin.getOrDefault(key, -1)
       var seedNet = net.name
       if bi >= 0:
@@ -155,9 +127,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         if sk in seededBundle: continue
         seededBundle.incl sk
       elif arrays.groupOf.hasKey(net.name):
-        # A distributed array group's endpoints sit at *different* points on a
-        # foreign part (eight CS pins on an MCU), each needing its own seed --
-        # so dedupe on the point, not the part, unlike `seededBundle`.
+        # An array group's endpoints are at different points on a foreign
+        # part, so dedupe on the point, not the part.
         let (ai, pj) = arrays.groupOf[net.name]
         seedNet = arrays.arrays[ai].ports[pj].display
         let pt0 = pinPos[key]
@@ -170,20 +141,13 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
              seedNet)
 
   # --- interface ports: a fixed column per direction ------------------
-  # Each entry of `nl.ports` (declared order -- an `OrderedTable`, iterated
-  # like `nl.nets` everywhere else here) whose net carries a real signal
-  # gets an Altium-style port symbol in a column just outside the parts: the
-  # left edge for an input or an unspecified port, the right edge for an
-  # output or a bidirectional one, so signal reads left to right. Rails and
-  # ground are skipped -- they draw their own glyph. Layout fixes the column
-  # x; a port's y follows its net-mate pin, pushed down only to clear a port
-  # already placed in that column. The connecting wire is routed like any
-  # other net branch, so it never crosses a body.
+  # Each signal-carrying `nl.ports` entry gets a port symbol in a column
+  # outside the parts: left for input/unspecified, right for
+  # output/bidirectional. Rails and ground are skipped (own glyph). A port's
+  # y follows its net-mate pin; its wire routes like any other branch.
   var portedNets = initHashSet[string]()
-  # A net may be published under more than one plain port name -- a pass-through
-  # strap, `<name>_in` and `<name>_out` bound to one internal net (the daisy
-  # chain modules in `designs/lib/`). Every such pennant needs its own
-  # connecting wire, so this is a seq, not one point.
+  # A net may be published under several port names (a pass-through strap,
+  # `<name>_in`/`<name>_out`); each pennant needs its own wire.
   var portConn = initTable[string, seq[tuple[at, inward: Point]]]()
   var strapNets = initCountTable[string]()
   for pn, nt in nl.ports:
@@ -221,11 +185,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     let bi = bundles.byPort.getOrDefault(portName, -1)
     let ag = (if net != nil: arrays.groupOf.getOrDefault(net.name, (-1, -1))
               else: (-1, -1))
-    # A pass-through strap publishes one internal net under two names
-    # (`<x>_in`, `<x>_out`). `portDirection` sees one internal pin and calls
-    # both inputs; orient them by the `_in` / `_out` suffix so the sheet reads
-    # in-then-out, and keep both real port names -- the interface is the two
-    # ports, not the net behind them.
+    # A strap's two port names see one internal pin; orient them by `_in`/
+    # `_out` suffix and keep both names.
     let strap = bi < 0 and ag.a < 0 and strapNets.getOrDefault(net.name) >= 2
     var dir =
       if bi >= 0: bundles.bundles[bi].dir
@@ -253,13 +214,9 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         have = true
     if not have: continue
     if bi >= 0:
-      # A bundle's published member ports fold to one pennant -- a collapsed
-      # bundle's member ports (all-or-nothing published, by the collapse
-      # precondition) or a net-label bundle's published subset alike. Keep
-      # the same "better" anchor test across every member's best pin. Named
-      # off `portText`/`portSceneMembers` (the *published* subset), not
-      # `pinName`/`sceneMembers` (every member) -- a `brNetLabel` bundle can
-      # publish fewer than all its members.
+      # A bundle's published member ports fold to one pennant, using the
+      # published subset (`portText`/`portSceneMembers`) -- a `brNetLabel`
+      # bundle may publish fewer than all members.
       let b = bundles.bundles[bi]
       portedNets.incl net.name
       portedNets.incl b.display
@@ -279,10 +236,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         members: b.portSceneMembers)
       continue
     if ag.a >= 0:
-      # A distributed array group whose member nets are published ports folds
-      # to one pennant -- exactly like a collapsed bundle. Without this, a
-      # member net whose only on-sheet owner is a hidden instance finds no
-      # placed pin and the port silently disappears.
+      # A published array group folds to one pennant too; otherwise a member
+      # owned only by a hidden instance finds no pin and the port vanishes.
       let ap = arrays.arrays[ag.a].ports[ag.p]
       let akey = $ag.a & ":" & $ag.p
       portedNets.incl net.name
@@ -308,16 +263,10 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       prefY: anchorY, bodyH: 24.0,
       bodyW: max(60.0, float(portName.len) * 8.0 + 28.0))
 
-  # Stack each column with a wire-tension relaxation: every port is a bead on
-  # its edge column pulled toward its target y like a wire end under tension,
-  # and two ports in one column keep `portMinGap` between bodies. The target is
-  # the port's net anchor pin, or -- once `refinePortPlacement` has run -- a
-  # `portY` override read off the routed wire. Each sweep is a spring pull then
-  # a symmetric forward / backward min-gap projection, so a jammed column
-  # settles centred on the mean of its targets instead of cascading downward
-  # from the topmost pin the way a greedy stack does; a column with room to
-  # spare leaves every port on its target. Column order is target y, then name
-  # for a tie.
+  # Stack each column by wire-tension relaxation: each port is pulled
+  # toward its target y (anchor pin, or the `portY` override), then a
+  # symmetric min-gap projection, so a jammed column centres on its targets
+  # instead of cascading down. Order: target y, then name.
   proc portTarget(pl: PortPlan): float =
     portY.getOrDefault(pl.name, pl.prefY)
   for onRight in [false, true]:
@@ -355,9 +304,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       let conn = Point(x: edgeX, y: y)
       let inward = Point(x: (if onRight: -1.0 else: 1.0), y: 0.0)
       portConn.mgetOrPut(pl.net, @[]).add (at: conn, inward: inward)
-      # A port's connecting stub is a signal wire like any other pin's, so a
-      # foreign net must not thread it either; seed it exactly like a part
-      # pin's escape stub above.
+      # A port's stub is a signal wire; seed it like a pin's escape stub.
       addOcc(escapeSeeds, conn, conn + inward * routingClearance, pl.net)
 
   var obstacles: seq[Obstacle]
@@ -387,11 +334,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   var free = buildFreeGrid(obstacles, escapeTerminals)
 
   # --- routing ------------------------------------------------------------
-  # Rail stubs are emitted first so their segments are occupied before any
-  # signal route is planned; signal routes then avoid running along them.
-  # Within each stub pass and signal pass the same deterministic order (net
-  # iteration order, then pin order) drives occupancy, so the whole scene is
-  # reproducible.
+  # Rail stubs first, so signal routes avoid them. Deterministic order (net,
+  # then pin) drives occupancy throughout.
   var occ: seq[OccSeg]
   var railLabelReqs: seq[tuple[text: string, at, dir: Point]]
 
@@ -407,8 +351,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     if constrained:
       var routePins: seq[tuple[pt: Point, partIdx: int]]
       for pin in pins:
-        # Rail/ground glyphs are shared at the canonical composite terminal;
-        # the remaining physical terminals are fed by internal taps below.
+        # Rail/ground glyphs sit at the canonical composite terminal; other
+        # terminals are fed by internal taps.
         var representative = true
         for idx in composites.topLevel:
           if composites.items[idx].raw >= 0: continue
@@ -439,23 +383,16 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         if net.name.len > 0:
           railLabelReqs.add (text: net.name, at: e, dir: dir)
     if constrained and (isGroundHere(net) or isRailHere(net)):
-      # Append the physical composite fanout after its shared glyph. The
-      # `internalRoute` hook is shared with genuine signal nets (a pi/tee's
-      # private mid node, a parallel stack's real trunk-and-tap) and always
-      # emits `wkSignal`; re-tag it `wkPowerLink` so it is neither mistaken
-      # for a routed signal (the "ground/rail nets are never routed" reading
-      # `wkSignal` would otherwise satisfy) nor for the glyph-owning stub
-      # itself (`wkGround`/`wkSupply` would draw a second bar, and reserve a
-      # second glyph footprint, at the shared member's bare pin).
+      # Append the composite fanout, re-tagged `wkPowerLink`: `wkSignal` would
+      # read as a routed rail, and `wkGround`/`wkSupply` would draw a second
+      # glyph at the member's bare pin.
       for w in compositeInternalRoutes(composites, result.parts, net.name):
         var w = w
         w.kind = wkPowerLink
         result.wires.add w
 
-  # A rail/ground terminal is more than its wire stem: SVG caps it with one
-  # supply bar or three ground bars. Signals may cross ordinary wires, but not
-  # this terminal ink, so give every glyph endpoint a Hanan axis and pass its
-  # complete geometry to the signal router as a crossing blocker.
+  # Signals may cross wires but not supply/ground glyph ink, so each glyph
+  # endpoint gets a Hanan axis and its geometry is a crossing blocker.
   var glyphs: seq[OccSeg]
   for w in result.wires:
     for g in terminalGlyphSegments(w):
@@ -471,18 +408,12 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   for _, net in nl.nets:
     if isGroundHere(net) or isRailHere(net): continue
 
-    # A collapsed bundle routes once, from its representative member -- one
-    # `RoutePin` per part entity at the merged point, plus the merged port
-    # point. Every other member `inc sigOrd; continue`s so `sigOrd`'s
-    # meaning (one per `nl.nets` entry) and `recoverRouting`'s `failOrd`
-    # comparisons are unchanged.
+    # A collapsed bundle routes once, from its representative member; other
+    # members `inc sigOrd; continue` so `sigOrd` stays one per net.
     let bi = bundles.byNet.getOrDefault(net.name, -1)
 
-    # A repeated-subsheet array. A suppressed net (a chain link, or a
-    # distributed member after the first) never routes; a distributed group
-    # routes once, on its first member, as one bus carrying every foreign
-    # endpoint of every member. The chain arc is not an `nl.nets` entry --
-    # it is routed in a dedicated pass after this loop.
+    # An array: suppressed nets never route; a distributed group routes once
+    # on its surviving member as one bus. Chain arcs are a later pass.
     let ar = arrayRouteFor(arrays, net.name)
     if ar.skip:
       inc sigOrd
@@ -492,26 +423,14 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       continue
     let arrGroup = ar.group and ar.first
 
-    # A bundle that failed collapse (3+ endpoints, or non-uniform): no member
-    # wires, one `fbNetLabel` tag per `LabelGroup`. Fires **once per bundle**
-    # (guarded on the first member, like the collapsed path), never once per
-    # member. A *merged* group gets one tag (`lg.text`) at the merged pin;
-    # `lg.text` must equal that group's merged `SchematicPin.name` so
-    # `fallbackFor` sets `part` and `fallbackEscapeDir` can match. An
-    # *unmerged* group keeps one tag per pin under the real member net name --
-    # **unless** a collapsed array now owns that pin's port
-    # (`arrayOwnsDistributedPin`): the array draws a real wire for it instead
-    # (`xbar_rf`'s `rin`/`rout`/`en`), under the bundle's own occupancy tag,
-    # so a bare tag here would be a second, contradictory drawing of the same
-    # connection. The published members now fold to ONE pennant (`byPort`
-    # covers a net-label bundle too) sharing ONE `portConn` entry keyed by
-    # `b.display` -- so the port side gets one merged tag, not one per member
-    # -- but that marker is likewise skipped once the array's own route
-    # already reaches the same port point (`arrGroup`, checked below). It is
-    # tagged `b.display`, not `b.portText`: `fallbackEscapeDir` recovers a
-    # port-point fallback's escape direction by matching
-    # `SchematicPort.net == f.net`, and a port's `net` field is the
-    # occupancy tag, never the drawn range/count text.
+    # A bundle that failed collapse: no member wires, one `fbNetLabel` tag
+    # per `LabelGroup`, emitted once per bundle. A merged group gets one tag
+    # (`lg.text`, equal to its merged `SchematicPin.name` so `fallbackFor`
+    # matches). An unmerged group gets one tag per pin, unless an array owns
+    # the pin's port (`arrayOwnsDistributedPin`) and draws a real wire. The
+    # port side gets one merged tag keyed by `b.display` (a port's `net` is
+    # the occupancy tag, which `fallbackEscapeDir` matches), skipped if the
+    # array's route already reaches it.
     if bi >= 0 and bundles.bundles[bi].role == brNetLabel:
       let b = bundles.bundles[bi]
       if net.name != b.members[0]:
@@ -523,12 +442,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         let pIdx = partIdxByDesig[lg.desig]
         let comp = nl.components[lg.desig]
         if lg.merged:
-          # A merged carrier is not itself necessarily an array member (it
-          # may be the shared far side of a bus every *other* carrier of
-          # which collapsed, e.g. `bundledTerminationBank`'s `U1`) --
-          # `arrayOwnsDistributedPin` can't see that from `comp`/`lg.pins[0]`
-          # alone, so ask whether an array already routes this group's own
-          # underlying net directly.
+          # A merged carrier may not itself be an array member, so ask
+          # whether an array already routes this group's net.
           if arrays.groupOf.hasKey(lg.members[0].net): continue
           let key = pinKey(comp, lg.pins[0].pin)
           if not pinPos.hasKey(key): continue
@@ -541,13 +456,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
             if arrayOwnsDistributedPin(arrays, comp, pr.pin): continue
             let key = pinKey(comp, pr.pin)
             if not pinPos.hasKey(key): continue
-            # `lg` was built over the pre-collapse netlist, so an unmerged
-            # carrier that is now an array representative still tags with
-            # its own single bound net ("rin_0") -- the one specific index
-            # it happened to sit on before every hidden member's pin
-            # vanished into this one box. `arrayBundleLabelFor` substitutes
-            # the bus/interface family name ("rin") for exactly that case;
-            # "" for every other pin, so its own net name is used unchanged.
+            # An unmerged carrier that is now an array representative would
+            # still tag "rin_0"; use the bus family name ("rin") instead.
             let famText = arrayBundleLabelFor(arrays, comp, pr.pin)
             let labelText = if famText.len > 0: famText else: pr.net
             pendingFallbacks.add (
@@ -561,11 +471,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
             netName: b.display, kind: fbNetLabel, bundle: b.display)
         inc sigOrd
         continue
-      # Else: a collapsed array owns this net's route (this is exactly its
-      # triggering "first" member -- see `arrayRouteFor`) -- fall through to
-      # the ordinary `arrGroup` handling below to draw the real wire, having
-      # already drawn whatever net-label tags remain for any carrier the
-      # array does not own.
+      # Else an array owns this net's route: fall through to `arrGroup`.
 
     let coll = bi >= 0 and bundles.bundles[bi].role == brCollapsed
     if coll and net.name != bundles.bundles[bi].members[0]:
@@ -578,9 +484,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
 
     var pins: seq[RoutePin]
     if arrGroup:
-      # One bus: every foreign endpoint of every member net, plus the
-      # representative's own pin (which sits on the first member net), plus
-      # the merged port connection point when the group is published.
+      # One bus: every member's foreign endpoints, the representative's pin,
+      # and the merged port point if published.
       for m in ar.members:
         if not nl.nets.hasKey(m): continue
         for p in nl.nets[m].pins:
@@ -622,9 +527,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                       partIdx: partIdxByDesig[p.component.designator],
                       esc: Point(x: 0.0, y: 0.0),
                       pinName: p.name)
-      # A collapsed array's chain head/tail is re-homed onto the
-      # representative box's IN/OUT pin, wherever the member that really holds
-      # it sits (possibly a hidden one).
+      # A chain head/tail is re-homed onto the representative's IN/OUT pin.
       if arrays.extraPins.hasKey(net.name):
         for ep in arrays.extraPins[net.name]:
           let key = pinKey(nl.components[ep.desig], ep.pin)
@@ -636,22 +539,16 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     let physicalPins = pins
     if not coll and not arrGroup and constrained and
        fullyInternalComposite(physicalPins, composites):
-      # A signal net wholly inside one composite -- a tee filter's mid node,
-      # every pin covered by the same composite port and nothing external on
-      # it. There is no tree to route; its wiring is the composite's own
-      # deterministic fanout, appended like the post-external-route fanout
-      # below. Not a dangling pin, so no fallback marker.
+      # A net wholly inside one composite: its wiring is the composite's own
+      # fanout. Not dangling, so no fallback marker.
       result.wires.add compositeInternalRoutes(composites, result.parts, net.name)
       inc sigOrd
       continue
     if not coll and not arrGroup and constrained:
       pins = compositeExternalPins(pins, composites)
     if pins.len < 2:
-      # A net with a single pin is a dangling connection: a dashed stub +
-      # marker + label instead of disappearing. The stub is finalised after
-      # every real wire is routed, so it never runs along one. This is not a
-      # routing failure -- `ok` stays true -- so it is recorded in every
-      # route, not only the fallback route.
+      # A single-pin net is dangling: a dashed stub + marker + label,
+      # finalised after all real wires. Not a routing failure.
       if pins.len == 1:
         for pin in physicalPins:
           pendingFallbacks.add (pin: pin, netName: net.name,
@@ -669,9 +566,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                  escapeSeeds, glyphs)
     if not ro.ok:
       if coll or arrGroup:
-        # A collapsed bundle or an array bus that will not route is not a
-        # dashed failure: drop its partial branches and carry every member by
-        # name instead.
+        # A collapsed bundle or array bus that won't route: drop its partial
+        # branches and carry members by name.
         occ = occBefore
         let tag = (if coll: bundles.bundles[bi].display else: ar.tag)
         for pin in pins:
@@ -680,18 +576,12 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
         inc sigOrd
         continue
       if withFallbacks:
-        # `routeNet` may have recorded the net's already-connected branches
-        # in `occ` before it failed; none of them are emitted, so drop them
-        # before the next net routes. The whole net is then drawn as
-        # fallbacks -- a marker at each pin, never a real wire.
+        # Drop branches `routeNet` recorded before failing; the net is drawn
+        # as fallbacks only.
         occ = occBefore
-        # A failed external composite endpoint represents every physical pin,
-        # not just its canonical terminal. Ports remain one fallback endpoint.
-        # A *published* net that will not route is carried to its port by name
-        # (a teal net-label, the bus/interface treatment) rather than flagged
-        # as a broken connection -- the port pennant already says where it
-        # goes. An unpublished internal net that fails is a real layout problem
-        # and keeps the amber marker.
+        # A failed composite endpoint stands for every physical pin. A
+        # published net that won't route gets a net-label (its pennant says
+        # where it goes); an unpublished one keeps the amber marker.
         let fk = if net.name in portedNets: fbNetLabel else: fbUnrouted
         for pin in physicalPins:
           pendingFallbacks.add (pin: pin, netName: net.name,
@@ -712,14 +602,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
           kind: (if b.tag == btInterface: wkInterface else: wkBus),
           members: b.members, points: poly)
       elif arrGroup:
-        # `ar.tag` is `ArrayPort.display`, which is the *bundle's* own
-        # `Bundle.display` whenever this group is bundle-owned (see
-        # `arrayOwnsDistributedPin`'s doc) -- so its colour must follow the
-        # same bundle, exactly like the `coll` branch above, not default to
-        # `wkBus`. `bi` (computed earlier in this loop, for this same net)
-        # is the matching `Bundle` when there is one; a plain array group
-        # with no bundle behind it at all (`bi < 0`, e.g. an undeclared
-        # distributed port) keeps the historical `wkBus`.
+        # `ar.tag` is the bundle's own display when bundle-owned, so colour
+        # follows the bundle; a plain array group is `wkBus`.
         let arKind = if bi >= 0 and bundles.bundles[bi].tag == btInterface: wkInterface else: wkBus
         result.wires.add SchematicWire(net: ar.tag, kind: arKind,
           members: ar.members, points: poly)
@@ -728,16 +612,14 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
           kind: wireKindFor(bundles, net.name), points: poly)
       addSegments(adj, poly)
     if coll and not bundles.bundles[bi].ported and pins.len > 0:
-      # A non-ported collapsed bundle has no port pennant to read its name, so
-      # request one `lrNet` label at the merged pin.
+      # A non-ported collapsed bundle gets one `lrNet` label at the merged pin.
       let b = bundles.bundles[bi]
       result.bundleLabelReqs.add (
         text: pinNameFor(b, result.parts[pins[0].partIdx].designator),
         at: pins[0].pt,
         esc: escapeDir(result.parts[pins[0].partIdx], pins[0].pt))
     if constrained and not coll and not arrGroup:
-      # Append fanout only after the external tree succeeds, preserving the
-      # net's atomic fallback behavior.
+      # Fanout only after the external tree succeeds (atomic fallback).
       result.wires.add compositeInternalRoutes(composites, result.parts, net.name)
     for p, nbrs in adj:
       if nbrs.len >= 3:
@@ -745,17 +627,10 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
     inc sigOrd
 
   # --- chain arcs -----------------------------------------------------------
-  # Every chained port pair of a collapsed array gets its own **recirculation
-  # arc**: a dashed annotation drawn on the box body as a tight rounded loop
-  # from the OUT pin across to the lined-up IN pin (both at the same y by
-  # construction). It reads as "this port feeds through all N instances", is a
-  # fixed polyline, never an `nl.nets` entry (so it never touches `sigOrd` or
-  # `result.ok`), added to `occ` so later fallback stubs avoid it and to
-  # `arrayNets` so `finish` leaves it unnamed. Because it runs on the box
-  # interior between its own two pins it is exempt from the routed-wire
-  # collinear / separation invariants. `svg` draws it dashed with an arrowhead
-  # into the IN pin; the lead of a parallel-chain group also carries the `xN`
-  # link-count badge.
+  # Each chained port pair gets a dashed recirculation arc on the box body
+  # from OUT to IN ("feeds through all N"). A fixed polyline, not an
+  # `nl.nets` entry; added to `occ` and `arrayNets`; exempt from routed-wire
+  # invariants. The lead of a parallel-chain group carries the `xN` badge.
   for a in arrays.arrays:
     if not partIdxByDesig.hasKey(a.rep): continue
     let repIdx = partIdxByDesig[a.rep]
@@ -769,9 +644,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       if not (pinPos.hasKey(ko) and pinPos.hasKey(ki)): continue
       for m in ap.links: result.arrayNets.incl m
       result.arrayNets.incl ap.display
-      # A tight staple on the box interior: from the OUT pin a little way in,
-      # up by `bulge`, across to above the IN pin, down, into the IN pin. The
-      # OUT/IN pins share a y (a chained pair is drawn on one row).
+      # A staple on the box interior: in from OUT, up by `bulge`, across,
+      # down into IN (same y).
       const bulge = 18.0
       const inset = 8.0
       let oy = pinPos[ko].y
@@ -789,9 +663,7 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
       result.wires.add SchematicWire(net: ap.display, kind: wkChain,
         members: (if ap.chainLead == lead: ap.links else: @[]), points: poly)
 
-  # Fallback stubs are sized against the *complete* occupancy set, so a
-  # dashed marker never runs along a real wire that routed after the net it
-  # belongs to failed.
+  # Fallback stubs are sized against the complete occupancy set.
   for req in pendingFallbacks:
     result.fallbacks.add fallbackFor(req.pin, result.parts, req.netName, occ,
                                      req.kind, req.bundle)
@@ -804,10 +676,8 @@ proc routeScene(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
   result.railLabelReqs = railLabelReqs
 
 proc feedbackCandidateParts(comps: seq[Component]): seq[int] =
-  ## Parts the feedback loop may move, in insertion order: only parts with at
-  ## least two non-ground / non-rail nets. A rail-only part, or a leaf with a
-  ## single signal net, has no tree route a move would unblock, so the loop
-  ## leaves both alone.
+  ## Parts the feedback loop may move, in insertion order: those with at
+  ## least two non-rail nets (others have no tree route a move would fix).
   for i, c in comps:
     var signal = 0
     for _, p in c.pins:
@@ -833,21 +703,13 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                     leftSplit = NegInf, rightSplit = Inf,
                     isPower: seq[bool] = @[], powerSplit = Inf,
                     mirrors: seq[bool] = @[]): RoutingState =
-  ## The placement-routing feedback loop. When `routeScene` cannot route a
-  ## signal net it tries deterministic single-part moves and keeps any move
-  ## that routes strictly further than the best layout so far, up to
-  ## `feedbackAcceptedBudget` accepted moves and `feedbackAttemptBudget`
-  ## candidates. Movable parts are `feedbackCandidateParts` (two or more
-  ## signal nets), in insertion order; each is tried on the rings of grid
-  ## cells around its current centre, nearest first, up to
-  ## `feedbackMaxRadius`. A candidate cell is rejected when it would overlap
-  ## another part's *raw* body, or when its final recomputed rotations leave
-  ## exact terminal pins on distinct nets coincident. The placement separation
-  ## clearance is allowed to relax during recovery, but symbols never overlap.
-  ## When no move fixes the sheet -- or the sheet is too large for the loop to
-  ## be attempted -- the best positions are re-routed with fallbacks enabled:
-  ## an unrouteable net becomes a dashed marker per pin instead of an
-  ## assertion.
+  ## The placement-routing feedback loop. On an unroutable signal net, tries
+  ## deterministic single-part moves (`feedbackCandidateParts`, nearest grid
+  ## rings first, up to `feedbackMaxRadius`), keeping any that route strictly
+  ## further, within the accepted/attempt budgets. A move is rejected if it
+  ## overlaps a raw body or makes distinct-net terminal pins coincide. If
+  ## nothing fixes it (or the sheet is too large), the best positions are
+  ## re-routed with fallbacks.
   let constrained = options.policy == lpConstrainedLayered
   var best = routeScene(nl, comps, syms, pos, rots, idxOf,
                         constrained = constrained, composites = composites,
@@ -855,17 +717,8 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                         mirrors = mirrors)
   if best.ok: return best
 
-  # Pool length, not raw count, is what should gate the recovery loop: its
-  # candidate-move search already iterates `units` built from the arena
-  # (composites moved as one rigid body, below), so the search *space* is
-  # already pool-sized. What is not yet pool-sized is the *cost of evaluating*
-  # each candidate -- `constrainedRecomputeRotations` still rebuilds
-  # `pinWorldPositions` from every singleton raw component, and
-  # `constrainedRouteScore` inside it is still O(raw pins * raw comps) per
-  # candidate rotation -- so a sheet that pools down to a small `poolLen` but
-  # carries a very large raw part count would still pay that raw-sized cost on
-  # every attempt. The `4 * feedbackMaxParts` raw ceiling is the guard for
-  # exactly that (four two-member parallel pairs collapse to one pool item).
+  # Gate on pool length (the search space), plus a `4 * feedbackMaxParts`
+  # raw ceiling: evaluating each candidate is still raw-sized.
   let poolLen = composites.topLevel.len
   if poolLen > options.feedbackMaxParts or
      comps.len > 4 * options.feedbackMaxParts:
@@ -888,9 +741,7 @@ proc recoverRouting(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
 
   var order = feedbackCandidateParts(comps)
   var units: seq[seq[int]]
-  # Recovery moves a composite as one rigid body. Singleton candidates keep
-  # `order`'s insertion order; a parallel unit is represented once at its
-  # first member.
+  # Composites move as one rigid body, represented at their first member.
   block:
     var grouped = newSeq[bool](comps.len)
     for idx in composites.topLevel:
@@ -970,11 +821,7 @@ proc routeScene(state: LayoutState, withFallbacks = false): RoutingState =
     arrays = state.arrays, portY = state.portY, mirrors = state.mirrors)
 
 proc recoverRouting(state: LayoutState): RoutingState =
-  # `activeOverrides`, not `state.overrides` directly -- see the identical
-  # comment on `state.nim`'s `repairTerminalClearance` wrapper: with
-  # `lsLayoutOverrides` disabled, `leftSplit`/`rightSplit` stay `-Inf`/`Inf`,
-  # and a non-empty `sides` against those would reject every candidate for an
-  # overridden part instead of the intended no-op.
+  # `activeOverrides`, as in `state.nim`'s `repairTerminalClearance`.
   let ov = activeOverrides(state)
   let isPower = rawPowerFlags(state.power, state.composites, state.comps.len)
   recoverRouting(state.nl, state.comps, state.syms, state.pos, state.rots,

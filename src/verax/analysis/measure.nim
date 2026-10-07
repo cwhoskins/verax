@@ -1,23 +1,13 @@
-## Curve math shared by the simulation-backed analyses in this submodule.
+## Curve math shared by the simulation-backed analyses: pure functions over
+## `openArray[float]`, so most of each analysis's reasoning is testable
+## without ngspice.
 ##
-## Everything here is a pure function over `openArray[float]` -- no netlist,
-## no simulator, no I/O -- so the bulk of each analysis's actual *reasoning*
-## is testable with no ngspice on the machine. The analyses themselves stay
-## thin: isolate, simulate, then call into here.
+## **Log-axis interpolation**: in a `dec` sweep, linear interpolation biases
+## a -3 dB corner by several percent, so frequency procs take `logX` (and
+## `corner3dB`/`unityGainFreq` set it).
 ##
-## **Interpolation on a log axis.** A `dec`-spaced frequency sweep puts
-## points at multiplicative intervals, so linear interpolation between two
-## adjacent samples is visibly wrong near a corner -- at 20 points/decade
-## consecutive frequencies differ by 12%, and reading a -3 dB corner linearly
-## biases it high by several percent. Every proc taking a frequency axis
-## therefore accepts `logX`, and the frequency-domain wrappers
-## (`corner3dB`, `unityGainFreq`) pass `logX = true` for you.
-##
-## Anything that cannot be found is reported as `NaN` rather than raised or
-## silently clamped: "this response never crosses -3 dB in the swept band" is
-## a real answer about the circuit, and a caller can test it with `isNaN`.
-## Malformed *input* (empty or mismatched arrays) is a caller bug and does
-## raise `ValueError`.
+## Anything not found is `NaN`, never raised or clamped. Malformed input
+## (empty or mismatched arrays) raises `ValueError`.
 
 import std/math
 
@@ -51,9 +41,8 @@ proc interpCrossing*(x, y: openArray[float], level: float,
   NaN
 
 proc valueAt*(x, y: openArray[float], at: float, logX = false): float =
-  ## `y` interpolated at `at`. `NaN` if `at` is outside the swept range --
-  ## extrapolating a simulated response past the range that was actually
-  ## simulated would be inventing data.
+  ## `y` interpolated at `at`; `NaN` outside the swept range (no
+  ## extrapolation).
   checkPair(x, y, "valueAt")
   if x.len == 1:
     return (if at == x[0]: y[0] else: NaN)
@@ -72,9 +61,8 @@ proc valueAt*(x, y: openArray[float], at: float, logX = false): float =
   NaN
 
 proc corner3dB*(freq, magDb: openArray[float]): float =
-  ## The -3 dB corner relative to the *first* swept point, which for a sweep
-  ## started well below the corner is the DC/passband value. Works for a
-  ## rising response too, since `interpCrossing` is direction-agnostic.
+  ## The -3 dB corner relative to the *first* swept point (right for
+  ## DC-coupled responses). Direction-agnostic.
   checkPair(freq, magDb, "corner3dB")
   interpCrossing(freq, magDb, magDb[0] - 3.0, logX = true)
 
@@ -84,39 +72,18 @@ proc peakIndex(y: openArray[float]): int =
     if y[i] > y[result]: result = i
 
 proc gainMax*(freq, magDb: openArray[float]): tuple[db, hz: float] =
-  ## The response's maximum, and where in the band it occurs.
-  ##
-  ## For an AC-coupled stage this is the midband gain -- the number the
-  ## circuit was designed around, and the one `gain_dc_db` structurally
-  ## cannot report. A single-supply amplifier's gain-setting leg is
-  ## capacitively coupled, so its gain at DC is unity *by construction*;
-  ## that is what makes single-supply operation possible, not a fault, and a
-  ## DC-referenced figure for such a stage is arithmetically correct and
-  ## answers nothing anyone would ask.
-  ##
-  ## Named for what it measures rather than "passband", because no attempt is
-  ## made to detect the shape of the response. On a flat-topped band-pass the
-  ## maximum *is* the passband; on a resonant peak it is the peak. Guessing
-  ## which is which would be a judgement this cannot back up, and the caller
-  ## knows their own circuit.
+  ## The response's maximum and its frequency: the midband gain of an
+  ## AC-coupled stage, whose DC gain is unity by construction. No shape
+  ## detection -- on a band-pass it's the passband, on a resonance the peak.
   checkPair(freq, magDb, "gainMax")
   let i = peakIndex(magDb)
   (db: magDb[i], hz: freq[i])
 
 proc bandEdges*(freq, magDb: openArray[float], dropDb = 3.0): tuple[lo, hi: float] =
-  ## The frequencies either side of the maximum where the response has fallen
-  ## `dropDb` below it.
-  ##
-  ## Referenced to the **maximum**, which is what makes this a band-pass
-  ## answer. `corner3dB` references the *first swept point* and is right for a
-  ## DC-coupled low-pass -- where the two agree -- and meaningless for a stage
-  ## whose first swept point sits in its own stopband, which every
-  ## single-supply audio stage's does.
-  ##
-  ## A side that never falls that far within the swept band comes back `NaN`.
-  ## A DC-coupled stage genuinely has no lower edge, and reporting the bottom
-  ## of the sweep as one would be inventing a corner the circuit does not
-  ## have -- the same reason nothing here clamps.
+  ## The frequencies either side of the maximum where the response has
+  ## fallen `dropDb` below it -- referenced to the maximum, unlike
+  ## `corner3dB`, so it suits AC-coupled stages. A side that never falls
+  ## that far is `NaN` (a DC-coupled stage has no lower edge).
   checkPair(freq, magDb, "bandEdges")
   let pk = peakIndex(magDb)
   let level = magDb[pk] - dropDb
@@ -137,28 +104,15 @@ proc bandEdges*(freq, magDb: openArray[float], dropDb = 3.0): tuple[lo, hi: floa
     inc i
 
 proc unityGainFreq*(freq, magDb: openArray[float]): float =
-  ## Where the response crosses 0 dB. `NaN` if it never does in the swept
-  ## band -- which for a gain-of-10 amplifier swept only to 10 kHz is the
-  ## correct answer, not an error.
+  ## Where the response crosses 0 dB; `NaN` if it never does in the band.
   interpCrossing(freq, magDb, 0.0, logX = true)
 
 proc maxDeviation*(x, ya, yb: openArray[float],
                    xFrom = 0.0, xTo = 0.0): tuple[dev, at: float] =
-  ## The largest `abs(ya[i] - yb[i])` over the samples, and the `x` where it
-  ## occurs.
-  ##
-  ## This is the point-by-point difference between two curves sharing one
-  ## axis -- two channels' gain in dB, so the answer is a channel-match figure
-  ## in dB and the `at` is the frequency that witnesses it. The two `y`
-  ## arrays must be sampled at the same `x`; a caller that sweeps each channel
-  ## with a different `.ac` card and passes the results here is comparing two
-  ## grids and the number means nothing. That is the caller's contract, the
-  ## same one `checkPair` enforces for length.
-  ##
-  ## With the window left at its `0.0 .. 0.0` default the whole axis is
-  ## considered. A window with no sample inside it yields `NaN`, per the
-  ## module rule: not found is `NaN`, never a clamp and never the endpoint of
-  ## an empty range dressed up as an answer.
+  ## The largest `abs(ya[i] - yb[i])` and the `x` where it occurs (e.g. a
+  ## channel-match figure in dB). Both curves must share one `x` grid -- the
+  ## caller's contract. A `0.0 .. 0.0` window means the whole axis; a window
+  ## with no samples gives `NaN`.
   checkPair(x, ya, "maxDeviation")
   checkPair(x, yb, "maxDeviation")
   let windowed = xFrom != 0.0 or xTo != 0.0
@@ -173,26 +127,13 @@ proc maxDeviation*(x, ya, yb: openArray[float],
 
 proc harmonicAmplitudes*(t, v: openArray[float], f0: float,
                          upTo = 9): seq[float] =
-  ## Amplitudes of the fundamental and its harmonics, `A[0]` being the
-  ## fundamental at `f0`.
+  ## Amplitudes of the fundamental (`A[0]`, at `f0`) and its harmonics.
   ##
-  ## Integrated directly over the samples' own timestamps rather than
-  ## resampled onto a uniform grid first. A `.tran` result is **not**
-  ## uniformly sampled -- ngspice takes the timestep it needs and takes it
-  ## wherever the waveform is moving fastest, which is exactly where a
-  ## clipped or slewing edge is -- so resampling would throw away resolution
-  ## precisely where the harmonics live. Trapezoidal integration against
-  ## cos/sin at each harmonic handles the non-uniform spacing natively.
-  ##
-  ## The window is the **last whole number of periods** in the data, and that
-  ## matters more than it looks: a Fourier integral over a fractional period
-  ## leaks the fundamental into every harmonic bin, and a leaked fundamental
-  ## reads as distortion the circuit does not have. Endpoints are
-  ## interpolated so the window is exact rather than snapped to a sample.
-  ##
-  ## Fewer than two whole periods yields an empty seq -- there is nothing to
-  ## measure, and a number derived from one and a bit periods would be
-  ## dominated by where the window happened to fall.
+  ## Integrated over the samples' own timestamps (trapezoidal against
+  ## cos/sin), not resampled: ngspice takes its smallest steps at fast
+  ## edges, where the harmonics are. The window is the **last whole number
+  ## of periods** with interpolated endpoints; a fractional period leaks the
+  ## fundamental into every bin. Fewer than two periods gives an empty seq.
   checkPair(t, v, "harmonicAmplitudes")
   if f0 <= 0.0 or upTo < 1 or t.len < 4: return @[]
 
@@ -229,12 +170,8 @@ proc harmonicAmplitudes*(t, v: openArray[float], f0: float,
     result.add sqrt(a * a + b * b)
 
 proc thd*(t, v: openArray[float], f0: float, upTo = 9): float =
-  ## Total harmonic distortion as a **fraction**, not a percentage: the
-  ## root-sum-square of harmonics 2..`upTo` over the fundamental.
-  ##
-  ## `NaN` when there is no measurable fundamental -- a silent output, or too
-  ## little data to place a window. That reads as "could not measure" rather
-  ## than as 0% distortion, which is what a clamped zero would claim.
+  ## THD as a **fraction**: RSS of harmonics 2..`upTo` over the fundamental.
+  ## `NaN` with no measurable fundamental (not 0%).
   let a = harmonicAmplitudes(t, v, f0, upTo)
   if a.len < 2 or a[0] <= 0.0: return NaN
   var sumSq = 0.0
@@ -242,32 +179,14 @@ proc thd*(t, v: openArray[float], f0: float, upTo = 9): float =
   sqrt(sumSq) / a[0]
 
 proc fundamentalFreq*(t, v: openArray[float], hysteresis = 0.1): float =
-  ## The repetition rate of a settled periodic waveform, in hertz, from its
-  ## rising mean-crossings.
+  ## The repetition rate of a settled periodic waveform, from rising
+  ## crossings of the window **mean** (a single-supply oscillator never
+  ## crosses zero). Not an FFT, whose resolution is 1/window; crossing
+  ## counts resolve to the timestep. `hysteresis` (fraction of amplitude)
+  ## stops a harmonic-rich wave being counted several times per period.
   ##
-  ## **This is where an oscillator's specification starts**, and it is
-  ## deliberately not a spectral estimate. An FFT's resolution is one over
-  ## the window, so a twenty-millisecond window resolves 50 Hz and would
-  ## report a 1.59 kHz oscillator to within 3% -- useless against a network
-  ## whose whole job is to place that frequency. Counting crossings over the
-  ## same window instead gives a resolution set by the *timestep*, which is
-  ## nanoseconds, and the answer is the average over every period in the
-  ## window rather than the peak of a smeared bin.
-  ##
-  ## The crossing level is the window's own **mean**, not zero: a
-  ## single-supply oscillator sits at mid-rail and has no zero crossings at
-  ## all. `hysteresis` is a fraction of the amplitude the waveform must first
-  ## fall below before the next rising crossing is counted, which is what
-  ## keeps a harmonic-rich wave -- anything clipped, or a relaxation
-  ## oscillator's exponential -- from being counted at three times its rate
-  ## because it wobbles across the mean on the way up.
-  ##
-  ## `NaN` when fewer than two rising crossings are found. That is the answer
-  ## for a circuit that **did not start**, and it must stay distinguishable
-  ## from a frequency of zero: an oscillator sitting at its operating point
-  ## is a flat line, and reporting 0 Hz for it would be a measurement where
-  ## there was none. See `analysis/transient.analyzeOscillation`, which turns
-  ## it into an issue naming the likeliest cause.
+  ## `NaN` with fewer than two rising crossings -- a circuit that didn't
+  ## start, which must stay distinct from 0 Hz.
   checkPair(t, v, "fundamentalFreq")
   if t.len < 4: return NaN
 
@@ -290,9 +209,8 @@ proc fundamentalFreq*(t, v: openArray[float], hysteresis = 0.1): float =
     if v[i] < mid - band:
       armed = true
     elif armed and v[i] >= mid and v[i - 1] < mid:
-      # Interpolated so the answer is set by the timestep rather than snapped
-      # to it -- on a 1.59 kHz sine sampled every 100 ns, snapping alone is
-      # worth 0.016% per crossing and it does not average out.
+      # Interpolated, so the answer is set by the timestep rather than
+      # snapped to it.
       let x = lerpX(t[i - 1], t[i], v[i - 1], v[i], mid, logX = false)
       if count == 0: first = x else: last = x
       inc count
@@ -301,12 +219,8 @@ proc fundamentalFreq*(t, v: openArray[float], hysteresis = 0.1): float =
   float(count - 1) / (last - first)
 
 proc swing*(v: openArray[float]): tuple[lo, hi, pp: float] =
-  ## The excursion actually reached: minimum, maximum, and peak-to-peak.
-  ##
-  ## Separate from `thd` because they answer different halves of the same
-  ## question. A stage can be clipping hard against one rail and symmetric
-  ## enough that its distortion figure looks unremarkable, and a stage can
-  ## have plenty of headroom and still distort.
+  ## The excursion reached: minimum, maximum, peak-to-peak. Separate from
+  ## `thd`: a stage can clip on one rail with an unremarkable THD.
   if v.len == 0: return (NaN, NaN, NaN)
   var lo = v[0]
   var hi = v[0]
@@ -316,19 +230,9 @@ proc swing*(v: openArray[float]): tuple[lo, hi, pp: float] =
   (lo: lo, hi: hi, pp: hi - lo)
 
 proc timeMean*(t, v: openArray[float]): float =
-  ## The average of `v` **weighted by time**, not by sample count.
-  ##
-  ## A `.tran` result is not uniformly sampled -- ngspice takes its smallest
-  ## steps exactly where the waveform moves fastest -- so a plain arithmetic
-  ## mean over the samples weights an edge far above the flat part either side
-  ## of it. On a switching converter's inductor current the two disagree by
-  ## whatever the solver felt like doing, which is a number about the timestep
-  ## rather than about the circuit. Trapezoidal integration over the samples'
-  ## own timestamps is exact for the piecewise-linear waveform the simulator
-  ## actually reported, and is the same argument `harmonicAmplitudes` makes.
-  ##
-  ## `NaN` for fewer than two samples or a zero-length window: an average over
-  ## no elapsed time is not zero, it is unmeasured.
+  ## The time-weighted average of `v` (trapezoidal over its own timestamps),
+  ## since ngspice samples non-uniformly and a sample mean over-weights
+  ## edges. `NaN` for fewer than two samples or zero elapsed time.
   checkPair(t, v, "timeMean")
   if t.len < 2: return NaN
   let span = t[^1] - t[0]
@@ -341,15 +245,9 @@ proc timeMean*(t, v: openArray[float]): float =
   acc / span
 
 proc timeRms*(t, v: openArray[float]): float =
-  ## Root-mean-square of `v` over the window, time-weighted as `timeMean` is.
-  ##
-  ## The square is integrated **exactly** for the piecewise-linear waveform
-  ## rather than by trapezoid over `v*v`: over one segment the integral of
-  ## `(v0 + s*(v1-v0))^2` is `dt*(v0^2 + v0*v1 + v1^2)/3`, which costs the
-  ## same arithmetic and does not systematically overestimate a triangle. On
-  ## a converter's inductor ripple -- a triangle wave sampled coarsely between
-  ## corners, which is precisely the shape the trapezoid rule is worst at --
-  ## that is the difference between an RMS figure and a sampling artefact.
+  ## Time-weighted RMS over the window. The square is integrated exactly per
+  ## linear segment (`dt*(v0^2 + v0*v1 + v1^2)/3`), which the trapezoid on
+  ## `v*v` overestimates for coarsely sampled triangles.
   checkPair(t, v, "timeRms")
   if t.len < 2: return NaN
   let span = t[^1] - t[0]
@@ -363,10 +261,8 @@ proc timeRms*(t, v: openArray[float]): float =
   if ms <= 0.0: 0.0 else: sqrt(ms)
 
 proc localMaxima*(x, y: openArray[float]): seq[tuple[x, y: float]] =
-  ## Strict interior maxima, at sweep resolution -- no parabolic refinement,
-  ## so a reported peak is always an actually-simulated point rather than an
-  ## inferred one. Resolution is therefore the sweep's own: at 20 points per
-  ## decade a peak frequency is good to about +-6%.
+  ## Strict interior maxima at sweep resolution (always simulated points; at
+  ## 20 points/decade, about +-6% in frequency).
   checkPair(x, y, "localMaxima")
   for i in 1 ..< x.len - 1:
     if y[i] > y[i - 1] and y[i] > y[i + 1]:
@@ -388,10 +284,8 @@ proc peak*(t, v: openArray[float]): tuple[t, v: float] =
   (t: t[bi], v: v[bi])
 
 proc peakAbs*(t, v: openArray[float]): tuple[t, v: float] =
-  ## Global maximum by magnitude, returning the *signed* value. Inrush
-  ## current is measured through an inserted probe source whose polarity
-  ## depends on which pin was probed, so "largest current" must not depend on
-  ## that arbitrary sign choice while the reported number still shows it.
+  ## Global maximum by magnitude, returning the signed value (probe polarity
+  ## is arbitrary).
   checkPair(t, v, "peakAbs")
   var bi = 0
   for i in 1 ..< v.len:
@@ -399,9 +293,8 @@ proc peakAbs*(t, v: openArray[float]): tuple[t, v: float] =
   (t: t[bi], v: v[bi])
 
 proc riseTime*(t, v: openArray[float], final: float, lo = 0.1, hi = 0.9): float =
-  ## Time from the first `lo*final` crossing to the first `hi*final` crossing
-  ## after it. `NaN` if either level is never reached -- i.e. if the signal
-  ## never got where it was supposed to go.
+  ## Time from the first `lo*final` crossing to the first `hi*final` after
+  ## it; `NaN` if either level is never reached.
   checkPair(t, v, "riseTime")
   let tLo = interpCrossing(t, v, lo * final)
   if tLo.isNaN: return NaN
@@ -412,9 +305,8 @@ proc riseTime*(t, v: openArray[float], final: float, lo = 0.1, hi = 0.9): float 
   tHi - tLo
 
 proc overshootFrac*(v: openArray[float], final: float): float =
-  ## Peak excursion beyond `final`, as a fraction of it. `0.0` when the
-  ## signal never exceeds `final`. Sign-aware, so it works for a negative
-  ## rail too.
+  ## Peak excursion beyond `final`, as a fraction of it; `0.0` if never
+  ## exceeded. Sign-aware.
   if v.len == 0:
     raise newException(ValueError, "overshootFrac: empty input")
   if final == 0.0:
@@ -427,10 +319,9 @@ proc overshootFrac*(v: openArray[float], final: float): float =
   max(over, 0.0)
 
 proc settleTime*(t, v: openArray[float], final: float, tol = 0.02): float =
-  ## The time after which `v` stays within `tol` (fractional) of `final` for
-  ## the rest of the record. `NaN` if it never does. Measured as "last exit
-  ## from the band" rather than "first entry", so a response that enters the
-  ## band and then rings back out is not credited with settling early.
+  ## The time after which `v` stays within `tol` of `final`; `NaN` if never.
+  ## Measured from the last exit from the band, so ringing back out isn't
+  ## credited as settled.
   checkPair(t, v, "settleTime")
   if final == 0.0:
     raise newException(ValueError, "settleTime: final value is zero")

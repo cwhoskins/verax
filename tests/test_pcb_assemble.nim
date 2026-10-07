@@ -1,7 +1,5 @@
 ## `pcb/assemble.nim`: netlist -> blank `Pcb`, with a fake `FootprintSource`
-## so these tests are deterministic and independent of any real KiCad
-## library being installed (`test_pcb_kicadmod.nim` is where the real
-## corpus is exercised).
+## so tests don't depend on an installed KiCad library.
 
 import std/[strutils, tables, unittest]
 
@@ -133,8 +131,7 @@ test "grid placement is deterministic and non-overlapping":
   check pcb1.placements["R1"].at == pcb2.placements["R1"].at
   check pcb1.placements["R2"].at == pcb2.placements["R2"].at
   check pcb1.placements["R1"].at != pcb1.placements["R2"].at
-  # Non-overlapping: the two courtyard-derived boxes, translated to their
-  # placed positions, do not intersect.
+  # The placed courtyard boxes don't intersect.
   let e1 = box(pcb1.placements["R1"].courtyard)
   let e2 = box(pcb1.placements["R2"].courtyard)
   let b1 = Box(lo: pcb1.placements["R1"].at + e1.lo, hi: pcb1.placements["R1"].at + e1.hi)
@@ -148,7 +145,7 @@ test "an unresolved footprint yields footprint_unresolved":
   let r = addComponent(nl, newComponent("R1", kind = "resistor"))
   discard connect(r, "1", a, ptPassive)
   discard connect(r, "2", b, ptPassive)
-  # no footprint stated at all
+  # no footprint stated
   let (pcb, issues, _) = assemble(nl)
   check pcb.placements.len == 0
   check issues.len == 1
@@ -186,9 +183,7 @@ test "a two-level hierarchical netlist yields X1.U1-style designators that bind 
   check inst.subNetlist != nil
   let u1 = inst.subNetlist.components["U1"]
   check place.component == u1
-  # Reverse lookup: `placementOf` must find the same placement back from the
-  # netlist component, which needs `graph.nim`'s new `p.component == c`
-  # fallback in the `Placement.sections` scan (`u1.designator` alone is
-  # "U1", not "X1.U1", so the fast `getOrDefault` path finds nothing).
+  # `placementOf` finds it back via the `Placement.sections` scan
+  # (`u1.designator` is "U1", not "X1.U1").
   check placementOf(pcb, u1) == place
   check place.attrs["assembly.path"] == "X1.U1"

@@ -2,12 +2,9 @@
 ##
 ## `power_rail` is the single-subject rail claim `spice/isolate` reads.
 ## `regulator`/`linear_regulator`/`switching_regulator` are **one role
-## specialised twice**, not three: the two specialisations call
-## `regulatorExpand` whole and then add what only their topology is asked.
-## `settled_rail`, `current_path`, `source_sweep` and `load_sweep` are the
-## characterisation primitives -- a node over a window, a part's current, a DC
-## sweep of a source, a swept current sink. The full reasoning for each is in
-## `contract/CLAUDE.md`.
+## specialised twice**: the specialisations call `regulatorExpand` whole and
+## add topology-specific claims. `settled_rail`, `current_path`,
+## `source_sweep` and `load_sweep` are the characterisation primitives.
 
 import std/tables
 import ../../netlist/types
@@ -18,8 +15,8 @@ import ./core
 # --- built-in: power_rail --------------------------------------------------
 
 proc powerRailApply*(inst: RoleInstance, nl: Netlist) =
-  ## Writes the nominal voltage where every existing consumer already looks
-  ## for it. `spice/isolate` needs no knowledge that roles exist.
+  ## Writes the nominal voltage where consumers already look for it, so
+  ## `spice/isolate` needs no knowledge of roles.
   let rail = inst.subject("rail")
   if not nl.nets.hasKey(rail.name):
     raise newException(NetlistError, "no such net: " & rail.name)
@@ -43,12 +40,8 @@ proc powerRailExpand*(inst: RoleInstance): seq[Assertion] =
                "assumes it does",
     origin: inst.name)
 
-  # Also opt-in, and for the same reason as `targetZ`: a derating ceiling is
-  # a project rule, not a property of the circuit. Stating one is also the
-  # only thing that makes the question answerable at all -- an operating
-  # point cannot tell a 6.3 V part from a 50 V one, so a design whose parts
-  # carry no `voltage_rating` gets an honest "nothing was checked" rather
-  # than a pass.
+  # Opt-in: a derating ceiling is a project rule. Without `voltage_rating`
+  # on the parts the evaluator reports "not checked", not a pass.
   if inst.hasParam("maxDerating"):
     result.add Assertion(
       id: assertionId(inst, "derating"),
@@ -62,10 +55,8 @@ proc powerRailExpand*(inst: RoleInstance): seq[Assertion] =
                  "fails short and takes the rail with it",
       origin: inst.name)
 
-  # Only claimed when a target is stated. A decoupling target is a design
-  # decision -- it comes from the load's transient current and its tolerated
-  # ripple -- and inventing a default here would manufacture a claim the
-  # designer never made and then report it as theirs.
+  # Only when a target is stated: it's a design decision, and a default
+  # would manufacture a claim.
   if inst.hasParam("targetZ"):
     var a = Assertion(
       id: assertionId(inst, "impedance"),
@@ -78,25 +69,18 @@ proc powerRailExpand*(inst: RoleInstance): seq[Assertion] =
                  "target impedance across the band where the capacitors, " &
                  "rather than the regulator or the planes, are what control it",
       origin: inst.name)
-    # The band is bounded at both ends deliberately: below the regulator's
-    # crossover the regulator holds the rail up and has been cut away, and
-    # above ~100 MHz plane and package parasitics dominate, so a discrete
-    # capacitor cannot fix a violation at either end.
+    # Bounded band: below the regulator's crossover the regulator holds the
+    # rail (cut away); above ~100 MHz plane/package parasitics dominate.
     a.condition["f_from"] = $paramFloat(inst, "targetFrom", 1.0e5)
     a.condition["f_to"] = $paramFloat(inst, "targetTo", 1.0e8)
     result.add a
 
 # --- the regulator family ------------------------------------------------
 #
-# One definition of what a regulator claims, specialised twice rather than
-# copied twice. `linear_regulator` and `switching_regulator` both expand
-# `regulatorExpand` whole and then add what only their topology is asked, so
-# a claim added to the base reaches all three and cannot drift between them.
-#
-# The parts and params are shared through these `let`s because `RoleDef.params`
-# is what `Design.validate` checks a stated parameter against: a specialised
-# role that forgot to re-declare `maxDroop` would reject a design using it,
-# with a message about an unknown parameter that is in fact perfectly good.
+# One definition, specialised twice: a claim added to `regulatorExpand`
+# reaches all three roles. Parts and params are shared `let`s because
+# `Design.validate` checks stated params against `RoleDef.params`; a
+# specialisation that forgot one would reject a valid design.
 
 let regulatorParts* = @[
   RolePart(name: "regulator", kind: skComponent,
@@ -274,29 +258,16 @@ let switchingParams* = @[
          doc: "acceptance band on that, as a fraction; default 15%"),
 ]
 
-# The three groups a regulator claims beyond the way up. Separate procs
-# because `linear_regulator` and `switching_regulator` expand `regulator`
-# whole and then add their own -- one definition of what a regulator claims,
-# specialised rather than copied.
+# The three claim groups beyond start-up, separate so the specialisations
+# share them.
 
 proc loadStepClaims(inst: RoleInstance, judged: Subject): seq[Assertion] =
-  ## What the rail does when the load jumps, and how long it takes to get
-  ## over it.
+  ## What the rail does when the load jumps -- the time-domain question
+  ## `power_rail.targetZ` is a proxy for.
   ##
-  ## **The time-domain twin of `power_rail`'s `targetZ`, and the thing that
-  ## target is a proxy for.** An impedance curve answers "how stiff is this
-  ## rail across the band", which is real and indirect; what the board has to
-  ## do is hold the rail up when the MCU wakes, and getting from one to the
-  ## other is an argument the reader has to complete. This states it
-  ## directly.
-  ##
-  ## Each claim is gated on its own limit and nothing is gated on the step
-  ## itself, which is `source_sweep`'s shape rather than an oversight: the
-  ## magnitude is *setup*, so it rides in the conditions, and a claim stated
-  ## without one is refused by the evaluator with a message naming what is
-  ## missing rather than silently expanding to nothing. Gating the whole
-  ## group on `iTo` also hid it from `claimingRoles`, which expands each
-  ## parameter on its own and so never had both a step and a limit at once.
+  ## Each claim is gated on its own limit, never on the step (which is setup,
+  ## in the conditions; the evaluator refuses a claim with no step). Gating
+  ## on `iTo` would also hide the group from `claimingRoles`.
   let iFrom = paramFloat(inst, "iFrom", 0.0)
   let iTo = paramFloat(inst, "iTo", 0.0)
 
@@ -311,10 +282,8 @@ proc loadStepClaims(inst: RoleInstance, judged: Subject): seq[Assertion] =
       severity: sev,
       rationale: why,
       origin: inst.name)
-    # Every one of these changes the run, so every one joins the setup key.
-    # The magnitude above all: a rail that holds up under 1 A may not under
-    # 3 A, and two claims at two magnitudes must be two runs rather than one
-    # run reported twice.
+    # Everything that changes the run joins the setup key; two step
+    # magnitudes are two runs.
     claim.condition["step_from"] = $iFrom
     claim.condition["step_to"] = $iTo
     claim.condition["step_edge"] = $paramFloat(inst, "tEdge", 0.0)
@@ -364,34 +333,17 @@ proc loadStepClaims(inst: RoleInstance, judged: Subject): seq[Assertion] =
             sevWarning)
 
 proc rejectionClaims(inst: RoleInstance, judged: Subject): seq[Assertion] =
-  ## How much of the supply's ripple reaches the rail.
+  ## How much of the supply's ripple reaches the rail. **The method is chosen
+  ## by which limit is stated, not by a mode string** (a string param needs
+  ## its own validation and is invisible to `verify.claimingRoles`):
   ##
-  ## **Which measurement runs is decided by which limit is stated, not by a
-  ## mode string**, and that is worth an extra parameter name. The two are
-  ## genuinely different measurements -- different capability, different run,
-  ## different meaning -- so they were never going to share a quantity, and
-  ## once they do not, a `psrrMethod = "tone" | "ac"` parameter buys nothing
-  ## and costs two things. It needs its own value validation, since a typo in
-  ## it is otherwise a silently different measurement. And it is invisible to
-  ## `verify.claimingRoles`, which works out what a role can claim by
-  ## expanding it with every parameter set to a placeholder: a float
-  ## placeholder still selects a branch, a string one selects nothing, so
-  ## every `.ac` quantity here reported as claimable by no built-in role at
-  ## all -- exactly the conflation that column exists to prevent.
+  ##   * `minPsrrDb` runs **one tone** through a `.tran`. Reaches everything,
+  ##     including switching converters and XSPICE models without `AC_GAIN`
+  ##     (which contribute nothing to an `.ac` matrix).
+  ##   * `minPsrrBandDb` **sweeps a band** with `.ac`: cheaper, finds the
+  ##     worst point, right for anything that linearises.
   ##
-  ##   * `minPsrrDb` runs **one tone** through a `.tran`. The default way to
-  ##     ask, because it is the one that reaches everything: a switching
-  ##     converter has no meaningful linearisation about an operating point,
-  ##     and an XSPICE code model contributes nothing to an AC matrix unless
-  ##     it sets `AC_GAIN` -- measured, an `.ac` sweep of
-  ##     `designs/lt8640a_buck.nim` reports exactly zero output.
-  ##   * `minPsrrBandDb` **sweeps a band** with `.ac`. Cheaper, and it finds
-  ##     the worst point across the whole band rather than answering at one
-  ##     frequency -- right for anything that linearises, which is most
-  ##     linear regulators and every passive filter.
-  ##
-  ## Stating both is legal and is two runs, which is the honest cost of
-  ## asking two questions.
+  ## Stating both is two runs.
   let atF = paramFloat(inst, "psrrAtF", 0.0)
 
   if hasParam(inst, "minPsrrDb"):
@@ -420,10 +372,8 @@ proc rejectionClaims(inst: RoleInstance, judged: Subject): seq[Assertion] =
     result.add claim
 
   if hasParam(inst, "minPsrrBandDb"):
-    # `psrrAtF` *redirects* this claim from the band's worst point onto that
-    # one point rather than adding a second claim -- the `gain_stage`/`atF`
-    # pattern. Claiming both would be two claims about one curve, and the
-    # point claim can only ever be the weaker of the two.
+    # `psrrAtF` redirects this claim to one point rather than adding a
+    # second (the `gain_stage.atF` pattern).
     var claim = Assertion(
       id: assertionId(inst, "psrr_swept"),
       subjects: @[judged],
@@ -444,20 +394,11 @@ proc rejectionClaims(inst: RoleInstance, judged: Subject): seq[Assertion] =
     result.add claim
 
 proc outputCurrentClaims(inst: RoleInstance): seq[Assertion] =
-  ## What the regulator is actually delivering, against what it is rated for.
-  ##
-  ## **The subject is the `sense` part, not the regulator**, and that is
-  ## forced rather than chosen: a regulator that reaches the deck as an
-  ## XSPICE code model or a subcircuit instance has no terminal current of
-  ## its own, so there is nothing to probe on the part itself. What carries
-  ## its output current is the inductor after a buck, or the pass element
-  ## inside a linear's loop model, and only the design knows which. Binding
-  ## it says so once.
-  ##
-  ## The claims are ordinary `current_path` quantities over the same window,
-  ## so a design already claiming an inductor's ripple gets these out of the
-  ## *same* `.tran` rather than a second one -- which on a converter
-  ## simulated at fifty timepoints a cycle is most of the check.
+  ## What the regulator delivers against its rating. **The subject is the
+  ## `sense` part**: a regulator modelled as an XSPICE code model or
+  ## subcircuit has no terminal current, so the design names what carries
+  ## it (a buck's inductor, a linear's pass element). These are
+  ## `current_path` quantities, so they share any existing `.tran`.
   if not inst.hasPart("sense"): return
   let sense = inst.subject("sense")
 
@@ -500,23 +441,13 @@ proc outputCurrentClaims(inst: RoleInstance): seq[Assertion] =
             sevWarning)
 
 proc regulatorExpand*(inst: RoleInstance): seq[Assertion] =
-  ## The rail's *behaviour on the way up*, as opposed to `power_rail`, which
-  ## claims only where it settles.
+  ## The rail's behaviour on the way up (`power_rail` claims only where it
+  ## settles). The subject is the net the rail is *judged* at, which may be
+  ## past a ferrite or LC from the regulator; `regulator`/`output` parts
+  ## tell the evaluator what to simulate.
   ##
-  ## The subject is the net the rail is *judged* at, which is not always the
-  ## one the regulator drives: with a ferrite or an LC between them, the
-  ## regulator pin shows a clean ramp while the load end rings. The
-  ## `regulator` and `output` parts are what an evaluator reads back to know
-  ## what to simulate -- a role knows its own topology, so its claims do not
-  ## have to restate it.
-  ## `tRun` is a **condition, not a limit**, the same way `settled_rail`'s
-  ## window is: it says how long the circuit was run for, and every
-  ## measurement here is a function of it. It matters most for exactly the
-  ## case the role was extended to reach -- a regulator that brings its own
-  ## model soft-starts on its own schedule, and the run length derived from
-  ## this analysis's *assumed* ramp has nothing to do with the part's. Left
-  ## unstated the derived length stands, which is right for the assumed ramp
-  ## and only for that.
+  ## `tRun` is a condition, not a limit. State it when the regulator brings
+  ## its own model: the derived run length fits only the assumed ramp.
   let judged = if inst.hasPart("measure"): inst.subject("measure")
                else: inst.subject("output")
   let target = paramFloat(inst, "voltage", 0.0)
@@ -548,16 +479,9 @@ proc regulatorExpand*(inst: RoleInstance): seq[Assertion] =
                "even though it settles correctly afterwards",
     origin: inst.name)
 
-  # The rest of what a `.tran` already measured. Each is opt-in, because
-  # each is a specification that comes from the system rather than from the
-  # rail: what the upstream supply can deliver, when the MCU releases its
-  # power-on reset, when anything downstream may be let out of reset.
-  #
-  # They are here rather than in a role of their own because the analysis
-  # is the same one -- `spice.startup` batches every claim sharing a
-  # regulator and a judged net into a single run -- and because a quantity
-  # no built-in role can claim reads, from `verax quantities`, as a
-  # quantity nothing can claim.
+  # Further opt-in start-up claims (inrush, reset timing): system specs, not
+  # rail properties. Here because `spice.startup` answers them in the same
+  # run.
   if hasParam(inst, "maxInrush"):
     result.add Assertion(
       id: assertionId(inst, "inrush"),
@@ -596,15 +520,8 @@ proc regulatorExpand*(inst: RoleInstance): seq[Assertion] =
                  "from reset",
       origin: inst.name)
 
-  # Stamped in one place at the end rather than at each `add`: this proc has
-  # five exits through four `if`s, and a condition applied at four of them is
-  # a claim quietly planned into a second run.
-  #
-  # **Only over the start-up claims**, which is why they are collected here
-  # rather than in `result` directly. The three groups below are answered by
-  # different analyses over different runs, and `t_run` says nothing about
-  # any of them -- stamped across everything it would print `t_run = 8 ms`
-  # under a ripple-rejection claim measured over eighty microseconds.
+  # `t_run` stamped once at the end, over the start-up claims only (the
+  # other groups are separate runs it says nothing about).
   for a in result.mitems:
     a.condition["t_run"] = $tRun
 
@@ -613,20 +530,10 @@ proc regulatorExpand*(inst: RoleInstance): seq[Assertion] =
   result.add outputCurrentClaims(inst)
 
 proc linearRegulatorExpand*(inst: RoleInstance): seq[Assertion] =
-  ## Everything `regulator` claims, plus the three things only a part that
-  ## *drops the difference* is asked.
-  ##
-  ## A linear regulator's whole character is that its input has to stay above
-  ## its output by some margin, and that what it does about a moving input is
-  ## a slope rather than a value. Neither is a question an operating point
-  ## contains, which is why all three go through `.dc`: `dropout_v` is a
-  ## threshold crossing on a swept curve, and the two regulation figures are
-  ## differences across a range.
-  ##
-  ## The sweep range joins the setup key, so a line figure quoted over the
-  ## part's specified range and one quoted over a wider range are two runs
-  ## whose answers are not comparable -- exactly the distinction
-  ## `templates/dc_sweep.nim` measures at 1.67% against 41.6% on one Zener.
+  ## `regulator` plus what only a part that drops the difference is asked:
+  ## `dropout_v` and line/load regulation, all via `.dc` sweeps. The sweep
+  ## range joins the setup key, since figures over different ranges aren't
+  ## comparable.
   result = regulatorExpand(inst)
 
   let outNet = if inst.hasPart("measure"): inst.subject("measure")
@@ -684,23 +591,10 @@ proc linearRegulatorExpand*(inst: RoleInstance): seq[Assertion] =
           sevWarning)
 
 proc switchingRegulatorExpand*(inst: RoleInstance): seq[Assertion] =
-  ## Everything `regulator` claims, plus what only a part that *chops and
-  ## filters* is asked.
-  ##
-  ## Three of them, and every one is a consequence of there being a waveform
-  ## where a linear regulator has a level. **Output ripple** is the inductor's
-  ## current triangle across the output capacitor's ESR, and it exists at all
-  ## only because the part switches. **The switching rate** is what fixes
-  ## that triangle's size, so a converter running at the wrong frequency has
-  ## the wrong ripple, the wrong inductor current and the wrong EMI
-  ## signature, and nothing else in a netlist records it -- it is set by a
-  ## resistor or by an internal oscillator. And **the inductor's peak
-  ## current**, which in a synchronous buck's on-time *is* the top switch's
-  ## current, so it is the measurable proxy for a current limit that lives
-  ## inside the part rather than on the board.
-  ##
-  ## Every one is an existing quantity over an existing evaluator: this role
-  ## adds no analysis, it says which parts to point the ones there at.
+  ## `regulator` plus what only a switcher is asked: output ripple (inductor
+  ## current across ESR), switching frequency (fixes ripple, inductor current
+  ## and EMI; recorded nowhere else), and inductor peak current (the
+  ## measurable proxy for the top switch's limit). Existing evaluators only.
   result = regulatorExpand(inst)
 
   let outNet = if inst.hasPart("measure"): inst.subject("measure")
@@ -771,25 +665,13 @@ proc switchingRegulatorExpand*(inst: RoleInstance): seq[Assertion] =
 
 proc settledRailExpand*(inst: RoleInstance): seq[Assertion] =
   ## What a node does once it has stopped changing: where it sits, and what
-  ## is left moving on it.
+  ## is still moving. Unlike `power_rail` (a `.op`, which has no ripple) and
+  ## `regulator` (the way up, binds a driver), this binds nothing, so it
+  ## reaches charge pumps, oscillator envelopes and cycle-by-cycle
+  ## converters.
   ##
-  ## **Why this is not `power_rail` with another parameter, and not
-  ## `regulator` with one either.** `power_rail`'s `dc_voltage` is an
-  ## operating point, and an operating point has no ripple in it -- a `.op`
-  ## solves one instant of a circuit that is not moving, so a switching
-  ## converter's rail reads as its average by construction and would pass any
-  ## ripple claim ever made about it. `regulator` is about the *way up*, and
-  ## binds a driving part to stand up as a ramp. This role binds nothing: it
-  ## names a net, a time by which the circuit should have settled, and what
-  ## it must then be doing. That is what makes it reach the circuits the
-  ## other two cannot -- a charge pump, an oscillator's envelope, a converter
-  ## measured cycle by cycle.
-  ##
-  ## `tSettle` and `tWindow` are **conditions, not limits**, exactly as
-  ## `large_signal`'s drive level is: they say what was run, the answer is a
-  ## function of them, and two claims at two windows are two runs. They ride
-  ## in `Assertion.condition`, and the evaluator's setup key reads them back
-  ## so the planner keeps those runs apart.
+  ## `tSettle`/`tWindow` are conditions, not limits: two windows are two
+  ## runs.
   let rail = inst.subject("rail")
   let tSettle = paramFloat(inst, "tSettle", 0.0)
   let tWindow = paramFloat(inst, "tWindow", 0.0)
@@ -809,11 +691,7 @@ proc settledRailExpand*(inst: RoleInstance): seq[Assertion] =
     claim.condition["t_window"] = $tWindow
     result.add claim
 
-  # Both claims are opt-in, and the role makes none of its own. A settling
-  # voltage without a stated value is not a claim, and a ripple budget is a
-  # system decision -- what the rail feeds and how much of it that load can
-  # reject -- rather than anything the circuit implies. Defaulting either
-  # would manufacture a claim nobody made and report it as theirs.
+  # Both claims opt-in; defaulting either would manufacture a claim.
   if hasParam(inst, "voltage"):
     settled("settled", "settled_v",
             nominal(paramFloat(inst, "voltage", 0.0),
@@ -831,27 +709,11 @@ proc settledRailExpand*(inst: RoleInstance): seq[Assertion] =
             "the part", sevWarning)
 
 proc currentPathExpand*(inst: RoleInstance): seq[Assertion] =
-  ## What is flowing **through a part** once the circuit has settled.
+  ## The current **through a part** once settled -- the one built-in whose
+  ## subject is a component (a net has no single current). Checks
+  ## `current_rating` and `isat`.
   ##
-  ## **The one built-in role whose subject is a component rather than a net.**
-  ## Every other quantity this library measures is a voltage, and that is not
-  ## a stylistic accident -- a branch current is not in an operating point for
-  ## anything but a voltage source, so until there was a `.tran` reading
-  ## device currents there was nothing for a current claim to be checked
-  ## against. `current_rating` and `isat` were registered and set by the part
-  ## policy the whole time and read by nobody, which is the shape of gap that
-  ## looks like coverage from the outside.
-  ##
-  ## **Why the part and not the net it feeds.** A net has one voltage and
-  ## every part on it shares it; a net has no current at all, only the several
-  ## different currents of the parts hanging off it. An inductor's peak, an
-  ## input capacitor's RMS and a sense resistor's average are three claims
-  ## about three parts on two nets, and naming the net could not tell them
-  ## apart.
-  ##
-  ## `tSettle` and `tWindow` are **conditions, not limits**, exactly as
-  ## `settled_rail`'s are and for the same reason: they say what was run, the
-  ## answer is a function of them, and two claims at two windows are two runs.
+  ## `tSettle`/`tWindow` are conditions, not limits.
   let part = inst.subject("part")
   let tSettle = paramFloat(inst, "tSettle", 0.0)
   let tWindow = paramFloat(inst, "tWindow", 0.0)
@@ -871,12 +733,7 @@ proc currentPathExpand*(inst: RoleInstance): seq[Assertion] =
     claim.condition["t_window"] = $tWindow
     result.add claim
 
-  # Every claim is opt-in and the role makes none of its own, the same rule
-  # `settled_rail` and `oscillator` follow. There is no default current for a
-  # part: what an inductor may carry is a property of the part somebody chose,
-  # and what it *does* carry is a property of the circuit -- neither implies a
-  # budget, and inventing one would manufacture a claim and report it as the
-  # designer's.
+  # Every claim opt-in; there's no default current budget for a part.
   if hasParam(inst, "isat"):
     carried("isat", "i_peak",
             atMost(paramFloat(inst, "isat", 0.0)), "A",
@@ -906,10 +763,7 @@ proc currentPathExpand*(inst: RoleInstance): seq[Assertion] =
             "limit headroom and whether the part saturates. Claiming it is " &
             "how a wrong inductor value is caught by something other than " &
             "the rail looking slightly worse")
-  # The two claims that read the *part's own* rating rather than restating it
-  # in the design file. That is the point of `isat` and `current_rating`
-  # having been registered: the number is a property of the part somebody
-  # chose, so a design that states it again has two copies to drift apart.
+  # These read the part's own rating rather than restating it in the design.
   if hasParam(inst, "maxIsatDerating"):
     carried("isat_derating", "i_peak_derating",
             atMost(paramFloat(inst, "maxIsatDerating", 0.0)), "",
@@ -924,22 +778,12 @@ proc currentPathExpand*(inst: RoleInstance): seq[Assertion] =
             "which is what its temperature rise was specified at", sevWarning)
 
 proc sourceSweepExpand*(inst: RoleInstance): seq[Assertion] =
-  ## What a node does as a source in the design is swept.
+  ## What a node does as a source is swept. `vFrom`/`vTo`/`vStep` are
+  ## conditions (the answers are differences across the range).
   ##
-  ## **Why the sweep is a condition and not a claim.** `vFrom`/`vTo`/`vStep`
-  ## say what was run: every quantity below is a difference taken across that
-  ## range, so two claims over two ranges are two runs and the answers are not
-  ## comparable. They ride in `Assertion.condition` exactly as
-  ## `settled_rail`'s window does, and the evaluator's setup key reads them
-  ## back so the planner keeps the runs apart.
-  ##
-  ## **Why `ratio` and `maxLineReg` are both here.** They are the same
-  ## measurement asked by two opposite circuits. A regulator's specification
-  ## is that the output does *not* follow its input, which is quoted as a
-  ## percentage of the output and wants to be small; a divider's is that it
-  ## follows exactly, by a stated ratio, which is quoted as a slope and wants
-  ## to be right. A role offering only one would make the other state its
-  ## specification as its counterpart's failure.
+  ## `ratio` and `maxLineReg` are the same measurement for opposite circuits:
+  ## a divider should follow by a stated slope, a regulator shouldn't follow
+  ## (quoted as a percentage).
   let outNet = inst.subject("output")
   let vFrom = paramFloat(inst, "vFrom", 0.0)
   let vTo = paramFloat(inst, "vTo", 0.0)
@@ -964,12 +808,7 @@ proc sourceSweepExpand*(inst: RoleInstance): seq[Assertion] =
       claim.condition["v_nominal"] = $paramFloat(inst, "nominal", 0.0)
     result.add claim
 
-  # Every claim is opt-in and the role makes none of its own. A sweep with no
-  # claim on it is a curve nobody asked a question about, and there is no
-  # default answer for what a node should do as its supply moves: for a
-  # regulator the right answer is "nothing", for a divider it is "follow", and
-  # inventing either would manufacture a claim and report it as the
-  # designer's.
+  # Every claim opt-in; there's no default for how a node should respond.
   if hasParam(inst, "ratio"):
     swept("transfer", "dc_transfer",
           nominal(paramFloat(inst, "ratio", 0.0),
@@ -1013,16 +852,10 @@ proc sourceSweepExpand*(inst: RoleInstance): seq[Assertion] =
           "has a budget rather than a nominal to be a fraction of")
 
 proc loadSweepExpand*(inst: RoleInstance): seq[Assertion] =
-  ## What a node does as current is drawn out of it.
-  ##
-  ## **This role binds no part, and that is the point.** The stimulus is a
-  ## constant-current sink the analysis injects at the measured node; there is
-  ## deliberately nothing in the design to bind, because a test load is not a
-  ## part anybody solders and putting one in the netlist would put it on the
-  ## BoM and in the layout. So the role names a node, a current range, and
-  ## what the node must then do -- which is also what lets it reach a network
-  ## that has no load port at all, where `z_out_dc` is the Thevenin
-  ## resistance the design equations computed and the netlist never states.
+  ## What a node does as current is drawn from it. Binds no part: the
+  ## analysis injects a constant-current sink (a test load isn't a board
+  ## part), so it also reaches networks with no load port, where `z_out_dc`
+  ## is the Thevenin resistance.
   let outNet = inst.subject("output")
   let iFrom = paramFloat(inst, "iFrom", 0.0)
   let iTo = paramFloat(inst, "iTo", 0.0)
@@ -1064,9 +897,7 @@ proc loadSweepExpand*(inst: RoleInstance): seq[Assertion] =
           atMost(paramFloat(inst, "maxZOut", 0.0)), "ohm",
           "how stiff the node has to be: everything hung on it sees this " &
           "resistance in series with whatever it draws")
-  # The same three the source sweep offers, and the natural way to state a
-  # load claim: what the node must still be at when the heaviest load in the
-  # range is drawn from it.
+  # The node's level at the heaviest load in the range.
   if hasParam(inst, "minOut"):
     swept("out_min", "dc_out_min",
           atLeast(paramFloat(inst, "minOut", 0.0)), "V",

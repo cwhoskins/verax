@@ -1,15 +1,6 @@
-## Registration of the built-in roles.
-##
-## `roles/core.nim` is the machinery -- the `RoleDef`/`RoleInstance` types and the
-## registry -- and the built-in `RoleDef`s themselves are split by category
-## across `power`, `analog` and `digital`. This module is where they are
-## assembled into `RoleDef`s and handed to `registerRole`, and it calls
-## `registerBuiltinRoles()` at init.
-##
-## Importing this module (rather than `roles/core.nim` directly) is what a program
-## does when it wants the built-ins registered -- the `contract` hub and
-## `contract/dsl` both do. It re-exports `roles`, so the core API comes with
-## it.
+## Registration of the built-in roles (defined in `power`, `analog`,
+## `digital`, `interconnect`), at init. Import this, not `roles/core`, to
+## get the built-ins; it re-exports `roles`.
 
 import ../../netlist/annotations
 import ./core
@@ -21,9 +12,8 @@ import ./interconnect
 export core
 
 proc registerBuiltinRoles*() =
-  ## Called at module init. Exposed so a test can prove that re-registering
-  ## is idempotent, and so an application that clears the registry can put
-  ## the built-ins back.
+  ## Called at module init; exposed so re-registration can be tested and a
+  ## cleared registry restored.
   registerRole(RoleDef(
     name: "power_rail",
     doc: "A regulated supply net at a stated nominal voltage.",
@@ -70,13 +60,8 @@ proc registerBuiltinRoles*() =
 
   registerRole(RoleDef(
     name: "spi",
-    # No `expects`, deliberately: `i2c` above sets it to `"i2c"` because that
-    # name is stable, but `diff_pair` does not, precisely so a differently
-    # named def (`usb2Interface`) can still imply it -- and this role needs
-    # the same latitude. `designs/lib/spi_memory.nim` defines its own
-    # `spi_memory_link` interface for the child-sheet side of an SPI bus, and
-    # a design author should be able to point that def at this role without
-    # a name check standing in the way.
+    # No `expects`, so differently named interface defs can imply this role
+    # (as with `diff_pair`).
     doc: "A four-wire SPI bus, fanned out to one instance per chip select.",
     parts: @[
       RolePart(name: "sclk", kind: skNet, doc: "clock, driven by the controller"),

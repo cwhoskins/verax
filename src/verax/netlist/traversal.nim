@@ -1,41 +1,19 @@
-## Author-stated pin-to-pin conduction for a component whose kind alone
-## cannot say it -- an 8-pin RF switch (`designs/xbar_rf.nim`'s ADG904,
-## `kind = "rf_switch"`), a connector, a relay, a jumper block, any N-pin
-## part whose conduction is a property of the part, not of its `kind` string.
+## Author-stated pin-to-pin conduction for a part whose kind can't say it --
+## an N-pin RF switch, connector, relay or jumper block.
 ##
-## Two independent hard-coded walks answer "can a graph walk pass *through*
-## this component" today and neither can be overridden: electrically,
-## `netlist/kinds.classifyConductivity` looks `Component.kind` up in two
-## fixed tables and calls anything else ambiguous; topologically,
-## `schematic/composites/composite.isTwoTerminal` is true only for a flat
-## part with exactly two connected pins. Both defaults **stay exactly as
-## they were** for a component that states nothing here -- this module adds
-## a third, explicit answer that overrides them, never a replacement for
-## either.
+## `kinds.classifyConductivity` (kind tables) and
+## `composite.isTwoTerminal` (two connected pins) stay unchanged for parts
+## that state nothing; this adds an explicit answer that overrides them.
 ##
-## Mirrors `netlist/layouthints.nim` (read it first; it is the template for
-## every decision below), down to the accessor/validator split: an accessor
-## is pure and total, so a malformed value never fails a check on its own,
-## and `validateTraversal` is the only place a bad value is ever reported.
+## Follows `layouthints.nim`: pure, total accessors; `validateTraversal` is
+## the only place bad values are reported. **Stored as namespaced
+## `traverse.*` attrs**, so specs survive clone/flatten/isolate (and are
+## lost by a SPICE round trip).
 ##
-## **Storage is namespaced `attrs` keys**, the trade every sibling module
-## here makes (`layouthints.nim`, `environment.nim`, `packages.nim`,
-## `pinmux.nim`): `graph.clone` copies `attrs` at every level, so a declared
-## spec survives `clone`/`instantiate`/`flatten`/`extractSubcircuit`/
-## `isolate` for free, and a SPICE round trip is *expected* to lose it
-## exactly as it loses `package.*` -- there is no SPICE card that could carry
-## "these two pins of this device conduct" for an arbitrary device kind.
-##
-## **Why this owns storage and grammar but not resolution.** `Conductivity`
-## does not move to this module: `kinds.nim` already imports only `./types`,
-## and `schematic/layout.nim` imports `./kinds` -- putting the resolution
-## procs (the fallback ladder from a spec, or its absence, to a
-## `Conductivity`) here would need `kinds` to import `traversal` and
-## `traversal` to need `Conductivity` from `kinds`, a cycle. The split that
-## avoids it: this module owns storage, grammar, accessors and validation,
-## and states conduction as a plain `bool` (`TraversalEdge.conducts`), so it
-## needs nothing from `kinds`. `kinds.conductivityBetween`/`conductiveExits`
-## import `./traversal` and do the resolving.
+## Owns storage, grammar, accessors and validation, but not resolution:
+## conduction is a plain `bool` here, and `kinds.conductivityBetween`/
+## `conductiveExits` resolve it (the other direction would be an import
+## cycle).
 
 import std/[strutils, tables]
 import ./types
@@ -46,44 +24,24 @@ export issue
 const
   traversalModeKey* = "traverse.mode"     ## "none" | "all"; absent = per-edge
   traversalPathsKey* = "traverse.paths"   ## conducting edges
-  traversalBlockedKey* = "traverse.blocked" ## edges that are a path but not a DC path
+  traversalBlockedKey* = "traverse.blocked" ## a schematic path, not a DC path
   traversalSpecKeys* = ["mode", "paths", "blocked"]
-    ## Extension point, the `layoutHintKeys` role: nothing else in this
-    ## module consults it (there is no free-form `traverse: key = value`
-    ## syntax to validate a bare key against), but a future addition to the
-    ## `traverse:` grammar has exactly one list to extend, on both sides of
-    ## the DSL, the way `layoutHintKeys` already does for `layout:`.
+    ## Extension point for the `traverse:` grammar (like `layoutHintKeys`).
 
-## Three homogeneous keys rather than one key with a per-edge "does this
-## count as DC" marker: each value stays a flat `;`-separated list of the
-## same shape `switch.select_pins`/`spice.couples` already use, so it stays
-## greppable in an `attrs` dump and every entry parses the same way whichever
-## key it came from.
-##
-## Grammar: one edge per `;`-separated entry, the edge's two pin names
-## separated by `,`. `-` is deliberately not a separator -- `IN-`/`IN+` are
-## real pin names in `spice/models/common.nim`, and a separator that can
-## appear inside a pin name is a parser that silently misreads the common
-## case to save punctuation. `,` and `;` appear in no pin name anywhere in
-## this repo, and `validateTraversal` is where a pin name that ever did
-## would be caught (as an "unknown pin", since it could never round-trip).
+## Three homogeneous keys, each a flat `;`-separated list of `a,b` pin
+## pairs. Not `-`: `IN-`/`IN+` are real pin names. `validateTraversal`
+## catches a pin name containing `,` or `;` as unknown.
 ##
 ##     traverse.paths   = "RFC,RF1;RFC,RF2;RFC,RF3;RFC,RF4"
 ##     traverse.blocked = "IN,OUT"
 ##     traverse.mode    = "none"
 ##
-## Canonical order is declaration order within one key, each edge's two pins
-## exactly as written -- `parseTraversalEdges`/`$` are exact inverses for a
-## single key's own list (which is what `setTraversal` round-trips), the
-## `parseLayoutSide`/`$` discipline `layouthints.nim` documents: one parse
-## point shared by the accessor and the validator, so a value neither
-## recognises is reported once, not divergently.
+## Declaration order, pins as written; `parseTraversalEdges`/`$` are exact
+## inverses for one key's list. One parse point for accessor and validator.
 
 type
   TraversalMode* = enum
-    ## `tmDefault` is the zero value *and* "nothing stated", so absence and
-    ## the explicit default coincide -- the `sideAuto` shape `layouthints.nim`
-    ## uses for exactly the same reason.
+    ## `tmDefault` is the zero value and "nothing stated".
     tmDefault, tmNone, tmAll
 
   TraversalEdge* = object
@@ -95,15 +53,10 @@ type
     edges*: seq[TraversalEdge]
 
 proc parseTraversalEdges*(s: string; conducts: bool): tuple[ok: bool, edges: seq[TraversalEdge]] =
-  ## The one place that maps a stored `paths`/`blocked` string to
-  ## `seq[TraversalEdge]`. An empty string is a *valid* zero-length list (the
-  ## key simply was not written -- `traversal` never calls this on an absent
-  ## key, but a reader constructing one by hand should not have to special
-  ## case it); a trailing `;`, an entry with no comma, or an entry with more
-  ## than one comma are all malformed and fail the whole value rather than
-  ## silently dropping the bad entry, on `parseLayoutSide`'s reasoning: a
-  ## partially-read spec is worse than an obviously-absent one, since a
-  ## declaration is meant to be exhaustive.
+  ## The one stored-string -> `seq[TraversalEdge]` mapping. Empty is a valid
+  ## empty list; a trailing `;` or an entry without exactly one comma fails
+  ## the whole value (a partial spec is worse than none -- declarations are
+  ## exhaustive).
   if s.len == 0: return (true, @[])
   var edges: seq[TraversalEdge]
   for entry in s.split(';'):
@@ -115,21 +68,16 @@ proc parseTraversalEdges*(s: string; conducts: bool): tuple[ok: bool, edges: seq
   (true, edges)
 
 proc `$`*(edges: seq[TraversalEdge]): string =
-  ## The inverse of `parseTraversalEdges` for one homogeneous list (every
-  ## edge sharing one `conducts` value, which is what `setTraversal` always
-  ## passes in) -- `conducts` itself is not rendered, since which key the
-  ## result is stored under already says it.
+  ## Inverse of `parseTraversalEdges` for one homogeneous list (`conducts`
+  ## is implied by the key).
   var parts: seq[string]
   for e in edges: parts.add e.a & "," & e.b
   parts.join(";")
 
 proc setTraversal*(c: Component, spec: TraversalSpec) =
-  ## Writes the three keys from `spec`, splitting `edges` by `conducts` into
-  ## `paths`/`blocked`. A `tmDefault` spec with no edges at all **deletes**
-  ## all three rather than writing empty strings -- one way to mean "nothing
-  ## stated", the same reasoning `setLayoutSide(c, sideAuto)` uses, so an
-  ## unannotated component and one explicitly reset are indistinguishable in
-  ## `attrs`.
+  ## Writes the three keys from `spec`, splitting edges by `conducts`. A
+  ## `tmDefault` spec with no edges **deletes** all three: one way to mean
+  ## "nothing stated".
   if spec.mode == tmDefault and spec.edges.len == 0:
     c.attrs.del(traversalModeKey)
     c.attrs.del(traversalPathsKey)
@@ -149,11 +97,8 @@ proc setTraversal*(c: Component, spec: TraversalSpec) =
   else: c.attrs.del(traversalBlockedKey)
 
 proc traversal*(c: Component): TraversalSpec =
-  ## Pure and total. Absent or unparseable both read as a zero `TraversalSpec`
-  ## (`tmDefault`, no edges) rather than raising -- exactly the `layoutSide`/
-  ## `validateLayoutHints` split: a stated-but-broken value must never be the
-  ## reason a check that merely wants to know "what conducts here" blows up;
-  ## `validateTraversal` is the only place a bad value is ever reported.
+  ## Pure and total: absent or unparseable reads as a zero `TraversalSpec`;
+  ## `validateTraversal` reports bad values.
   if c.attrs.hasKey(traversalModeKey):
     case c.attrs[traversalModeKey]
     of "none": result.mode = tmNone
@@ -167,29 +112,21 @@ proc traversal*(c: Component): TraversalSpec =
     if ok: result.edges.add edges
 
 proc statesTraversal*(c: Component): bool =
-  ## Whether *anything* was declared, valid or not -- the zero-cost gate every
-  ## consumer (`kinds.conductivityBetween`, `schematic`'s widened
-  ## `isTraversable`) checks first, so an undeclared component -- the
-  ## overwhelming majority of every existing design -- takes its exact
-  ## pre-feature path without even reading `traversal(c)`.
+  ## Whether anything was declared, valid or not -- the cheap gate every
+  ## consumer checks first, so undeclared parts take their default path.
   c.attrs.hasKey(traversalModeKey) or c.attrs.hasKey(traversalPathsKey) or
     c.attrs.hasKey(traversalBlockedKey)
 
 proc addTraversalEdge*(c: Component, a, b: string, conducts = true) =
-  ## Appends one edge, preserving whatever is already stated (mode included)
-  ## -- the DSL calls this once per `<->` pair (per cross-product member, for
-  ## a bracketed side) and never calls `setTraversal` directly, so a
-  ## multi-statement `traverse:` block accumulates rather than each
-  ## statement clobbering the last.
+  ## Appends one edge, keeping what's stated (mode included). The DSL calls
+  ## it per `<->` pair, so a multi-statement block accumulates.
   var spec = traversal(c)
   spec.edges.add TraversalEdge(a: a, b: b, conducts: conducts)
   setTraversal(c, spec)
 
 proc setTraversalMode*(c: Component, mode: TraversalMode) =
-  ## Sets `mode` alone, leaving any already-declared edges in place --
-  ## `validateTraversal` is what flags the resulting `none`-plus-edges
-  ## contradiction if the design actually does that; the accessor does not
-  ## pre-empt it, on the same reasoning `setLayoutSide` doesn't validate.
+  ## Sets `mode` alone, keeping edges; `validateTraversal` flags a
+  ## `none`-plus-edges contradiction.
   var spec = traversal(c)
   spec.mode = mode
   setTraversal(c, spec)
@@ -203,15 +140,10 @@ proc unorderedPair(a, b: string): tuple[lo, hi: string] =
   if a <= b: (a, b) else: (b, a)
 
 proc validateTraversal*(nl: Netlist, recursive = true): seq[Issue] =
-  ## What is wrong with a `traverse.*` attr as *written*. Unlike a rendering
-  ## hint (`validateLayoutHints`), an unknown pin is `sevError`: a bad
-  ## `layout.side` only draws the sheet worse, but a bad traversal spec
-  ## silently changes what `dcReachable`/`dc_path_exists` conclude about the
-  ## board, and that must not pass quietly to `sevWarning`'s "cosmetic"
-  ## reading. Only reachable from a file reader or a raw `attrs` write: the
-  ## DSL's `traverse:` block rejects an unrecognised shape at compile time,
-  ## but not an unknown *pin name* -- see `dsl.handleTraverse`'s own note on
-  ## why that one check has to wait until here.
+  ## Problems with `traverse.*` as written. An unknown pin is `sevError`, not
+  ## a warning: a bad spec silently changes what DC walks conclude. The DSL
+  ## rejects bad shapes at compile time but can't check pin names (see
+  ## `dsl.handleTraverse`).
   for _, c in nl.components:
     if c.attrs.hasKey(traversalModeKey):
       let m = c.attrs[traversalModeKey]

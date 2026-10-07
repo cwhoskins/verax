@@ -1,5 +1,4 @@
-## Structural regression for the reusable SPI memory sheet used by
-## designs/spi_memories.nim.
+## Structural regression for the reusable SPI memory sheet.
 
 import std/[tables, unittest]
 import verax/netlist

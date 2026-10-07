@@ -1,7 +1,4 @@
-## The simulation-backed half of the evaluator layer.
-##
-## Skipped rather than failed when `ngspice` is not on `PATH`, matching
-## `tests/test_spice_ngspice.nim`.
+## The simulation-backed evaluators. Skipped when `ngspice` is not on `PATH`.
 
 import std/[math, os, strutils, tables, unittest]
 
@@ -18,8 +15,7 @@ proc resultFor(rs: seq[AssertionResult], id: string): AssertionResult =
 # --- fixtures -----------------------------------------------------------
 
 proc dividerBoard(upper: string): Design =
-  ## A 10 V source divided down to a nominal 3.3 V rail. With 2k/1k the rail
-  ## sits at 3.333 V; changing the upper leg moves it off target.
+  ## A 10 V source divided to a nominal 3.3 V rail (3.333 V with 2k/1k).
   design("divider"):
     net vin, kind = ntPower
     net vdd, kind = ntPower
@@ -46,8 +42,7 @@ test "the simulated evaluators register themselves on import":
   check "spice.dc_voltage" in registeredEvaluators()
 
 test "a simulated quantity is not *evaluated* when no simulator is offered":
-  # The default capability set is offline, so importing this module must not
-  # silently start running ngspice.
+  # The default capability set is offline: importing must not run ngspice.
   let r = resultFor(evaluate(dividerBoard("2000")), "vdd_rail.voltage")
   check r.status == esNotEvaluated
   check "the .op capability" in r.reason
@@ -67,7 +62,7 @@ test "one .op answers every dc_voltage claim in the design":
     require dc_voltage(b) == 12.0.V, id = "B"
 
   let p = plan(d, allCapabilities)
-  # Two rails, two claims, but a single node-voltage solve answers both.
+  # Two claims, one node-voltage solve.
   check p.steps.len == 1
   check p.steps[0].evaluator == "spice.dc_voltage"
   check p.steps[0].assertions.len == 2
@@ -102,12 +97,8 @@ test "an undriven rail measures zero and fails, which is a real verdict":
   if not haveNgspice:
     skip()
   else:
-    # Worth pinning because the tempting answer is "unsolvable, so skip it".
-    # ngspice does solve this network -- the rail genuinely sits at 0 V,
-    # because nothing drives it -- so the honest report is a failure with a
-    # witness, not a shrug. The paths that really cannot produce a number
-    # (capability withheld, a NaN measurement, a simulation that raises) are
-    # each covered separately.
+  # ngspice solves this: the undriven rail sits at 0 V, so the honest report
+  # is a failure with a witness, not a skip.
     let d = design("floating"):
       net vdd, kind = ntPower
       net gnd, kind = ntGround, name = "0"
@@ -123,12 +114,8 @@ test "a claim about a net inside a subcircuit instance is checked, not shrugged 
   if not haveNgspice:
     skip()
   else:
-    # `design.innerNet` builds the subject and `resolve` accepts it when the
-    # claim is attached, so a flat-key lookup inside the evaluator made such a
-    # claim representable, bindable and then uncheckable -- reporting `needs a
-    # net subject that exists in this design` about a net that does. The name
-    # is also what `spice/flatten` calls that net, which is the netlist the
-    # operating point was solved on.
+  # A claim on an inner net (`design.innerNet`) must be checkable, not just
+  # bindable. The name matches what `spice/flatten` calls that net.
     let leg = subckt("LEG", [TOP, BOT]):
       net TOP, kind = ntSignal
       net BOT, kind = ntSignal
@@ -156,9 +143,8 @@ test "a claim about a net inside a subcircuit instance is checked, not shrugged 
 # --- setup recovered from the role that made the claim -------------------
 
 test "a start-up claim with no regulator bound says exactly what is missing":
-  # `overshoot_pct(vdd)` names the rail but not what drives it. Without a
-  # role to read the topology back from, that is not evaluable -- and the
-  # reason has to name the fix.
+  # `overshoot_pct(vdd)` names the rail but not its regulator; with no role
+  # to read that from, it's not evaluable and the reason names the fix.
   let d = design("noreg"):
     net vdd, kind = ntPower
     net gnd, kind = ntGround, name = "0"
@@ -185,8 +171,7 @@ test "a regulator role supplies the topology its own claims need":
     role "regulator", vdd_reg, regulator = U1, output = vdd,
                       voltage = 3.3.V, maxOvershoot = 5.0
 
-  # The claim carries only the rail as its subject; the regulator designator
-  # comes back through `Assertion.origin` -> the role instance's bindings.
+  # The regulator comes back through `Assertion.origin` -> the role bindings.
   let p = plan(d, allCapabilities)
   var startupSteps = 0
   for s in p.steps:
@@ -210,16 +195,14 @@ test "a PDN target is claimed only when the designer states one":
       found = true
       check a.expect.kind == ekMax
       check abs(a.expect.hi - 0.05) < 1.0e-12
-      # The band is bounded at both ends, or every board fails for something
-      # no capacitor change can fix.
+      # The band is bounded at both ends.
       check a.condition.hasKey("f_from")
       check a.condition.hasKey("f_to")
   check found
 
 # --- what each simulated run says it is ---------------------------------
 #
-# Pure: `describeStep` runs off the plan and never simulates, so these hold
-# with no ngspice on the machine.
+# `describeStep` never simulates, so these need no ngspice.
 
 test "a PDN step names the rail and the band it is judged over":
   let d = design("pdn"):
@@ -231,9 +214,7 @@ test "a PDN step names the rail and the band it is judged over":
     if s.evaluator == "spice.pdn": text = describeStep(d, s)
   check "net 'vdd'" in text
   check "100 kHz .. 100 MHz" in text
-  # The setup key that grouped the batch is machinery, and must not be what
-  # a reader is shown: `vdd|100000.0|100000000.0` says nothing about what
-  # was simulated, or about what the sweep does and does not cover.
+  # The setup key is machinery and must not be what a reader sees.
   check "100000.0" notin text
 
 test "a start-up step names the part standing in for the regulator":
@@ -255,8 +236,7 @@ test "a start-up step names the part standing in for the regulator":
   check "soft-start" in text
 
 test "the .op step says it is not isolated, which is why the claim means anything":
-  # Isolating first would terminate the rail with an ideal source at the very
-  # voltage the claim is asking about, and pass every time.
+  # Isolating first would pin the rail at the voltage being asked about.
   let d = dividerBoard("2000")
   let p = plan(d, allCapabilities)
   var text = ""
@@ -267,11 +247,8 @@ test "the .op step says it is not isolated, which is why the claim means anythin
 # --- what the run context guarantees ------------------------------------
 
 test "the declared capabilities are what a run actually uses":
-  # Both of these once under-declared. `spice.pdn` said `.ac` and solved an
-  # operating point for its bias derating; `spice.large_signal` said `.tran`
-  # and solved one to find the bias its stimulus sits on. Under `--caps=ac`
-  # or `--caps=tran` each ran an analysis the caller had withheld, and the
-  # flag quietly meant nothing. A `set` is what let them say so.
+  # Each evaluator declares every analysis it runs, so `--caps` withholding
+  # one actually refuses it.
   check evaluatorFor("z_max_in_band").get.needs == {capSpiceOp, capSpiceAc}
   check evaluatorFor("thd_pct").get.needs == {capSpiceOp, capSpiceTran}
 
@@ -284,16 +261,12 @@ test "a claim needing two capabilities is refused when only one is offered":
       # Named, and named by label rather than by enum identifier.
       check ".op" in rej.reason
       check "capSpiceOp" notin rej.reason
-  # The fixture claims no impedance, so this is a guard on the message shape
-  # only when one is present.
+  # The fixture claims no impedance; this guards the message shape only.
   discard found
 
 test "an edited design is re-solved rather than answered from a stale cache":
-  # The operating point used to live in a module-level `var` keyed on Design
-  # reference identity with no content invalidation: mutating a design in
-  # place and evaluating again returned the *first* answer, silently. It now
-  # lives in the EvalContext, which lasts exactly one run, so this cannot
-  # happen -- and a sweep over candidate values is the obvious way to hit it.
+  # The operating point lives in the EvalContext, so mutating a design and
+  # evaluating again gets a fresh answer.
   if not haveNgspice:
     skip()
   else:
@@ -308,8 +281,7 @@ test "an edited design is re-solved rather than answered from a stale cache":
     check first.value != second.value
 
 test "one EvalContext shares an operating point across every step in a run":
-  # The other half of the same property: within one run the .op is solved
-  # once, which is what keeps N claims to one simulation.
+  # Within one run the .op is solved once.
   if not haveNgspice:
     skip()
   else:
@@ -321,9 +293,8 @@ test "one EvalContext shares an operating point across every step in a run":
 # --- device currents ----------------------------------------------------
 
 proc currentBoard(): Design =
-  ## A square wave through a series R-L into a resistive load. The chain is
-  ## 200 ohm across a 10 V 50% square, so it settles to 25 mA with a triangle
-  ## on it -- an average, a peak and an RMS that are three different numbers.
+  ## A square wave through a series R-L into a resistive load: settles to
+  ## 25 mA with a triangle on it, so average, peak and RMS all differ.
   design("current_board"):
     net vin, kind = ntPower
     net mid, kind = ntSignal
@@ -368,14 +339,12 @@ test "a current quantity is reachable, and its subject is a component":
   let ev = evaluatorFor("i_peak")
   check ev.isSome
   check ev.get.subjectKinds == {skComponent}
-  # **No `binds`.** The subject *is* the part, so a bare
-  # `require i_peak(L1) <= 6.A` reaches this with no role at all.
+  # No `binds`: the subject is the part, so `require i_peak(L1) <= 6.A`
+  # needs no role.
   check ev.get.binds.len == 0
 
 test "two parts over one window are one run, not one run per part":
-  # The setup is the window and nothing else. Keyed by part instead, this
-  # design would `.tran` twice to read one set of waveforms two ways -- which
-  # on a design whose parts carry switching models is the whole cost.
+  # The setup is the window alone, so one `.tran` serves every part.
   let d = currentBoard()
   let p = plan(d, allCapabilities)
   var steps = 0
@@ -394,10 +363,8 @@ test "the current claims are checked against the parts that carry them":
     check abs(resultFor(rs, "coil.i_avg").value - 0.025) / 0.025 < 0.02
     check resultFor(rs, "coil.i_rms").status == esPass
 
-    # **One run, two parts, and the numbers do not get crossed.** The
-    # capacitor carries the ripple and none of the DC; the inductor carries
-    # both. A harvest by quantity name alone would answer the capacitor's
-    # claim with the inductor's 25 mA and fail it.
+    # One run, two parts, numbers not crossed: the capacitor carries the
+    # ripple and none of the DC; the inductor carries both.
     check resultFor(rs, "cap.i_avg").status == esPass
     check resultFor(rs, "cap.i_avg").value < 0.001
 
@@ -413,9 +380,7 @@ test "a derating claim reads the part's own rating rather than restating it":
     check resultFor(rs, "coil.rms_derating").status == esPass
 
 test "a current claim on a net says a current is carried by a part":
-  # The subject kind is checked by the evaluator's own `subjectKinds`, so a
-  # net-subject claim never reaches the run -- and the message has to say
-  # what to write instead rather than only that this one is wrong.
+  # `subjectKinds` rejects a net subject, and the message says what to write.
   let d = design("net_current"):
     net vdd, kind = ntPower
     net gnd, kind = ntGround, name = "0"
@@ -430,11 +395,9 @@ test "a current claim on a net says a current is carried by a part":
 # --- load step, rejection and output-current derating -------------------
 
 proc stepBoard(): Design =
-  ## A stiff 5 V rail behind 100 mohm of source resistance, with 100 uF and
-  ## a 1 A standing load. The droop the step produces is arithmetic rather
-  ## than a fixture: a 0.5 A step through 100 mohm is 50 mV once the source
-  ## is in charge of it, and the capacitor's own contribution over the first
-  ## microsecond is `i * t / C` = 5 mV.
+  ## A 5 V rail behind 100 mohm, with 100 uF and a 1 A standing load. A
+  ## 0.5 A step droops 50 mV once the source takes over; the capacitor's
+  ## contribution over the first microsecond is `i * t / C` = 5 mV.
   design("step"):
     net vin, kind = ntPower
     net vout, kind = ntPower
@@ -475,9 +438,7 @@ test "the load-step quantities are reachable and their subject is a net":
   let ev = evaluatorFor("step_droop_v")
   check ev.isSome
   check ev.get.subjectKinds == {skNet}
-  # No `binds`: the subject is the rail, so `require step_droop_v(vout)`
-  # reaches this with no role at all. The *step* still has to be stated,
-  # and the evaluator says so when it is not.
+  # No `binds`: the subject is the rail. The step must still be stated.
   check ev.get.binds.len == 0
 
 test "one load step is one run however many claims are made about it":
@@ -489,9 +450,8 @@ test "one load step is one run however many claims are made about it":
   check steps == 1
 
 test "two step magnitudes are two runs -- the answers do not pool":
-  # A rail that holds up under 1 A may not under 3 A, so the magnitude is
-  # part of the setup key. Pooling would answer one claim with the other's
-  # number, which is a wrong answer rather than a missing one.
+  # The step magnitude is part of the setup key; pooling would answer one
+  # claim with the other's number.
   let d = stepBoard()
   discard d.addRole("regulator", "reg2",
                     {"regulator": Subject(kind: skComponent, name: "V1"),
@@ -513,14 +473,10 @@ test "a load step measures the droop the source resistance predicts":
     let rs = evaluate(stepBoard(), allCapabilities)
     let droop = resultFor(rs, "reg.droop")
     check droop.status == esPass
-    # 0.5 A through 100 mohm, once the capacitor has handed over.
+  # 0.5 A through 100 mohm.
     check abs(droop.value - 0.05) / 0.05 < 0.1
-    # **The release does not mirror it, and that is the right answer.** A
-    # first-order RC behind a resistor has nothing to overshoot with: the
-    # rail climbs back to exactly where it started and stops. An overshoot
-    # needs a second energy store -- an output inductance, or a loop with
-    # phase left in it -- so a fixture that reported one here would be
-    # reporting the measurement's own artefact.
+    # The release does not mirror the droop: a first-order RC has nothing to
+    # overshoot with. An overshoot needs a second energy store.
     let over = resultFor(rs, "reg.step_overshoot")
     check over.status == esPass
     check over.value < 0.005
@@ -529,20 +485,17 @@ test "recovery is measured against where the rail settles under the new load":
   if not haveNgspice:
     skip()
   else:
-    # There is no loop here at all -- an RC behind a resistor -- so the
-    # recovery is the RC's own 10 us and nothing else. What this pins is
-    # that load regulation is not counted as a failure to recover: the rail
-    # settles 50 mV lower under the step and stays there, and a recovery
-    # measured against the *old* level would never converge.
+    # No loop, so recovery is the RC's 10 us. Load regulation isn't a failure
+    # to recover: the rail settles 50 mV lower and recovery is measured
+    # against that, not the old level.
     let rs = evaluate(stepBoard(), allCapabilities)
     let rec = resultFor(rs, "reg.recover")
     check rec.status == esPass
     check rec.value >= 0.0 and rec.value < 1.0e-3
 
 proc psrrBoard(): Design =
-  ## An RC low-pass from input to output, whose rejection is exactly
-  ## `sqrt(1 + (2*pi*f*R*C)^2)`. 1 kohm and 1 uF puts the pole at 159 Hz, so
-  ## at 1 kHz the attenuation is 16.1 dB.
+  ## An RC low-pass whose rejection is `sqrt(1 + (2*pi*f*R*C)^2)`: 1 kohm and
+  ## 1 uF give 16.1 dB at 1 kHz.
   design("psrr"):
     net vin, kind = ntPower
     net vout, kind = ntPower
@@ -570,8 +523,7 @@ proc psrrBoard(): Design =
          minPsrrBandDb = 15.dB, psrrFrom = 100.Hz, psrrTo = 10.kHz
 
 test "the two rejection evaluators declare different capabilities":
-  # One evaluator declaring `{capSpiceAc, capSpiceTran}` would be refused on
-  # a host offering only one of them, which is why these are two.
+  # Two evaluators, so a host offering only `.ac` or only `.tran` can run one.
   check isEvaluable("psrr_db")
   check isEvaluable("psrr_min_db")
   check isEvaluable("psrr_at_f")
@@ -581,8 +533,7 @@ test "the two rejection evaluators declare different capabilities":
   check evaluatorFor("psrr_min_db").get.needs == {capSpiceAc}
 
 test "a rejection claim names the role, because it needs a supply bound":
-  # Both declare `binds`, so a bare `require psrr_db(vout) >= 40.dB` comes
-  # back naming what would have to be bound rather than failing obscurely.
+  # Both declare `binds`, so a bare claim names what must be bound.
   check evaluatorFor("psrr_db").get.binds == @["source", "input"]
   check evaluatorFor("psrr_min_db").get.binds == @["source", "input"]
   let d = design("bare_psrr"):
@@ -608,16 +559,14 @@ test "both methods measure an RC's known rejection, and agree with each other":
     check swept.status == esPass
     check abs(tone.value - exact) < 0.3
     check abs(swept.value - exact) < 0.1
-    # The point of running both: a tone measurement has a noise floor and an
-    # `.ac` sweep has a linearisation, and neither alone says which it hit.
+  # A tone has a noise floor and `.ac` a linearisation; they must agree.
     check abs(tone.value - swept.value) < 0.3
 
 # --- channel match, the first two-subject quantity ---------------------
 
 proc matchBoard(rfRight: string): Design =
-  ## Two non-inverting stages. Gain is 1 + Rf/Rg per channel; with both Rf at
-  ## 10k the channels match, and moving the right one off it is a real
-  ## imbalance the `channel_match` claim has to catch.
+  ## Two non-inverting stages, gain 1 + Rf/Rg. Both Rf at 10k match; moving
+  ## the right one is an imbalance `channel_match` must catch.
   design("match"):
     net inL, kind = ntSignal
     net outL, kind = ntSignal
@@ -694,9 +643,7 @@ test "a gain-setting resistor off on one channel fails it, with the measurement"
     check "dB" in r.reason
 
 test "i_out_derating reads the regulator's rating, not the sense part's":
-  # The rating belongs to the part somebody chose, so a substitution changes
-  # the limit in one place rather than two -- and the sense part is a
-  # resistor here, which has no rating of its own to be confused with.
+  # The rating belongs to the chosen source part, not the sense resistor.
   if not haveNgspice:
     skip()
   else:
@@ -715,9 +662,7 @@ test "i_out_derating reads the regulator's rating, not the sense part's":
     check abs(dr.value - 0.5) < 0.05
 
 test "a regulator that states no rating reports derating as unchecked":
-  # NaN rather than infinite headroom: a part nobody has chosen must read as
-  # *not evaluated*, which is the rule `current_path` already follows for
-  # `isat` and `current_rating`.
+  # No rating reads NaN (not evaluated), not infinite headroom.
   if not haveNgspice:
     skip()
   else:

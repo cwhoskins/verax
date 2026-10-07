@@ -1,27 +1,14 @@
-## Making a `.cm` path safe to write into a SPICE deck.
-##
-## Split out of `xspice/build.nim` so `verax/spice/ngspice` can reuse it
-## without pulling in the build driver: this module depends on nothing but the
-## standard library.
+## Making a `.cm` path safe to write into a SPICE deck (stdlib only, so
+## `spice/ngspice` can use it without the build driver).
 
 import std/[hashes, os, strutils]
 
 proc deckSafeCmPath*(cm: string): string =
-  ## Return a path to `cm` that survives being written into a SPICE deck.
-  ##
-  ## ngspice lowercases every deck line before parsing -- including the
-  ## argument of `pre_codemodel` -- so a `.cm` whose absolute path contains an
-  ## uppercase character can *never* be loaded from a deck: ngspice reports
-  ## `No such file or directory` for the case-folded name. Quoting does not
-  ## help; the quotes are taken literally and become part of the filename.
-  ## Verified against ngspice-46.
-  ##
-  ## This bites more often than it sounds: `std/tempfiles.createTempDir`
-  ## generates mixed-case names, and `/home/SomeUser/...` is ordinary.
-  ##
-  ## Returns `cm` unchanged when its absolute path is already all-lowercase,
-  ## otherwise an all-lowercase symlink to it. The symlink's *target* may of
-  ## course contain uppercase -- only the text in the deck matters.
+  ## A path to `cm` that survives a deck: ngspice lowercases every line,
+  ## including `pre_codemodel`'s argument, so any uppercase in the path
+  ## breaks loading (quoting doesn't help). Common with temp dirs and home
+  ## directories. Returns `cm` if already lowercase, else a lowercase
+  ## symlink to it.
   let abs = cm.absolutePath
   if abs == abs.toLowerAscii: return abs
   var base = getTempDir()

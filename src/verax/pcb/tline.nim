@@ -1,15 +1,10 @@
 ## Joins the route (`pcb/trace`) and the cross-section (`pcb/impedance`):
-## per-frequency Z0 and loss, propagation delay, a cascaded ABCD matrix and
-## the `SParams` it converts to.
+## per-frequency Z0 and loss, delay, a cascaded ABCD matrix and `SParams`.
 ##
-## `specFor` is the only place that turns board data into a `LineSpec` --
-## everything numeric past that point is `pcb/impedance`'s pure arithmetic,
-## unchanged. It classifies a section as stripline the moment
-## `RouteSection.reference.opposite` is set (both sides independently
-## cleared `RouteSpec.minCoverage` in `trace.resolveReference`) and as
-## microstrip otherwise, `lgCoveredMicrostrip` when the stackup's own solder
-## mask entry sits directly outside the trace layer -- "covered" is read off
-## the board, never assumed.
+## `specFor` is the only board -> `LineSpec` step. A section is stripline
+## when `reference.opposite` is set, else microstrip --
+## `lgCoveredMicrostrip` when the stackup has solder mask directly outside
+## the trace layer (read off the board, never assumed).
 import std/[math, complex]
 
 import ./units
@@ -27,58 +22,34 @@ export trace, impedance, touchstone
 type
   TlineSpec* = object
     freqs*: seq[float]
-      ## Hz. Default a log sweep 1 MHz .. 20 GHz, 10 points/decade -- enough
-      ## to place a corner without costing seconds on a whole net's worth of
-      ## edges (`nimble traces` is what proved that budget against the real
-      ## corpus, not a guess).
+      ## Hz. Default log sweep 1 MHz .. 20 GHz, 10 points/decade.
     zRef*: float
     roughness*: float
-      ## RMS copper roughness, metres. No board format states this per-trace
-      ## (`pcb/CLAUDE.md`); `0` (smooth) is the default, and `characterize`
-      ## records that default as an `Assumption` naming which edge rests on
-      ## it, on the same discipline every `spice/models` expander follows
-      ## for an invented input -- loss computed at `roughness = 0` is a
-      ## lower bound, not a measurement.
+      ## RMS copper roughness, metres. Default `0` (smooth), recorded as an
+      ## `Assumption`; loss at `0` is a lower bound.
     rho*: float
-      ## Conductor resistivity, ohm-metre. Defaults to annealed copper at
-      ## 20 degC, `1.72e-8` -- also recorded as an `Assumption` when a
-      ## caller leaves it at that default, for the same reason.
+      ## Conductor resistivity, ohm-metre. Default annealed copper at 20
+      ## degC (`1.72e-8`), recorded as an `Assumption`.
 
   SectionResult* = object
     spec*: LineSpec
     z0*: seq[float]
-      ## `|Zc|` per frequency in `freqs`. Empty when the section's return
-      ## path never resolved (`RouteSection.reference.layer == nil`) --
-      ## `NaN` per-sample would still need a caller to check every entry;
-      ## an empty `seq` is the same refusal stated once.
+      ## `|Zc|` per frequency. Empty when the return path never resolved.
     gamma*: seq[Complex64]
     delay*: float
-      ## Seconds, lossless (`impedance.delayPerMetre * length`). `NaN` when
-      ## undetermined for the same reason `z0` is empty.
+      ## Seconds, lossless. `NaN` when undetermined (as for `z0`).
     lossDb*: seq[float]
-      ## Insertion loss of this section alone, per frequency: `alpha * L`
-      ## converted from nepers to dB.
+      ## This section's insertion loss per frequency (`alpha * L` in dB).
 
   EdgeResult* = object
     edge*: RouteEdge
     sections*: seq[SectionResult]
     length*, delay*: float
     freqs*: seq[float]
-      ## The frequency axis `abcd` (and every `SectionResult.z0`/`gamma`) is
-      ## indexed against -- a copy of the `TlineSpec.freqs` that produced
-      ## this result, carried on the result itself rather than only on the
-      ## input, because `sparams` needs a real axis to hand `SParams.freqs`
-      ## and reaches it through `r`, not through a second parameter the
-      ## plan's own `sparams*(r: EdgeResult, zRef = 50.0)` signature has no
-      ## room for. Deviation from the plan's literal `EdgeResult` field list,
-      ## noted here rather than silently: without it `sparams` would have to
-      ## either guess a frequency axis or hand back an `SParams` whose
-      ## `freqs` lied by repeating one placeholder value, and a wrong axis
-      ## is worse than an extra field.
+      ## The frequency axis for `abcd` and every section's results, carried
+      ## on the result so `sparams` can fill `SParams.freqs`.
     abcd*: seq[array[4, Complex64]]
-      ## Cascaded over every section, per frequency in `freqs` -- the matrix
-      ## product in section order, standard two-port cascade convention
-      ## (`[A B; C D]` multiplied left to right along the edge).
+      ## Cascaded ABCD per frequency: sections multiplied left to right.
     issues*: seq[Issue]
     assumptions*: seq[Assumption]
 
@@ -95,10 +66,8 @@ proc defaultTlineSpec*(): TlineSpec =
 # ---------------------------------------------------------------- specFor
 
 proc isMicrostripCovered(pcb: Pcb, l: PcbLayer): bool =
-  ## Does a solder-mask stack entry sit directly outside this copper layer?
-  ## An inner layer is never "covered" in this sense -- it is either
-  ## unresolved or already classified as a stripline family by `specFor`
-  ## before this is even asked.
+  ## Does solder mask sit directly outside this copper layer? Never for an
+  ## inner layer.
   if pcb.stackup == nil or l == nil or l.side == lsInner: return false
   let entries = pcb.stackup.entries
   var idx = -1
@@ -113,13 +82,9 @@ proc isMicrostripCovered(pcb: Pcb, l: PcbLayer): bool =
   else: false
 
 proc specFor*(pcb: Pcb, s: RouteSection, t: TlineSpec): LineSpec =
-  ## Builds the pure-numeric `LineSpec` `pcb/impedance` needs from one
-  ## already-resolved `RouteSection`. Deliberately does **not** special-case
-  ## an unresolved reference (`s.reference.layer == nil`): `noReferencePath`
-  ## already leaves `height`/`er`/`tand` at `NaN`, which propagates through
-  ## every `impedance` formula to a `NaN` `z0` on its own -- the house rule
-  ## working exactly as intended, with no second refusal path to keep in
-  ## sync with the first.
+  ## The `LineSpec` for one resolved `RouteSection`. An unresolved reference
+  ## isn't special-cased: its `NaN` height/er/tand propagate to a `NaN`
+  ## `z0`.
   let w = toMetres(s.width)
   var thick = 0.0
   let se = stackEntryFor(pcb, s.layer)
@@ -135,8 +100,8 @@ proc specFor*(pcb: Pcb, s: RouteSection, t: TlineSpec): LineSpec =
     h2 = opp.height
     let wTotal = h1 + h2
     if wTotal > 0.0 and not (h1.isNaN or h2.isNaN):
-      # Both planes clamp the field, so both dielectrics' material figures
-      # in proportion to how much of the gap each occupies.
+    # Both planes clamp the field: weight each dielectric by its share of
+    # the gap.
       er = (rp.er * h1 + opp.er * h2) / wTotal
       tand = (rp.tand * h1 + opp.tand * h2) / wTotal
     geometry =
@@ -169,9 +134,7 @@ proc identityAbcd(): array[4, Complex64] =
   [complex(1.0, 0.0), complex(0.0, 0.0), complex(0.0, 0.0), complex(1.0, 0.0)]
 
 const NepersToDb = 20.0 / ln(10.0)
-  ## `1 Np = 20/ln(10) dB ~= 8.6859 dB` -- the conversion between the natural
-  ## attenuation unit `gamma.re` (`alpha`) comes out in from `propagation`
-  ## and the dB figure `lossDb` reports.
+  ## `1 Np = 20/ln(10) dB ~= 8.6859 dB`.
 
 proc characterize*(pcb: Pcb, e: RouteEdge, t = defaultTlineSpec()): EdgeResult =
   var issues: seq[Issue] = @[]
@@ -242,11 +205,8 @@ proc characterize*(pcb: Pcb, tree: RouteTree, t = defaultTlineSpec()): seq[EdgeR
 # ---------------------------------------------------------------- S-parameters
 
 proc sparams*(r: EdgeResult, zRef = 50.0): SParams =
-  ## Converts the cascaded ABCD to a 2-port `S` matrix at `zRef`, reusing
-  ## `verax/touchstone`'s own type and row-major convention rather than a
-  ## second matrix shape -- see this module's doc comment on why that is the
-  ## one edge `pcb/` gains to a module outside its own dependency tree
-  ## (`touchstone` imports only `std/[complex, math]`, so it stays a leaf).
+  ## The cascaded ABCD as a 2-port `S` matrix at `zRef`, using
+  ## `verax/touchstone`'s type (a leaf module, so the dependency is safe).
   result.nPorts = 2
   result.z0 = zRef
   result.freqs = r.freqs
@@ -265,17 +225,9 @@ proc sparams*(r: EdgeResult, zRef = 50.0): SParams =
     result.points.add(@[s11, s12, s21, s22])
 
 proc ladder*(r: EdgeResult, f: float, nSections: int): seq[tuple[r, l, g, c: float]] =
-  ## `nSections` equal lumped RLGC subsections at frequency `f`, as plain
-  ## data -- deliberately not a `Netlist`: building one would pull in
-  ## device-kind and `formats/spice.nim` work this scope excludes (see the
-  ## module doc's scope note). Each subsection is `1/nSections` of the
-  ## edge's total length; which of the edge's own (possibly several, at
-  ## different widths) sections a given subsection falls in is resolved by
-  ## walking each section's own physical length -- recovered from
-  ## `delay / delayPerMetre(spec)` rather than carried as a separate field,
-  ## since `SectionResult` already has everything needed to reconstruct it
-  ## and a second length field would be one more thing to keep in sync with
-  ## `RouteSection.length`.
+  ## `nSections` equal lumped RLGC subsections at `f`, as plain data (not a
+  ## `Netlist`). Each subsection's owning section is found by walking
+  ## section lengths, recovered from `delay / delayPerMetre`.
   if nSections <= 0 or r.length <= 0.0: return
   let subLen = r.length / nSections.float
   var lens: seq[float] = @[]
@@ -299,17 +251,9 @@ proc ladder*(r: EdgeResult, f: float, nSections: int): seq[tuple[r, l, g, c: flo
     result.add((r: rl.r * subLen, l: rl.l * subLen, g: rl.g * subLen, c: rl.c * subLen))
 
 proc skew*(pcb: Pcb, a, b: seq[RouteEdge], t = defaultTlineSpec()): float =
-  ## Delay difference between two paths, seconds -- what `intra_pair_skew`
-  ## will call once a differential-pair adapter exists (see the plan's scope
-  ## note: this module makes the quantity *computable*, a follow-up makes it
-  ## *claimable*). Takes `pcb`/`t` rather than the plan's bare
-  ## `skew*(a, b: seq[RouteEdge])`: a `RouteEdge`'s own geometry alone is not
-  ## enough to know its propagation velocity -- that needs `specFor`'s
-  ## stackup lookup and a frequency sweep is not even required for a
-  ## lossless delay figure, but the classification (stripline vs microstrip,
-  ## the `epsEff` fringing correction) still is, and inventing that
-  ## classification from a `RouteEdge` alone would be exactly the kind of
-  ## guess this codebase refuses to make silently.
+  ## Delay difference between two paths, seconds (for a future
+  ## `intra_pair_skew`). Needs `pcb`/`t` because velocity depends on
+  ## `specFor`'s stripline/microstrip classification.
   proc pathDelay(edges: seq[RouteEdge]): float =
     for e in edges:
       let r = characterize(pcb, e, t)
@@ -318,11 +262,9 @@ proc skew*(pcb: Pcb, a, b: seq[RouteEdge], t = defaultTlineSpec()): float =
   pathDelay(a) - pathDelay(b)
 
 proc delayTo*(pcb: Pcb, tree: RouteTree, p: Pin, t = defaultTlineSpec()): float =
-  ## Sum of section delays from `tree.root` to the node carrying pin `p`.
-  ## `NaN` when `p` is unreachable (`pathTo` returns `@[]`) or any section
-  ## along the way never resolved a return path -- a partial delay figure
-  ## that silently omitted the unresolved section would understate every
-  ## downstream skew comparison.
+  ## Sum of section delays from `tree.root` to pin `p`. `NaN` if `p` is
+  ## unreachable or any section lacks a return path (a partial sum would
+  ## understate skew).
   let path = pathTo(tree, p)
   if path.len == 0: return NaN
   for e in path:

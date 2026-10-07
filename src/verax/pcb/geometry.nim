@@ -1,20 +1,14 @@
 ## Format-agnostic 2-D geometry for the physical board model.
 ##
-## **Canonical frame: X right, Y up, angles counter-clockwise positive,
-## degrees.** ODB++ and Gerber are already Y-up; KiCad is the outlier (Y-down,
-## with a rotation that reads counter-clockwise on screen and therefore
-## clockwise in a Y-up frame), so a KiCad reader negates Y and angle at its
-## boundary. Canonical polygon winding is **islands counter-clockwise, holes
-## clockwise** (positive area outward); ODB++ is the reverse and normalises on
-## read.
+## **Canonical frame: X right, Y up, CCW-positive degrees.** KiCad is Y-down
+## (its rotation is clockwise in a Y-up frame), so its reader negates Y and
+## angle at the boundary. Winding: **islands CCW, holes CW**; ODB++ is
+## reversed and normalises on read.
 ##
-## The *curve* (a dimensionless line) is deliberately separate from the
-## *shape* (the thing that has area): a track is a stroked path, a pour is a
-## filled polygon, and a pad is an interned aperture flashed at a point. Arcs
-## are canonically centre + radius + start angle + signed sweep, because both
-## source encodings (KiCad's three-point form, ODB++'s endpoints-plus-centre
-## form) are awkward for bounding boxes and sampling. `arcFrom3Points` and
-## `arcFromEndpointsCenter` convert once, at the reader.
+## A *curve* (no area) is separate from a *shape*: a track is a stroked path,
+## a pour a filled polygon, a pad an interned aperture flashed at a point.
+## Arcs are canonically centre + radius + start angle + signed sweep;
+## `arcFrom3Points`/`arcFromEndpointsCenter` convert at the reader.
 
 import std/[math, tables]
 import ./units
@@ -44,8 +38,7 @@ type
       radius*: Nm
       startAngle*: Deg
       sweep*: Deg
-        ## Signed: positive is counter-clockwise. `abs(sweep) >= 360` is a
-        ## full circle.
+        ## Signed: positive is CCW. `abs(sweep) >= 360` is a full circle.
 
   Path* = object
     curves*: seq[Curve]
@@ -61,8 +54,8 @@ type
     ecRound, ecSquare, ecButt
 
   Corner* = enum
-    ## Corner selector for rounded/chamfered rectangles, in ascending
-    ## counter-clockwise order starting top-right, matching ODB++.
+    ## Corner selector for rounded/chamfered rectangles, CCW from top-right
+    ## (as ODB++).
     cnTopRight, cnTopLeft, cnBottomLeft, cnBottomRight
 
   ApertureKind* = enum
@@ -71,12 +64,10 @@ type
 
   Aperture* = ref object
     ## A pad/flash shape, interned in `Pcb.apertures` and shared by every pad
-    ## that uses it -- mirroring ODB++'s `$n` symbol table and KiCad's shape
-    ## tokens. Local coordinates are centred on the aperture origin.
+    ## using it. Local coordinates centred on the origin.
     name*: string
-      ## Raw source name, kept verbatim even when parsed: it is what
-      ## round-trips, and ODB++ standard-symbol names are the only definition
-      ## many shapes have.
+      ## Raw source name, kept verbatim: it round-trips, and is the only
+      ## definition many ODB++ standard symbols have.
     case kind*: ApertureKind
     of akCircle:
       dia*: Nm
@@ -121,18 +112,17 @@ type
       angle*: Deg
 
   Transform* = object
-    ## Footprint-local to board coordinates. KiCad's rule is
-    ## `absolute = fp.at + Rotate(local, +fp.angle)` with **no** extra mirror
-    ## term -- a side flip is already baked into the stored local coordinates
-    ## and layer names -- so `mirrorX` stays false for KiCad footprints.
+    ## Footprint-local to board coordinates. KiCad: `absolute = fp.at +
+    ## Rotate(local, +fp.angle)` with no mirror term (a flip is baked into
+    ## local coordinates and layer names), so `mirrorX` stays false for KiCad.
     origin*: Point
     rot*: Deg
     mirrorX*: bool
 
 const
   DefaultFlattenTol* = nm(2000)
-    ## Chord tolerance used when an arc must be approximated by a polyline
-    ## for a containment or distance test. 2 microns.
+    ## Chord tolerance for approximating arcs in containment/distance tests:
+    ## 2 microns.
 
 # ---------------------------------------------------------------- Point
 
@@ -251,17 +241,15 @@ proc box*(c: Curve): Box =
     result = boxOf(c.a, c.b)
   of cvArc:
     result = boxOf(startPoint(c), endPoint(c))
-    # An arc's extremes are its endpoints plus whichever axis crossings it sweeps through.
+    # An arc's extremes: its endpoints plus any axis crossings it sweeps.
     for q in 0 .. 3:
       let a = deg(q.float * 90.0)
       if sweepContains(c, a):
         result.extendTo(pointOnArc(c, a))
 
 proc arcFrom3Points*(a, mid, b: Point): Curve =
-  ## KiCad's `(start ...) (mid ...) (end ...)` form. Collinear input degrades
-  ## to a straight segment rather than raising, matching how
-  ## `netlist/formats/spice` falls back instead of erroring on input it cannot
-  ## classify.
+  ## KiCad's `(start) (mid) (end)` form. Collinear input degrades to a
+  ## straight segment rather than raising.
   let
     ax = a.x.raw.float
     ay = a.y.raw.float
@@ -293,7 +281,7 @@ proc arcFrom3Points*(a, mid, b: Point): Curve =
     arc(center, radius, startA, deg(ccwSweep - 360.0))
 
 proc arcFromEndpointsCenter*(s, e, center: Point, clockwise: bool): Curve =
-  ## ODB++'s `A <xs> <ys> <xe> <ye> <xc> <yc> ... <cw>` form. Coincident
+  ## ODB++'s `A <xs> <ys> <xe> <ye> <xc> <yc> ... <cw>` form; coincident
   ## endpoints mean a full circle.
   let radius = nm(int64(round(distance(center, s))))
   if radius == nm(0):
@@ -330,17 +318,9 @@ proc flatten*(c: Curve, tol = DefaultFlattenTol): seq[Point] =
       result.add(pointOnArc(c, c.startAngle + c.sweep * f))
 
 proc length*(c: Curve): float =
-  ## Metres of centreline, exact. Deliberately **not** routed through
-  ## `flatten`: a chord is always shorter than the arc it subtends, so
-  ## approximating an arc's length by summing its 2 micron-tolerance
-  ## polyline biases every arc short by a real (if small) amount -- fine for
-  ## a hit test, wrong for a length that gets summed over a whole net and
-  ## fed into a propagation-delay calculation. `cvSeg` is the straight-line
-  ## `distance`; `cvArc` is the textbook `radius * |sweep in radians|`. Both
-  ## convert nanometres to metres with the same `1e-9` factor `units.toMetres`
-  ## uses, inlined here because `distance` already returns a bare
-  ## nanometre-valued `float`, not an `Nm`, so there is nothing typed to hand
-  ## `toMetres` without a pointless round trip through `nm(int64(...))`.
+  ## Metres of centreline, exact -- not via `flatten`, whose chords bias
+  ## every arc short (which matters when summed into propagation delay).
+  ## `cvSeg` is `distance`; `cvArc` is `radius * |sweep|`.
   case c.kind
   of cvSeg:
     distance(c.a, c.b) * 1e-9
@@ -348,20 +328,14 @@ proc length*(c: Curve): float =
     c.radius.raw.float * abs(c.sweep.toRadians) * 1e-9
 
 proc length*(p: Path): float =
-  ## Sum of every curve's length. Metres, exact, for the same reason
-  ## `length(Curve)` is.
+  ## Sum of every curve's length, in metres, exact.
   for c in p.curves:
     result += length(c)
 
 proc endpoints*(s: Shape): tuple[a, b: Point] =
-  ## The two ends of a stroked path -- what `pcb/trace.nim` needs to test
-  ## whether two track segments meet. Raises on every other shape kind: a
-  ## fill, a pad or text has no "ends", and handing back a box corner
-  ## instead of refusing would be exactly the silent-wrong-answer failure
-  ## mode `NaN`/`Issue` exist elsewhere in this codebase to prevent -- a
-  ## `Shape` has no not-found sentinel to return here, so a raise is the only
-  ## honest refusal available at this layer (`pcb/trace.nim` is where a
-  ## caller decides whether that raise becomes an `Issue`).
+  ## The two ends of a stroked path (for `pcb/trace` joins). Raises for any
+  ## other shape: there's no not-found sentinel, and a box corner would be a
+  ## silent wrong answer.
   if s.kind != shStroke:
     raise newException(GeometryError,
       "endpoints: not a stroked shape (kind=" & $s.kind & ")")
@@ -478,10 +452,8 @@ proc pointInRing(pts: seq[Point], p: Point): bool =
   inside
 
 proc contains*(poly: Polygon, p: Point, tol = DefaultFlattenTol): bool =
-  ## Inside the outer ring and outside every hole. Flattens fresh on every
-  ## call -- fine for the occasional point test, the wrong shape for testing
-  ## many points against the same polygon; see `FlattenedPolygon` for that
-  ## case.
+  ## Inside the outer ring and outside every hole. Flattens on every call;
+  ## for many points against one polygon use `FlattenedPolygon`.
   if not pointInRing(flatten(poly.outer, tol), p): return false
   for h in poly.holes:
     if pointInRing(flatten(h, tol), p): return false
@@ -489,19 +461,9 @@ proc contains*(poly: Polygon, p: Point, tol = DefaultFlattenTol): bool =
 
 type
   FlattenedPolygon* = object
-    ## A `Polygon`'s rings, flattened once and cached. `contains(Polygon,
-    ## Point)` re-flattens on every call, which is `O(circumference / tol)`
-    ## and the right cost for one point test; a reference-plane coverage
-    ## sweep tests hundreds of sample points against the *same* pour's
-    ## outline (`pcb/trace.resolveReference`), and re-flattening a zone fill
-    ## with thousands of thermal-relief vertices once per sample rather than
-    ## once per polygon was measured, against the real KiCad demo corpus, to
-    ## be the dominant cost of the whole sweep: summed over every net on
-    ## `video.kicad_pcb`, reference resolution measured at 159.6s without
-    ## this (with every other fix `pcb/trace.nim` needed already in place)
-    ## and 12.4s with it -- see `pcb/trace.sampleSideReference`'s own doc
-    ## comment for the full before/after breakdown across all three fixes
-    ## that stage made.
+    ## A `Polygon`'s rings flattened once and cached, for testing many points
+    ## against one pour (reference-plane coverage). Re-flattening per sample
+    ## was the dominant cost of that sweep (~13x).
     outer: seq[Point]
     holes: seq[seq[Point]]
 
@@ -511,8 +473,7 @@ proc flattenPolygon*(poly: Polygon, tol = DefaultFlattenTol): FlattenedPolygon =
     result.holes.add(flatten(h, tol))
 
 proc contains*(fp: FlattenedPolygon, p: Point): bool =
-  ## Same predicate as `contains(Polygon, Point)`, against an already-cached
-  ## flattening.
+  ## `contains(Polygon, Point)` against a cached flattening.
   if not pointInRing(fp.outer, p): return false
   for h in fp.holes:
     if pointInRing(h, p): return false
@@ -548,12 +509,9 @@ proc box*(a: Aperture): Box =
   of akPolygon, akCustom: box(a.outline)
 
 proc containsLocal*(a: Aperture, p: Point, tol = DefaultFlattenTol): bool =
-  ## Hit test in the aperture's own local frame.
-  ##
-  ## `akChamferRect` is tested as its bounding rectangle and `akThermal` as a
-  ## plain annulus (spokes ignored) -- both are deliberate approximations that
-  ## over-report slightly; a reader needing exactness should supply an
-  ## `akCustom` outline instead.
+  ## Hit test in the aperture's local frame. `akChamferRect` is tested as
+  ## its bounding rectangle and `akThermal` as a plain annulus -- slight
+  ## over-reports; use `akCustom` for exactness.
   if a == nil: return false
   let
     x = p.x.raw.float
@@ -615,8 +573,8 @@ proc containsLocal*(a: Aperture, p: Point, tol = DefaultFlattenTol): bool =
 # ---------------------------------------------------------------- Transform
 
 proc apply*(t: Transform, p: Point): Point =
-  ## Local to board coordinates: rotate by `t.rot` (counter-clockwise), then
-  ## mirror about the local Y axis if asked, then translate by `t.origin`.
+  ## Local to board: rotate by `t.rot` (CCW), mirror about local Y if asked,
+  ## then translate by `t.origin`.
   let
     a = t.rot.toRadians
     ca = cos(a)
@@ -684,8 +642,8 @@ proc box*(s: Shape): Box =
     result = box(s.poly)
   of shPad:
     if s.aperture == nil: return emptyBox()
-    # Rotate the local box corners rather than the shape, which is exact for
-    # circles and a safe over-estimate for everything else.
+    # Rotate the local box corners: exact for circles, a safe over-estimate
+    # otherwise.
     let
       lb = box(s.aperture)
       t = padTransform(s)
@@ -694,8 +652,7 @@ proc box*(s: Shape): Box =
     for c in [lb.lo, pt(lb.hi.x, lb.lo.y), lb.hi, pt(lb.lo.x, lb.hi.y)]:
       result.extendTo(apply(t, c))
   of shText:
-    # Text metrics are font-dependent; approximate from the cell height and
-    # a nominal 0.7 aspect per character.
+    # Approximate text from cell height and a 0.7 per-character aspect.
     let
       w = nm(int64(round(s.height.raw.float * 0.7 * s.text.len.float)))
       h = s.height
@@ -705,8 +662,8 @@ proc box*(s: Shape): Box =
       result.extendTo(apply(t, c))
 
 proc contains*(s: Shape, p: Point, tol = DefaultFlattenTol): bool =
-  ## Exact hit test, except where noted: `shStroke` treats every end cap as
-  ## round, and `shText` tests its approximate bounding box.
+  ## Exact hit test, except `shStroke` treats every end cap as round and
+  ## `shText` uses its approximate box.
   case s.kind
   of shStroke:
     distanceTo(s.path, p) <= s.width.raw.float / 2.0

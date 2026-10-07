@@ -1,11 +1,8 @@
-## `$VERAX_KEEP_RUNS` -- the run archive -- and `$VERAX_SAVE_CURRENTS`.
+## `$VERAX_KEEP_RUNS` (the run archive) and `$VERAX_SAVE_CURRENTS`.
 ##
-## The property worth pinning here is not that files appear. It is that
-## switching either of them on cannot change what was simulated, and that the
-## device-current `.save` stays away from the analyses whose plot is complex:
-## a real-valued `@r1[i]` written into a complex rawfile is a malformed line,
-## so an unguarded version of this would turn every frequency sweep in the
-## library into a parse error.
+## Pinned: neither changes what was simulated, and the device-current `.save`
+## stays off complex-plot analyses, where a real-valued `@r1[i]` would be a
+## malformed rawfile line.
 
 import std/[math, os, sequtils, strutils, tables, tempfiles, unittest]
 
@@ -79,23 +76,19 @@ test "no .save card unless asked for":
   check saveCurrentsCard(dividerNetlist(), ".op") == ""
 
 test "the .save card leads with `all`":
-  # Naming any vector turns the default set off, so a card that said only
-  # @r1[i] would archive a resistor current and throw away every node voltage.
+  # Naming any vector turns the default set off, so node voltages must be
+  # named too.
   withEnv("VERAX_SAVE_CURRENTS", "1"):
     let card = saveCurrentsCard(dividerNetlist(), ".tran 1u 1m")
     check card.startsWith(".save all ")
     check "@R1[i]" in card
     check "@R2[i]" in card
     check "@C1[i]" in card
-    # A voltage source's branch current is already an MNA unknown, saved as
-    # v1#branch by default; asking for a terminal current it does not have
-    # would only earn an `unrecognized variable` warning.
+    # A voltage source's current is already saved as v1#branch.
     check "@V1[" notin card
 
 test "no .save card for a complex-plot analysis":
-  # The whole reason this is built here rather than asked for with
-  # `.options savecurrents`: a real-valued @r1[i] written into a complex
-  # rawfile is a malformed value line.
+  # Why it's built here rather than `.options savecurrents`: complex rawfiles.
   withEnv("VERAX_SAVE_CURRENTS", "1"):
     check saveCurrentsCard(dividerNetlist(), ".ac dec 10 1 1k") == ""
     check saveCurrentsCard(dividerNetlist(), ".noise v(vout) V1 dec 10 1 1k") == ""
@@ -112,8 +105,7 @@ suite "run archive":
       delEnv("VERAX_KEEP_RUNS")
       let before = walkDirRec(getTempDir(), yieldFilter = {pcDir}).toSeq.len
       discard run(dividerNetlist(), ".op")
-      # The temp directory `run` makes is removed in its own `finally`; all we
-      # can check cheaply is that the count did not grow.
+      # `run`'s temp directory is removed; check the count didn't grow.
       check walkDirRec(getTempDir(), yieldFilter = {pcDir}).toSeq.len <= before
 
     test "deck, rawfile, log and index land in the archive":
@@ -130,17 +122,16 @@ suite "run archive":
       check fileExists(dir / "run000.json")
       check fileExists(dir / "index.txt")
 
-      # The JSON is the public scene for the very fragment that ran, byte-for-
-      # byte the scene a fresh layout of that netlist produces.
+      # The JSON is byte-for-byte a fresh layout of the fragment that ran.
       check readFile(dir / "run000.json") == sceneToJsonString(dividerNetlist())
 
-      # The rawfile is ngspice's own ASCII format, loadable straight back in.
+      # ngspice's own ASCII rawfile.
       let raw = readFile(dir / "run000.raw")
       check raw.startsWith("Title:") or "Plotname:" in raw
       check "v(vout)" in raw.toLowerAscii
 
-      # The archived deck is the one that ran: its `write` names the rawfile
-      # sitting beside it, so handing it back to ngspice reproduces the run.
+      # The archived deck's `write` names the rawfile beside it, so it
+      # reproduces the run.
       check ("write " & dir / "run000.raw") in readFile(dir / "run000.cir")
 
       let rows = readFile(dir / "index.txt").strip.splitLines
@@ -182,8 +173,7 @@ suite "run archive":
       check parseInt(rows[2].split('\t')[9]) > 1
 
     test "a failed run keeps its deck and log, and says so in the index":
-      # This is the run whose artifacts are worth reading, so it must not be
-      # the one that gets cleaned up.
+      # The failing run's artifacts are the ones worth keeping.
       let dir = createTempDir("verax_keeptest_", "")
       defer: removeDir(dir)
       withEnv("VERAX_KEEP_RUNS", dir):
@@ -192,8 +182,7 @@ suite "run archive":
 
       check fileExists(dir / "run000.cir")
       check fileExists(dir / "run000.log")
-      # The fragment picture and scene are written before ngspice runs, so a
-      # failed run keeps them like its deck and log.
+      # Picture and scene are written before ngspice runs.
       check fileExists(dir / "run000.svg")
       check fileExists(dir / "run000.json")
       let rows = readFile(dir / "index.txt").strip.splitLines
@@ -201,7 +190,7 @@ suite "run archive":
       check rows[1].split('\t')[1] == "failed"
 
     test "an .ac run still parses with save-currents on":
-      # The regression this file exists for.
+      # Device currents on .tran, none on .ac.
       let dir = createTempDir("verax_keeptest_", "")
       defer: removeDir(dir)
       withEnv("VERAX_KEEP_RUNS", dir):
@@ -214,7 +203,7 @@ suite "run archive":
 
       check ".save" notin readFile(dir / "run000.cir")   # the .ac
       check ".save all @" in readFile(dir / "run001.cir") # the .tran
-      # And the device current really is in the archived .tran rawfile.
+      # The device current is in the archived .tran rawfile.
       check "@r1[i]" in readFile(dir / "run001.raw").toLowerAscii
 
     test "archiving does not move a measured number":

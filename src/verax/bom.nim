@@ -1,24 +1,17 @@
-## Compiling a bill of materials from a design: which real, orderable part
-## each component is. See `docs/bom_compiler_plan.md` for the whole plan and
-## `src/verax/bom/CLAUDE.md` for what has shipped.
+## Compiling a bill of materials: which orderable part each component is.
+## Above `parts/`, below `verify.nim`; takes a `Netlist` (never a `Design` or
+## `Pcb`) and isn't in the verification path.
 ##
-## Sits above `parts/` and below `verify.nim`, takes a `Netlist` -- never a
-## `Design` or a `Pcb` -- and is not in the verification path: a design that
-## never asks for a BOM never pays for one.
-##
-##   * `types` -- `PartFamily`, `BomItem`, a catalogue's `Candidate`, and the
-##     resolver's `Resolution`/`BomLine`/`BomResult`.
-##   * `classify` -- `familyOf` (which kinds are searchable, which are not
-##     parts at all) and `caseCodeOf` (the standard-footprint gate).
-##   * `collect` -- netlist -> one `BomItem` per physical part, with every
-##     `bom:` default that filled a gap recorded as an `Assumption`.
-##   * `source` -- the `CatalogSource` registry, `PartQuery` and `matches`.
-##     No source is registered by importing this; the hermetic one is
-##     `verax/bom/sources/local`, imported on its own.
-##   * `resolve` -- `BomItem`s -> a `BomResult`: each item's part, by MPN or
-##     by parametric search, rolled up into lines.
-##   * `report` -- a `BomResult` as text, CSV or `verax.bom/1` JSON, and
-##     `loadLock`, which reads that JSON back as the lockfile.
+##   * `types` -- `PartFamily`, `BomItem`, `Candidate`, `Resolution`/
+##     `BomLine`/`BomResult`.
+##   * `classify` -- `familyOf` and `caseCodeOf` (the standard-footprint
+##     gate).
+##   * `collect` -- netlist -> one `BomItem` per physical part, with `bom:`
+##     defaults recorded as `Assumption`s.
+##   * `source` -- the `CatalogSource` registry, `PartQuery`, `matches`.
+##     Nothing registers on import; see `bom/sources/local`.
+##   * `resolve` -- `BomItem`s -> `BomResult`, by MPN or parametric search.
+##   * `report` -- text, CSV or `verax.bom/1` JSON, and `loadLock`.
 
 import ./bom/types
 import ./bom/classify

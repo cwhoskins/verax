@@ -1,58 +1,37 @@
-## Bus- and interface-aware grouping: a read-only index built once per layout,
-## before any symbol is sized.
+## Bus- and interface-aware grouping: a read-only index built once per
+## layout, before any symbol is sized. Groups members of a lowered bus or
+## interface so a whole SPI link can draw as one thick wire between merged
+## pins.
 ##
-## `netlist/interfaces.nim` lowers every bus and declared interface to scalar
-## nets and records membership only in `Net.attrs` (`bus.name`/`bus.index`/
-## `bus.width`, `iface.instance`/`iface.def`/`iface.signal`/`iface.shared`/
-## `iface.dir`/`iface.nc`). This unit reads those attrs -- **the net attrs, and
-## never a pin attr** -- and groups the members so a whole SPI link can draw as
-## one thick coloured wire between one merged pin per end instead of N pennants
-## and N thin wires.
+## Reads **net attrs only, never pin attrs**: `promotePortDirections` copies
+## `iface.*` onto instance pins, so reading pins would drag an `iface.nc`
+## open net into the bundle it was left out of.
 ##
-## Why net attrs only, never pin attrs: `promotePortDirections`
-## (`interfaces.nim`) copies every `iface.*` key onto instance *pins*, so an
-## `iface.nc` open net (`nc_X1_spi_miso`) -- which carries no `iface.instance`
-## on the *net* -- would be dragged into the bundle it was explicitly left out
-## of if we read pin attrs. Reading the net's own attrs keeps a no-connect out
-## by construction: it is simply not a member, the rest still collapse.
+## `findBus`/`findInterface`/`interfacesOf` are forbidden here: they rescan,
+## `findInterface` needs a registered def, and `busOf` *writes*
+## `bus.index`. Layout stays read-only and reads `attrs` directly.
 ##
-## Why `findBus`/`findInterface`/`interfacesOf` are forbidden here: they rescan
-## every net; `findInterface` raises unless the `InterfaceDef` was registered
-## in this process; and `busOf` -- which `addInterfaceRecovery` calls --
-## *writes* `bus.index` from table order. Layout must stay read-only, so this
-## reads `attrs` directly, the pattern `analysis/io_check.nim` and
-## `contract/design.nim` already use.
-##
-## The plan is a pure function of netlist topology. `recoverRouting`'s
-## candidate part moves never rebuild it: which nets group, and how, depends
-## only on `attrs`, `nl.ports` identity and the pin graph, none of which a
-## placement move touches. A zero-value `BundlePlan` (no net carries
-## `iface.instance` or `bus.name`) is the whole byte-identity guarantee for a
-## bus-free netlist: every new code path downstream is guarded on a non-empty
-## plan.
+## The plan is a pure function of netlist topology; `recoverRouting` never
+## rebuilds it. A zero-value `BundlePlan` is the byte-identity guarantee for a
+## bus-free netlist.
 
 type
   BundleTag = enum
     btBus, btInterface
 
   BundleRole = enum
-    brScalar     ## fails collapse (non-uniform, or a non-box carrier): ordinary
-                 ## wires, membership colour only
+    brScalar     ## fails collapse: ordinary wires, membership colour only
     brCollapsed  ## two or more endpoint entities, uniform: one merged pin per
                  ## entity, one thick bus tree between them
-    brNetLabel   ## fails collapse (non-uniform, a non-box carrier, or a
-                 ## single unported entity) **and** (published or spanning 3+
-                 ## component entities): grouped net-label tags, no wires --
-                 ## one merged tag per box endpoint carrying >= 2 members, a
-                 ## bare member tag elsewhere
+    brNetLabel   ## fails collapse **and** is published or spans 3+ entities:
+                 ## grouped net-label tags, no wires (one merged tag per box
+                 ## carrying >= 2 members, a bare tag elsewhere)
 
   LabelGroup = object
-    ## One endpoint's share of a `brNetLabel` bundle: the member pins on one
-    ## component, and how their tags merge. A *box* component carrying >= 2
-    ## members gets ONE merged pin with one tag (`text`); a component carrying
-    ## a single member keeps the bare member label. Populated in
-    ## `b.memberPins` desig-first-seen order, which `bundleReport.labels` and
-    ## `laneOf`'s linear scan both rely on.
+    ## One endpoint's share of a `brNetLabel` bundle. A box carrying >= 2
+    ## members gets one merged pin and tag; one member keeps its bare label.
+    ## In `memberPins` desig-first-seen order (`bundleReport`, `laneOf` rely
+    ## on it).
     desig: string
     pins: seq[tuple[pin, net: string]]  ## owned member pins, memberPins order
     members: seq[BundleMember]          ## this group's subset, member order
@@ -61,25 +40,14 @@ type
 
   Bundle = object
     key: string              ## "iface:spi" / "bus:spi1_cs" -- index identity
-    display: string          ## the scene net identity ("spi"), guaranteed
-                             ## distinct from every `nl.nets` key
-    pinName: string          ## the net-based fallback text: "en[7:0]" /
-                             ## "spi[3]". The *drawn* merged pin name is
-                             ## `pinNameFor(b, desig)` -- a per-designator,
-                             ## pin-name-based answer -- which falls back to
-                             ## this field only when that designator's own
-                             ## pin names don't compress into a family.
-    portText: string         ## the drawn merged *port* pennant text, over
-                             ## only the published (`portNames`) members --
-                             ## "" when nothing is published. A port pennant
-                             ## is legitimately net-based (it says what
-                             ## leaves the sheet), unlike a merged pin.
-                             ## Distinct from `pinName` because a `brNetLabel`
-                             ## bundle can publish a strict subset of its
-                             ## members (a bus wired one member per box, some
-                             ## of the eight boxes' pins not on the sheet
-                             ## boundary at all); `pinName` still names every
-                             ## member for the box-pin/label-group side.
+    display: string          ## scene net identity ("spi"), distinct from
+                             ## every `nl.nets` key
+    pinName: string          ## net-based fallback text ("en[7:0]", "spi[3]");
+                             ## the drawn merged pin name is `pinNameFor`
+    portText: string         ## drawn port pennant text over the published
+                             ## members only; "" when none. Separate from
+                             ## `pinName` because a `brNetLabel` bundle may
+                             ## publish a subset.
     tag: BundleTag
     role: BundleRole
     dir: PortDirection       ## the folded member direction
@@ -88,63 +56,48 @@ type
     ported: bool             ## the sheet boundary is one of the entities
     portNames: seq[string]   ## the merged `nl.ports` keys, declared order
     memberPins: seq[tuple[desig, pin, net: string]]
-      ## every owned physical pin of every member net, in member then pin
-      ## order -- the routing endpoints and the net-label pins
+      ## every owned physical pin of every member net, member then pin order:
+      ## routing endpoints and net-label pins
     sceneMembers: seq[BundleMember]
-      ## the drawn (signal name, scalar net) pairs -- one per member net, in
-      ## member order. This is what a merged `SchematicPin`/`SchematicPort`
-      ## carries and what `runFULL.html` expands.
+      ## the drawn (signal name, scalar net) pairs, one per member, carried by
+      ## a merged `SchematicPin`/`SchematicPort`
     portSceneMembers: seq[BundleMember]
-      ## `sceneMembers` restricted to the published subset, in member order
-      ## -- what a merged sheet `SchematicPort.members` carries. Equal to
-      ## `sceneMembers` whenever every member is published (always true for
-      ## a `brCollapsed` bundle, since collapse requires uniform ported-ness
-      ## across every member).
+      ## `sceneMembers` restricted to the published subset (equal for a
+      ## `brCollapsed` bundle, which requires uniform ported-ness)
     labelGroups: seq[LabelGroup]
-      ## `brNetLabel` only; empty otherwise. One entry per component entity,
-      ## in `memberPins` desig-first-seen order.
+      ## `brNetLabel` only: one entry per component entity.
 
   BundlePlan = object
     bundles: seq[Bundle]
     ofNet: Table[string, BundleTag]
-      ## every membership net -> its kind, for colour. Covers a net whatever
-      ## its bundle's role, and a discarded (<2-member) candidate's nets too.
+      ## every membership net -> kind, for colour, whatever the role
+      ## (including discarded candidates)
     byNet: Table[string, int]
-      ## member net -> bundle index. Only nets that belong to a real Bundle.
+      ## member net -> bundle index, real bundles only
     byPin: Table[string, int]
-      ## `pinKey(c, pin)` -> bundle index. Collapsed bundles, and the merged
-      ## `LabelGroup`s of a `brNetLabel` bundle.
+      ## `pinKey(c, pin)` -> bundle index: collapsed bundles and merged
+      ## `LabelGroup`s
     byPort: Table[string, int]
-      ## `nl.ports` key -> bundle index, for a collapsed bundle or a
-      ## published `brNetLabel` bundle (a `brScalar` bundle is never
-      ## published -- `disposeBus`/the interface branch route any ported
-      ## candidate to `brNetLabel` instead)
+      ## `nl.ports` key -> bundle index, for collapsed or published
+      ## `brNetLabel` bundles (`brScalar` is never published)
     bundled: HashSet[string]
       ## designators carrying a collapsed bundle or a merged net-label group
 
 proc wireKindFor(plan: BundlePlan, netName: string): WireKind {.inline.} =
-  ## The membership colour for a signal wire on `netName`: purple for an
-  ## interface member, blue for a bus member, `wkSignal` otherwise. Colour is
-  ## membership and applies to *every* wire whether or not anything collapsed;
-  ## thickness (`SchematicWire.members.len > 1`) is what says a wire collapses
-  ## more than one net. A zero-value plan colours nothing.
+  ## Membership colour for a signal wire: purple for an interface, blue for
+  ## a bus, else `wkSignal`. Colour is membership; thickness
+  ## (`members.len > 1`) says it collapses nets.
   if not plan.ofNet.hasKey(netName): return wkSignal
   if plan.ofNet[netName] == btInterface: wkInterface else: wkBus
 
 proc pinNameFor(b: Bundle, desig: string): string
-  ## Forward-declared: the body (below `busIndexRangeText`) needs it, but
-  ## `laneOf` -- called from `routing.nim`, spliced in after this file --
-  ## must already see the signature.
+  ## Forward-declared for `routing.nim`, which is spliced in after this file.
 
 proc laneOf(plan: BundlePlan, bi: int, desig: string):
     tuple[name: string, members: seq[BundleMember]] =
-  ## The one source of a merged lane's drawn string and member list, so
-  ## `bundleGroupsFor` (box sizing) and `routing.nim`'s part loop (the merged
-  ## `SchematicPin`) never disagree -- `boxSlots` sizing `innerW` for
-  ## `spi1(cs0)` while `svg` prints `spi1[5]` is the bug this prevents. A
-  ## linear scan: `labelGroups.len` is the entity count, no table to keep in
-  ## sync. A collapsed bundle's name comes from `pinNameFor`, `desig`-specific
-  ## (see there); its members are the whole bundle's, unchanged.
+  ## The one source of a merged lane's text and members, so box sizing
+  ## (`bundleGroupsFor`) and the drawn pin never disagree. A collapsed
+  ## bundle's name comes from `pinNameFor`.
   let b = plan.bundles[bi]
   if b.role == brNetLabel:
     for lg in b.labelGroups:
@@ -153,14 +106,9 @@ proc laneOf(plan: BundlePlan, bi: int, desig: string):
 
 proc bundleGroupsFor(plan: BundlePlan, c: Component):
     tuple[groupOf, groupSide: seq[int], groupNames: seq[string]] =
-  ## The per-pin partition `boxSlots` needs for `c` when it carries one or
-  ## more collapsed bundles, or the merged group of a net-label bundle:
-  ## `groupOf[i]` a local group id for a member pin, `-1` for an ordinary
-  ## pin. `groupSide` is derived from the folded member direction -- an
-  ## input/unspecified bundle takes the left column, an output/bidirectional
-  ## one the right, matching where its port pennant sits. Returns three empty
-  ## seqs when `c` carries none, so `prepare` passes the historical
-  ## `boxSlots` path unchanged.
+  ## The per-pin partition `boxSlots` needs for `c`: `groupOf[i]` a local
+  ## group id or `-1`. `groupSide` follows the folded direction (input left,
+  ## output right, like the port pennant). Empty when `c` carries no bundle.
   if c.designator notin plan.bundled: return
   var localOf = initTable[int, int]()
   for pinName, _ in c.pins:
@@ -178,10 +126,8 @@ proc bundleGroupsFor(plan: BundlePlan, c: Component):
 
 proc bundleEntities(nl: Netlist, members: seq[Net]):
     tuple[parts: seq[string], ported, uniform: bool] =
-  ## `uniform` is the collapse precondition: every member must touch the *same*
-  ## entity set, so one merged pin per end really carries the whole bundle.
-  ## Ported-ness is tested by `Net` object identity against `nl.ports` values,
-  ## never by name.
+  ## `uniform` is the collapse precondition: every member touches the same
+  ## entity set. Ported-ness is tested by `Net` identity, never name.
   var first: seq[string]
   var firstPorted = false
   var firstSet = false
@@ -204,20 +150,14 @@ proc bundleEntities(nl: Netlist, members: seq[Net]):
   (first, firstPorted, true)
 
 proc collapsible(parts: seq[string], ported: bool): bool {.inline.} =
-  ## Two or more endpoint entities -- a component, or the sheet boundary
-  ## (`ported`, one entity however many `nl.ports` keys are involved) --
-  ## paired with `bundleEntities.uniform` (every member touches the *same*
-  ## entity set) is the whole collapse precondition. There is no upper cap:
-  ## a uniform bus across any number of boxes draws as one bus tree rather
-  ## than degrading to grouped net-label tags once it passes three entities.
+  ## The collapse precondition, with `uniform`: two or more endpoint entities
+  ## (a component, or the sheet boundary). No upper cap.
   parts.len + (if ported: 1 else: 0) >= 2
 
 proc bundleUnionEntities(nl: Netlist, members: seq[Net]):
     tuple[parts: seq[string], ported: bool] =
-  ## Every distinct component entity any member touches, plus whether any
-  ## member is published. Used to decide net-label degradation, which is about
-  ## the drawn mess of N thin wires among the *union* of endpoints, not one
-  ## member's.
+  ## Every component entity any member touches, plus whether any member is
+  ## published -- for net-label degradation, which concerns the union.
   var parts: seq[string]
   var ported = false
   for n in members:
@@ -231,20 +171,14 @@ proc bundleUnionEntities(nl: Netlist, members: seq[Net]):
   (parts, ported)
 
 proc sigOf(n: Net): string =
-  ## The signal a member belongs to: `iface.signal` for an interface member,
-  ## else `bus.name`. Never `iface.instance` -- a group text names *which
-  ## signals* a component carries, not which interface.
+  ## A member's signal: `iface.signal`, else `bus.name` (never
+  ## `iface.instance`).
   let s = n.attrs.getOrDefault("iface.signal")
   if s.len > 0: s else: n.attrs.getOrDefault("bus.name")
 
 proc busIndexRangeText(display: string, sortedIndices: seq[int]): string =
-  ## Verilog-style `hi:lo` notation over a bus's `bus.index` set:
-  ## `en[7:0]` for every index 0..7 present, `en[7:5,2]` for a partial,
-  ## non-contiguous set (indices 7, 6, 5 and 2). `sortedIndices` must already
-  ## be sorted ascending and distinct. Read from `bus.index` net attrs
-  ## directly -- never `findBus`, which `busOf` can leave untrustworthy
-  ## (see `groupText` above) and which layout is forbidden from calling
-  ## anyway.
+  ## `hi:lo` notation over sorted, distinct `bus.index` values: `en[7:0]`,
+  ## or `en[7:5,2]` for a partial set. Read from attrs, never `findBus`.
   if sortedIndices.len == 0: return display
   var runs: seq[string]
   var i = sortedIndices.len - 1
@@ -257,26 +191,15 @@ proc busIndexRangeText(display: string, sortedIndices: seq[int]): string =
   display & "[" & runs.join(",") & "]"
 
 proc dimsRangeText(display: string, dims: seq[int]): string =
-  ## Full-width multi-dimensional notation: `a[7:0][1:0]` for `dims = [8, 2]`
-  ## -- one `hi:lo` bracket per axis, outermost first. Used only when every
-  ## member of every axis is present (see `busPortText`); a partial publish
-  ## of a multi-dim bus falls back to the flat single-axis form instead of
-  ## guessing a per-axis range from a scattered subset.
+  ## Multi-dimensional notation, `a[7:0][1:0]` for `dims = [8, 2]`. Only when
+  ## every cell is present; otherwise the flat form.
   result = display
   for d in dims: result &= "[" & $(d - 1) & ":0]"
 
 proc busPortText(display: string, tag: BundleTag, members: seq[Net]): string =
-  ## The drawn text for a merged *port* pennant (`portText`, over the
-  ## sheet-published subset) -- what leaves the sheet, so it is correctly
-  ## about the net/bus identity. Also `pinNameFor`'s fallback when a
-  ## designator's own pin names don't compress into a family (see there):
-  ## a merged *pin*'s primary text is about the component, not the bus, but
-  ## a bus/net-shaped answer beats no answer at all. An interface keeps the
-  ## existing count form (`spi[3]`) -- its members are heterogeneous named
-  ## signals with no index axis to range over. A bus renders a `bus.index`
-  ## range instead of a bare count, and a bus whose members carry a uniform
-  ## `bus.dims` (Part B's multi-dimensional bus) and cover every one of its
-  ## cells renders the multi-axis form.
+  ## The merged port pennant text (`portText`), about net/bus identity. Also
+  ## `pinNameFor`'s fallback. An interface uses a count (`spi[3]`); a bus a
+  ## `bus.index` range; a complete multi-dim bus the multi-axis form.
   if members.len == 0: return ""
   if tag == btInterface: return display & "[" & $members.len & "]"
   let dimsStr = members[0].attrs.getOrDefault("bus.dims")
@@ -300,35 +223,19 @@ proc busPortText(display: string, tag: BundleTag, members: seq[Net]): string =
   busIndexRangeText(display, indices)
 
 proc splitPinFamily(name: string): tuple[prefix: string, idx: int, ok: bool] =
-  ## Splits a trailing run of digits off a declared pin name: `"RF1"` ->
-  ## `("RF", 1, true)`; `"GND"`, or an all-digit name, -> `("", 0, false)` --
-  ## no letter-prefixed trailing index, so the caller falls back rather than
-  ## treating a bare unindexed name as part of a family.
+  ## Splits a trailing index off a pin name: `"RF1"` -> `("RF", 1, true)`;
+  ## `"GND"` or an all-digit name -> `("", 0, false)`.
   var i = name.len
   while i > 0 and name[i - 1] in {'0' .. '9'}: dec i
   if i == name.len or i == 0: return ("", 0, false)
   (name[0 ..< i], parseInt(name[i .. ^1]), true)
 
 proc pinNameFor(b: Bundle, desig: string): string =
-  ## The merged pin's drawn text on `desig`'s own box. `busPortText` above
-  ## conflates two different questions -- what a merged *port* pennant
-  ## publishes (a net/bus identity, correctly) and what a merged *pin* sits
-  ## on top of (the component's own pins, which the net's name says nothing
-  ## about) -- and answered both from the bus side. `xbar_rf`'s `m` bus is
-  ## the case that shows it: `RF1..RF4` are four distinct declared ADG904
-  ## pins, wired identically across every switch, so the bundle collapses
-  ## them to one pin per box -- and the box's own pins are what a reader
-  ## standing at the schematic wants named there, not the midplane net
-  ## they happen to share (`m[3:0]`), which is *already* drawn as that pin's
-  ## `net` field and the wire's own label.
-  ##
-  ## Builds the text from `desig`'s own bound pin names (`b.memberPins`,
-  ## already in member -- so bus-index -- order): a bare name for one pin,
-  ## a `busIndexRangeText` range (`"RF[4:1]"`) when every name shares one
-  ## alphabetic prefix and a distinct trailing index, and `b.pinName` --
-  ## the old net-based text -- otherwise: an interface's heterogeneous named
-  ## signals (`sclk`/`mosi`/`miso`), or any bus whose bound pins carry no
-  ## common prefix/index shape.
+  ## The merged pin's text on `desig`'s box, named from the component's own
+  ## pins (the net name is already on the wire): one name, or a
+  ## `busIndexRangeText` range (`"RF[4:1]"`) when all share a prefix with
+  ## distinct indices, else `b.pinName` (e.g. an interface's
+  ## `sclk`/`mosi`/`miso`).
   var names: seq[string]
   for mp in b.memberPins:
     if mp.desig == desig: names.add mp.pin
@@ -346,17 +253,13 @@ proc pinNameFor(b: Bundle, desig: string): string =
   busIndexRangeText(p0, indices)
 
 proc groupText(b: Bundle, owned, allMembers: seq[Net]): string =
-  ## The tag on a merged net-label pin. `owned` is this component's member
-  ## subset, `allMembers` the bundle's, both in bundle-member order.
+  ## The tag on a merged net-label pin. `owned` is this component's subset,
+  ## `allMembers` the bundle's. "Full" is computed from the bundle's members,
+  ## never `bus.width` (which `busOf` rewrites).
   ##
-  ## "Full" for a signal is computed from the bundle's own members, **never**
-  ## `bus.width`: `busOf` (which interface recovery runs) rewrites
-  ## `bus.index`/`bus.width` from table order, so `findBus` is forbidden here
-  ## and the width it would report is not trustworthy anyway.
-  ##
-  ## Cases: whole interface -> `spi1`; a coherent slice -> `spi1(cs0)`; a
-  ## two-wire tap -> `spi1(sclk, mosi)`; a CS-only analyzer -> `spi1(cs)`;
-  ## a `bus dq` carrying bits 0 and 3 -> `dq(0, 3)`; all 8 -> `dq`.
+  ## Cases: whole interface -> `spi1`; a slice -> `spi1(cs0)`; a tap ->
+  ## `spi1(sclk, mosi)`; CS only -> `spi1(cs)`; bits 0 and 3 of `dq` ->
+  ## `dq(0, 3)`; all 8 -> `dq`.
   let base = b.display
   var sigOrder: seq[string]
   var total = initCountTable[string]()
@@ -379,8 +282,8 @@ proc groupText(b: Bundle, owned, allMembers: seq[Net]): string =
   if parts.len == 0: base else: base & "(" & parts.join(", ") & ")"
 
 proc bundlePlan(nl: Netlist): BundlePlan =
-  ## One pass over `nl.nets` in insertion order. Returns a zero-value plan the
-  ## moment no net carries `iface.instance` or `bus.name`.
+  ## One pass over `nl.nets` in order; a zero-value plan if no net carries
+  ## `iface.instance` or `bus.name`.
   var plan: BundlePlan
   var order: seq[string]
   var tagOf = initTable[string, BundleTag]()
@@ -411,10 +314,9 @@ proc bundlePlan(nl: Netlist): BundlePlan =
     boxOf[c.designator] = symbolFor(c).isBox
 
   proc memberLabel(n: Net): string =
-    ## The signal-level name of a member: the interface signal (with a bus
-    ## index when the signal is wide), or the bare member net name for a
-    ## plain bus. `connectPort` never emits `[`, so `pinName` (this plus the
-    ## width) cannot collide with a real pin name.
+    ## A member's signal-level name: the interface signal (with index when
+    ## wide), or the bare net name. Contains no `[`, so can't collide with a
+    ## pin name.
     let sig = n.attrs.getOrDefault("iface.signal")
     if sig.len == 0: return n.name
     let w = n.attrs.getOrDefault("bus.width", "1")
@@ -426,10 +328,8 @@ proc bundlePlan(nl: Netlist): BundlePlan =
 
   var usedDisplays = initHashSet[string]()
   proc uniqueDisplay(natural: string, tag: BundleTag): string =
-    ## `SchematicWire.net`, `SchematicPort.net`, the merged `SchematicPin.net`
-    ## and `diagnostics.sceneRouterInputs` all key on this, so it must not
-    ## collide with an authored net name or another bundle's display -- two
-    ## scene entities sharing one occupancy tag is an invisible failure.
+    ## Scene entities key on `display`, so it must not collide with a net
+    ## name or another bundle's display.
     proc free(s: string): bool = not nl.nets.hasKey(s) and s notin usedDisplays
     var cand = natural
     if not free(cand):
@@ -519,37 +419,23 @@ proc bundlePlan(nl: Netlist): BundlePlan =
         plan.byPin[pinKey(nl.components[mp.desig], mp.pin)] = idx
       for d in b.parts: plan.bundled.incl d
     elif role == brNetLabel:
-      # Merged groups only: `symbolFor`'s lane merge and `routing`'s merged
-      # `SchematicPin` both key on `byPin`, and an unmerged (single-member, or
-      # two-terminal) carrier must keep its bare per-pin tag.
+      # Merged groups only; an unmerged carrier keeps its bare per-pin tag.
       for lg in b.labelGroups:
         if not lg.merged: continue
         plan.bundled.incl lg.desig
         for pr in lg.pins:
           plan.byPin[pinKey(nl.components[lg.desig], pr.pin)] = idx
-    # `byPort` covers both roles: a `brCollapsed` bundle folds its ends to
-    # one pin each, and a `brNetLabel` bundle folds its *sheet* endpoints to
-    # one merged pennant even though its component endpoints stay per-pin
-    # tags (`labelGroups` above). A `brScalar` bundle is never published --
-    # `disposeBus`/the interface branch route any ported candidate straight
-    # to `brNetLabel` -- so there is no third case to handle here.
+    # `byPort` covers both roles: a collapsed bundle's ends, and a
+    # `brNetLabel` bundle's sheet endpoints (one pennant). `brScalar` is
+    # never published.
     if role in {brCollapsed, brNetLabel}:
       for pn in b.portNames:
         plan.byPort[pn] = idx
 
   proc disposeBus(key: string, members: seq[Net]) =
-    ## A `btBus` candidate (no further retry): collapse if eligible, else
-    ## net-label if ported **or spanning 3+ component entities**, else scalar
-    ## recolour, else -- below two members -- discard (the `ofNet` colour still
-    ## applies).
-    ##
-    ## The `>= 3` arm is the shared-bus rule: `union.parts` holds component
-    ## designators only (the `p.component.netlist == nl` guard), never the
-    ## sheet boundary, so three-plus *components* fanning off one bus draw as
-    ## grouped net-label tags -- the conventional schematic -- rather than a
-    ## nest of N recoloured wires, **unless** it collapses first: a uniform
-    ## bus touching the identical entity set on every member draws as one bus
-    ## tree regardless of how many entities that set has.
+    ## A `btBus` candidate: collapse if eligible; else net-label if ported or
+    ## spanning 3+ component entities (the shared-bus convention); else scalar
+    ## recolour; under two members, discard (colour still applies).
     if members.len < 2 or anyRailOrGround(members): return
     let ent = bundleEntities(nl, members)
     let union = bundleUnionEntities(nl, members)
@@ -578,23 +464,16 @@ proc bundlePlan(nl: Netlist): BundlePlan =
         addBundle(key, btInterface, members, brCollapsed,
                   (parts: ent.parts, ported: ent.ported))
         continue
-      # A published interface, or one fanning to 3+ component entities, that
-      # fails collapse (non-uniform, or a non-box carrier) becomes ONE
-      # net-label bundle over *all* its member nets -- the per-`bus.name`
-      # retry is skipped entirely. The trade, stated in
-      # `schematic/CLAUDE.md`: a published or >= 3-entity interface no longer
-      # gets a collapsed sub-bus (e.g. `spiSharedBusSheet` loses its
-      # `bus:spi1_cs` sub-bundle -- it is claimed by `iface:spi1`).
+      # A published or 3+-entity interface that fails collapse becomes one
+      # net-label bundle over all members; the per-`bus.name` retry is
+      # skipped, so no collapsed sub-bus.
       if union.ported or union.parts.len >= 3:
         addBundle(key, btInterface, members, brNetLabel, union)
         continue
 
-    # Retry: re-split by the members' recorded `bus.name` (`addInterface`
-    # always sets it). Each sub-bus with >= 2 members re-runs as `btBus`.
-    # Reached only for the < 3-entity, non-ported, non-uniform leftover
-    # (uniform or >= 3-entity/published candidates are claimed above), where
-    # a narrower sub-bus can still be uniform even though the whole interface
-    # was not, and so can still collapse.
+    # Retry by `bus.name`, each sub-bus with >= 2 members as `btBus`. Only
+    # the < 3-entity, unpublished, non-uniform leftover gets here, where a
+    # narrower sub-bus may still be uniform.
     var subOrder: seq[string]
     var subNets = initTable[string, seq[Net]]()
     for n in members:
@@ -608,12 +487,8 @@ proc bundlePlan(nl: Netlist): BundlePlan =
     for sk in subOrder:
       disposeBus(sk, subNets[sk])
 
-    # The old trailing "dispose the interface-level candidate when ported"
-    # block is gone: a ported interface (and any >= 3-entity one) is now
-    # claimed as `brNetLabel` in the main branch above and never reaches the
-    # retry, so that block could only ever add a duplicate. An unpublished
-    # < 3-entity interface still falls through to `ofNet` colour and nothing
-    # else -- what keeps a genuinely point-to-point sub-bus free to collapse.
+    # An unpublished < 3-entity interface keeps only its `ofNet` colour, so
+    # point-to-point sub-buses stay free to collapse.
 
   result = plan
 
@@ -622,13 +497,9 @@ proc bundlePlan(nl: Netlist): BundlePlan =
 proc bundleReport*(nl: Netlist): seq[tuple[display, kind, role: string,
                                      members, entities, labels: seq[string],
                                      port: string]] =
-  ## Every grouped bundle, so "does `spi1_cs` collapse?" is a one-line unit
-  ## test instead of an inference from geometry. A netlist with no bus or
-  ## interface net attrs yields an empty report. `labels` renders each
-  ## `brNetLabel` group's merged tag as `"U1=spi1"` / `"X1=spi1(cs0)"` /
-  ## `"R1="` (empty for an unmerged carrier), in `labelGroups` order; it is
-  ## empty for every other role. `port` is the merged sheet-port pennant text
-  ## (`"en[7:0]"`, `"spi[3]"`) -- "" when nothing in the bundle is published.
+  ## Every grouped bundle, for unit tests. `labels` renders each
+  ## `brNetLabel` group's tag (`"U1=spi1"`, `"R1="` when unmerged), empty for
+  ## other roles. `port` is the pennant text, "" when unpublished.
   let plan = bundlePlan(nl)
   for b in plan.bundles:
     var labels: seq[string]

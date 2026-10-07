@@ -1,13 +1,7 @@
-## Run-archive schematic output: the SVG/JSON pair writer, and the interactive
-## `runFULL.html` hierarchy browser.
-##
-## `svg.nim` and `json.nim` each render one scene one way. This module is the
-## composition layer above them: it drives `layout` over a whole design and its
-## sub-circuits, writes the archive files, and assembles the self-contained
-## HTML explorer. It is what `verify` calls when `$VERAX_KEEP_RUNS` is set and
-## what `spice/ngspice` uses to drop a `runNNN` scene beside its deck -- both
-## sit above `schematic` on the dependency spine, so this stays a leaf on
-## `netlist` like the rest of the submodule.
+## Run-archive schematic output: SVG/JSON pairs and the interactive
+## `runFULL.html` hierarchy browser. Drives `layout` over a design and its
+## sub-circuits; used by `verify` (`$VERAX_KEEP_RUNS`) and `spice/ngspice`.
+## Depends only on `netlist`, like the rest of the submodule.
 
 import std/[json, os, strutils, tables]
 
@@ -19,17 +13,15 @@ import ./svg
 import ./json
 
 proc safeSheetName*(s: string): string =
-  ## A subcircuit name reduced to a filename fragment: anything outside
-  ## `[A-Za-z0-9._-]` becomes `_`, so `runFULL.<name>.svg` is always a legal
-  ## path regardless of what the `.SUBCKT` was called.
+  ## A subcircuit name as a filename fragment (anything outside
+  ## `[A-Za-z0-9._-]` becomes `_`).
   result = newStringOfCap(s.len)
   for ch in s:
     if ch in {'A'..'Z', 'a'..'z', '0'..'9', '.', '_', '-'}: result.add ch
     else: result.add '_'
 
 proc writeScenePair*(s: Schematic, base: string) =
-  ## Writes one routed scene to the archive as both SVG and JSON, sharing the
-  ## single layout so the two files can never disagree about geometry.
+  ## Writes one routed scene as SVG and JSON from the same layout.
   writeSvgFile(s, base & ".svg")
   writeSceneJsonFile(s, base & ".json")
 
@@ -37,20 +29,17 @@ proc writeScenePair*(s: Schematic, base: string) =
 
 type
   ExplorerSheet* = object
-    ## One sheet of the interactive `runFULL.html` browser: the sheet id used
-    ## in the hierarchy links, its display title, the inline SVG, and the
-    ## clickable part list (each part carrying the child-sheet id it opens, or
-    ## `null`). Built from the same routed scene the SVG/JSON pair is written
-    ## from -- never a second layout.
+    ## One browser sheet: its id, title, inline SVG, and clickable part list
+    ## (each with the child-sheet id it opens, or `null`). From the same
+    ## routed scene as the SVG/JSON.
     id*, title*, svg*: string
     parts*: JsonNode
 
 proc explorerSheet*(n: Netlist, s: Schematic, id: string,
                     childOf: OrderedTable[string, string]): ExplorerSheet =
-  ## Fold one netlist level and its routed scene into an `ExplorerSheet`.
-  ## `childOf` contains the archive IDs resolved for this occurrence, rather
-  ## than deriving an ID from a child name: same-named, non-equivalent blocks
-  ## need separate sheets.
+  ## Fold one netlist level and its scene into an `ExplorerSheet`. `childOf`
+  ## holds resolved archive IDs, since same-named non-equivalent blocks need
+  ## separate sheets.
 
   var parts = newJArray()
   for p in s.parts:
@@ -60,8 +49,8 @@ proc explorerSheet*(n: Netlist, s: Schematic, id: string,
       for m in pin.members: members.add %*{"name": m.name, "net": m.net}
       pins.add %*{"name": pin.name, "net": pin.net, "x": pin.x, "y": pin.y,
                   "members": members, "tag": pin.tag}
-    # A collapsed subsheet array's representative carries `members` (the
-    # instance designators) and `count`; each links to its own child sheet.
+    # An array representative carries `members` and `count`; each links to
+    # its own child sheet.
     var arrMembers = newJArray()
     for d in p.members:
       arrMembers.add %*{"designator": d,
@@ -291,8 +280,7 @@ render();
 """
 
 proc renderExplorerHtml*(sheets: seq[ExplorerSheet]): string =
-  ## The self-contained hierarchy browser: every sheet's SVG and part list
-  ## inlined into one HTML file, no external resources.
+  ## The self-contained browser: every sheet's SVG and parts inlined.
   var sheetObj = newJObject()
   for sh in sheets:
     sheetObj[sh.id] = %*{"title": sh.title, "svg": sh.svg, "parts": sh.parts}
@@ -305,36 +293,19 @@ proc renderExplorerHtml*(sheets: seq[ExplorerSheet]): string =
     .replace("$MODEL$", ($model).replace("</", "<\\/"))
 
 proc keepFullSchematic*(nl: Netlist) =
-  ## Renders the authored design as `runFULL.svg`/`runFULL.json` in a run
-  ## archive, plus one `runFULL.<sheet-id>.svg`/`.json` per distinct rendered
-  ## child-sheet variant, and one `runFULL.html` that browses the hierarchy
-  ## interactively -- when an archive is being kept and before any derived
-  ## fragment is simulated.
+  ## Renders the authored design as `runFULL.svg`/`.json`, one
+  ## `runFULL.<sheet-id>.svg`/`.json` per distinct child sheet, and
+  ## `runFULL.html` -- before any fragment is simulated. The `runNNN` files
+  ## are derived fragments; these are the circuit as written. Not index rows
+  ## (they aren't runs).
   ##
-  ## The per-run `runNNN.svg`/`runNNN.json` files are the *derived* fragments
-  ## -- isolated, flattened, model-substituted -- so none of them is the
-  ## circuit the author wrote. These are: the full `Design.netlist` and each
-  ## block it builds on, drawn with interface ports, once and overwritten
-  ## every run, so the archive carries both the design as stated and the
-  ## fragments as simulated. Each SVG and its JSON come from the same routed
-  ## scene. They are deliberately **not** index rows: the index names one
-  ## analysis run per row, and none of these pictures is a run.
+  ## `runFULL.html` adds navigation: click for properties, double-click a
+  ## block to descend, *Up* to return. Self-contained.
   ##
-  ## `runFULL.html` inlines those same routed scenes as SVG and adds a
-  ## navigation layer: single-click a component for a properties panel,
-  ## double-click a hierarchical block to descend to its sheet, and an *Up*
-  ## button (a breadcrumb history) to come back out. It is self-contained --
-  ## no external file, so it opens straight from disk.
+  ## Equivalent clones (same name, scene and resolved sheets) are drawn once;
+  ## others get unique IDs (`name`, `name.2`, ...).
   ##
-  ## Equivalent deep clones of a subcircuit (two channels of a stereo stage,
-  ## say) are drawn once.  A shared `Netlist.name` alone is not enough: both
-  ## the rendered scene and the resolved sheets its instances lead to must
-  ## agree.  Non-equivalent occurrences get deterministic, globally unique
-  ## IDs (`name`, then `name.2`, `name.3`).
-  ##
-  ## Best effort, and off unless `$VERAX_KEEP_RUNS` is set, on the same
-  ## reasoning as the archive itself: drawing a picture must never be able to
-  ## change what is checked, or fail it.
+  ## Best effort, only with `$VERAX_KEEP_RUNS`; never affects checking.
   let dir = getEnv("VERAX_KEEP_RUNS")
   if dir.len == 0: return
   try:
@@ -367,8 +338,8 @@ proc keepFullSchematic*(nl: Netlist) =
 
     proc walk(n: Netlist): string
     proc walkUnnamed(n: Netlist) =
-      ## Preserve the old treatment of an unnamed intermediate child: it has
-      ## no sheet of its own, but its named descendants are still archived.
+      ## An unnamed intermediate child has no sheet, but its named
+      ## descendants are archived.
       for _, child in n.children:
         if child.name.len > 0: discard walk(child)
         else: walkUnnamed(child)

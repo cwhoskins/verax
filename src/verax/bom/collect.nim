@@ -1,10 +1,7 @@
-## Netlist -> `BomItem`s: one per physical part, carrying what the design
-## states about it and, where it states nothing, the `bom:` default that
-## filled the gap -- recorded as an `Assumption`, so a default that moved a
-## choice says so.
-##
-## Hermetic: no catalogue, no network. Everything here is read off the
-## netlist, and nothing here decides *which* part to buy.
+## Netlist -> `BomItem`s: one per physical part, with what the design
+## states and any `bom:` default that filled a gap (recorded as an
+## `Assumption`). Hermetic: reads only the netlist and decides nothing about
+## which part to buy.
 
 import std/[math, strutils, tables]
 
@@ -25,11 +22,8 @@ const
 
 proc collectLeaves(nl: Netlist, prefix: string,
                    res: var seq[tuple[c: Component, path: string]]) =
-  ## Every non-hierarchical component under `nl` with its hierarchical path,
-  ## walking `subNetlist` instances rather than flattening them -- a local
-  ## copy of `pcb/assemble.collectLeaves`, which `bom/` may not import
-  ## (`bom/` has no edge to `pcb/`), and the same six lines
-  ## `netlist/packages`/`netlist/pinmux` each keep their own of.
+  ## Every leaf component with its hierarchical path, walking instances (a
+  ## local copy of `pcb/assemble.collectLeaves`; `bom/` can't import `pcb/`).
   for _, c in nl.components:
     let p = hierName(prefix, c.designator)
     if c.subNetlist != nil:
@@ -38,10 +32,8 @@ proc collectLeaves(nl: Netlist, prefix: string,
       res.add (c, p)
 
 proc floatOf(item: BomItem, c: Component, path, key: string): float =
-  ## A stated float annotation, `NaN` when absent. An unparseable one is
-  ## `NaN` too, reported rather than raised: collection reports what is
-  ## wrong with a whole board in one pass, and `readiness` already reports
-  ## the same value as `annotation_unparseable` with an error severity.
+  ## A stated float annotation, or `NaN` when absent or unparseable
+  ## (`readiness` already reports the latter).
   try:
     let v = annotationFloat(c, key)
     if v.has: v.value else: NaN
@@ -51,9 +43,7 @@ proc floatOf(item: BomItem, c: Component, path, key: string): float =
     NaN
 
 proc fill(item: BomItem, c: Component, path: string) =
-  ## The first member to state a field wins; a packaged part's sections name
-  ## the same physical part, so a later one stating the same field again
-  ## adds nothing.
+  ## The first member stating a field wins (sections describe one part).
   template firstStr(field: untyped, key: string) =
     if item.field.len == 0:
       let v = annotation(c, key)
@@ -83,10 +73,8 @@ proc newItem(c: Component): BomItem =
           currentRating: NaN, isat: NaN, quantity: 1)
 
 proc applyDefaults(item: BomItem, d: BomDefaults) =
-  ## Fills only what the part left unstated, and only for the parametric
-  ## families -- a default tolerance means nothing to an op-amp. A part's
-  ## own `spec:` is never overridden here; that is the whole point of
-  ## reading the part first (`bomdefaults`' module comment).
+  ## Fills only unstated fields, only for parametric families; a part's own
+  ## `spec:` always wins.
   if not item.family.isParametric: return
   let who = item.designators[0]
   if item.tolerance.isNaN and float(d.tolerance) > 0.0:
@@ -98,8 +86,8 @@ proc applyDefaults(item: BomItem, d: BomDefaults) =
     item.dielectric = d.dielectric
     item.assumptions.add note(who, "dielectric " & d.dielectric &
       " from the bom: default (the part states none)")
-  # A stated footprint already fixes the land pattern, so a default package
-  # beside it would decide nothing and record an assumption that misleads.
+  # A stated footprint fixes the land pattern; a default package would only
+  # mislead.
   if item.package.len == 0 and item.footprint.len == 0:
     let p =
       case item.family
@@ -113,10 +101,8 @@ proc applyDefaults(item: BomItem, d: BomDefaults) =
         " from the bom: default (the part states neither package nor footprint)")
 
 proc parseValue(item: BomItem) =
-  ## Only a parametric family's `value` is a magnitude; anything else's is a
-  ## model name (`1N4148` is lexically valid RKM, which is the reason this is
-  ## never attempted on one). RKM (`2k2`) is refused by `parseSpiceMagnitude`
-  ## on purpose and lands here as a warning, read as neither 2200 nor 2000.
+  ## Only a parametric family's `value` is a magnitude (`1N4148` would parse
+  ## as RKM). RKM (`2k2`) is refused and reported as a warning.
   if not item.family.isParametric: return
   var v: float
   if parseSpiceMagnitude(item.valueText, v):
@@ -132,11 +118,9 @@ proc parseValue(item: BomItem) =
       "by value.", components = item.components)
 
 proc collect*(nl: Netlist): seq[BomItem] =
-  ## One `BomItem` per physical part under `nl`, in netlist order.
-  ## Simulation-only kinds (`pfNotAPart`) are left out; parts marked
-  ## `bom_exclude` are kept with `excluded = true`, so the resolver can say
-  ## what it left out. Each item's `bom:` defaults are read from the netlist
-  ## its (first) member lives in -- most specific wins, per `bomDefaults`.
+  ## One `BomItem` per physical part, in netlist order. `pfNotAPart` kinds
+  ## are omitted; `bom_exclude` parts are kept with `excluded = true`.
+  ## Defaults come from the first member's netlist (most specific wins).
   var leaves: seq[tuple[c: Component, path: string]]
   collectLeaves(nl, "", leaves)
   var byPkg: Table[string, BomItem]
@@ -163,7 +147,7 @@ proc collect*(nl: Netlist): seq[BomItem] =
       var t = dnpSeen.getOrDefault(r.value)
       if isDnp.has and isDnp.value: inc t.yes else: inc t.no
       dnpSeen[r.value] = t
-      # A packaged part's footprint may live only on its definition.
+      # A packaged part's footprint may be only on its definition.
       if item.footprint.len == 0:
         let dn = packageDefName(c)
         if dn.has and isPackageRegistered(dn.value):

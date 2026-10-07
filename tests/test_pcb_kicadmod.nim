@@ -1,12 +1,6 @@
-## `formats/kicadmod.nim`: the `.kicad_mod` library footprint reader.
-##
-## Gated on `/usr/share/kicad/footprints` existing, the same posture
-## `test_spice_ngspice.nim`/`test_xspice_build.nim` take for a missing
-## toolchain -- a machine with no KiCad footprint library installed skips
-## rather than fails. It is present in the environment this stage was
-## written against (155 `.pretty` directories), so these tests exercise the
-## real corpus, not a hand-built fixture, for the two footprints named
-## below.
+## `formats/kicadmod.nim`: the `.kicad_mod` footprint reader. Skipped when
+## `/usr/share/kicad/footprints` is absent; otherwise exercises the real
+## library.
 
 import std/[os, unittest]
 
@@ -54,10 +48,8 @@ else:
     check resolveFootprint("") == nil
 
   test "the Y-flip applies at the boundary: a negative library Y comes back positive":
-    # A tiny synthetic footprint rather than hunting the corpus for a pad
-    # with negative raw Y: deterministic, and it tests exactly the boundary
-    # rule (`kicadgeom.readXy`/`readMm`/`readDeg`, KiCad Y-down negated to
-    # canonical Y-up) rather than whichever real part happens to have one.
+    # A synthetic footprint with a negative raw Y, testing the Y-down ->
+    # Y-up rule directly.
     let body = """(footprint "flip_test"
       (layer "F.Cu")
       (attr smd)

@@ -7,25 +7,14 @@ import verax/spice/xspice/build
 
 import ../designs/lib/i2c_parts
 
-## The I2C EEPROM protocol, end to end, on a **digital** bus.
+## The I2C EEPROM protocol end to end on a digital bus.
 ##
-## `designs/i2c_eeprom.nim` runs the same two code models over a real analog
-## bus -- pull-up resistors, bus capacitance and a `bidi_bridge` -- which is
-## what makes its `i2c` role's claims mean anything. It is also two orders of
-## magnitude more analog timepoints, because every released line becomes an RC
-## the solver has to follow.
+## An analog bus (pull-ups, capacitance, `bidi_bridge`) costs orders of
+## magnitude more timepoints. The device models' SDA/SCL are digital `inout`
+## either way, so `d_pullup` gives the protocol a fast regression.
 ##
-## This file swaps that bus for `d_pullup` and keeps everything else. The
-## device models cannot tell the difference: their SDA and SCL are digital
-## `inout` pins either way, and only what supplies the `1` changes. So the
-## protocol -- which is the part with two independent state machines that have
-## to agree -- gets a fast regression, and the design gets to be the slow,
-## honest one.
-##
-## The cases are chosen so that each one fails differently if a distinct piece
-## of the model is wrong, and in particular so that the verdict is shown to be
-## capable of coming out **low**. A pass/fail flag that cannot be made to fail
-## is not evidence of anything.
+## Each case fails differently if a distinct piece of the model is wrong,
+## and the verdict is shown able to come out low.
 
 let haveNgspice = findExe("ngspice").len > 0
 let haveToolchain =
@@ -38,11 +27,9 @@ let haveToolchain =
 
 proc rig(eeUid, mcuUid: string, tw = 0.0, pollLimit = -1,
          wrAddr = -1, wrData = "", rbAddr = -1, rbData = ""): Design =
-  ## One MCU, one EEPROM, a digital bus and somewhere for the verdict to land.
-  ##
-  ## `xact_done` and `xact_pass` are ordinary analog nets fed by the
-  ## `dac_bridge` that `useDummyMcu` installs; the 100k pull-downs give them a
-  ## DC path and a defined level before the controller drives them.
+  ## One MCU, one EEPROM, a digital bus and verdict nets. `xact_done` and
+  ## `xact_pass` are analog nets fed by `useDummyMcu`'s `dac_bridge`; the
+  ## 100k pull-downs give them a DC path.
   let d = design("i2c_rig"):
     net gnd, kind = ntGround, name = "0"
     net sda, kind = ntSignal
@@ -73,15 +60,12 @@ proc rig(eeUid, mcuUid: string, tw = 0.0, pollLimit = -1,
   useDummyMcu(d, "U1", uid = mcuUid, pollLimit = pollLimit,
               wrAddr = wrAddr, wrData = wrData,
               rbAddr = rbAddr, rbData = rbData)
-  # The bus is digital, so it is not marked analog and no bridge is built.
+  # Digital bus: not analog, no bridge.
   digitalBus(d.netlist, [findNet(d.netlist, "sda"), findNet(d.netlist, "scl")])
   d
 
 proc verdict(d: Design, tSettle, tWindow: float): tuple[done, pass: float] =
-  ## Both flags out of one run. `analyzeTransient` measures the net it is
-  ## given, but the whole plot comes back in `raw`, and running the
-  ## transaction twice to read two nodes of it would double the slowest thing
-  ## in this file.
+  ## Both flags from one run, read from `raw`.
   var spec = defaultTransientSpec()
   spec.tSettle = tSettle
   spec.tWindow = tWindow
@@ -102,37 +86,30 @@ suite "i2c eeprom, digital bus":
 
   if haveToolchain:
     test "the whole transaction completes and every readback matches":
-      # Read the UID, write four bytes, ACK-poll through the 5 ms write cycle,
-      # read them back. All four stages have to work for `pass` to go high.
+      # UID read, four-byte write, ACK-poll through the 5 ms cycle, read back.
       let (dn, ps) = verdict(rig(goodUid, goodUid), 9.0e-3, 1.0e-3)
       check dn > 3.0
       check ps > 3.0
 
     test "a UID the controller did not expect fails, and says so as a verdict":
-      # The same run in every respect except the sixteen bytes in the target's
-      # identification page. `done` must still rise -- the exchange itself was
-      # fine -- while `pass` must not.
+      # Only the target's ID page differs: `done` rises, `pass` doesn't.
       let (dn, ps) = verdict(rig("deadbeef0000000000000000000000ff", goodUid),
                              9.0e-3, 1.0e-3)
       check dn > 3.0
       check ps < 0.3
 
     test "the write cycle is real: a part that stays busy is never written":
-      # `tw` far beyond the run, so every acknowledge poll is NACKed until the
-      # budget runs out. Without a genuine busy period the write would appear
-      # to succeed immediately and this would pass, which is the point of it.
+      # `tw` beyond the run, so every poll is NACKed. Without a real busy
+      # period the write would appear to succeed.
       let (dn, ps) = verdict(rig(goodUid, goodUid, tw = 50.0e-3,
                                  pollLimit = 10), 5.0e-3, 1.0e-3)
       check dn > 3.0
       check ps < 0.3
 
     test "a page write past the end of its page wraps to the start of it":
-      # Thirty-six bytes from offset 16 of a 32-byte page. Bytes 0..15 land at
-      # offsets 16..31, bytes 16..31 wrap to offsets 0..15, and bytes 32..35
-      # overwrite offsets 16..19 -- the page pointer's low five bits roll over
-      # and the rest of the address does not advance. The expectation is
-      # computed here rather than by the controller, so the check is against
-      # the datasheet's behaviour and not against the model's own idea of it.
+      # 36 bytes from offset 16 of a 32-byte page: the pointer's low five bits
+      # wrap, so bytes 16..31 land at 0..15 and 32..35 overwrite 16..19. The
+      # expectation is computed here, from the datasheet, not by the model.
       var wr = ""
       var page = newSeq[int](32)
       for i in 0 ..< 32: page[i] = 0xFF
@@ -152,9 +129,8 @@ suite "i2c eeprom, digital bus":
       check ps > 3.0
 
     test "an expectation that ignores the wrap is rejected":
-      # The same write, read back against what a part with no in-page wrap
-      # would have left behind. If this passed, the case above would be
-      # measuring nothing.
+      # The same write against a no-wrap expectation must fail, or the case
+      # above measures nothing.
       var wr = ""
       for i in 0 ..< 36: wr.add toHex(0x40 + i, 2).toLowerAscii
       var rb = ""

@@ -11,13 +11,10 @@ type
     name*: string
     nets*: seq[Net]
     dims*: seq[int]
-      ## The shape a multi-dimensional bus was declared with, outermost first
-      ## (`[8, 2]` for `bus a, width = [8, 2]`). Empty means "1-D of
-      ## `nets.len`" -- the zero value, so every existing `Bus` literal and
-      ## every consumer that never heard of `dims` keeps working unchanged.
-      ## `nets` stays flat and row-major regardless of `dims.len`; `dims` is
-      ## only ever consulted by the multi-index accessors, `sub`, and
-      ## `schematic/bundles.nim`'s range-notation label.
+      ## Multi-dimensional shape, outermost first (`[8, 2]`). Empty (the zero
+      ## value) means 1-D of `nets.len`. `nets` is always flat, row-major;
+      ## `dims` is read only by the multi-index accessors, `sub`, and
+      ## `schematic/bundles.nim`'s label.
   SignalDef* = object
     name*: string
     width*: int
@@ -84,8 +81,7 @@ proc describeInterfaceDef*(def: InterfaceDef): string =
 proc memberName(name: string, index, width: int): string =
   if width == 1: name else: name & "_" & $index
 proc intsJoin(xs: openArray[int]): string =
-  ## `[8, 2]` -> `"8,2"`. The wire format for `bus.dims`/`bus.coord`; there is
-  ## no `strutils.join` for `openArray[int]`.
+  ## `[8, 2]` -> `"8,2"`: the `bus.dims`/`bus.coord` wire format.
   for i, x in xs:
     if i > 0: result &= ","
     result &= $x
@@ -93,8 +89,8 @@ proc intsSplit(s: string): seq[int] =
   if s.len == 0: return
   for part in s.split(','): result.add parseInt(part)
 proc coordsOf(flat: int, dims: openArray[int]): seq[int] =
-  ## The row-major multi-index of flat position `flat` in a `dims`-shaped
-  ## bus -- the inverse of the flat index `addBus`/`sub` compute.
+  ## The row-major multi-index of flat position `flat` (inverse of the flat
+  ## index).
   result = newSeq[int](dims.len)
   var rem = flat
   for k in countdown(dims.len - 1, 0):
@@ -103,10 +99,8 @@ proc coordsOf(flat: int, dims: openArray[int]): seq[int] =
 proc coordSuffix(coords: openArray[int]): string =
   for c in coords: result &= "_" & $c
 proc memberName(name: string, coords, dims: openArray[int]): string =
-  ## Row-major multi-index naming: `a_0_0, a_0_1, .. a_7_1` for
-  ## `dims = [8, 2]`. A single dimension defers to the 1-D form above, so a
-  ## width-1 1-D bus keeps naming its one net bluntly `name` -- `dims = [1]`
-  ## and `dims = @[]` (the 1-D `addBus(width: int)` path) agree.
+  ## Row-major names: `a_0_0, a_0_1, .. a_7_1` for `dims = [8, 2]`. One
+  ## dimension defers to the 1-D form, so `dims = [1]` and `@[]` agree.
   if dims.len == 1: return memberName(name, coords[0], dims[0])
   name & coordSuffix(coords)
 proc addBus*(nl: Netlist, name: string, width: int, kind = ntSignal): Bus =
@@ -117,13 +111,9 @@ proc addBus*(nl: Netlist, name: string, width: int, kind = ntSignal): Bus =
     n.attrs["bus.name"] = name; n.attrs["bus.index"] = $i; n.attrs["bus.width"] = $width
     result.nets.add n
 proc addBus*(nl: Netlist, name: string, dims: openArray[int], kind = ntSignal): Bus =
-  ## A multi-dimensional bus: `width = [8, 2]` is drawn `a[7:0][1:0]`
-  ## (`schematic/bundles.nim`) and indexed `a[i, j]` / sliced `a.sub(i)`.
-  ## `nets` stays flat and row-major -- every existing consumer of a `Bus`
-  ## (`connectPort`, `addPorts`, `wiringOf`, `bundles.nim`'s per-`bus.name`
-  ## grouping) keeps working off `nets`/`bus.index`/`bus.width` exactly as it
-  ## does for a 1-D bus; only `dims` is new, carried alongside for the
-  ## multi-index accessors and the range-notation label.
+  ## A multi-dimensional bus: `width = [8, 2]` is drawn `a[7:0][1:0]` and
+  ## indexed `a[i, j]` / sliced `a.sub(i)`. `nets` stays flat and row-major,
+  ## so 1-D consumers are unaffected.
   if dims.len == 0:
     raise newException(NetlistError, "bus '" & name & "' dims must not be empty")
   for d in dims:
@@ -140,11 +130,8 @@ proc addBus*(nl: Netlist, name: string, dims: openArray[int], kind = ntSignal): 
     n.attrs["bus.dims"] = dimsStr; n.attrs["bus.coord"] = intsJoin(coords)
     result.nets.add n
 proc busOf*(nl: Netlist, name: string, nets: openArray[Net]): Bus =
-  ## 1-D only: grouping pre-existing nets by hand has no shape to infer. If a
-  ## member was previously part of a multi-dimensional bus, its stale
-  ## `bus.dims`/`bus.coord` are deleted along with the `bus.index` this proc
-  ## rewrites -- left behind, they would report a shape the flat index no
-  ## longer means.
+  ## 1-D only. A member's stale `bus.dims`/`bus.coord` from an earlier
+  ## multi-dim bus are deleted with the rewritten `bus.index`.
   if nets.len == 0: raise newException(NetlistError, "bus '" & name & "' width must be positive")
   result.name = name; result.nets = @nets
   for i, n in result.nets:
@@ -164,11 +151,9 @@ proc `[]`*(b: Bus, i, j: int): Net =
       intsJoin(b.dims) & "); use `[i]`/`.sub(i)` matching its actual shape")
   b.nets[i * b.dims[1] + j]
 proc sub*(b: Bus, i: int): Bus =
-  ## The inner bus at outer index `i`, dropping the leading dimension --
-  ## `a.sub(3)` on an `[8, 2]` bus is a plain width-2 1-D bus over the same
-  ## `Net` objects. Pure value-space, like `narrow` below: it writes nothing
-  ## to the netlist and cannot desync `bus.index`, which `busOf` rewrites
-  ## from table order.
+  ## The inner bus at outer index `i` (`a.sub(3)` on `[8, 2]` is a width-2
+  ## bus over the same nets). Pure value-space: writes nothing, can't desync
+  ## `bus.index`.
   if b.dims.len < 2:
     raise newException(NetlistError, "bus '" & b.name & "' has no inner dimension to take (dims=" &
       intsJoin(b.dims) & ")")
@@ -219,24 +204,14 @@ proc `[]`*(i: Interface, signal: string): Net =
   if b.len != 1: raise newException(NetlistError, "interface signal '" & signal & "' is wide")
   b[0]
 proc `[]`*(i: Interface, signal: string, k: int): Net = i.bus(signal)[k]
-  ## One member of a wide signal by index. `spi1["cs", 0]` parses as
-  ## `` `[]`(spi1, "cs", 0) `` -- the arity-3 form, no ambiguity with the
-  ## arity-2 whole-signal overload above. Replaces `spi1.bus("cs")[0]`, the
-  ## boilerplate `spi_memories.nim` repeated six times.
+  ## One member of a wide signal: `spi1["cs", 0]` (the arity-3 overload).
 
 proc narrow*(i: Interface, signal: string, k: int): Interface =
-  ## `i` presented with one wide signal cut down to the single member `k`, as a
-  ## width-1 bus -- the parent-side view a child that owns exactly one member
-  ## of a shared bus sees. Pure value space: it copies `i` and rewrites only
-  ## the local `signals` table and `def.signals[j].width`, touching neither the
-  ## netlist nor the registry, so it survives `clone` and cannot rewrite a
-  ## net's `bus.index` (the reason `busOf` is dangerous to reach for here).
-  ##
-  ## `{"spi": spi1.narrow("cs", 0)}` wires through `wiringOf(label, Interface)`
-  ## to `spi_sclk, spi_mosi, spi_miso, spi_cs` -- exactly a single-select
-  ## peripheral sheet's port list. The rejected alternative was a `spi1 with
-  ## cs = 0` macro form: it does not parse in a Nim macro argument position,
-  ## and passing a bare interface would leave `vdd`/`gnd` unwired and raise.
+  ## `i` with one wide signal cut to member `k` as a width-1 bus -- the view
+  ## a child owning one member of a shared bus sees. Pure value-space (copies
+  ## `i`; touches neither netlist nor registry, so can't rewrite
+  ## `bus.index`). `{"spi": spi1.narrow("cs", 0)}` wires `spi_sclk, spi_mosi,
+  ## spi_miso, spi_cs`.
   result = i
   let b = i.bus(signal)
   if k notin 0 ..< b.len:
@@ -247,9 +222,7 @@ proc narrow*(i: Interface, signal: string, k: int): Interface =
     if result.def.signals[j].name == signal: result.def.signals[j].width = 1
 
 proc narrow*(i: Interface, signal: string, s: HSlice[int, int]): Interface =
-  ## The `hostData[4..7]` shape: `i` with one wide signal cut to the members
-  ## `s`, re-indexed from zero in the returned view. Same value-space rules as
-  ## the single-member overload.
+  ## `i` with one wide signal cut to members `s`, re-indexed from zero.
   result = i
   let b = i.bus(signal)
   if s.a < 0 or s.b >= b.len or s.a > s.b:
@@ -275,12 +248,9 @@ proc findInterface*(nl: Netlist, name: string): Interface =
   if defName.len == 0: raise newException(NetlistError, "no such interface: " & name)
   result = addInterfaceRecovery(nl, name, interfaceDefOf(defName))
 proc addInterfaceRecovery(nl: Netlist, name: string, def: InterfaceDef): Interface =
-  ## The registry supplies the interface shape, while bus metadata supplies
-  ## parameter values.  This matters for e.g. `spiInterface(2)`: its
-  ## registered catalogue entry is the one-CS default, but a recovered
-  ## instance really has a two-member `cs` bus.  Width is the only
-  ## parameterised part of an interface definition today, and recording it
-  ## on every bus member makes this work for user definitions too.
+  ## Shape from the registry, parameter values from bus metadata: a recovered
+  ## `spiInterface(2)` has a two-member `cs` though the catalogue entry is the
+  ## default. Width is recorded on every member, so user definitions work too.
   result.name = name; result.def = def
   for i in 0 ..< result.def.signals.len:
     let signal = result.def.signals[i].name
@@ -313,39 +283,27 @@ proc netsOf*(v: InterfaceView): seq[Net] =
     if mp.dirs.hasKey(s.name): result.add v.iface.bus(s.name).nets
 proc wiringOf*(label: string, n: Net): seq[(string, Net)] = @[(label, n)]
 proc wiringOf*(label: string, ns: seq[Net]): seq[(string, Net)] =
-  ## A width-1 group is the bare `label` (it maps to one scalar child port); a
-  ## wider one is `label_0 .. label_(N-1)`, matching how `addPorts` names a bus
-  ## on the child side. Fixing the previous all-bare form is what makes
-  ## `docs/buses_and_interfaces.md` item 9 true -- there was no call site
-  ## passing a Bus/seq here to break (checked across `designs/`, `tests/`,
-  ## `templates/`).
+  ## A width-1 group is the bare `label`; a wider one is `label_0 ..
+  ## label_(N-1)`, matching `addPorts`.
   if ns.len == 1: return @[(label, ns[0])]
   for i, n in ns: result.add (label & "_" & $i, n)
 proc wiringOf*(label: string, b: Bus): seq[(string, Net)] =
-  ## `dims.len <= 1` forwards to the plain-seq form above (its width-1 bare
-  ## label collapse). A multi-dim bus does not forward -- forwarding to
-  ## `wiringOf(label, b.nets)` would drop `dims` and wire `a_0_0..a_7_1`
-  ## instead of following `b`'s own shape -- so it names each member
-  ## `label_<i0>_<i1>..` directly off `coordsOf`, matching `addPorts` below.
+  ## `dims.len <= 1` forwards to the plain-seq form. A multi-dim bus names
+  ## members `label_<i0>_<i1>..` off `coordsOf`, matching `addPorts`.
   if b.dims.len <= 1: return wiringOf(label, b.nets)
   for flat, n in b.nets:
     result.add (label & coordSuffix(coordsOf(flat, b.dims)), n)
 proc wiringOf*(label: string, i: Interface): seq[(string, Net)] =
-  ## Member-suffix a wide signal the same way `addPorts(_, _, InterfaceView)`
-  ## does (`label_signal` for width 1, `label_signal_k` for a wide one), so a
-  ## `narrow`ed interface -- one signal presented as width 1 -- wires straight
+  ## Member-suffixes wide signals like `addPorts(_, _, InterfaceView)`
+  ## (`label_signal`, or `label_signal_k`), so a `narrow`ed interface wires
   ## onto a single-member child port.
   for s in i.def.signals:
     let nets = i.bus(s.name).nets
     for k, n in nets:
       result.add (label & "_" & memberName(s.name, k, s.width), n)
 proc wiringOf*(label: string, v: InterfaceView): seq[(string, Net)] =
-  ## Off `def.signals` directly, mirroring `addPorts(_, _, InterfaceView)`.
-  ## The previous version recovered the signal name from
-  ## `entry[0].substr(label.len + 1)` and tested `mp.dirs` on it -- once the
-  ## interface overload member-suffixes a wide signal that substring is
-  ## `cs_0`, never a modport key, so every wide-signal entry was silently
-  ## dropped.
+  ## Driven off `def.signals`, mirroring `addPorts(_, _, InterfaceView)`, so
+  ## wide-signal entries (`cs_0`) aren't dropped.
   let mp = v.iface.def.modports[v.modport]
   for s in v.iface.def.signals:
     if not mp.dirs.hasKey(s.name): continue
@@ -357,8 +315,8 @@ proc instantiateByPortOpen*(parent: Netlist, instanceDesignator: string,
                             openGroups: openArray[string],
                             globalNets: var OrderedTable[string, Net],
                             componentKind = "subcircuit"): Component =
-  ## Strict named wiring with explicit grouped opens. Each exposed scalar port
-  ## gets its own net, preserving the graph and flattening invariants.
+  ## Strict named wiring with explicit grouped opens; each exposed scalar
+  ## port gets its own net.
   var all = @wiring
   for group in openGroups:
     var matched = false
@@ -397,9 +355,8 @@ proc promotePortDirections*(inst: Component) =
       if d.len > 0:
         for k in PinType:
           if $k == d: p.kind = k
-      # Direction belongs to the child port, but shared-bus identity belongs
-      # to the parent net this instance pin joins.  Carry it onto the pin so
-      # ERC sees the same declaration through a hierarchy boundary.
+      # Direction comes from the child port, shared-bus identity from the
+      # parent net; carry it onto the pin so ERC sees it across the boundary.
       let source = if p.net != nil and
                       p.net.attrs.getOrDefault("iface.instance").len > 0:
                      p.net
@@ -407,9 +364,7 @@ proc promotePortDirections*(inst: Component) =
       for key, value in source.attrs:
         if key.startsWith("iface."): p.attrs[key] = value
 proc connectPort*(c: Component, b: Bus, pins: openArray[(string,string)] = [], prefix = "") =
-  ## A bare bus deliberately states no direction -- and no pin function, so
-  ## this overload takes no `peripheral`/`functions` the way the `InterfaceView`
-  ## one does.
+  ## A bare bus states no direction and no pin function.
   for k, n in b.nets:
     var pinName = if b.len == 1: b.name else: $k
     for pair in pins:
@@ -418,11 +373,9 @@ proc connectPort*(c: Component, b: Bus, pins: openArray[(string,string)] = [], p
 
 proc connectPort*(c: Component, v: InterfaceView, pins: openArray[(string,string)] = [], prefix = "",
                   peripheral = "", functions: openArray[(string,string)] = []) =
-  ## `peripheral` names the concrete peripheral instance this port is wired as
-  ## ("SPI1"), and `functions` overrides that per member -- `{"cs_1": "GPIO"}`
-  ## for a software chip select that is not an SPI function. Both are stamped
-  ## onto the pins as `pinmux.*` attrs for `validatePinmux` and default to
-  ## stamping nothing, so a design that names no peripheral is unaffected.
+  ## `peripheral` names the peripheral instance ("SPI1"); `functions`
+  ## overrides per member (`{"cs_1": "GPIO"}` for a software chip select).
+  ## Stamped as `pinmux.*` attrs for `validatePinmux`; empty stamps nothing.
   let mp = v.iface.def.modports[v.modport]
   for pair in pins:
     var known = v.iface.signals.hasKey(pair[0])
@@ -450,18 +403,16 @@ proc connectPort*(c: Component, v: InterfaceView, pins: openArray[(string,string
       for pair in pins:
         if pair[0] == s.name: pinName = pair[1]
       for pair in pins:
-        # A member mapping wins over a signal mapping regardless of the table
-        # literal's order.  Mapping a wide signal as one pin would otherwise
-        # attempt to connect that one pin N times.
+        # A member mapping wins over a signal mapping (a wide signal mapped
+        # as one pin would connect it N times).
         if pair[0] == member: pinName = pair[1]
       if prefix.len > 0:
         pinName = prefix & pinName
       let p = connect(c, pinName, n, mp.dirs[s.name])
       p.attrs["iface.instance"] = v.iface.name; p.attrs["iface.signal"] = s.name
       p.attrs["iface.modport"] = v.modport; p.attrs["iface.def"] = v.iface.def.name
-      # Pin function: a per-member `functions` entry wins over the port-wide
-      # `peripheral`.  A member override wearing "PERIPH.sig" also sets the
-      # peripheral; a bare "GPIO" clears it.
+      # A per-member `functions` entry wins over `peripheral`. "PERIPH.sig"
+      # also sets the peripheral; a bare "GPIO" clears it.
       var fn = ""
       if peripheral.len > 0: fn = peripheral & "." & s.name
       for pair in functions:
@@ -469,9 +420,8 @@ proc connectPort*(c: Component, v: InterfaceView, pins: openArray[(string,string
       if fn.len > 0: setPinFunction(p, fn)
 
 proc validateInterfaces*(nl: Netlist, recursive = true): seq[Issue] =
-  ## Validate both graph-authored metadata and direction constraints.  The
-  ## unknown-modport case is reachable from importers/manual graph builders,
-  ## while DSL construction rejects it immediately.
+  ## Validates graph-authored metadata and direction constraints. Unknown
+  ## modports are reachable only from importers/manual building.
   for iface in interfacesOf(nl):
     var hasController = false
     var needsController = false
@@ -492,9 +442,8 @@ proc validateInterfaces*(nl: Netlist, recursive = true): seq[Issue] =
         "interface '" & iface.name & "' has no controller modport pin")
   for _, n in nl.nets:
     if n.attrs.getOrDefault("iface.instance").len == 0: continue
-    # A child sheet's published port is driven from its parent.  Its local
-    # pins alone cannot say whether that boundary is dangling or driven; the
-    # parent-level interface is where both sides meet and is checked there.
+    # A child sheet's published port is driven from its parent; it's checked
+    # at the parent-level interface.
     var published = false
     for _, portNet in nl.ports:
       if portNet == n: published = true
@@ -504,8 +453,7 @@ proc validateInterfaces*(nl: Netlist, recursive = true): seq[Issue] =
       if p.kind == ptOutput: inc outs
       if p.kind == ptInput: inc inputs
     if outs >= 2: result.add newIssue("interface_direction_conflict", sevError, "multiple outputs on interface net '" & n.name & "'", net=n)
-    # A shared line may deliberately be released by every participant.  It
-    # is not an undriven unicast signal merely because no chip select is live.
+    # A shared line may be released by every participant; not undriven.
     if inputs > 0 and outs == 0 and n.attrs.getOrDefault("iface.shared") != "1":
       result.add newIssue("interface_signal_undriven", sevWarning, "interface net '" & n.name & "' is undriven", net=n)
     if n.pins.len < 2 and n.attrs.getOrDefault("iface.nc") != "1": result.add newIssue("interface_signal_dangling", sevWarning, "interface net '" & n.name & "' is dangling", net=n)

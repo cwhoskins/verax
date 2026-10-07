@@ -4,10 +4,8 @@
 # --- routed-scene scoring ------------------------------------------------------
 
 proc wireBends(poly: seq[Point]): int =
-  ## Direction changes along a rectilinear polyline. Collinear interior points
-  ## and zero-length segments do not count -- only a real corner does. This is
-  ## the library form of `tests/test_schematic.nim`'s `visualBends`, hardened
-  ## against the redundant collinear vertices the router sometimes emits.
+  ## Direction changes along a rectilinear polyline; collinear points and
+  ## zero-length segments don't count.
   var prevDir = -1                       ## 0 horizontal, 1 vertical, -1 none
   for k in 1 ..< poly.len:
     let a = poly[k - 1]
@@ -28,10 +26,8 @@ proc wireLength(poly: seq[Point]): float =
     result += abs(poly[k].x - poly[k - 1].x) + abs(poly[k].y - poly[k - 1].y)
 
 proc sceneScore(rs: RoutingState): tuple[fallbacks, bends: int, length: float] =
-  ## Lexicographic route-quality reading of a routed scene: how many nets fell
-  ## back, then total corners, then total wire length. `wkChain` recirculation
-  ## arcs are fixed annotation polylines, not routed connectivity, so they are
-  ## excluded.
+  ## Lexicographic route quality: fallbacks, then corners, then length.
+  ## `wkChain` arcs are annotations, so excluded.
   result.fallbacks = rs.fallbacks.len
   for w in rs.wires:
     if w.kind == wkChain: continue
@@ -39,8 +35,7 @@ proc sceneScore(rs: RoutingState): tuple[fallbacks, bends: int, length: float] =
     result.length += wireLength(w.points)
 
 proc betterThan(a, b: tuple[fallbacks, bends: int, length: float]): bool =
-  ## Strict lexicographic improvement: fewer fallbacks, then fewer bends, then
-  ## shorter. Length ties inside 1e-6 are not an improvement.
+  ## Strict lexicographic improvement; length ties within 1e-6 don't count.
   if a.fallbacks != b.fallbacks: return a.fallbacks < b.fallbacks
   if a.bends != b.bends: return a.bends < b.bends
   b.length - a.length > 1e-6
@@ -48,11 +43,9 @@ proc betterThan(a, b: tuple[fallbacks, bends: int, length: float]): bool =
 # --- post-route port placement -----------------------------------------------
 
 proc portTargets(rs: RoutingState): OrderedTable[string, seq[float]] =
-  ## For every net that carries an interface port, the y coordinates its routed
-  ## wire spends the most horizontal length on -- the tracks tension would pull
-  ## the ports onto -- best first, at most `portRefineCandidates` of them, and
-  ## never a y a port on that net already sits at. Keyed and ordered by net tag
-  ## in `rs.ports` order so the caller is deterministic.
+  ## For each ported net, the y's where its routed wire runs longest
+  ## horizontally, best first, at most `portRefineCandidates`, excluding
+  ## y's a port already sits at. In `rs.ports` order.
   var portYs = initTable[string, seq[float]]()
   var order: seq[string]
   for p in rs.ports:
@@ -88,18 +81,12 @@ proc portTargets(rs: RoutingState): OrderedTable[string, seq[float]] =
     if picked.len > 0: result[net] = picked
 
 proc refinePortPlacement(state: var LayoutState) =
-  ## Pull each ported net's ports onto the y its routed wire already runs
-  ## along, whenever a full re-route then scores strictly better
-  ## (`betterThan`: fallbacks, then bends, then length). A port's column and x
-  ## are never touched -- only its y, and only through `state.portY`, which
-  ## `routeScene` applies as the column relaxation's spring target so
-  ## `portMinGap` still holds. Bounded by `portRefineRounds` sweeps and
-  ## `portRefineMaxAttempts` re-routes; a sheet that never improves is left
-  ## exactly as routing produced it. Deterministic: fixed budgets, ordered
-  ## iteration, no clock or RNG.
+  ## Pull each ported net's ports onto the y its wire already runs along,
+  ## when a full re-route scores strictly better. Only `state.portY` changes
+  ## (a spring target, so `portMinGap` holds). Bounded by
+  ## `portRefineRounds` and `portRefineMaxAttempts`; deterministic.
   if state.routing.ports.len == 0: return
-  # The same raw-size ceiling `recoverRouting` gates its per-candidate re-route
-  # cost on -- a post-route pass is the same shape of work.
+  # Same raw-size ceiling as `recoverRouting`.
   if state.comps.len > 4 * state.options.feedbackMaxParts: return
 
   var best = sceneScore(state.routing)
@@ -136,14 +123,9 @@ proc portObstacle(p: SchematicPort): Obstacle =
   Obstacle(x1: p.x - hw, y1: p.y - hh, x2: p.x + hw, y2: p.y + hh)
 
 proc verifyPartPlacement(part: SchematicPart, state: LayoutState): bool =
-  ## True when `part`'s `routingClearance`-inflated body -- the same
-  ## inflation `separate` legalizes placement against and the router builds
-  ## its obstacle set from -- does not overlap any other part or port already
-  ## in `state.routing`. A part sharing `part`'s own designator is excluded
-  ## from the comparison, so passing back the part's own (moved) copy checks
-  ## it against everything *else* on the sheet. Intended to be called after a
-  ## manual part move, to confirm the new position is still legal before it
-  ## is accepted.
+  ## True when `part`'s inflated body overlaps no other part or port in
+  ## `state.routing` (its own designator excluded). For validating a manual
+  ## move.
   let hw = part.bodyW / 2.0 + routingClearance
   let hh = part.bodyH / 2.0 + routingClearance
   let here = Obstacle(x1: part.x - hw, y1: part.y - hh,
@@ -158,19 +140,9 @@ proc verifyPartPlacement(part: SchematicPart, state: LayoutState): bool =
   true
 
 proc verifyWireRouting(wire: SchematicWire, state: LayoutState): bool =
-  ## True when `wire` -- a candidate manually re-routed net polyline, in
-  ## scene coordinates -- conflicts with no other visual component in
-  ## `state.routing`: none of its segments enters the interior of any part's
-  ## or port's inflated body, threads a rail/ground terminal's drawn glyph
-  ## ink, or touches another net's wire under the router's hard cross-net
-  ## rule (no collinear touch, not even end-to-end, and at least
-  ## `wireMinSeparation` of centreline separation wherever a parallel run's
-  ## projections overlap). Other wires of `wire.net` are excluded: they are
-  ## `wire`'s own branches, not another visual component, and the within-net
-  ## no-positive-overlap invariant is the router's own concern when it grows
-  ## a net's tree, not this check's. Intended to be called after a wire is
-  ## manually re-routed, to confirm the new path is still legal before it is
-  ## accepted.
+  ## True when a candidate re-routed polyline enters no part/port body,
+  ## threads no glyph ink, and obeys the cross-net rules against other nets'
+  ## wires (same-net wires excluded). For validating a manual re-route.
   var obstacles = obstaclesFor(state.routing.parts)
   for p in state.routing.ports: obstacles.add portObstacle(p)
   var glyphs: seq[OccSeg]
@@ -192,32 +164,11 @@ proc verifyWireRouting(wire: SchematicWire, state: LayoutState): bool =
 
 proc translateRoutedComponent(state: var LayoutState, designator: string,
                               dx, dy: float): bool =
-  ## Moves the already-placed-and-routed part `designator` by (`dx`, `dy`)
-  ## and rebuilds the sheet's routing against the new position: every signal
-  ## wire, every rail/ground stub ("power port"), and every fallback
-  ## marker -- the anchor `finishLabels` later hangs a net-name label off of,
-  ## since `LayoutState` itself carries no realized `SchematicLabel`s to move.
-  ## `state.pos` is what `routeScene` reads for a part's centre;
-  ## `state.routing.parts[i].x`/`y` is only a routed *snapshot* of it, so
-  ## this writes the move there rather than into the routed copy directly.
-  ##
-  ## The move commits only when the fresh routing both completes in full
-  ## (`RoutingState.ok`) and the moved part's new, `routingClearance`-inflated
-  ## body clears every other part and port (`verifyPartPlacement`). A
-  ## complete route does not by itself rule that out -- routing legality is
-  ## about wires, never about a body sitting on top of another one -- so it is
-  ## checked separately; `verifyWireRouting` is not, since a wire the router
-  ## just emitted has already satisfied it by construction (the router's own
-  ## obstacle/occupancy rules are the same primitives that proc checks). On
-  ## either failure `state.pos` and `state.routing` are restored to exactly
-  ## what they were and the move is refused, so a caller never has to tell
-  ## "rejected" apart from "applied, then undone".
-  ##
-  ## Moves one part at a time: a member of a constrained-layout composite unit
-  ## moved alone would leave its partner behind rather than translating as one
-  ## rigid body, so a composite member is refused outright rather than
-  ## silently breaking `restoreCompositeOffsets`' canonical-offset invariant.
-  ## Moving a whole composite is outside this proc's scope.
+  ## Moves part `designator` by (`dx`, `dy`) via `state.pos` and re-routes
+  ## the sheet (wires, rail stubs, fallback markers). Commits only if routing
+  ## completes and the moved body clears every part and port
+  ## (`verifyPartPlacement`); otherwise everything is restored and it returns
+  ## false. Composite members are refused (they must move as a unit).
   if designator notin state.idxOf: return false
   let idx = state.idxOf[designator]
   if state.composites.ownerOf[idx] != idx:

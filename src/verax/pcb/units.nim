@@ -1,18 +1,11 @@
 ## Canonical units for the physical board model.
 ##
-## Lengths are signed nanometres in a `distinct int64` (`Nm`), so mixing a raw
-## integer with a length is a compile error. `int64` nanometres span the entire
-## ODB++ legal coordinate range (+/-2450 mm, about +/-2.45e12 nm) with room to
-## spare, and exactly round-trip KiCad, which is `int32` nanometres internally
-## and never writes more than six decimal places.
+## Lengths are signed nanometres in a `distinct int64` (`Nm`): it spans
+## ODB++'s +/-2450 mm range and round-trips KiCad exactly. ODB++'s 2.5 nm
+## quantum rounds to the nearest nm (far below any fab tolerance).
 ##
-## Known, deliberate precision loss: ODB++'s finest legal quantum is
-## 1/400 micron = 2.5 nm, so ODB++ input rounds to the nearest nanometre. That
-## is far below any real fab or design-rule tolerance.
-##
-## Angles are degrees in a `distinct float64` (`Deg`), **counter-clockwise
-## positive**, matching the canonical frame described in
-## `verax/pcb/geometry`.
+## Angles are degrees in a `distinct float64` (`Deg`), **CCW positive**
+## (see `verax/pcb/geometry`).
 
 import std/math
 
@@ -34,8 +27,8 @@ const
   NmPerInch* = 25_400_000'i64
 
   OdbQuantumNm* = 2.5
-    ## ODB++ minimum resolution, 1/400 micron, in nanometres. Documented here
-    ## because it is the one quantity this representation cannot hold exactly.
+    ## ODB++ minimum resolution (1/400 micron) in nm -- the one quantity not
+    ## held exactly.
 
 # ---------------------------------------------------------------- Nm
 
@@ -72,20 +65,8 @@ proc toMil*(a: Nm): float {.inline.} = a.raw.float / NmPerMil.float
 proc toInch*(a: Nm): float {.inline.} = a.raw.float / NmPerInch.float
 
 proc toMetres*(a: Nm): float {.inline.} =
-  ## Nanometres as a plain metre-valued `float`. The conversion
-  ## `fem/extrude.nim` used to open-code privately (`a.raw.float * 1e-9`) as
-  ## its own local `metres` proc; promoted here once `pcb/geometry.length`
-  ## needed the identical factor, so the two do not silently drift apart.
-  ##
-  ## Returns a bare `float`, not a new distinct type: `findings.md` §18 asked
-  ## whether a `Metres` type belongs here or in `verax/units`, and the answer
-  ## this stage lands on is neither -- a computed length is a real number
-  ## used in ordinary arithmetic (summed, divided by a velocity, squared into
-  ## an area), `pcb/units.Nm` stays integer nanometres for the geometry it
-  ## already serves, and `verax/units` stays electrical quantities
-  ## (`Volts`/`Ohms`/...), which a board length is not. Adding a third unit
-  ## type to carry one already-scaled `float` around would buy type safety
-  ## nothing else here has and cost every consumer an extra conversion.
+  ## Nanometres as metres, a plain `float` (no `Metres` type: computed
+  ## lengths are used in ordinary arithmetic).
   a.raw.float * 1e-9
 
 proc toNm*(v: float, u: LengthUnit): Nm =
@@ -98,8 +79,8 @@ proc toNm*(v: float, u: LengthUnit): Nm =
   of luInch: inch(v)
 
 proc `$`*(a: Nm): string =
-  ## Renders as the raw nanometre count, e.g. `"1000000nm"`. Lossless, so it
-  ## is safe to compare in tests; use `toMm` for human-facing output.
+  ## The raw nanometre count (`"1000000nm"`), lossless for tests; use `toMm`
+  ## for display.
   $a.raw & "nm"
 
 # ---------------------------------------------------------------- Deg

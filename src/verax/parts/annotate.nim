@@ -1,20 +1,7 @@
-## Writing a `Choice` onto a component.
-##
-## Every field of a `Choice` becomes a **registered** annotation -- `package`,
-## `dielectric`, `voltage_rating`, `isat` and the rest are all in the bare
-## vocabulary, which is the point: a policy's output is not private to the
-## policy, it is the same thing a designer would have typed in a `spec:`
-## block, and everything downstream reads it the same way either way.
-##
-## What a policy decides is therefore *visible* in the netlist, in `verax
-## annotations`' vocabulary, and in the deck. A mechanism whose output could
-## only be understood by re-reading the mechanism would be worse than typing
-## the values out.
-##
-## Nothing is written for a zero field. A `Choice` that says nothing about a
-## rating leaves the component saying nothing about it, rather than claiming
-## zero -- the same reason the annotation accessors are pure and never
-## default.
+## Writing a `Choice` onto a component. Every field becomes a **registered**
+## annotation -- the same thing a designer would type in `spec:` -- so a
+## policy's decisions are visible in the netlist and deck. Zero fields are
+## not written (no claiming zero).
 
 import ../netlist/types
 import ../netlist/annotations
@@ -22,12 +9,9 @@ import ../units
 import ./types
 
 proc applyChoice*(c: Component, ch: Choice, source = annDerived) =
-  ## Annotates `c` from `ch`, recording provenance.
-  ##
-  ## `annDerived` by default, and that is the honest source: a policy computed
-  ## these from a request, nobody measured them and nobody looked them up in a
-  ## datasheet. A policy backed by a real preferred-parts list should pass
-  ## `annImported` instead, and one transcribing a datasheet `annAuthored`.
+  ## Annotates `c` from `ch`. `annDerived` by default (computed, not
+  ## measured); pass `annImported` for a parts-list policy, `annAuthored`
+  ## for a datasheet transcription.
   if c == nil: return
   if ch.package.len > 0: setAnnotation(c, "package", ch.package, source)
   if ch.dielectric.len > 0: setAnnotation(c, "dielectric", ch.dielectric, source)
@@ -45,7 +29,6 @@ proc applyChoice*(c: Component, ch: Choice, source = annDerived) =
   if ch.use.len > 0: setAnnotation(c, "part_use", ch.use, source)
 
 proc choiceNotes*(designator: string, ch: Choice): seq[Assumption] =
-  ## A policy's `notes` as `Assumption`s, so they surface where every other
-  ## invented number does rather than being swallowed by the builder.
+  ## A policy's `notes` as `Assumption`s.
   for n in ch.notes:
     result.add note(designator, n)

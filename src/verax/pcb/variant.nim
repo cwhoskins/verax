@@ -1,47 +1,19 @@
-## The data model for **multiple physical layouts of one subcircuit** --
-## types, a registry, and the instance -> variant binding -- committed now so
-## a later place-and-route stage has nothing left to re-litigate about the
-## *shape* of a variant. **No algorithm lives here**: no placer, no router,
-## no variant-selection policy beyond naming what a real one would need to
-## decide between. `selectVariant`/`instantiateVariant` raise "not
-## implemented" by name rather than stubbing a plausible-looking answer --
-## see each proc's own doc comment for why a stub here is worse than a
-## refusal.
+## The data model for **multiple physical layouts of one subcircuit**:
+## types, registry, and the instance -> variant binding. **No algorithm**:
+## `selectVariant`/`instantiateVariant` raise by name rather than stub a
+## plausible answer.
 ##
-## Four decisions, each stated so a later stage does not reopen it:
+## **Keyed by `Netlist.name`** (the template): one layout, N instances.
 ##
-## **Keyed by `Netlist.name`, not by instance.** `verify.nim` and
-## `schematic/render.keepFullSchematic` already spell a subcircuit's identity
-## this way -- a block instanced twice is drawn once -- so a variant attaches
-## to the *template*, which is the whole point of having one: one layout, N
-## instances.
+## **A registry of pure data, no built-ins** (like `PackageDef`), so it
+## could come from a file. Duplicate `(subcircuit, name)` raises.
 ##
-## **A registry of pure data, no procs on the variant, no built-ins** -- the
-## `PackageDef`/`PartPinmux` shape (`netlist/packages.nim`, `netlist/pinmux.nim`):
-## a variant computes nothing, so it could later be read from a file rather
-## than written in Nim, and there is no generic variant the way there is no
-## generic multi-channel package -- every one is a specific board's specific
-## layout, owned by whatever `designs/lib/` module states it. Duplicate
-## `(subcircuit, name)` raises, the same posture `registerPackage` and
-## `registerInterfaceDef` already take on a collision.
+## **The binding is `attrs["layout.variant"]` on the instance component**
+## (`netlist/layouthints`), authored on the netlist side.
 ##
-## **"This instance uses variant X" is `attrs["layout.variant"]` on the
-## instance `Component`**, joining the `netlist/layouthints.nim` `layout.*`
-## family (`layoutVariant`/`setLayoutVariant`, that module's `"variant"` key)
-## rather than a field here -- `pcb/` must not gain an edge *from*
-## `netlist/`, and the binding is authored on the netlist side (the DSL's
-## `layout:` block) long before any `Pcb` exists to hold it.
-##
-## **`selectVariant` raises, naming the constraints asked for and the
-## variants that exist**, rather than returning the first match: a stub that
-## silently ignored `VariantConstraints` would look like it worked while
-## quietly picking a variant that does not fit the copper-layer count or
-## extent a caller actually has -- precisely the failure mode this
-## codebase's named refusals exist to avoid (`spice/models.expandSourceImpedance`'s
-## own doc comment in `verify.nim`, for the identical reasoning applied to a
-## PDN check that would otherwise always pass). `instantiateVariant` raises
-## for the same reason: stamping copper onto a `Pcb` from a `LayoutVariant`
-## is a placer-and-router's job, which this stage deliberately does not do.
+## **`selectVariant` raises**, naming the constraints and the variants that
+## exist: a first-match stub would silently ignore constraints.
+## `instantiateVariant` raises too -- that's a placer-and-router's job.
 
 import std/[strutils, tables]
 
@@ -52,12 +24,9 @@ import ./types
 type
   VariantPlacement* = object
     designator*: string
-      ## Subcircuit-local -- the component's own designator inside the
-      ## template netlist, before any hierarchical prefix.
+      ## The component's designator inside the template, unprefixed.
     at*: Point
-      ## Subcircuit-local frame: offset from the variant's own origin, not
-      ## board coordinates. `instantiateVariant` is what would apply the
-      ## instance's own placement transform on top of this.
+      ## Offset from the variant's origin, not board coordinates.
     rot*: Deg
     side*: BoardSide
     footprint*: string
@@ -107,9 +76,7 @@ proc fits(v: LayoutVariant, c: VariantConstraints): bool =
   if c.maxCopperLayers > 0 and v.copperLayers > c.maxCopperLayers: return false
   if not c.maxExtent.isEmpty and not c.maxExtent.contains(v.extent): return false
   if c.requireSide in {bsTop, bsBottom}:
-    # A constraint names a side only when every placement must land on it --
-    # nothing here infers "which side does this variant mostly use", since
-    # that is a policy question the caller (not this data model) answers.
+    # A side constraint means every placement must be on that side.
     for p in v.placements:
       if p.side != c.requireSide: return false
   true
@@ -123,14 +90,9 @@ proc describe(c: VariantConstraints): string =
   if parts.len == 0: "(no constraints stated)" else: parts.join(", ")
 
 proc selectVariant*(subcircuit: string, c: VariantConstraints): LayoutVariant =
-  ## Deliberately never implemented as "return the first fit": a real
-  ## selection policy has to rank candidates that all satisfy `c` (fewest
-  ## layers, smallest extent, best courtyard utilisation -- a later stage's
-  ## question), and a stub that picked one anyway would look like it worked
-  ## while silently ignoring every constraint that did not happen to rule
-  ## its pick out. Names what was asked for and what actually exists, which
-  ## a caller reading the raise can act on today; a real policy replaces
-  ## this proc's body, not its signature.
+  ## Never "return the first fit": a real policy must rank candidates (layer
+  ## count, extent, utilisation). Raises naming what was asked and what
+  ## exists; a real policy replaces the body, not the signature.
   let candidates = layoutVariants(subcircuit)
   var fitting: seq[string]
   var all: seq[string]
@@ -147,13 +109,8 @@ proc selectVariant*(subcircuit: string, c: VariantConstraints): LayoutVariant =
 
 proc instantiateVariant*(pcb: Pcb, v: LayoutVariant, instance: string,
                          at: Point, rot: Deg, side: BoardSide) =
-  ## Deliberately never implemented: stamping `v`'s placements, routes and
-  ## vias onto `pcb` at `(at, rot, side)` is a placer-and-router's job (real
-  ## collision checking against whatever else already occupies `pcb`, a
-  ## mirror for `side == bsBottom`, keepouts), none of which this stage
-  ## builds. A version that copied geometry in blindly would produce a
-  ## `Pcb` that *looks* routed while silently overlapping or mis-siding
-  ## whatever it landed on.
+  ## Never implemented: stamping a variant onto `pcb` needs collision
+  ## checks, bottom-side mirroring and keepouts (a placer/router's job).
   raise newException(PcbError,
     "instantiateVariant: not implemented -- '" & v.name & "' (" &
     v.subcircuit & ") has " & $v.placements.len & " placement(s) and " &

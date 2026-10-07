@@ -4,56 +4,36 @@ type
     isBox: bool
     bodyW, bodyH: float
     inkW, inkH: float
-      ## The bounding box of what `svg.drawPart` actually strokes for this
-      ## symbol, at rotation 0 -- which for the horizontal two-terminal
-      ## symbols is far shorter than the `bodyW`/`bodyH` pin span. `layout`
-      ## and `svg` are the two files that must agree on drawn geometry: a
-      ## change to a symbol's drawing in `svg.nim` needs the matching extent
-      ## updated here (see `inkExtent`). Used only to place labels.
+      ## Bounding box of what `svg.drawPart` strokes, at rotation 0 (much
+      ## shorter than the pin span for two-terminal symbols). Must match
+      ## `svg.nim` (see `inkExtent`). Used only to place labels.
     slots: seq[Point]
-      ## Positional pin slots: `slots[i]` is the slot of the `i`-th pin in
-      ## `Component.pins` order.
+      ## Positional slots: `slots[i]` is the `i`-th pin in `Component.pins`.
     byName: Table[string, Point]
-      ## When non-empty, pin slots are keyed by pin name instead of position
-      ## (the controlled-source symbol, whose input and output pins sit on
-      ## opposite edges regardless of declaration order).
+      ## When non-empty, slots are keyed by pin name (the controlled-source
+      ## symbol, whose pins sit on fixed edges regardless of order).
     extraSlots: seq[Point]
-      ## Lane slots that belong to no `Component.pins` entry: today only the
-      ## two endpoints a collapsed array's chain arc needs (see `arrays.nim`).
-      ## Kept out of `slots` on purpose -- `slots` is parallel to `c.pins` and
-      ## `slotOf`/`pinWorldPositions`/`rotationScore`/`terminalClearance` all
-      ## depend on that. Only `routeScene`'s part loop reads these.
+      ## Lane slots with no `Component.pins` entry (an array's chain-arc
+      ## endpoints). Kept out of `slots`, which must stay parallel to
+      ## `c.pins`. Only `routeScene` reads these.
     extraNames: seq[string]
-      ## Parallel to `extraSlots`: the lane id (`arrays.nim` builds it as
-      ## `<array key>:out` / `<array key>:in`).
+      ## Parallel to `extraSlots`: lane ids (`<array key>:out`/`:in`).
 
 const boxStub* = 20.0
-  ## How far a fallback-box pin sits outside the *drawn* rectangle. `boxSlots`
-  ## puts the pin (and hence its routing escape point) on the `bodyW`/`bodyH`
-  ## extent so routing stays grid-aligned; `svg` insets the visible rectangle
-  ## by this much and draws a stub from that edge out to the pin.
+  ## How far a box pin sits outside the drawn rectangle: pins sit on the
+  ## grid-aligned body extent, and `svg` insets the rectangle and draws a
+  ## stub.
 
 proc traversalSides(c: Component): seq[int] =
-  ## Parallel to `c.pins`: `-1` no opinion, `0` left, `1` right -- from a
-  ## declared `traverse:` spec's connectivity graph, so a through-path (the
-  ## ADG904's `RFC <-> [RF1..RF4]`) lands its two ends on *opposite* box
-  ## edges instead of alternating by declaration order. `boxSlots` treats
-  ## `@[]` (the inert value, returned whenever the component states no
-  ## traversal, its declared edges don't 2-colour -- an odd cycle has no
-  ## two-sided drawing -- or it declares no edge at all, e.g. `traverse:
-  ## none`) as "no opinion for any pin", so an undeclared component takes its
-  ## exact historical alternating path. A named pin `c.pins` does not have is
-  ## silently skipped -- `validateTraversal` is where a bad name is actually
-  ## reported, never here.
+  ## Parallel to `c.pins`: `-1` no opinion, `0` left, `1` right, from a
+  ## `traverse:` spec's two-colouring, so a through-path's ends land on
+  ## opposite edges. `@[]` (no spec, no edges, or not 2-colourable) means no
+  ## opinion. Unknown pin names are skipped (`validateTraversal` reports
+  ## them).
   ##
-  ## Both `traverse.paths` and `traverse.blocked` edges count: each declares
-  ## a through-path, and it is topology, not DC conduction, that decides
-  ## which edge a pin is drawn on. A pin whose `Pin.kind` already forces a
-  ## side (`ptPower`/`ptGround`/`ptInput`/`ptOutput`, `boxSlots`' own special
-  ## cases) keeps that edge -- excluded from the result -- but an
-  ## `ptInput`/`ptOutput` pin still seeds its connected component's colour
-  ## (lowest-ordinal such pin wins) so the two-colouring agrees with
-  ## `boxSlots` rather than fighting it.
+  ## Both paths and blocked edges count (topology, not conduction). Pins with
+  ## a kind-forced side keep it and are excluded, but an input/output pin
+  ## seeds its component's colour so the two agree.
   if not statesTraversal(c): return @[]
   let spec = traversal(c)
   if spec.mode == tmNone: return @[]
@@ -92,9 +72,8 @@ proc traversalSides(c: Component): seq[int] =
   for k in 0 ..< n: color[k] = -1
   for start in 0 ..< n:
     if color[start] != -1 or adj[start].len == 0: continue
-    # Collect this whole connected component first (BFS), so the seed colour
-    # can be picked from the lowest-ordinal forced-side pin anywhere in it,
-    # not just at `start`.
+    # BFS the whole component first, so the seed colour comes from its
+    # lowest-ordinal forced-side pin.
     var order = @[start]
     var seen = newSeq[bool](n)
     seen[start] = true
@@ -136,30 +115,20 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
               extraLanes: seq[string] = @[], extraSide: seq[int] = @[],
               titleWidth = 0.0):
     tuple[slots, extraSlots: seq[Point], halfW, halfH: float] =
-  ## Deterministic fallback-box pin placement, keyed on pin type: declared
-  ## power pins leave the top edge, ground pins the bottom, inputs the left and
-  ## outputs the right; every other pin fills the left edge then the right,
-  ## unless a declared `traverse:` spec's two-colouring (`traversalSides`)
-  ## gives it an opinion first -- so a through-path's two ends land on
-  ## opposite edges rather than alternating by declaration order. Within an
-  ## edge the pins are spread symmetrically about the body centre. `halfW`/
-  ## `halfH` are the pin extent -- pins sit on this rectangle so their escape
-  ## points land on the routing grid, and `svg` draws the body itself
-  ## `boxStub` smaller so each pin visibly juts out with its name just inside.
+  ## Deterministic box pin placement by pin type: power top, ground bottom,
+  ## inputs left, outputs right; others fill left then right unless
+  ## `traversalSides` gives an opinion. Pins spread symmetrically per edge on
+  ## the `halfW`/`halfH` extent (grid-aligned); `svg` draws the body
+  ## `boxStub` smaller.
   ##
-  ## `groupOf` (parallel to `c.pins`: `-1` an own slot, `>=0` a merged-group
-  ## id), `groupNames[g]` (the drawn lane name, `"spi[3]"`) and `groupSide[g]`
-  ## (`-1` auto / `0` left / `1` right) collapse a collapsed bundle's member
-  ## pins onto **one lane sharing one slot `Point`**, so `SymbolDef.slots`
-  ## stays parallel to `c.pins` and `slotOf`/`pinWorldPositions`/`rotationScore`
-  ## are untouched. `rows`/`cols` count *lanes*. **`groupOf.len == 0` is the
-  ## historical path, bit-for-bit** -- that one default is the whole inertness
-  ## guarantee at this layer; `traversalSides` returning `@[]` for an
-  ## undeclared component is what keeps it bit-for-bit too.
+  ## `groupOf` (parallel to `c.pins`: `-1` own slot, else merged-group id),
+  ## `groupNames` and `groupSide` merge a collapsed bundle's pins onto one
+  ## lane sharing one slot, so `slots` stays parallel to `c.pins`. `rows`/
+  ## `cols` count lanes. Empty `groupOf` is the unchanged path.
   const
     pitch = 40.0       ## row spacing on the left/right edges
-    endPitch = 80.0     ## column spacing on the top/bottom edges -- wider so a
-                        ## rail stub's net-name label clears the next pin
+    endPitch = 80.0     ## top/bottom column spacing, wider so a rail stub's
+                        ## label clears the next pin
   proc spread(count, k: int, step: float): float =
     (float(k) - float(count - 1) / 2.0) * step
 
@@ -204,9 +173,8 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
     result.halfH = halfH
     return
 
-  # Lane-based: a merged group is one lane; every other pin is its own lane.
-  # Auxiliary array lanes (`extraLanes`) are appended after the pin lanes --
-  # they carry no `c.pins` entry, so they land in `extraSlots`, not `slots`.
+  # One lane per merged group or ungrouped pin; array lanes (`extraLanes`)
+  # follow in `extraSlots`.
   var laneNames: seq[string]
   var laneOfGroup = initTable[int, int]()
   var laneForPin: seq[int]
@@ -224,16 +192,9 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
     let forced =
       if g >= 0 and g < groupSide.len: groupSide[g] else: -1
     let laneId = laneNames.len
-    # A declared traversal opinion for this lane's first pin wins over a
-    # merged bundle group's own `forced` side: `forced` for a lane of
-    # otherwise-directionless pins (the ADG904's `m`/RF bus, all `ptPassive`)
-    # comes from `bundleGroupsFor`'s generic `portDirection` fallback --
-    # "nothing drives it, so call it an input" -- which is not a real
-    # electrical statement, whereas `traverse:` is an explicit one about
-    # exactly these pins. A pin with a kind-based side of its own
-    # (`ptPower`/`ptGround`/`ptInput`/`ptOutput`) always has `travSide[i] ==
-    # -1` (`traversalSides` excludes them), so this never overrides a
-    # genuinely directional bundle member.
+    # A declared traversal side beats a bundle's `forced` side, which for
+    # directionless pins is only `portDirection`'s fallback guess.
+    # Directional pins never have a traversal side, so they're unaffected.
     if i < travSide.len and travSide[i] == 0: left.add laneId
     elif i < travSide.len and travSide[i] == 1: right.add laneId
     elif forced == 0: left.add laneId
@@ -286,11 +247,8 @@ proc boxSlots(c: Component, groupOf: seq[int] = @[],
   result.halfH = halfH
 
 proc inkExtent(name: string, bodyW, bodyH: float): tuple[w, h: float] =
-  ## The bounding box of what `svg.drawPart` strokes for symbol `name`, at
-  ## rotation 0. These literals mirror `svg.nim`'s drawing code -- the resistor
-  ## zigzag is +/-10 tall (`svg.zigzag`), the source circle is r=16, the
-  ## transistor has leads on three sides -- and the two files must be kept in
-  ## step. Only labels read this; it never feeds an obstacle rect.
+  ## Bounding box of what `svg.drawPart` strokes for `name` at rotation 0.
+  ## Mirrors `svg.nim`'s literals; keep the two in step. Labels only.
   case name
   of "resistor", "diode": (bodyW, 20.0)
   of "capacitor", "passive": (bodyW, 24.0)
@@ -303,16 +261,10 @@ proc symbolFor(c: Component, groupOf: seq[int] = @[],
                groupNames: seq[string] = @[], groupSide: seq[int] = @[],
                extraLanes: seq[string] = @[], extraSide: seq[int] = @[],
                titleWidth = 0.0): SymbolDef =
-  ## The symbol for `c.kind`, with pin slots relative to the part centre.
-  ##
-  ## A part is a fallback box when its kind has no registered symbol, when it
-  ## instantiates hierarchy (its pins are the child's ports, best drawn as a
-  ## box), or when its pin count does not match the symbol's slots.
-  ##
-  ## The `group*` / `extra*` / `titleWidth` params reach only the box branch --
-  ## every collapsed-bundle carrier and every collapsed-array representative is
-  ## a box, and the fixed 2-slot / `byName` symbols have no lane to merge, so
-  ## confining it there keeps `rotatable`/`slotOf` untouched.
+  ## The symbol for `c.kind`, with slots relative to the part centre. A box
+  ## when the kind has no symbol, the part is an instance, or its pin count
+  ## doesn't match. The `group*`/`extra*`/`titleWidth` params apply only to
+  ## boxes (bundle carriers and array representatives are always boxes).
   let n = c.pins.len
   proc box(): SymbolDef =
     let b = boxSlots(c, groupOf, groupNames, groupSide,
@@ -348,9 +300,8 @@ proc symbolFor(c: Component, groupOf: seq[int] = @[],
   of "current_source", "iswitch":
     result = SymbolDef(name: "current_source", bodyW: h, bodyH: h, slots: vert)
   of "vcvs", "vccs", "cccs", "ccvs":
-    # A rectangular buffer/controlled source: OUT+/OUT- on the right edge,
-    # IN+/IN- on the left edge. Slots are keyed by pin name so declaration
-    # order never decides which side a pin lands on.
+    # Rectangular buffer/controlled source: OUT+/OUT- right, IN+/IN- left,
+    # keyed by pin name.
     if n != 4: return box()
     let bodyW = 2.0 * pinSpan
     let bodyH = 60.0
@@ -364,12 +315,8 @@ proc symbolFor(c: Component, groupOf: seq[int] = @[],
     return SymbolDef(name: "source4", bodyW: bodyW, bodyH: bodyH,
                      inkW: bodyW, inkH: bodyH, byName: byName)
   of "opamp", "op_amp", "operational_amplifier":
-    # The traditional triangular op-amp symbol: IN+/IN- land on the flat left
-    # edge (the base), OUT at the apex on the right, V+/V- entering the
-    # slanted top/bottom edges at mid-width. Slots are keyed by pin name, the
-    # `source4` pattern, so declaration order never decides which edge a pin
-    # lands on; a pin-count/name mismatch (a 3-pin ideal model with no drawn
-    # supply pins, say) falls back to the plain box.
+    # Triangular op-amp: IN+/IN- on the left base, OUT at the apex, V+/V- on
+    # the slanted edges; keyed by name. A pin mismatch falls back to a box.
     if n != 5: return box()
     let bodyW = 2.0 * pinSpan
     let bodyH = 2.0 * pinSpan

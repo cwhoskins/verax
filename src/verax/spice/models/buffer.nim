@@ -1,7 +1,5 @@
-## `bufferModel`: a part that passes a signal through becomes a VCVS from its
-## input to its output, so the path survives.
-##
-## Mutates the `Netlist` it is given; run it on a simulation clone.
+## `bufferModel`: a signal-passing part becomes a VCVS from input to output.
+## Mutates its netlist; use a clone.
 
 import std/[strutils, tables]
 import ../../netlist/types
@@ -13,19 +11,9 @@ import ./common
 import ./behavioral
 
 proc bufferModel*(nl: Netlist, c: Component, gnd: Net): BehavioralResult =
-  ## A part that passes a signal through becomes a VCVS from its input to its
-  ## output, so the path survives.
-  ##
-  ## Without this a buffer sitting in a feedback path is stood in for by two
-  ## impedances to ground, which does not merely lose accuracy -- it opens
-  ## the loop, and a loop-gain measurement over an opened loop is a confident
-  ## number about a circuit that is not the one on the bench. Same failure as
-  ## a regulator read at 0 V, one analysis further along.
-  ##
-  ## Unity is assumed where nothing states otherwise, which is defensible
-  ## here and was not for a regulator's output voltage: a part whose kind is
-  ## `buffer` has a gain of one by definition, whereas nothing about the word
-  ## `regulator` says what voltage it makes. Annotate `gain` to say otherwise.
+  ## A signal-passing part becomes a VCVS from input to output, so a buffer
+  ## in a feedback path doesn't open the loop. Unity gain unless `gain` is
+  ## annotated (a buffer is unity by definition).
   let outPin = pinNamed(c, outNames)
   let inPin = pinNamed(c, inNames)
   if outPin == nil or inPin == nil or outPin.net == nil or inPin.net == nil:

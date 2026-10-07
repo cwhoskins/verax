@@ -1,34 +1,27 @@
-## `BomItem`s -> `BomResult`: which orderable part each item is, asked of
-## every registered `CatalogSource` (`source.searchAll`/`lookupAll`).
+## `BomItem`s -> `BomResult`: which orderable part each item is, per the
+## registered `CatalogSource`s.
 ##
-## Per item, in this order:
+## Per item, in order:
 ##
-##   1. **Excluded** (`bom_exclude`) -- not resolved, on no line, and said so
-##      (`bom_excluded`).
-##   2. **An MPN, for every family.** A stated `mpn` is authoritative:
-##      `lookupAll` verifies it, and a part no source knows is
-##      `bom_part_not_found` (a warning -- a source not carrying a part is not
-##      proof it does not exist) and still goes on the BOM as stated. With no
-##      `mpn`, `partNumber` stands in for it, always visibly
-##      (`bom_partnumber_used_as_mpn`): info when a source recognises it, a
-##      warning when none does and it is ordered unverified -- as often as
-##      not it is a free-text label.
-##   3. **A parametric search**, for a resistor/capacitor/inductor/ferrite
-##      with no MPN: refused without a case code (`bom_nonstandard_footprint`)
-##      or a value. A `LockEntry` with the item's `signature` wins when its
-##      part is still offered and still meets the requirement; otherwise the
-##      candidates are ranked.
-##   4. **Nothing resolved** -- `bom_mpn_required` or `bom_no_match`, an
-##      error for a part that reaches assembly and info for a DNP one.
+##   1. **Excluded** (`bom_exclude`): on no line (`bom_excluded`).
+##   2. **An MPN, for every family.** A stated `mpn` is authoritative; one no
+##      source knows is `bom_part_not_found` (warning) and stays on the BOM.
+##      With no `mpn`, `partNumber` stands in, always visibly
+##      (`bom_partnumber_used_as_mpn`: info if a source knows it, warning if
+##      not -- it may be a free-text label).
+##   3. **A parametric search** for an R/C/L/ferrite with no MPN: refused
+##      without a case code (`bom_nonstandard_footprint`) or value. A
+##      matching `LockEntry` wins while its part is still offered and fits;
+##      otherwise candidates are ranked.
+##   4. **Nothing resolved**: `bom_mpn_required` or `bom_no_match` (error if
+##      assembled, info if DNP).
 ##
-## Then items roll up into `BomLine`s by `(manufacturer, mpn)`, DNP never
-## merging with populated, and each line's stock is checked.
+## Items roll up into `BomLine`s by `(manufacturer, mpn)`, DNP separately,
+## with a stock check per line.
 ##
-## `bom:` defaults (tolerance, dielectric, package) were already applied by
-## `collect`, under a part's own `spec:`; the resolver reads only
-## `manufacturers` from them. `series` and `derating` are not read: the
-## resolver buys the value the design states, and derating needs the voltage
-## across the part, which a BOM does not know (`analysis/derating`'s job).
+## Of the `bom:` defaults only `manufacturers` is read here (`collect`
+## applied the rest). `series` and `derating` are not: the design's value is
+## bought as stated, and derating needs voltages a BOM doesn't know.
 
 import std/[algorithm, math, strutils, tables]
 
@@ -64,8 +57,7 @@ type
       ## is `bom_low_stock`; `0` disables it. Unknown stock is never flagged.
     maxAlternates*: int
     lock*: Table[string, LockEntry]
-      ## A previous result's decisions, keyed on `signature`
-      ## (Stage 4's `loadLock`).
+      ## A previous result's decisions, keyed on `signature` (`loadLock`).
 
 proc defaultResolveOptions*(): ResolveOptions =
   ResolveOptions(minCandidates: 3, stockFactor: 10.0, maxAlternates: 3)
@@ -92,11 +84,9 @@ proc canon(x: float): string =
   if x.isNaN: "-" else: formatFloat(x, ffScientific, 6)
 
 proc signatureOf*(i: BomItem): string =
-  ## The lockfile key: the requirement, never the designator -- a generated
-  ## designator renumbers when a part is inserted earlier, and a lock keyed
-  ## on it would then quietly hand one part's choice to another. Two items
-  ## stating the same requirement share a signature and a part, on purpose.
-  ## `""` for a family that is not searched.
+  ## The lockfile key: the requirement, never the designator (generated
+  ## designators renumber). Identical requirements share a part on purpose.
+  ## `""` for a non-searched family.
   if not i.family.isParametric: return ""
   [familyWord(i.family), canon(i.value), canon(i.tolerance),
    i.caseCode.toUpperAscii, i.dielectric.toUpperAscii,
@@ -121,9 +111,8 @@ proc describe(i: BomItem): string =
   parts.join(" ")
 
 proc queryOf*(i: BomItem): PartQuery =
-  ## The search an item's requirement asks for. The candidate's nominal may
-  ## sit within the item's tolerance, but `fitsBand` then demands its whole
-  ## tolerance band does.
+  ## The search for an item's requirement. The nominal may sit within the
+  ## item's tolerance; `fitsBand` then requires the whole band to.
   result = newPartQuery(i.family, i.value, i.caseCode)
   result.valueTolerance = i.tolerance
   result.maxTolerance = i.tolerance
@@ -133,10 +122,9 @@ proc queryOf*(i: BomItem): PartQuery =
   result.dielectric = i.dielectric
 
 proc fitsBand(c: Candidate, i: BomItem): bool =
-  ## A candidate's whole band (nominal ± its tolerance) inside the item's.
-  ## A 9.76 k 1 % part fits a 10 k 5 % requirement; a 9.76 k 5 % part does
-  ## not. With no stated tolerance the nominal must be exact, which
-  ## `matches` already enforced.
+  ## A candidate's whole band (nominal +/- tolerance) inside the item's: a
+  ## 9.76 k 1 % part fits a 10 k 5 % requirement, a 9.76 k 5 % doesn't. No
+  ## stated tolerance means an exact nominal (enforced by `matches`).
   if i.tolerance.isNaN: return true
   let ct = if c.tolerance.isNaN: 0.0 else: c.tolerance
   abs(c.value - i.value) + ct * abs(c.value) <=
@@ -154,10 +142,9 @@ proc lifecycleRank(c: Candidate): int =
   else: 0
 
 proc rank(cands: var seq[Candidate], i: BomItem, preferred: seq[string]) =
-  ## Lifecycle (active or unknown, then NRND, then obsolete), preferred
-  ## manufacturer, exact value over merely in-band, stock descending
-  ## (unknown last), then MPN and manufacturer ascending so a re-run is
-  ## byte-identical.
+  ## Lifecycle (active/unknown, NRND, obsolete), preferred manufacturer,
+  ## exact value over in-band, stock descending (unknown last), then MPN and
+  ## manufacturer, for byte-identical reruns.
   proc pref(c: Candidate): int =
     for k, m in preferred:
       if cmpIgnoreCase(m.strip, c.manufacturer) == 0: return k
@@ -184,7 +171,7 @@ proc add(r: Resolution, kind: string, sev: Severity, msg: string) =
                         components = r.item.components)
 
 proc unresolvedSeverity(i: BomItem): Severity =
-  ## Decision 4: an error only for a part that reaches assembly.
+  ## An error only for a part that reaches assembly.
   if i.doNotPopulate: sevInfo else: sevError
 
 proc checkLifecycle(r: Resolution, c: Candidate) =
@@ -198,8 +185,8 @@ proc checkLifecycle(r: Resolution, c: Candidate) =
   else: discard
 
 proc checkSpec(r: Resolution, c: Candidate) =
-  ## A part bought by MPN against what the design also states about it.
-  ## Only what both sides state is compared; an unstated side is no finding.
+  ## An MPN-bought part against what the design states; only facts both
+  ## sides state are compared.
   let i = r.item
   if not i.family.isParametric or i.value.isNaN: return
   var why: seq[string]
@@ -226,8 +213,8 @@ proc checkSpec(r: Resolution, c: Candidate) =
       " does not meet what the design states: " & why.join("; ") & ".")
 
 proc byMpn(r: Resolution): bool =
-  ## Steps 2 of the module comment. True when the item is settled by MPN
-  ## (resolved or not), false when it should go on to a search.
+  ## Step 2: true when the item is settled by MPN (resolved or not), false
+  ## to go on to a search.
   let i = r.item
   if i.mpn.len > 0:
     let c = lookupAll(i.mpn, i.manufacturer)
@@ -333,8 +320,8 @@ proc lineKey(r: Resolution): string =
                                                r.chosen.mpn) & dnp
   if i.effectiveMpn.len > 0:
     return "mpn:" & partKey(i.manufacturer, i.effectiveMpn) & dnp
-  # Unresolved: one line per identical requirement, so the BOM still lists
-  # what is missing.
+  # Unresolved: one line per identical requirement, so missing parts are
+  # still listed.
   if r.signature.len > 0: return "sig:" & r.signature & dnp
   "item:" & i.kind & "|" & i.valueText & "|" & i.footprint & "|" &
     i.partNumber & dnp
@@ -355,8 +342,7 @@ proc resolve*(items: seq[BomItem], opts = defaultResolveOptions()): BomResult =
     var line = byKey.getOrDefault(k)
     if line == nil:
       let c = r.chosen
-      # A parsed value prints through `eng`, never as the raw attr: a typed
-      # quantity reaches the netlist as `3.000000000e-06`.
+      # Print a parsed value through `eng`, not the raw `3.000000000e-06`.
       let shown =
         if i.family.isParametric and not i.value.isNaN:
           eng(i.value, valueUnit(i.family))

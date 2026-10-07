@@ -1,11 +1,7 @@
-## Capacitor parasitic expansion: an ideal C in series with its ESR and ESL,
-## because an ideal capacitor's impedance falls monotonically forever and a
-## PDN sweep over ideal caps shows none of the self-resonance, ESR floor or
-## anti-resonance such a sweep is run to find.
-##
-## Like the rest of `spice/models`, this mutates whatever `Netlist` it is
-## given -- run it on a simulation clone, never on the real design netlist --
-## and returns a `seq[Assumption]` for every number it invents.
+## Capacitor parasitic expansion: an ideal C in series with ESR and ESL.
+## Ideal caps show none of the self-resonance, ESR floor or anti-resonance a
+## PDN sweep looks for. Mutates its netlist (use a clone) and returns an
+## `Assumption` per invented number.
 
 import std/tables
 import ../../netlist/types
@@ -24,13 +20,9 @@ type
     fallback*: Parasitic
 
 proc defaultParasitics*(): ParasiticDefaults =
-  ## Typical order-of-magnitude MLCC figures by case size, **not** measured
-  ## or vendor data. They exist so a board that carries no parasitic
-  ## annotation still produces a qualitatively right impedance curve --
-  ## self-resonance in roughly the right decade, and an anti-resonance peak
-  ## where two capacitor families actually interact. Do not read a specific
-  ## ESR number off a run that used these; annotate `attrs["esr"]`/
-  ## `attrs["esl"]` from a real datasheet if the exact value matters.
+  ## Typical MLCC figures by case size, **not** vendor data: enough for a
+  ## qualitatively right impedance curve. Annotate `esr`/`esl` from a
+  ## datasheet when exact values matter.
   result.byPackage = {
     "0201": (esr: 0.05, esl: 0.4e-9),
     "0402": (esr: 0.03, esl: 0.6e-9),
@@ -45,15 +37,10 @@ proc defaultParasitics*(): ParasiticDefaults =
   result.fallback = (esr: 0.02, esl: 1.0e-9)
 
 proc parasiticFor(c: Component, d: ParasiticDefaults): tuple[p: Parasitic, notes: seq[Assumption]] =
-  ## Attribute first, then the package table, then the global fallback.
-  ##
-  ## Reads through `netlist/annotations`, so an unparseable value raises with
-  ## the same message everywhere and a misspelled key is caught by
-  ## `validateAnnotations` rather than silently landing here as a default.
-  ## Each invented value is returned as an `Assumption` carrying its own
-  ## provenance -- this proc is where the distinction between "the designer
-  ## measured this" and "we guessed from the case size" is actually made, so
-  ## it is where the record has to be created.
+  ## Attribute first, then the package table, then the fallback. Reads
+  ## through `netlist/annotations` (consistent errors; typos caught by
+  ## `validateAnnotations`). Each invented value is returned as an
+  ## `Assumption` with its provenance.
   var p = d.fallback
   var esrSrc = "from the global fallback"
   var eslSrc = "from the global fallback"
@@ -83,24 +70,12 @@ proc expandCapacitorParasitics*(nl: Netlist, d = defaultParasitics(),
                                 derating = defaultDerating(),
                                 bias = initOrderedTable[string, float]()):
     seq[Assumption] =
-  ## Rewrites every `kind == "capacitor"` into an ideal C in series with its
-  ## ESR and ESL, using only the `graph` API.
+  ## Rewrites every `capacitor` into ideal C + ESR + ESL via the `graph` API.
   ##
-  ## This is not cosmetic. An ideal capacitor's impedance falls monotonically
-  ## with frequency, so a PDN sweep over ideal caps shows no self-resonance,
-  ## no ESR floor and no anti-resonance between capacitor families -- i.e.
-  ## none of the three things such a sweep is run to find. The expansion is
-  ## what makes the result mean anything above a megahertz.
-  ##
-  ## Only `nl`'s own components are touched, never `nl.children` -- a
-  ## capacitor inside a macromodel (e.g. `idealOpAmp`'s pole cap) is a
-  ## modelling element, not a physical part, and giving it an ESL would add a
-  ## resonance the real amplifier does not have. Such caps are also marked
-  ## `attrs["parasitics.expanded"]`, which this proc honours, so expanding
-  ## twice is a no-op rather than a doubling.
-  ##
-  ## Returns one `Assumption` per invented value, each carrying which
-  ## capacitor, which key, the magnitude and where it came from.
+  ## Only `nl`'s own components, never children (a macromodel's capacitor
+  ## must not gain an ESL). Caps marked `parasitics.expanded` are skipped,
+  ## so expanding twice is a no-op. Returns one `Assumption` per invented
+  ## value.
   var caps: seq[Component]
   for _, c in nl.components:
     if c.kind == "capacitor" and c.subNetlist == nil and
@@ -115,9 +90,7 @@ proc expandCapacitorParasitics*(nl: Netlist, d = defaultParasitics(),
     if pins[0].net == nil or pins[1].net == nil:
       continue  # a dangling cap contributes nothing; leave it exactly as-is
 
-    # Before the parasitics, because it rewrites the capacitance itself: a
-    # Class 2 ceramic on a rail is not the part its label says it is, and
-    # every impedance computed from the label is wrong by that factor.
+    # Derate first: it rewrites the capacitance itself.
     result.add derateCapacitor(cap, derating, bias)
 
     let (par, notes) = parasiticFor(cap, d)

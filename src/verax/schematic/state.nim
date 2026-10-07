@@ -1,12 +1,7 @@
-## Private state and placement-stage bodies shared by the included layout
-## pipeline.
-##
-## This is deliberately included by `layout.nim`, not imported: it keeps
-## placement and routing work data out of the public scene contract.
-## `LayoutState` bundles the index-parallel component / symbol / position
-## arrays the pipeline threads; the stage procs below (`prepare`, `forcePlace`,
-## `snapToGrid`, `separate`) and the thin `*(state: LayoutState)` forwarders
-## take it by `var` so `layout` reads as an ordered stage list.
+## Private state and placement-stage bodies for the layout pipeline.
+## Included by `layout.nim` (not imported) to keep work data out of the
+## public scene contract. `LayoutState` bundles the index-parallel
+## component/symbol/position arrays; stage procs take it by `var`.
 
 type
   RoutingState = object
@@ -26,26 +21,21 @@ type
     portedNets: HashSet[string]
     railLabelReqs: seq[tuple[text: string, at, dir: Point]]
     bundleNets: HashSet[string]
-      ## Every collapsed-bundle member net name plus its `display`. `finish`
-      ## skips these in the ordinary net-name pass -- a merged pin would
-      ## otherwise get one label per member stacked on it.
+      ## Every collapsed-bundle member net plus its `display`; `finish` skips
+      ## these so a merged pin isn't labelled once per member.
     bundleLabelReqs: seq[tuple[text: string, at, esc: Point]]
-      ## One request per **non-ported** collapsed bundle: `finish` places a
-      ## single `lrNet` label (`"spi[3]"`) at the merged pin. A ported bundle
-      ## emits none -- its port pennant already reads the name.
+      ## One `lrNet` label request per **non-ported** collapsed bundle; a
+      ## ported bundle's pennant already names it.
     arrayNets: HashSet[string]
-      ## Every net a collapsed array's group wire drew, plus its display tag
-      ## and every chain link. `finish` skips these in the ordinary net-name
-      ## pass -- one label per member stacked on the merged pin is what it
-      ## prevents.
+      ## Every net an array's group wire drew, its display tag, and chain
+      ## links; `finish` skips these in the net-name pass.
     arrayLabelReqs: seq[tuple[text: string, at, esc: Point]]
-      ## One request per drawn distributed group (`"cs[1:8]"` at the merged
-      ## pin) and per non-ported chain arc (`"x7"` at an aux lane). `finish`
-      ## places each as a single `lrNet` label.
+      ## One `lrNet` label per distributed group (`"cs[1:8]"`) and per
+      ## non-ported chain arc (`"x7"`).
 
   LayoutState = object
-    ## All transient placement/routing state. `Schematic` remains solely the
-    ## renderer-neutral completed scene.
+    ## All transient placement/routing state; `Schematic` is only the
+    ## finished scene.
     nl: Netlist
     options: LayoutOptions
     comps: seq[Component]
@@ -54,81 +44,53 @@ type
     pos: seq[Point]
     rots: seq[float]
     mirrors: seq[bool]
-      ## Parallel to `comps`. `state.chooseMirrors` (`lsMirror`) is the sole
-      ## writer, through `applyMirror` -- which also bakes the reflection
-      ## into `state.syms[i]`'s slot coordinates, so nothing downstream needs
-      ## its own mirror-aware transform (see `SchematicPart.mirror`'s doc).
-      ## All-false is the zero value: an un-annotated sheet with `lsMirror`
-      ## off, or one where no box ever scores better mirrored, is unchanged.
+      ## Parallel to `comps`. Written only by `applyMirror`, which also bakes
+      ## the reflection into `syms[i]`'s slots so nothing downstream needs a
+      ## mirror-aware transform. All-false is the zero value.
     ohw: seq[float]
     ohh: seq[float]
     composites: CompositePlan
     bundles: BundlePlan
-      ## Bus/interface grouping, a function of netlist topology alone (see
-      ## `bundles.nim`). Built at the top of `prepare` when `lsBundles` is on,
-      ## before `state.syms` is sized -- a merged pin changes `SPI_MEMORY`'s
-      ## `U1` box height. `recoverRouting`'s candidate moves never rebuild it.
+      ## Bus/interface grouping (`bundles.nim`). Built at the top of `prepare`
+      ## before `syms` is sized (merged pins change box heights). Never
+      ## rebuilt by `recoverRouting`.
     arrays: ArrayPlan
-      ## Repeated-subsheet grouping (see `arrays.nim`), a function of netlist
-      ## topology and the bundle plan. Built in `prepare` when `lsArrays` is
-      ## on, **after** `bundles` and **before** `state.comps` is filled -- the
-      ## N-1 non-representative members of each collapsed array are never
-      ## placed, routed or drawn, so every index-parallel array below is one
-      ## entry shorter per hidden member. `recoverRouting` never rebuilds it.
+      ## Repeated-part grouping (`arrays.nim`). Built in `prepare` after
+      ## `bundles` and before `comps` is filled: hidden members are never
+      ## placed, routed or drawn. Never rebuilt by `recoverRouting`.
     semanticAnchors: seq[Point]
     overrides: LayoutOverridePlan
-      ## Authored `layout.side` hints (`netlist/layouthints`), parallel to
-      ## `comps`. Built in `prepare` right after `comps` is filled -- one pass
-      ## over components, independent of `syms`/composites. `any == false`
-      ## (no component states a side) is the zero-value guarantee every
-      ## consumer below is gated on.
+      ## Authored `layout.side` hints, parallel to `comps`. `any == false` is
+      ## the zero value every consumer is gated on.
     leftSplit: float
-      ## The x boundary `enforceLayoutSides` established for the left band:
-      ## `-Inf` when no component is left-overridden, so `sideBandAllows`
-      ## reads as vacuously true. Read by `repairTerminalClearance` and
-      ## `recoverRouting` so neither can move a part back across it.
+      ## The left band's x boundary from `enforceLayoutSides`; `-Inf` when
+      ## unused. Later movers respect it via `sideBandAllows`.
     rightSplit: float
       ## The mirror of `leftSplit` for the right band; `Inf` when unused.
     power: PowerPlan
-      ## Power/decoupling band classification (see `power.nim`), a function
-      ## of the composite arena and the authored `layout.power` overrides
-      ## alone. Built in `prepare` right after `planComposites`, gated on
-      ## `lsPowerBand` -- disabling the stage leaves this at its zero value
-      ## (`any == false`) regardless of what any component states, exactly
-      ## `activeOverrides`' shape for `lsLayoutOverrides`.
+      ## Power/decoupling classification (`power.nim`), built after
+      ## `planComposites`. Gated on `lsPowerBand`: disabled leaves the zero
+      ## value whatever components state.
     powerSplit: float
-      ## The y boundary `enforcePowerBand` established for the power band:
-      ## `Inf` when no unit is power-classified, so `powerBandAllows` reads
-      ## as vacuously true. Read by `repairTerminalClearance` and
-      ## `recoverRouting` so neither can move a part back above it.
+      ## The power band's y boundary from `enforcePowerBand`; `Inf` when
+      ## unused. Later movers respect it via `powerBandAllows`.
     portY: Table[string, float]
-      ## Post-route interface-port y overrides, keyed by `SchematicPort.name`.
-      ## Empty on the first route; `refinePortPlacement` (stage `lsPortRefine`)
-      ## fills it from the routed wire geometry and re-routes. `routeScene`
-      ## reads it as the column relaxation's *spring target*, not a hard
-      ## position, so `portMinGap` still legalises the column.
+      ## Post-route port y overrides by `SchematicPort.name`, filled by
+      ## `refinePortPlacement`. A spring target for the column relaxation, not
+      ## a hard position.
     routing: RoutingState
 
 proc planComposites(state: var LayoutState) =
-  ## A collapsed array's representative is excluded exactly like a bundle
-  ## carrier, and for a component array this is no longer free: a subsheet
-  ## representative is always a box (`isTraversable` wants `subNetlist ==
-  ## nil`, so it was never composite-eligible to begin with), but a component
-  ## array's representative is a flat two-terminal part still fully visible --
-  ## exactly the shape `parallelStackKind`/`seriesChainKind`/pi/tee recognize.
-  ## Without this exclusion a termination resistor badged `x8` could be
-  ## claimed as a member of a composite it does not belong to, and the
-  ## composite's internal fanout would run to a symbol that stands for eight
-  ## different physical resistors, not one.
+  ## An array representative is excluded like a bundle carrier. A component
+  ## array's representative is a visible two-terminal part, so without this
+  ## a resistor badged `x8` could be claimed by a composite.
   var excluded = state.bundles.bundled
   for rep in state.arrays.byRep.keys: excluded.incl rep
   state.composites = compositePlan(state.comps, state.syms, excluded)
 
 proc activeOverrides(state: LayoutState): LayoutOverridePlan =
-  ## `state.overrides` gated on `lsLayoutOverrides`: disabling the stage must
-  ## produce the pre-feature scene regardless of what a component states, not
-  ## merely skip `enforceLayoutSides` -- so the seed/anchor hint in
-  ## `constrainedTopology` reads a plan with `any == false` too.
+  ## `state.overrides` gated on `lsLayoutOverrides`, so disabling the stage
+  ## yields an empty plan everywhere, not just a skipped enforcement.
   if state.options.stageEnabled(lsLayoutOverrides): state.overrides
   else: LayoutOverridePlan()
 
@@ -163,22 +125,15 @@ proc chooseCompositeOrientation(state: var LayoutState) =
     state.rots, state.composites)
 
 proc mirrorable(sd: SymbolDef): bool {.inline.} =
-  ## Mirror is scoped to fallback boxes: a box's drawn rectangle and ink
-  ## extents are symmetric about its own centre, and `svg`'s box branch and
-  ## the array pin marks already derive each pin's edge from its *world*
-  ## coordinate -- so reflecting `slots`/`extraSlots`/`byName` about x=0 is a
-  ## correct, self-contained transform with no SVG or routing change needed.
-  ## A symbol part is deliberately excluded: `source4`/`transistor`/a rotated
-  ## two-terminal symbol would need the reflection threaded through instead
-  ## of baked, plus an SVG `scale(-1,1)` group with upright-text handling --
-  ## not built here, since for a horizontal two-terminal symbol mirror-X is
-  ## already identical to `rotate(180)`.
+  ## Mirroring is limited to fallback boxes: they're symmetric and their pin
+  ## edges derive from world coordinates, so reflecting the slots is
+  ## self-contained. Symbols are excluded (would need an SVG transform; for a
+  ## horizontal two-terminal symbol mirror-X equals `rotate(180)` anyway).
   sd.isBox
 
 proc applyMirror(state: var LayoutState, i: int, on: bool) =
-  ## Sets `state.mirrors[i]` and reflects `state.syms[i]`'s slot coordinates
-  ## about its own centre (x=0 in symbol-local coordinates) if the requested
-  ## state differs from what is already applied. Idempotent.
+  ## Sets `mirrors[i]` and reflects `syms[i]`'s slots about x=0 if the state
+  ## changes. Idempotent.
   if state.mirrors[i] == on: return
   state.mirrors[i] = on
   for k in 0 ..< state.syms[i].slots.len:
@@ -189,18 +144,10 @@ proc applyMirror(state: var LayoutState, i: int, on: bool) =
     state.syms[i].byName[key].x = -state.syms[i].byName[key].x
 
 proc chooseMirrors(state: var LayoutState) =
-  ## `lsMirror`, the definitive mirror assignment once centres are final. A
-  ## stated `layout.mirror` override is honoured absolutely -- the same
-  ## guarantee `enforceLayoutSides` gives `side`, no search. Otherwise, a
-  ## mirrorable box that belongs to no multi-member composite/array unit (a
-  ## 2-pin box *can* be a `parallel`/`pi`/`tee` member -- only `series`
-  ## excludes boxes -- and flipping one member would invalidate the
-  ## composite's rigid internal frame) is scored both ways by the same
-  ## `rotationScore` wirelength metric `bestRotation` uses, snapshot-read
-  ## against one `pinWorldPositions` table so the choice does not depend on
-  ## visiting order -- exactly `forcePlace`'s "fresh-write, snapshot-read"
-  ## shape, here run once rather than per-iteration since there is no
-  ## co-optimisation loop to feed back into.
+  ## `lsMirror`, once centres are final. A stated `layout.mirror` is honoured
+  ## absolutely. Otherwise a mirrorable box outside any multi-member unit
+  ## (flipping one member would break the composite's frame) is scored both
+  ## ways with `rotationScore`, against one snapshot so order doesn't matter.
   let ov = activeOverrides(state)
   let n = state.comps.len
   let pinWorld = pinWorldPositions(state.comps, state.syms, state.pos, state.rots)
@@ -225,25 +172,20 @@ proc chooseMirrors(state: var LayoutState) =
     applyMirror(state, i, decision[i])
 
 proc constrainedRecomputeRotations(state: var LayoutState) =
-  ## The definitive constrained orient pass: let each orientable composite
-  ## revisit its rigid frame now that centres are settled (`revisitCompositeFrames`),
-  ## then assign every member and singleton angle. Mutates `state.pos`,
-  ## `state.rots` and each composite's `unitRot` in place.
+  ## Lets each orientable composite revisit its frame now that centres are
+  ## settled, then assigns every angle. Mutates `pos`, `rots` and `unitRot`.
   revisitCompositeFrames(state.nl, state.comps, state.syms, state.pos,
     state.rots, state.semanticAnchors, state.composites)
   state.rots = constrainedRecomputeRotations(state.nl, state.comps, state.syms,
     state.pos, state.rots, state.semanticAnchors, state.composites)
 
 proc placementPool(state: LayoutState): seq[int] =
-  ## The items placement actually reasons about: `state.composites.topLevel`,
-  ## a mix of leaf and composite arena indices in ascending first-raw-member
-  ## order. This -- not `comps.len` -- is the count that actually bounds
-  ## `forcePlace`/`separate`'s cost.
+  ## The items placement reasons about: `composites.topLevel` (leaf and
+  ## composite indices). This count bounds `forcePlace`/`separate`'s cost.
   state.composites.topLevel
 
 proc poolMembers(state: LayoutState, item: int): seq[int] =
-  ## Every raw component a `placementPool` entry stands for: a composite's
-  ## members (`item` is an arena index).
+  ## Every raw component a pool item stands for.
   rawMembers(state.composites, item)
 
 proc poolOffsets(state: LayoutState, item: int): seq[Point] =
@@ -252,28 +194,17 @@ proc poolOffsets(state: LayoutState, item: int): seq[Point] =
 
 proc poolOrigin(state: LayoutState, members: seq[int],
                offsets: seq[Point]): Point =
-  ## The point a pool item's members are offset from -- the mean of each
-  ## member's *implied* origin (`pos[m] - offsets[m]`), exactly the
-  ## computation `restoreCompositeOffsets` already uses to re-rigidify a
-  ## composite. Well-defined here because every caller runs after a point
-  ## where composites are already exactly rigid (`prepare` rigidifies the
-  ## seed before `forcePlace` ever runs; `forcePlace` re-rigidifies at the end
-  ## of every iteration), so this is a stable representative position, not an
-  ## approximation. A singleton with a zero offset makes this exactly
-  ## `pos[item]`.
+  ## The point a pool item's members are offset from: the mean implied
+  ## origin (`pos[m] - offsets[m]`). Exact because composites are rigid at
+  ## every caller. For a singleton, `pos[item]`.
   for at, m in members: result += state.pos[m] - offsets[at]
   result = result * (1.0 / float(members.len))
 
 proc repairTerminalClearance(state: var LayoutState) =
   let locked = compositeMembers(state.composites, state.comps.len)
-  # `activeOverrides`, not `state.overrides` directly: with
-  # `lsLayoutOverrides` disabled, `leftSplit`/`rightSplit` stay at their
-  # vacuous `-Inf`/`Inf` defaults (`enforceLayoutSides` never narrowed them),
-  # and passing a non-empty `sides` against those would make `sideBandAllows`
-  # reject *every* candidate for an overridden part (`x + halfWidth <= -Inf`
-  # is never true) instead of the intended no-op -- an empty `sides` here
-  # fails the callee's `sides.len == comps.len` guard and skips the check
-  # entirely, exactly like a sheet with no override at all.
+  # `activeOverrides`: with the stage disabled, the splits stay at `-Inf`/
+  # `Inf`, and a non-empty `sides` would reject every candidate; an empty one
+  # skips the check.
   let ov = activeOverrides(state)
   let isPower = rawPowerFlags(state.power, state.composites, state.comps.len)
   repairTerminalClearance(state.comps, state.syms, state.pos, state.rots,
@@ -281,34 +212,18 @@ proc repairTerminalClearance(state: var LayoutState) =
     isPower, state.powerSplit)
 
 # --- placement stages -----------------------------------------------------
-# The bodies below were the inline stretches of `layout`. Each mutates the
-# index-parallel arrays in `state`; `layout` now calls them in order. The
-# historical policy's output must stay byte-identical, so this is a move, not
-# a rewrite.
+# Each mutates the index-parallel arrays in `state`; `layout` calls them in
+# order. Output must stay byte-identical.
 
 proc prepare(state: var LayoutState) =
-  ## Build the component / symbol arrays, the composite plan, the
-  ## golden-angle seed, the designator index and the semantic seed / anchors.
-  # Bus/interface grouping first: a merged pin changes `symbolFor`'s box
-  # sizing, so the plan must exist before the symbols are built. A zero-value
-  # plan when nothing groups.
+  ## Build the component/symbol arrays, composite plan, seed, designator
+  ## index and semantic anchors.
+  # Bundles first: merged pins change `symbolFor`'s box sizing.
   if state.options.stageEnabled(lsBundles):
     state.bundles = bundlePlan(state.nl)
-  # Repeated-subsheet arrays next, and **before `state.comps` is filled**: the
-  # plan decides which components are drawn at all. The N-1 non-representative
-  # members of every collapsed array are dropped here and never placed, routed
-  # or drawn -- the filter is the sibling-clone shape (`ownsPin` /
-  # `partIdxByDesig.hasKey`) that every layout site already tolerates. A
-  # zero-value plan when fewer than three components share a subsheet, and then
-  # this loop is `for _, c in state.nl.components: state.comps.add c` verbatim.
-  #
-  # `lsPartArrays` (repeated raw components -- a termination bank, one rank of
-  # an 8x(R+C) filter) is built into the *same* `ArrayPlan`, right after, and
-  # `finalizeArrayPlan` runs exactly once, over their union, whichever subset
-  # of the two stages is on: it derives `suppressed` from the final `groupOf`
-  # (a net distributed at both ends must suppress a consistent subset
-  # regardless of which array claims it last -- see `arrays.nim`'s doc
-  # comment) and only then can safely run the totality assertion.
+  # Arrays before `comps` is filled: hidden members are dropped here.
+  # `lsArrays` and `lsPartArrays` build into one `ArrayPlan`, and
+  # `finalizeArrayPlan` runs once over their union (see `arrays.nim`).
   if state.options.stageEnabled(lsArrays):
     buildSubsheetArrays(state.nl, state.bundles, state.arrays)
   if state.options.stageEnabled(lsPartArrays):
@@ -322,13 +237,8 @@ proc prepare(state: var LayoutState) =
     state.comps.add c
   let n = state.comps.len
 
-  # `layout.side` overrides, one pass over `state.comps` -- independent of
-  # `syms`/composites, so it can be built here regardless of policy or the
-  # `lsLayoutOverrides` stage. `leftSplit`/`rightSplit` default to vacuously
-  # permissive here so a sheet that runs with `lsLayoutOverrides` disabled
-  # (skipping `enforceLayoutSides`, the only other writer of these two
-  # fields) still reads every `sideBandAllows` check as unconstrained,
-  # instead of the zero-value-float trap of an unset `-Inf`/`Inf` pair.
+  # Side overrides; the splits default to permissive so a run with
+  # `lsLayoutOverrides` disabled reads every `sideBandAllows` as unconstrained.
   state.overrides = layoutOverridePlan(state.comps)
   state.leftSplit = NegInf
   state.rightSplit = Inf
@@ -345,29 +255,21 @@ proc prepare(state: var LayoutState) =
     else:
       state.syms[i] = symbolFor(c, @[], @[], @[], lanes.names, lanes.side, tw)
 
-  # A stated `layout.mirror` override is applied immediately -- before
-  # composite recognition and the semantic seed walk read `state.syms`'
-  # slot geometry -- so both see the authored orientation rather than the
-  # default and one silently re-deciding it out from under the other.
-  # `chooseMirrors` (`lsMirror`) revisits every component later, but an
-  # override is never reconsidered there, only re-applied (idempotent).
+  # Apply stated `layout.mirror` overrides now, before composite recognition
+  # and the seed read slot geometry. `chooseMirrors` only re-applies them.
   state.mirrors = newSeq[bool](n)
   let earlyOv = activeOverrides(state)
   for i in 0 ..< n:
     if i < earlyOv.mirror.len and earlyOv.mirror[i] != mirrorAuto:
       applyMirror(state, i, earlyOv.mirror[i] == mirrorOn)
 
-  # The constrained plan is made before placement and remains the sole source
-  # of member offsets and external composite geometry for the whole pipeline.
+  # The constrained plan is the sole source of member offsets and composite
+  # geometry for the whole pipeline.
   if state.options.policy == lpConstrainedLayered:
     planComposites(state)
-  # Power/decoupling band classification, right after the composite arena
-  # exists -- a composite is one placement unit, so classifying by raw
-  # component would let a bank's members disagree. Gated on `lsPowerBand`,
-  # not merely inert on an empty result: disabling the stage must leave
-  # `state.power` at its zero value regardless of what any component states,
-  # exactly `activeOverrides`' shape for `lsLayoutOverrides` -- otherwise a
-  # disabled stage would still change `groupsOf`'s `noMerge` behaviour.
+  # Power classification right after the composite arena (a composite is one
+  # unit). Gated on `lsPowerBand` so a disabled stage can't change
+  # `groupsOf`'s `noMerge` behaviour.
   if state.options.policy == lpConstrainedLayered and
      state.options.stageEnabled(lsPowerBand):
     state.power = powerPlan(state.comps, state.composites, activeOverrides(state))
@@ -381,8 +283,7 @@ proc prepare(state: var LayoutState) =
   state.idxOf = initTable[string, int]()
   for i, c in state.comps: state.idxOf[c.designator] = i
 
-  # Layer columns are gated on their own stage so a caller may still disable
-  # just this pass.
+  # Layer columns have their own stage.
   if state.options.policy == lpConstrainedLayered and
      state.options.stageEnabled(lsSemanticSeed):
     constrainedSemanticSeed(state)
@@ -395,14 +296,10 @@ proc prepare(state: var LayoutState) =
       state.pos
 
 proc forcePlace(state: var LayoutState) =
-  ## Orientation is co-optimised with placement: the attraction force below
-  ## acts pin-to-pin, so it needs each part's rotation, and the rotation that
-  ## minimises a part's wire depends on where its neighbours have been pushed.
-  ## Each iteration re-picks every rotation from a *snapshot* of the current
-  ## centres and rotations (fresh-write, snapshot-read), so the result never
-  ## depends on the order parts are visited. The last stretch of iterations
-  ## leaves rotation frozen so the centres settle against a fixed orientation,
-  ## and a final pass after separation gives the definitive assignment.
+  ## Orientation is co-optimised with placement (attraction is pin-to-pin).
+  ## Each iteration re-picks rotations from a snapshot, so visiting order
+  ## doesn't matter; the last iterations freeze rotation so centres settle,
+  ## and a final pass after separation assigns definitively.
   let n = state.comps.len
   let nl = state.nl
   state.rots = newSeq[float](n)
@@ -411,16 +308,9 @@ proc forcePlace(state: var LayoutState) =
   let iterations = if state.options.stageEnabled(lsForcePlacement): 250 else: 0
   let temp0 = 2.0 * k
 
-  # Repulsion below is pairwise over *pool items*, not raw components: two
-  # composites repel each other once, from their own representative origins,
-  # broadcasting the one resulting force to every one of their members --
-  # not once per raw-member pair (today's `n^2` term, run fresh every one of
-  # `iterations`, is the single most expensive computation in the whole
-  # pipeline). Membership is static across iterations (composites don't
-  # change during force placement), so it is computed once here rather than
-  # once per iteration; only each item's `repPos` moves. A raw singleton is
-  # its own pool item with a zero offset, so `repPos` is exactly
-  # `state.pos[i]` for it -- see `placementPool`.
+  # Repulsion is pairwise over pool items, not raw components (the `n^2`
+  # term dominates runtime), broadcast to every member. Membership is static,
+  # so computed once; only `repPos` moves.
   let pool = placementPool(state)
   var poolMemberLists = newSeq[seq[int]](pool.len)
   var poolOffsetLists = newSeq[seq[Point]](pool.len)
@@ -465,12 +355,8 @@ proc forcePlace(state: var LayoutState) =
     for _, net in nl.nets:
       if isGround(net): continue
       let w = if isRail(net): 0.35 else: 1.0
-      # Pin-to-pin, not centre-to-centre: a net with pins on three parts pulls
-      # each pair together, and a parallel pair sharing two nets is pulled by
-      # both wires at once -- so its lowest-energy rest is the two parts side
-      # by side with both pin pairs short, which centre-to-centre could never
-      # express (both nets were the same centre vector, i.e. one doubled tug
-      # toward overlap).
+      # Pin-to-pin, not centre-to-centre, so a parallel pair rests side by
+      # side with both pin pairs short.
       let ps = net.pins
       for a in 0 ..< ps.len:
         for b in a + 1 ..< ps.len:
@@ -496,29 +382,13 @@ proc forcePlace(state: var LayoutState) =
           disp[j].x += fx
           disp[j].y += fy
 
-      # A collapsed array's chain head/tail physically sits on a *hidden*
-      # member, so the pair loop above -- both ends read from `net.pins`
-      # directly -- can never see it: the hidden end fails
-      # `state.idxOf.hasKey`. Without a pull toward whatever this net's other
-      # real pin is, a part wired only to a chain's tail (`spi_daisy_chain`'s
-      # R1/R2 terminations) gets no electrical force at all and drifts on
-      # repulsion and the semantic anchor's weak 8% y-pull alone, landing far
-      # off the array's row rather than snug against it. `arrays.extraPins`
-      # re-homes the net onto the representative's own same-named pin, so the
-      # pull is anchored there -- the same point routing later draws the wire
-      # to.
+      # A chain's head/tail sits on a hidden member, so the pair loop never
+      # sees it and a part wired only to the tail would drift. Pull toward the
+      # re-homed pin on the representative (`arrays.extraPins`).
       #
-      # Y-only, deliberately: the ordinary pin-to-pin spring below pulls along
-      # both axes, which is right when the anchor and the electrical target
-      # agree, but here they can genuinely disagree -- the semantic column
-      # (`constrainedTargets`) puts this pool item a whole layer pitch past
-      # the array, while the real re-homed pin sits right at the array box's
-      # own edge. A 2-D pull toward that near point drags the part's *x* back
-      # into the array's own column (the box is wide enough that its edge
-      # already reaches partway into the next semantic column), fighting the
-      # anchor's 70% x-pull and undoing the layering `constrainedTopology`
-      # just computed. Only the part's row within its layer is left for this
-      # force to settle -- it has no claim on which layer that is.
+      # Y-only: the semantic column puts the part a layer past the array,
+      # while the re-homed pin is at the array's edge; an x pull would drag it
+      # back into the array's column and undo the layering.
       if state.arrays.extraPins.hasKey(net.name):
         for home in state.arrays.extraPins[net.name]:
           if not state.idxOf.hasKey(home.desig): continue
@@ -542,14 +412,13 @@ proc forcePlace(state: var LayoutState) =
     for i in 0 ..< n:
       disp[i].x -= state.pos[i].x * 0.08
       disp[i].y -= state.pos[i].y * 0.08
-      # Semantic layers are bounded soft anchors: they guide the search but
-      # never overwrite obstacle-driven placement.
+      # Semantic layers are soft anchors; they never override obstacles.
       if state.options.policy == lpConstrainedLayered:
         disp[i].x += (state.semanticAnchors[i].x - state.pos[i].x) * 0.70
         disp[i].y += (state.semanticAnchors[i].y - state.pos[i].y) * 0.08
 
-    # A constrained parallel motif is a composite during placement: retain its
-    # canonical internal offsets by applying the mean force as one translation.
+    # A constrained composite moves as one: apply the mean force as one
+    # translation.
     if state.options.policy == lpConstrainedLayered:
       for idx in state.composites.topLevel:
         if state.composites.items[idx].raw >= 0: continue
@@ -577,9 +446,8 @@ proc snapToGrid(state: var LayoutState) =
     if abs(state.pos[i].y) < 1e-9: state.pos[i].y = 0.0
 
 proc separationRects(state: LayoutState, i: int): seq[Obstacle] =
-  ## The inflated body (or, for a composite member, its whole unit footprint)
-  ## the separation search tests for overlap. A free proc rather than a nested
-  ## one: a closure may not capture the `var LayoutState` the search threads.
+  ## The inflated body (or a composite member's whole unit footprint) tested
+  ## for overlap. Free proc: a closure can't capture the `var LayoutState`.
   let owner = state.composites.ownerOf[i]
   if owner != i:
     compositeFootprint(state.composites, owner, state.syms, state.pos,
@@ -589,11 +457,9 @@ proc separationRects(state: LayoutState, i: int): seq[Obstacle] =
                x2: state.pos[i].x + state.ohw[i], y2: state.pos[i].y + state.ohh[i])]
 
 proc separate(state: var LayoutState) =
-  ## Separation: each component is placed in deterministic order at the nearest
-  ## grid cell whose inflated body is clear of every already-placed body.
-  ## Searching an expanding ring outward from the force-layout position keeps
-  ## the result close to the layout while guaranteeing non-overlap (no
-  ## best-effort pass).
+  ## Places each component in deterministic order at the nearest grid cell
+  ## (expanding ring from its force-layout position) clear of every placed
+  ## body. Guarantees non-overlap.
   let n = state.comps.len
   state.ohw = newSeq[float](n)
   state.ohh = newSeq[float](n)
@@ -602,9 +468,8 @@ proc separate(state: var LayoutState) =
     state.ohh[i] = state.syms[i].bodyH / 2.0 + placementPad
 
   let maxR = max(64, 4 * n)
-  # Legalize the early units, not their individual members. The footprint
-  # carries placementPad externally while the canonical internal offsets are
-  # raw-body touching, so another part cannot occupy the composite gap.
+  # Legalize units, not members: the footprint carries the external pad, so
+  # nothing can occupy the composite's internal gap.
   var placed: seq[int]
   for item in placementPool(state):
     let members = poolMembers(state, item)
@@ -638,19 +503,13 @@ proc separate(state: var LayoutState) =
 proc placeOverrideUnit(state: var LayoutState, item: int, isLeft: bool,
                        freeMinX, freeMaxX: float,
                        placedRects: var seq[seq[Obstacle]]) =
-  ## Places one overridden pool unit: the same expanding-ring nearest-free-cell
-  ## search `separate` uses, seeded just past the free region's edge, with one
-  ## added rejection -- the unit's inflated body must stay entirely on its
-  ## required side of that edge. A free proc, not nested inside
-  ## `enforceLayoutSides`: a closure may not capture the `var LayoutState` the
-  ## search threads (the same reason `separationRects` is free rather than
-  ## nested).
+  ## Places one overridden pool unit: `separate`'s ring search seeded past the
+  ## free region's edge, rejecting any position not wholly on the required
+  ## side. Free proc (closure can't capture the `var LayoutState`).
   let members = poolMembers(state, item)
   let offsets = poolOffsets(state, item)
   let origin = poolOrigin(state, members, offsets)
-  # Extents relative to origin are translation-invariant (member offsets are
-  # fixed), so the rect at the *current* position tells us how far the unit's
-  # edge sits from its own origin.
+  # Extents relative to origin are translation-invariant.
   let rect0 = separationRects(state, members[0])[0]
   let relLeft = rect0.x1 - origin.x
   let relRight = rect0.x2 - origin.x
@@ -687,21 +546,11 @@ proc placeOverrideUnit(state: var LayoutState, item: int, isLeft: bool,
     state.comps[members[0]].designator
 
 proc enforceLayoutSides(state: var LayoutState) =
-  ## The hard guarantee behind a `layout.side` override (`netlist/layouthints`):
-  ## once separation and packing have settled every centre, translate each
-  ## overridden unit rigidly into its own dedicated column, strictly left (or
-  ## right) of every non-overridden unit -- not merely onto whichever edge it
-  ## would have landed on anyway. `state.leftSplit`/`state.rightSplit` are the
-  ## resulting band boundaries; `repairTerminalClearance` and `recoverRouting`
-  ## read them afterward (via `sideBandAllows`) so neither later mover can pull
-  ## a part back across the line this pass draws.
-  ##
-  ## Reuses `separate`'s own machinery -- `placementPool`/`poolMembers`/
-  ## `poolOffsets`/`poolOrigin` for a rigid per-unit translation that preserves
-  ## composite member offsets exactly, and `separationRects`/`anyOverlap` for
-  ## the same expanding-ring nearest-free-cell search, non-overlap always
-  ## authoritative -- with one added rejection: a left (right) unit's inflated
-  ## body must land entirely left (right) of the free region's edge.
+  ## The hard guarantee behind `layout.side`: after separation, move each
+  ## overridden unit rigidly into its own column strictly left (or right) of
+  ## every other unit, recording `leftSplit`/`rightSplit` so later movers
+  ## (`sideBandAllows`) can't pull it back. Uses `separate`'s ring search and
+  ## pool helpers.
   state.leftSplit = NegInf
   state.rightSplit = Inf
   if not state.overrides.any: return
@@ -725,10 +574,8 @@ proc enforceLayoutSides(state: var LayoutState) =
   if (leftUnits.len == 0 and rightUnits.len == 0) or freeMinX > freeMaxX:
     return
 
-  # Deterministic order: current origin x ascending, then first raw member --
-  # computed once, before anything moves, and sorted via a plain tuple's
-  # lexicographic `<` rather than a closure over `state` (same reason
-  # `placeOverrideUnit` is a free proc, not nested).
+  # Deterministic order: origin x, then first raw member, via a plain tuple
+  # sort (no closure over `state`).
   var leftKeyed = newSeq[tuple[x: float, first, item: int]](leftUnits.len)
   for i, item in leftUnits:
     let members = poolMembers(state, item)
@@ -758,26 +605,17 @@ proc enforceLayoutSides(state: var LayoutState) =
 
 proc placePowerUnit(state: var LayoutState, item: int, seedX, seedY, freeMaxY: float,
                     placedRects: var seq[seq[Obstacle]]) =
-  ## Places one power-band pool unit: the same expanding-ring nearest-free-cell
-  ## search `separate`/`placeOverrideUnit` use, seeded so the unit's own
-  ## inflated top-left corner lands near `(seedX, seedY)`, with one added
-  ## rejection -- the unit's inflated top edge must stay at or below
-  ## `freeMaxY`, the y boundary `enforcePowerBand` is carving. A free proc,
-  ## not nested inside `enforcePowerBand`: a closure may not capture the
-  ## `var LayoutState` the search threads (`placeOverrideUnit`'s own reason).
+  ## Places one power-band unit: the ring search seeded near
+  ## `(seedX, seedY)`, rejecting any position whose top edge is above
+  ## `freeMaxY`. Free proc.
   let members = poolMembers(state, item)
   let offsets = poolOffsets(state, item)
   let origin = poolOrigin(state, members, offsets)
-  # Extents relative to origin are translation-invariant (member offsets are
-  # fixed), so the rect at the *current* position tells us how far the
-  # unit's top-left edge sits from its own origin.
+  # Extents relative to origin are translation-invariant.
   let rect0 = separationRects(state, members[0])[0]
   let relLeft = rect0.x1 - origin.x
   let relTop = rect0.y1 - origin.y
-  # Rounded to the grid, `placeOverrideUnit`'s own discipline: `seedX`/`seedY`
-  # are shelf-cursor arithmetic over rect *boundaries*, which need not land on
-  # the grid even though every centre does -- only the ring search's own
-  # `grid`-stepped candidates keep that invariant.
+  # Round to grid: shelf arithmetic over rect boundaries needn't land on it.
   let seedOriginX = round((seedX - relLeft) / grid) * grid
   let seedOriginY = round((seedY - relTop) / grid) * grid
   let maxR = max(64, 4 * state.comps.len)
@@ -807,21 +645,10 @@ proc placePowerUnit(state: var LayoutState, item: int, seedX, seedY, freeMaxY: f
     state.comps[members[0]].designator
 
 proc enforcePowerBand(state: var LayoutState) =
-  ## The hard guarantee behind the separated power/decoupling band
-  ## (`power.PowerPlan`): once separation and packing have settled every
-  ## centre, translate every power-classified unit into a shelf-packed band
-  ## strictly below every signal-classified unit, and record the resulting
-  ## `state.powerSplit` y boundary; `repairTerminalClearance` and
-  ## `recoverRouting` read it afterward (via `powerBandAllows`) so neither
-  ## later mover can pull a part back above the line this pass draws.
-  ##
-  ## Reuses `separate`'s own machinery, `enforceLayoutSides`'s pattern turned
-  ## through 90 degrees: `placementPool`/`poolMembers`/`poolOffsets`/
-  ## `poolOrigin` for a rigid per-unit translation that preserves composite
-  ## member offsets exactly, `separationRects`/`anyOverlap` for the same
-  ## expanding-ring nearest-free-cell search, non-overlap always
-  ## authoritative -- with one added rejection (`placePowerUnit`): a power
-  ## unit's inflated body must land entirely below the signal region.
+  ## The hard guarantee behind the power band: after separation, shelf-pack
+  ## every power-classified unit strictly below every signal unit and record
+  ## `powerSplit` so later movers (`powerBandAllows`) can't pull one back.
+  ## `enforceLayoutSides` turned 90 degrees.
   state.powerSplit = Inf
   if not state.power.any: return
 
@@ -846,9 +673,7 @@ proc enforcePowerBand(state: var LayoutState) =
   if signalUnits.len == 0 or powerUnits.len == 0 or freeMinX > freeMaxX:
     return
 
-  # Deterministic order: current origin y ascending, then x, then first raw
-  # member -- computed once, before anything moves (`enforceLayoutSides`'s
-  # own reason for sorting a plain tuple rather than closing over `state`).
+  # Deterministic order: origin y, x, then first raw member.
   var keyed = newSeq[tuple[y, x: float, first, item: int]](powerUnits.len)
   for i, item in powerUnits:
     let members = poolMembers(state, item)
@@ -856,9 +681,7 @@ proc enforcePowerBand(state: var LayoutState) =
     keyed[i] = (o.y, o.x, members[0], item)
   keyed.sort()
 
-  # A left-to-right shelf across the signal region's own width, wrapping to a
-  # new row when a unit would overrun it -- the same `groupGap`-style gutter
-  # `packGroups` uses between blocks.
+  # Left-to-right shelves across the signal region's width, wrapping rows.
   const bandGutter = 2.0 * grid
   var cursorX = freeMinX
   var rowY = freeMaxY + bandGutter

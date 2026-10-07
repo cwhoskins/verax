@@ -1,38 +1,17 @@
 ## Checking what a design claims about itself.
 ##
-## `contract/types` declares an `Assertion`, `contract/roles` expands roles
-## into them and `contract/design` prints them. This module is what actually
-## produces a verdict, and the verdict type is the design decision worth
-## stating first: an `AssertionResult` is **not** an `Issue`. `Issue` can say
-## "something is wrong here" and nothing else -- it has no way to say "checked,
-## and it is fine", and no way to say "could not check". Silence meaning pass
-## is how an assertion layer turns into filler that always agrees with you.
+## An `AssertionResult` is **not** an `Issue`: it can say "checked and fine"
+## and "could not check", which silence-means-pass cannot.
 ##
-## **Quantity to evaluator is many-to-one, and the "many" already exists.**
-## `analysis/pdn.analyzePdn` emits eight measurement names from a single `.ac`
-## run; `analyzeStartup` emits six from one `.tran`. So an evaluator is handed
-## a *batch* of assertions and returns a batch of results, and the loop is:
+## Evaluators take a *batch*, since one analysis emits many quantities. The
+## loop: **plan** (group by evaluator and `setupKey`, so one run per setup --
+## a property of this module, testable by counting steps), **run**,
+## **harvest**, **compare** (shared `satisfies`).
 ##
-## 1. **plan** -- group assertions by the evaluator that produces their
-##    quantity and by a setup key, so one analysis runs once per distinct
-##    setup rather than once per assertion;
-## 2. **run** each step;
-## 3. **harvest** the measurements it produced;
-## 4. **compare**, with the `satisfies` in `contract/types` that every
-##    evaluator shares.
-##
-## Grouping is the *planner's* job, via `Evaluator.setupKey`, rather than
-## something each evaluator reimplements -- that way "one run per setup" is a
-## property of this module, provable by a test that counts steps.
-##
-## **This module depends only on `verax/netlist`**, which is what keeps a
-## design and its contract inspectable with no simulator anywhere in the
-## build. An `Evaluator` is a value with a `proc` field, exactly as
-## `RoleDef.expand` is, so the simulation-backed evaluators register
-## themselves from `verax/analysis/evaluators/contract_eval` -- a module that *is*
-## allowed to import a simulator -- and take an identical path to the static
-## ones registered here. A built-in that cheats makes user-defined evaluators
-## second-class, and then nobody writes one.
+## **Depends only on `verax/netlist`**, so a design is inspectable with no
+## simulator. Simulation-backed evaluators register from
+## `analysis/evaluators/contract_eval` through the same path as static ones,
+## so user evaluators are first-class.
 
 import std/[algorithm, math, options, sets, strutils, tables]
 import ../netlist/types
@@ -42,11 +21,8 @@ import ./types as ctypes
 import ./roles/core
 import ./design
 
-# `AssertionResult` carries `Assumption`s, so anything holding a result needs
-# the accessors that build and read one without a second import -- the same
-# reason `analysis/report` re-exports this.
-# `originRole`/`netSubject` and friends hand back `Option`s, so an evaluator
-# module needs those accessors without a second import too.
+# Results carry `Assumption`s and accessors return `Option`s, so evaluator
+# modules get both without extra imports.
 export ctypes, roles, design, annotations, options
 
 type
@@ -57,13 +33,9 @@ type
     esNotEvaluable  ## nothing can produce this quantity for these subjects
 
   Capability* = enum
-    ## What running an evaluator costs. A closed enum, deliberately, while
-    ## `Assertion.quantity`, `Issue.kind` and `Measurement.name` are all open
-    ## strings: quantity names are owned by whoever writes a role, but the set
-    ## of *execution environments* is owned by this library, and a host has to
-    ## be able to state what it can offer as a `set`. Finer-grained bench
-    ## requirements (an IVI class-driver taxonomy -- DMM, scope, fgen, PSU)
-    ## belong on a later field of `Evaluator`, not as more members here.
+    ## What running an evaluator costs. Closed (unlike quantity names) because
+    ## the library owns execution environments and a host states its offer as
+    ## a `set`. Finer bench requirements belong on a later `Evaluator` field.
     capStatic     ## a graph walk; no external tool
     capSpiceOp
     capSpiceDc    ## a source sweep: N operating points, one per swept value
@@ -76,9 +48,8 @@ const
   offlineCapabilities* = {capStatic}
   allCapabilities* = {capStatic, capSpiceOp, capSpiceDc, capSpiceAc,
                       capSpiceTran}
-    ## Everything reachable without hardware. `capBench` is deliberately left
-    ## out: it is opt-in, because offering it means a person is standing at a
-    ## bench.
+    ## Everything reachable without hardware. `capBench` is opt-in: it means
+    ## someone is at a bench.
 
 type
   AssertionResult* = object
@@ -88,118 +59,59 @@ type
       ## The measured number. `NaN` unless `status` is `esPass`/`esFail`.
     unit*: string
     reason*: string
-      ## For a fail, the witness. For anything not checked, why not -- naming
-      ## what was missing, since that is the only part a reader can act on.
+      ## For a fail, the witness; for anything unchecked, what was missing.
     evaluator*: string
     assumptions*: seq[Assumption]
-      ## What the verdict rested on that the design did not state. A pass
-      ## built on an invented number has to carry it, or this layer quietly
-      ## launders confidence.
+      ## What the verdict rested on that the design didn't state.
     issues*: seq[Issue]
-      ## Diagnostic context the underlying analysis reported alongside the
-      ## measurement -- never a duplicate of this result's own verdict.
+      ## Diagnostics the analysis reported alongside the measurement.
 
   EvalContext* = ref object
-    ## Everything one evaluation run may see, and the **only** argument an
-    ## evaluator receives.
-    ##
-    ## This exists because `EvalProc` is the plugin ABI. An evaluator loaded
-    ## at runtime compiles against that signature, so anything an evaluator
-    ## might ever need has to be reachable through it -- and a `Design` alone
-    ## is not enough. Three things already arrived by side doors before this
-    ## type existed: a shared operating point lived in a module-level `var`
-    ## (so two designs checked in one process shared one slot, and an edited
-    ## design silently kept a stale answer), the offered capabilities were
-    ## known to the planner and not to the evaluator, and a `Pcb` or a bench
-    ## reading had no route in at all. Widening the argument once is cheap;
-    ## widening it after a third party has compiled against it is not.
+    ## Everything one evaluation run may see -- the **only** argument an
+    ## evaluator receives. `EvalProc` is the plugin ABI, so anything an
+    ## evaluator might need must be reachable here.
     design*: Design
     allowed*: set[Capability]
-      ## What this run may actually do. The planner has already refused any
-      ## assertion whose evaluator needs more than this, so an evaluator sees
-      ## it only to decide how far to go *within* what it was granted --
-      ## refining a result with an extra analysis when one is offered, and
-      ## saying so rather than silently skipping it when it is not.
+      ## What this run may do. The planner already refused anything needing
+      ## more; an evaluator uses it to decide how far to go within it.
     scratch*: Table[string, RootRef]
-      ## Per-run storage, owned by whoever puts something in it, keyed by a
-      ## dotted name the owner picks (`"spice.operating_point"`).
-      ##
-      ## Deliberately type-erased, and that is the whole point: `contract`
-      ## must not gain an edge to `analysis` or to `pcb`, so it cannot name
-      ## an `OperatingPoint` or a `Pcb` in a field. A module that owns such a
-      ## type declares `ref object of RootObj`, stashes it here, and downcasts
-      ## on the way out. That keeps the layering intact *and* keeps this type
-      ## from having to change again every time something new needs carrying.
-      ##
-      ## Lifetime is one run. A cache in here cannot go stale against an
-      ## edited design, because there is no run during which the design
-      ## changes -- which is what the previous module-level cache could not
-      ## promise and documented a rule about instead.
+      ## Per-run storage keyed by an owner-chosen dotted name
+      ## (`"spice.operating_point"`). Type-erased so `contract` never depends
+      ## on `analysis` or `pcb`: owners store a `ref object of RootObj` and
+      ## downcast. Lives one run, so caches can't go stale against an edit.
 
   EvalProc* = proc (ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] {.nimcall.}
-    ## Takes every assertion routed to this evaluator that shares a setup key,
-    ## and must return one result per assertion in the batch.
+    ## Takes every assertion routed here with one setup key; returns one
+    ## result per assertion.
   SetupKeyProc* = proc (ctx: EvalContext, a: Assertion): string {.nimcall.}
-    ## Two assertions with the same key can be answered by one run. `nil`
-    ## means "the subject names", which is the right default for anything
-    ## measured per-net.
+    ## Same key = answerable by one run. `nil` means "the subject names".
   SetupDocProc* = proc (ctx: EvalContext, batch: seq[Assertion]): string {.nimcall.}
-    ## What this run actually *is*, in one sentence, given the batch routed
-    ## to it. A proc on the data object for the same reason `run` and
-    ## `setupKey` are: an evaluator registered at runtime must be able to
-    ## describe itself exactly as a built-in does.
+    ## One sentence saying what the run is, given its batch.
 
   Evaluator* = object
     name*: string
     produces*: seq[string]
       ## Quantity names, matching `analysis/report.Measurement.name`.
     needs*: set[Capability]
-      ## Every capability a run of this evaluator actually uses -- not the
-      ## headline one.
-      ##
-      ## A set rather than a scalar because more than one built-in genuinely
-      ## needs two, and while this was a single `Capability` they had no way
-      ## to say so: `spice.pdn` declared `.ac` and solved an operating point
-      ## for its bias derating, and `spice.large_signal` declared `.tran` and
-      ## solved one to find the bias its stimulus sits on. Both ran an
-      ## analysis that `--caps` had withheld. Under-declaring is invisible
-      ## while every capability happens to be available and becomes a wrong
-      ## answer the moment one is not -- which is exactly the case a bench
-      ## host, or `--caps=ac`, is.
-      ##
-      ## Empty means `{capStatic}`; `registerEvaluator` normalises it.
+      ## Every capability a run uses, not just the headline one (e.g. an
+      ## `.ac` evaluator that also solves an `.op` for derating). Under-
+      ## declaring gives wrong answers once a capability is withheld. Empty
+      ## means `{capStatic}`; `registerEvaluator` normalises it.
     arity*: Slice[int]
-      ## Accepted subject count. Left at its zero default, means `1 .. high`.
+      ## Accepted subject count; the zero default means `1 .. high`.
     subjectKinds*: set[SubjectKind]
       ## Empty means every kind.
     binds*: seq[string]
-      ## Role *parts* this evaluator reads back off a role instance, beyond
-      ## the assertion's own subjects -- usually the one in `Assertion.origin`
-      ## (`originBinding`), and for a multi-subject quantity the ones its
-      ## `skClass` subjects name (`subjectRoleBinding`). `channel_match` reads
-      ## `opamp`/`input`/`output` off each of the two stages its subjects
-      ## point at.
-      ##
-      ## Declared rather than inferred, for the same reason
-      ## `BehavioralModel.passesSignal` is: something has to answer "can a
-      ## bare `require` reach this quantity?" **without running anything**,
-      ## and only the evaluator knows. Empty means the subjects are enough --
-      ## a `dc_voltage` or a PDN sweep needs only the net it is about.
-      ## Non-empty means the quantity is reachable *only* through a role that
-      ## binds those parts, because an assertion carries no other channel for
-      ## them: `overshoot_pct(vdd)` names the rail but not the regulator
-      ## driving it, and nothing in a netlist recovers that.
+      ## Role parts read off a role instance beyond the subjects (via
+      ## `originBinding` or `subjectRoleBinding`). Declared so "can a bare
+      ## `require` reach this?" is answerable without running. Non-empty
+      ## means reachable only through a role (`overshoot_pct(vdd)` names the
+      ## rail, not its regulator).
     setupKey*: SetupKeyProc
     setupDoc*: SetupDocProc
-      ## Renders the run for a reader: `"one .op solve of the whole design"`,
-      ## `"an .ac sweep of net 'vdd', 1 A injected"`.
-      ##
-      ## The setup key exists to *group*, not to be read -- `vdd|100000.0|
-      ## 100000000.0` and `U1|vdda` are correct keys and say nothing about
-      ## what was simulated. A report that names the evaluator and the key is
-      ## naming the machinery; a reader needs to know which analysis produced
-      ## the number they are about to trust, because that is what says what
-      ## the number does and does not cover. `nil` falls back to the key.
+      ## Renders the run for a reader (`"an .ac sweep of net 'vdd', 1 A
+      ## injected"`); the setup key groups but says nothing. `nil` falls back
+      ## to the key.
     run*: EvalProc
 
   PlanStep* = object
@@ -215,34 +127,27 @@ type
     evaluator*: string   ## empty when nothing claimed the quantity
 
   ResolveStep* = object
-    ## How a relative or predicate claim folds back into one user-visible
-    ## result after its hidden measurement requests have run.
+    ## How a relative or predicate claim folds back into one result after
+    ## its hidden requests run.
     assertion*: Assertion
       ## The authored claim, kept whole.
     primary*: string
-      ## Id of the hidden request for the left-hand measurement; "" for a
-      ## predicate, which has none.
+      ## Hidden request id for the left-hand measurement; "" for a predicate.
     deps*: seq[tuple[name, request: string]]
-      ## The named dependencies, in predicate-argument order. A relative
-      ## claim has exactly one, named `reference`.
+      ## Named dependencies in predicate-argument order; a relative claim has
+      ## one, `reference`.
 
   Plan* = object
-    ## What *would* run. Separated from running it because an assertion set
-    ## you cannot inspect before it executes is the same failure mode
-    ## `design.explain` exists to prevent.
+    ## What *would* run, inspectable before execution.
     steps*: seq[PlanStep]
     rejected*: seq[Rejection]
     resolves*: seq[ResolveStep]
-      ## Relative and predicate claims, one per authored claim, to be folded
-      ## from their hidden requests after the steps have run.
+      ## Relative and predicate claims, folded after the steps run.
     hidden*: HashSet[string]
-      ## Ids of the measurement requests the planner invented. Excluded from
-      ## every user-facing result list.
+      ## Planner-invented request ids, excluded from user-facing results.
 
 proc capLabel*(c: Capability): string =
-  ## Short form, shared by every renderer so one capability never appears
-  ## under two names. `$capSpiceOp` is the enum identifier, which is right in
-  ## a stack trace and wrong in a sentence a designer reads.
+  ## Short readable form, shared by every renderer.
   case c
   of capStatic: "static"
   of capSpiceOp: ".op"
@@ -252,17 +157,14 @@ proc capLabel*(c: Capability): string =
   of capBench: "bench"
 
 proc capLabel*(s: set[Capability]): string =
-  ## The set form, so a requirement of two capabilities is never rendered as
-  ## the enum's `{capSpiceOp, capSpiceAc}` in a sentence a designer reads.
+  ## The set form, readable (not `{capSpiceOp, capSpiceAc}`).
   var parts: seq[string]
   for c in s: parts.add capLabel(c)
   if parts.len == 0: "none" else: parts.join(" + ")
 
 proc newEvalContext*(d: Design, allowed = offlineCapabilities): EvalContext =
-  ## One context per run. Callers that hold one across `plan`, `runPlan` and
-  ## `describeStep` get the sharing this type exists for; callers that build
-  ## one per call get isolation, which is what a sweep over many candidate
-  ## designs wants.
+  ## One context per run. Hold one across `plan`, `runPlan` and
+  ## `describeStep` to share caches; build one per call for isolation.
   EvalContext(design: d, allowed: allowed)
 
 # --- registry ----------------------------------------------------------
@@ -271,17 +173,9 @@ var evaluatorRegistry: OrderedTable[string, Evaluator]
 var quantityIndex: Table[string, string]  ## quantity -> evaluator name
 
 proc registerEvaluator*(ev: Evaluator) =
-  ## Registering an evaluator under a name already taken replaces it, exactly
-  ## as `registerRole` replaces a role -- that is how an application overrides
-  ## a built-in with something better suited to its own designs.
-  ##
-  ## Claiming a quantity a **different** evaluator already produces raises.
-  ## `quantityIndex` is a flat map, so the second registration would silently
-  ## take over every claim on that quantity in every design: an assertion that
-  ## was answered by a `.ac` sweep would start being answered by something
-  ## else, with no diagnostic anywhere and the same quantity name in the
-  ## report either way. An override says so by keeping the name; a collision
-  ## is an accident, and the two are indistinguishable once it has happened.
+  ## Re-registering under the same name replaces (the override path).
+  ## Claiming a quantity a **different** evaluator produces raises: it would
+  ## silently take over every claim on that quantity.
   if ev.name.len == 0:
     raise newException(NetlistError, "evaluator name must not be empty")
   if ev.run == nil:
@@ -292,10 +186,7 @@ proc registerEvaluator*(ev: Evaluator) =
 
   var it = ev
   if it.arity.a == 0 and it.arity.b == 0: it.arity = 1 .. int.high
-  # An evaluator that declares nothing is a graph walk. Left as the empty
-  # set it would pass `<= allowed` against *any* offer, including `--offline`,
-  # which would make an omitted declaration mean "runs everywhere" -- the one
-  # reading a defaulted field must never have.
+  # Declaring nothing means a graph walk; an empty set would pass any offer.
   if it.needs == {}: it.needs = {capStatic}
   if it.subjectKinds == {}:
     it.subjectKinds = {skNet, skComponent, skPin, skClass, skDesign}
@@ -331,14 +222,9 @@ proc evaluableQuantities*(): seq[string] =
 # --- what an evaluator can recover about its setup ----------------------
 
 proc originRole*(d: Design, a: Assertion): Option[RoleInstance] =
-  ## The role instance that expanded this assertion, if a role did.
-  ##
-  ## This is how an evaluator recovers topology the assertion itself does not
-  ## carry. `overshoot_pct(vdd)` names a rail but not the regulator driving
-  ## it, and `analyzeStartup` needs both -- but `roles.nim` stamps the role
-  ## instance name into `Assertion.origin`, and the instance holds every part
-  ## the role bound. So a role, which already knows its own topology, supplies
-  ## the setup its own claims need.
+  ## The role instance that expanded this assertion, if any. How an
+  ## evaluator recovers topology the assertion lacks (the regulator behind
+  ## `overshoot_pct(vdd)`): roles stamp their instance into `origin`.
   if a.origin.len == 0 or a.origin == "authored": return none(RoleInstance)
   if not d.roles.hasKey(a.origin): return none(RoleInstance)
   some(d.roles[a.origin])
@@ -357,19 +243,10 @@ proc originParam*(d: Design, a: Assertion, name: string): Option[string] =
   some(inst.get.params[name])
 
 proc subjectRole*(d: Design, a: Assertion, index: int): Option[RoleInstance] =
-  ## The role instance the `index`-th subject *names*, when that subject is an
-  ## `skClass` reference and the instance exists.
-  ##
-  ## The subject-side counterpart of `originRole`, which answers "the role that
-  ## *expanded* this assertion". A multi-subject quantity such as
-  ## `channel_match` states its claim over two role instances, and the topology
-  ## those instances bound -- an amplifier, an input and an output each -- is
-  ## what the evaluator needs. It cannot come from the expander: a
-  ## `RoleExpander` takes only a `RoleInstance` and has no `Design` to
-  ## dereference through, which is the same asymmetry `originRole` exists for.
-  ##
-  ## `none` rather than a raise, matching every accessor here, so an
-  ## evaluator's refusal message is written where it can name what was missing.
+  ## The role instance the `index`-th `skClass` subject names, if it exists.
+  ## The subject-side counterpart of `originRole`, for multi-subject claims
+  ## like `channel_match` (expanders have no `Design` to dereference).
+  ## Returns `none` so the evaluator can name what was missing.
   if index < 0 or index >= a.subjects.len: return none(RoleInstance)
   let s = a.subjects[index]
   if s.kind != skClass: return none(RoleInstance)
@@ -404,9 +281,7 @@ proc netSubject*(d: Design, a: Assertion, index = 0): Option[Net] =
 # --- building results ---------------------------------------------------
 
 proc unitsAgree(claimed, measured: string): bool =
-  ## An empty unit on either side means "not stated", which is unchecked
-  ## rather than mismatched: `pullup_count` is a bare number and always will
-  ## be.
+  ## An empty unit on either side is unchecked, not mismatched.
   if claimed.len == 0 or measured.len == 0: return true
   cmpIgnoreCase(claimed, measured) == 0
 
@@ -421,28 +296,15 @@ proc notEvaluated*(a: Assertion, evaluator, reason: string): AssertionResult =
 proc verdict*(a: Assertion, value: float, unit: string, evaluator: string,
               assumptions: seq[Assumption] = @[],
               issues: seq[Issue] = @[]): AssertionResult =
-  ## The single place pass/fail semantics live, so every evaluator -- built-in
-  ## or not -- gets identical behaviour for free.
+  ## The single place pass/fail semantics live:
   ##
-  ## Two decisions are pinned here:
+  ## * **`NaN` is `esNotEvaluated`, not `esFail`**: "never crossed -3 dB in
+  ##   the band" isn't "the design is wrong" (`z_antiresonance` is `NaN` when
+  ##   there's no peak, the good outcome).
+  ## * **A unit mismatch is `esNotEvaluable`.**
   ##
-  ## * **A `NaN` measurement is `esNotEvaluated`, not `esFail`.** `satisfies`
-  ##   guarantees a `NaN` never *passes*; this goes one step further and
-  ##   declines to call it a failure, because "the response never crossed
-  ##   -3 dB anywhere in the swept band" and "this design is wrong" are
-  ##   different claims. `z_antiresonance` comes back `NaN` when there is no
-  ##   interior impedance peak, which is the good outcome.
-  ## * **A unit mismatch is `esNotEvaluable`.** Comparing volts against hertz
-  ##   silently is worse than declining to compare them.
-  ##
-  ## Both of those decline to answer, and both still carry the analysis's
-  ## `assumptions` and `issues` out with them -- for the same reason
-  ## `failBatch` does. `reason` is written here and cannot name a cause this
-  ## proc does not know; the analysis that produced the `NaN` usually does
-  ## know, and says so in an `Issue`. Dropping those leaves a reader holding
-  ## "the quantity was not found in the range that was analysed" -- true, and
-  ## it sends them to widen a sweep -- when an issue one field away says the
-  ## loop break never opened the loop and no margin exists to find.
+  ## Both still carry the analysis's assumptions and issues: the issue
+  ## usually explains the `NaN`, which this generic `reason` can't.
   if not unitsAgree(a.unit, unit):
     result = notEvaluable(a, evaluator,
       "unit mismatch: the assertion is stated in " & a.unit &
@@ -482,18 +344,14 @@ proc defaultKey(a: Assertion): string =
 const hiddenIdPrefix = "\x1fcontract-dep\x1f"
 
 proc hiddenId(serial: int, role: string): string =
-  ## A request id no authored claim can collide with in practice: the same
-  ## record separator the planner already uses for its step keys, plus a
-  ## monotonic counter. The counter guarantees uniqueness; the prefix lets a
-  ## reader tell an invented request from a claim at a glance.
+  ## A request id no authored claim can collide with: the planner's record
+  ## separator plus a counter.
   hiddenIdPrefix & $serial & "\x1f" & role
 
 proc routePlain(ctx: EvalContext, p: var Plan,
                 stepIndex: var Table[string, int], a: Assertion) =
-  ## Route one plain measurement request, the path every assertion took
-  ## before relative and predicate claims existed. Hidden requests from the
-  ## planner go through here unchanged, so they group with authored claims
-  ## sharing the same evaluator and setup.
+  ## Routes one plain measurement request. Hidden requests use this path
+  ## too, so they group with authored claims sharing evaluator and setup.
   let d = ctx.design
   let allowed = ctx.allowed
   let evOpt = evaluatorFor(a.quantity)
@@ -538,16 +396,10 @@ proc routePlain(ctx: EvalContext, p: var Plan,
   p.steps[stepIndex[slot]].assertions.add a
 
 proc plan*(ctx: EvalContext): Plan =
-  ## Routes every assertion in the design -- authored and role-expanded alike
-  ## -- to an evaluator, grouping into one step per `(evaluator, setup key)`.
-  ##
-  ## A relative or predicate claim is first decomposed into hidden
-  ## measurement requests (its left-hand measurement and each named
-  ## dependency), each routed through the ordinary path, and one `ResolveStep`
-  ## that folds them back into the single authored claim. The evaluator ABI
-  ## never sees the relative or predicate itself.
-  ##
-  ## Pure: nothing runs, nothing is simulated, and the design is not touched.
+  ## Routes every assertion (authored and role-expanded) to an evaluator,
+  ## one step per `(evaluator, setup key)`. Relative and predicate claims
+  ## become hidden requests plus a `ResolveStep`; evaluators never see them.
+  ## Pure: nothing runs.
   let d = ctx.design
   let allowed = ctx.allowed
   var stepIndex: Table[string, int]
@@ -590,14 +442,12 @@ proc plan*(ctx: EvalContext): Plan =
       result.resolves.add ResolveStep(assertion: a, primary: "", deps: reqs)
 
 proc plan*(d: Design, allowed: set[Capability] = offlineCapabilities): Plan =
-  ## Convenience for a caller that does not need to hold a context. Note that
-  ## nothing is shared with a later `runPlan(d, ...)`: pass one `EvalContext`
-  ## to both to share an operating point across the whole run.
+  ## Convenience overload. Shares nothing with a later `runPlan(d, ...)`;
+  ## pass one `EvalContext` to both to share an operating point.
   plan(newEvalContext(d, allowed))
 
 proc assertionCount*(p: Plan): int =
-  ## The number of *authored* claims in the plan. The planner's hidden
-  ## measurement requests are implementation detail and are not claims.
+  ## The number of authored claims (hidden requests excluded).
   for s in p.steps:
     for a in s.assertions:
       if a.id notin p.hidden: inc result
@@ -624,12 +474,8 @@ proc explainPlan*(p: Plan): string =
   lines.join("\n")
 
 proc describeStep*(ctx: EvalContext, s: PlanStep): string =
-  ## What one plan step will run, in the evaluator's own words.
-  ##
-  ## Falls back to the setup key, which is honest rather than helpful: an
-  ## evaluator that has not said what it does is better reported as opaque
-  ## than described by a guess made out here, where nothing knows what the
-  ## key's fields mean.
+  ## What one plan step runs, in the evaluator's words; falls back to the
+  ## setup key rather than guessing.
   if not evaluatorRegistry.hasKey(s.evaluator): return s.key
   let ev = evaluatorRegistry[s.evaluator]
   if ev.setupDoc == nil or s.assertions.len == 0:
@@ -637,9 +483,7 @@ proc describeStep*(ctx: EvalContext, s: PlanStep): string =
   try:
     ev.setupDoc(ctx, s.assertions)
   except CatchableError:
-    # A third-party evaluator whose description raises must not take down a
-    # report about its own results, exactly as `previewRole` refuses to let a
-    # bad expander make `verax roles` unusable.
+    # A third-party description that raises must not break the report.
     (if s.key.len > 0: "setup " & s.key else: "")
 
 proc describeStep*(d: Design, s: PlanStep): string =
@@ -648,9 +492,8 @@ proc describeStep*(d: Design, s: PlanStep): string =
 # --- running ------------------------------------------------------------
 
 proc runStep(ctx: EvalContext, step: PlanStep): seq[AssertionResult] =
-  ## An evaluator that returns the wrong number of results, or raises, is a
-  ## bug in the evaluator -- but it must not take down a whole run, because
-  ## then one bad plugin costs every other verdict in the design.
+  ## A misbehaving evaluator (wrong result count, raises) must not take down
+  ## the whole run.
   let ev = evaluatorRegistry[step.evaluator]
   var produced: seq[AssertionResult]
   try:
@@ -676,36 +519,25 @@ proc runStep(ctx: EvalContext, step: PlanStep): seq[AssertionResult] =
         "evaluator '" & ev.name & "' returned no result for this assertion")
 
 proc runPlan*(ctx: EvalContext, p: Plan): seq[seq[AssertionResult]] =
-  ## One inner `seq` per plan step, in step order.
-  ##
-  ## `evaluate` flattens this and is what most callers want. Keeping the
-  ## grouping is what lets a report say *which run* produced a number and
-  ## what that run rested on: an assumption is attached to every result in a
-  ## batch, so a flat list of results cannot tell "the op-amp macromodel this
-  ## sweep substituted" from "an assumption that happens to be in the pile".
-  ## Recovering the grouping afterwards is not possible either -- a result
-  ## carries its evaluator's name but not its setup key, and two steps of one
-  ## evaluator are two different runs.
+  ## One inner `seq` per plan step, in order. `evaluate` flattens it; the
+  ## grouping is what lets a report attach assumptions to the run they came
+  ## from, and it can't be recovered from a flat list.
   for step in p.steps: result.add runStep(ctx, step)
 
 proc runPlan*(d: Design, p: Plan): seq[seq[AssertionResult]] =
-  ## Convenience overload. Builds a fresh context, so nothing is shared with
-  ## the `plan` call that produced `p`.
+  ## Convenience overload with a fresh context (shares nothing with `plan`).
   runPlan(newEvalContext(d, allCapabilities), p)
 
 proc rejectionResults*(p: Plan): seq[AssertionResult] =
-  ## Every rejection, including the planner's hidden requests, as results.
-  ## Low-level: user-facing flows go through `visibleRejections` instead, so
-  ## an invented request never surfaces as a claim of its own.
+  ## Every rejection, hidden requests included. User-facing flows use
+  ## `visibleRejections`.
   for rej in p.rejected:
     result.add AssertionResult(assertion: rej.assertion, status: rej.status,
                                value: NaN, unit: rej.assertion.unit,
                                reason: rej.reason, evaluator: rej.evaluator)
 
 proc visibleRejections*(p: Plan): seq[AssertionResult] =
-  ## The *authored* claims that never reached an evaluator, as results. The
-  ## planner's hidden requests are consumed by `resolveHidden` and never
-  ## surface as claims of their own.
+  ## Authored claims that never reached an evaluator, as results.
   for rej in p.rejected:
     if rej.assertion.id in p.hidden: continue
     result.add AssertionResult(assertion: rej.assertion, status: rej.status,
@@ -713,8 +545,7 @@ proc visibleRejections*(p: Plan): seq[AssertionResult] =
                                reason: rej.reason, evaluator: rej.evaluator)
 
 proc relativeResult(a: Assertion, prim, dep: AssertionResult): AssertionResult =
-  ## Fold one relative claim: the left-hand measurement and its reference
-  ## have both run (or refused to), and the comparison is between the two.
+  ## Fold one relative claim from its measurement and reference.
   let e = a.expect
 
   template refuse(r: AssertionResult, prefix: string): AssertionResult =
@@ -763,8 +594,8 @@ proc relativeResult(a: Assertion, prim, dep: AssertionResult): AssertionResult =
 
 proc predicateResult(a: Assertion,
                      deps: seq[tuple[name: string, r: AssertionResult]]): AssertionResult =
-  ## Fold one predicate claim: gather the dependency values in order, run the
-  ## non-capturing proc, and report whether it held.
+  ## Fold one predicate claim: gather dependency values in order, run the
+  ## proc, report whether it held.
   var values: seq[float]
   var assumptions: seq[Assumption]
   var issues: seq[Issue]
@@ -800,9 +631,7 @@ proc predicateResult(a: Assertion,
     assumptions: assumptions, issues: issues)
 
 proc resolveHidden*(p: Plan, batches: seq[seq[AssertionResult]]): seq[AssertionResult] =
-  ## One user-visible result per relative/predicate claim, in `p.resolves`
-  ## order, folded from the hidden requests after they have run or been
-  ## rejected.
+  ## One result per relative/predicate claim, in `p.resolves` order.
   var byId = initTable[string, AssertionResult]()
   for batch in batches:
     for r in batch:
@@ -828,15 +657,8 @@ proc resolveHidden*(p: Plan, batches: seq[seq[AssertionResult]]): seq[AssertionR
       result.add predicateResult(step.assertion, depResults)
 
 proc evaluate*(ctx: EvalContext): seq[AssertionResult] =
-  ## Every claim this design makes, checked as far as `ctx.allowed` permits.
-  ##
-  ## Exactly one result comes back per authored claim: relative and predicate
-  ## claims are folded from their hidden requests rather than reported once
-  ## per measurement.
-  ##
-  ## One context throughout, so every step of the run shares whatever the
-  ## first one put in `scratch` -- which is what makes "one `.op` per design"
-  ## a property of the run rather than of a module-level cache.
+  ## Every claim checked as far as `ctx.allowed` permits, one result per
+  ## authored claim. One context throughout, so steps share `scratch`.
   let p = plan(ctx)
   let batches = runPlan(ctx, p)
   for batch in batches:
@@ -846,55 +668,32 @@ proc evaluate*(ctx: EvalContext): seq[AssertionResult] =
   for r in resolveHidden(p, batches): result.add r
 
 proc evaluate*(d: Design, allowed: set[Capability] = offlineCapabilities): seq[AssertionResult] =
-  ## Every claim this design makes, checked as far as `allowed` permits.
-  ##
-  ## The default offers nothing but graph walks, mirroring how
-  ## `verax/analysis` exports only what runs with no external toolchain: pass
-  ## `allCapabilities` (and import `verax/analysis/evaluators/contract_eval`) to let the
-  ## simulation-backed evaluators run.
-  ##
-  ## Each call builds its own context, so a caller sweeping many candidate
-  ## designs through this gets a clean cache every time by construction.
+  ## Every claim checked as far as `allowed` permits (default: graph walks
+  ## only; pass `allCapabilities` and import `contract_eval` to simulate).
+  ## A fresh context per call.
   evaluate(newEvalContext(d, allowed))
 
 # --- reading the results ------------------------------------------------
 
 type
   Margin* = object
-    ## How much room a checked claim had, computed from `Expectation.bounds`
-    ## rather than carried by the evaluator -- every evaluator already
-    ## produces a bare `value`, so this is the same arithmetic `acceptance`
-    ## does for rendering, done once here for every consumer that wants a
-    ## number rather than a picture (`--format=json`'s `margin` field, a
-    ## future regression gate). A pass/fail gate alone cannot see the defect
-    ## class this exists for: a part substitution that halves a phase margin
-    ## while leaving it above the 45 degree floor reports identically to one
-    ## that leaves it at 89 degrees, until something reads how far from the
-    ## edge each one actually sat.
+    ## How much room a checked claim had, computed from `Expectation.bounds`.
+    ## Lets a gate see a margin that halved while still passing.
     abs*: float
-      ## Distance to the nearest limit, in the measurement's own unit.
-      ## Negative when the claim failed -- `value` sits past the limit, not
-      ## short of it, and clamping that to zero would say a failure and a
-      ## bare pass were equally close to the edge.
+      ## Distance to the nearest limit, in the measurement's unit. Negative
+      ## on failure (not clamped).
     frac*: float
       ## `abs` as a fraction; meaningless unless `hasFrac`.
     hasFrac*: bool
-      ## False when there is no sane denominator to divide by -- a one-sided
-      ## limit of exactly zero, or (see `bounds`) a relative/predicate claim,
-      ## which never reaches this proc at all.
+      ## False with no sane denominator (a one-sided limit of exactly zero).
     twoSided*: bool
-      ## True when `frac` is a fraction of the *half-band* (an `ekNominal`
-      ## tolerance or an `ekRange`, where 1.0 means dead centre and 0.0 means
-      ## sitting exactly on either edge); false when it is a fraction of a
-      ## single one-sided limit (`ekMin`/`ekMax`), where a fraction has no
-      ## natural ceiling -- a measurement can clear a floor by 500%.
+      ## True when `frac` is of the half-band (`ekNominal` tolerance or
+      ## `ekRange`: 1.0 = centre, 0.0 = edge); false for a one-sided limit,
+      ## where it has no ceiling.
 
 proc marginOf*(r: AssertionResult): Option[Margin] =
-  ## `none` for exactly the two cases `acceptance` and `renderClaim` already
-  ## special-case: a claim nothing measured (`r.status` outside
-  ## `{esPass, esFail}`, so there is no `value` to measure a distance from),
-  ## and `ekRelative`/`ekPredicate`, whose `bounds` is `(NaN, NaN)` because
-  ## the limit is another measurement rather than a constant interval.
+  ## `none` when nothing was measured, or for `ekRelative`/`ekPredicate`
+  ## (limit is another measurement).
   if r.status notin {esPass, esFail}: return none(Margin)
   let e = r.assertion.expect
   if e.kind in {ekRelative, ekPredicate}: return none(Margin)
@@ -905,10 +704,7 @@ proc marginOf*(r: AssertionResult): Option[Margin] =
     m.twoSided = true
     m.abs = min(r.value - lo, hi - r.value)
     let half = (hi - lo) / 2.0
-    # `ekNominal` with no stated tolerance has `lo == hi`, so `half` is zero
-    # -- a target hit exactly has no band to be a fraction *of*, and dividing
-    # by zero would print a `Margin` for a claim `acceptance` itself declines
-    # to spell as an interval.
+    # `ekNominal` with no tolerance has `lo == hi`: no band to divide by.
     if half != 0.0:
       m.frac = m.abs / half
       m.hasFrac = true
@@ -935,9 +731,7 @@ proc failed*(results: seq[AssertionResult]): seq[AssertionResult] =
     if r.status == esFail: result.add r
 
 proc unchecked*(results: seq[AssertionResult]): seq[AssertionResult] =
-  ## Everything nobody actually verified. Worth reading as carefully as the
-  ## failures: a contract whose claims are mostly unchecked is not a contract
-  ## that passed.
+  ## Everything nobody verified. Unchecked claims are not passes.
   for r in results:
     if r.status in {esNotEvaluated, esNotEvaluable}: result.add r
 

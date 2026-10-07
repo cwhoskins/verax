@@ -51,15 +51,13 @@ if not haveNgspice:
 else:
   test "the output network is collected, the upstream rail is cut":
     let r = analyzeStartup(supply(), "U1", "v3v3")
-    # The load cap and resistor are on the (seeded) output rail, so they are
-    # part of the fragment; nothing else in the design is.
+    # The load is on the seeded output rail, so it's in the fragment; nothing
+    # else is.
     check abs(r["final_v"] - VOut) / VOut < 0.01
 
   test "rise time and inrush match the closed-form ramp response":
-    # Driving R||C with a linear ramp of slope k = V/tss, the capacitor
-    # current settles to a constant k*C once the initial transient decays
-    # (tau = R*C = 1 ms here, comparable to the ramp, so the peak is reached
-    # near the end of the ramp).
+    # A linear ramp of slope k into R||C: the capacitor current settles to
+    # k*C (tau = 1 ms, so the peak lands near the end of the ramp).
     var spec = defaultStartupSpec()
     spec.softStart = 10.0e-3        # >> tau, so the ramp dominates
     let r = analyzeStartup(supply(), "U1", "v3v3", spec = spec)
@@ -67,8 +65,7 @@ else:
     # 10-90% of a linear ramp takes 80% of the ramp time.
     check abs(r["rise_time_10_90"] - 0.8 * spec.softStart) / (0.8 * spec.softStart) < 0.05
 
-    # Peak current = ramp charging current + load current at the top:
-    #   C*dV/dt + V/R
+    # Peak current = C*dV/dt + V/R.
     let expectI = CBulk * (VOut / spec.softStart) + VOut / RLoad
     check abs(r["inrush_peak"] - expectI) / expectI < 0.05
 
@@ -76,9 +73,8 @@ else:
     check r["overshoot_pct"] < 0.1
 
   test "inrush splits into a ramp-rate term and a constant load term":
-    # Only the capacitor's share scales with dV/dt; the load's V/R does not.
-    # Subtracting the load current recovers C*dV/dt for each ramp, which is
-    # the quantity a designer actually trades against soft-start time.
+    # Only the capacitor's share scales with dV/dt; subtracting the load
+    # current recovers C*dV/dt.
     let iLoad = VOut / RLoad
     var slow = defaultStartupSpec()
     slow.softStart = 10.0e-3
@@ -111,9 +107,8 @@ else:
     check stated
 
   test "an LC output filter overshoots, and the overshoot is flagged":
-    # An inductor between the regulator and the bulk cap makes a series LC
-    # with the 100 ohm load: zeta = (R_L/2)*sqrt(C/L) is well under 1 here, so
-    # the rail rings past its target.
+    # An inductor before the bulk cap makes an underdamped series LC with the
+    # 100 ohm load, so the rail rings past target.
     let nl = supply()
     let v3 = nl.nets["v3v3"]
     let gnd = nl.nets["0"]
@@ -179,9 +174,8 @@ suite "loads that carry no model":
     check abs(r["final_v"] - 3.3) < 0.05
 
   test "the regulator itself is never replaced by the generic stand-in":
-    # It is excluded from the pass on purpose: `analyzeStartup` stands it up
-    # as a soft-start ramp, and the behavioural regulator model would quietly
-    # overwrite the one thing this analysis exists to measure.
+    # Excluded on purpose: a behavioural model would overwrite the soft-start
+    # ramp this analysis measures.
     let r = analyzeStartup(railWithLoad("mcu"), "U1", "vdd")
     var ramped = false
     for a in r.assumptions:
@@ -199,8 +193,7 @@ suite "loads that carry no model":
     check cut
 
   proc railWithFilteredRail(): Netlist =
-    ## A regulated rail with a second, filtered rail one ferrite downstream --
-    ## the shape any board with a separate analog supply takes.
+    ## A regulated rail with a second rail one ferrite downstream.
     result = newNetlist("b")
     let vin = addNet(result, newNet("vin", ntPower))
     let vdd = addNet(result, newNet("vdd", ntPower))
@@ -224,34 +217,30 @@ suite "loads that carry no model":
     discard connect(u2, "VSS", gnd, ptGround)
 
   test "a rail downstream of the regulator is not stood up as an ideal source":
-    # Nothing downstream is at its nominal voltage during start-up -- a rail
-    # ramping from zero is the premise. Terminating `vdda` at 3.3 V while
-    # `vdd` ramps from zero drives current backwards through FB1 into it: on
-    # a real design that reported 2.8 kA against a true 163 mA.
+    # Nothing downstream is at nominal during start-up. Terminating `vdda` at
+    # 3.3 V would drive current backwards through FB1, overstating inrush by
+    # orders of magnitude.
     let r = analyzeStartup(railWithFilteredRail(), "U1", "vdd")
     check r["inrush_peak"] < 5.0
     check abs(r["final_v"] - 3.3) < 0.05
 
   test "the same inrush is measured wherever the rail is judged":
-    # Judging past the filter changes the seed set, and used to change the
-    # answer by four orders of magnitude.
+    # Judging past the filter changes the seed set but not the answer.
     let atOutput = analyzeStartup(railWithFilteredRail(), "U1", "vdd")
     let atFiltered = analyzeStartup(railWithFilteredRail(), "U1", "vdd", "vdda")
     check abs(atOutput["inrush_peak"] - atFiltered["inrush_peak"]) /
           atFiltered["inrush_peak"] < 0.05
 
   test "the rail feeding the regulator's input keeps its ideal source":
-    # The walk crosses passive parts only, so it stops at the regulator. The
-    # input rail genuinely is up before start-up begins.
+    # The walk crosses passives only, so it stops at the regulator; the input
+    # rail really is up.
     let r = analyzeStartup(railWithFilteredRail(), "U1", "vdd")
     check abs(r["final_v"] - 3.3) < 0.05
 
   test "inrush says where it was probed, because that is not the subject":
-    # An assertion's subject does two jobs: it says what the claim is about,
-    # and it selects the analysis setup. Inrush is probed on the source
-    # feeding the regulator's output whatever the subject says -- while the
-    # subject still has to name the *judged* net, because that is what the
-    # isolation seeds on. Both are right and they are not the same net.
+    # Inrush is probed on the source feeding the regulator output, while the
+    # subject names the judged net the isolation seeds on. Different nets,
+    # both right.
     let r = analyzeStartup(railWithFilteredRail(), "U1", "vdd", "vdda")
     var stated = false
     for m in r.measurements:
@@ -269,22 +258,16 @@ suite "loads that carry no model":
 # --- a regulator that brings its own model ------------------------------
 
 proc buildRamp(nl: Netlist, old: Component): Component {.nimcall.} =
-  ## Stands the regulator up as a source of its own, through the `build`
-  ## route rather than through `kind`/`pinNets`.
-  ##
-  ## `build` exists because `kind`/`pinNets` cannot express an XSPICE code
-  ## model -- there is a `.MODEL` card to register, an ordered port binding
-  ## and port text to render. Nothing here needs any of that; what it does
-  ## need is to be *the same route*, so that `analyzeStartup` taking it is
-  ## covered without a configured ngspice source tree in the build.
+  ## Stands the regulator up as a source through the `build` route (which
+  ## exists for XSPICE code models), so that route is covered without an
+  ## ngspice source tree.
   let outNet = old.pins["OUT"].net
   let gnd = nl.nets["0"]
   removeComponent(nl, old.designator)
   result = addComponent(nl, newComponent("VOWN", kind = "voltage_source"))
   discard connect(result, "+", outNet, ptPower)
   discard connect(result, "-", gnd, ptGround)
-  # Twice as slow as `StartupSpec.softStart`'s default, which is how the run
-  # below tells which of the two ramps actually ran.
+  # Twice the default soft-start, so the run shows which ramp ran.
   result.attrs["value"] = "PWL(0 0 2m 3.3)"
 
 test "a regulator's own build-route model is what runs, not the assumed ramp":
@@ -297,20 +280,18 @@ test "a regulator's own build-route model is what runs, not the assumed ramp":
     spec.tStop = 6.0e-3
     let r = analyzeStartup(nl, "U1", "v3v3", spec = spec)
 
-    # 10-90% of a linear 2 ms ramp is 1.6 ms. The assumed ramp is 1 ms, so
-    # the two answers cannot be confused for each other.
+    # 10-90% of a 2 ms ramp is 1.6 ms; the assumed ramp would give 0.8 ms.
     check abs(r["rise_time_10_90"] - 1.6e-3) / 1.6e-3 < 0.1
     check r.assumptions.anyIt("builds its own stand-in" in it.detail)
-    # And the assumed ramp is not reported as though it had been used.
+    # The assumed ramp isn't reported as used.
     check not r.assumptions.anyIt(it.key == "softStart")
 
 test "a part that starts itself is started from zero, not from a solved bias":
   if not haveNgspice:
     skip()
   else:
-    # An operating point finds the state the soft start settles *to*, so the
-    # `.tran` would begin at the end of the ramp and report a rise time of
-    # zero for a part that takes milliseconds.
+    # An operating point would start the `.tran` at the end of the ramp,
+    # reporting zero rise time.
     let nl = supply()
     addSimModel(nl.components["U1"], newSimReplacement(buildRamp, name = "own"))
     var spec = defaultStartupSpec()
@@ -318,7 +299,7 @@ test "a part that starts itself is started from zero, not from a solved bias":
     check analyzeStartup(nl, "U1", "v3v3", spec = spec).assumptions
             .anyIt("uic" in it.detail)
 
-    # ...and the assumed ramp, which has no state, keeps its operating point.
+    # ...while the assumed ramp, which has no state, keeps its operating point.
     check not analyzeStartup(supply(), "U1", "v3v3", spec = spec).assumptions
                 .anyIt("uic" in it.detail)
 
@@ -326,8 +307,7 @@ test "the inrush probe goes on the pin that is actually on the output net":
   if not haveNgspice:
     skip()
   else:
-    # It used to assume a pin named `"+"`, which is the pin of the PWL source
-    # this analysis builds and is not one any other model has to have.
+    # No pin name is assumed (`"+"` is only the built PWL source's).
     let nl = supply()
     addSimModel(nl.components["U1"], newSimReplacement(buildRamp, name = "own"))
     var spec = defaultStartupSpec()
@@ -340,9 +320,8 @@ test "a stand-in with no pin on the output net reports no inrush rather than zer
   if not haveNgspice:
     skip()
   else:
-    # The ordinary case is a switching regulator: it drives a switch node
-    # into an inductor, so the current reaching the rail is the inductor's
-    # and there is no single branch to put a probe in series with.
+    # A switching regulator feeds the rail through an inductor; there's no
+    # single branch to probe.
     let nl = supply()
     var sr = newSimReplacement("voltage_source", name = "elsewhere")
     sr.pinNets["+"] = "vin"

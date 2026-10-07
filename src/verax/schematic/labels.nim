@@ -1,9 +1,6 @@
 # --- label placement --------------------------------------------------------
-# Designator/value text (and net + rail names) is placed here, against the
-# finished wire and body geometry, rather than at fixed offsets in `svg.nim`.
-# The search is a first-fit over a small ordered set of candidate spots around
-# the thing being named; if every candidate collides, candidate 0 is used
-# anyway, so the pass is total and a label is never dropped.
+# Labels are placed against the finished geometry by first-fit over ordered
+# candidate spots; if all collide, the least bad is used (never dropped).
 
 type
   Rect = tuple[x1, y1, x2, y2: float]
@@ -18,10 +15,8 @@ proc rectsOverlap(a, b: Rect): bool {.inline.} =
   a.y1 < b.y2 - 1e-9 and b.y1 < a.y2 - 1e-9
 
 proc partInk(p: SchematicPart): Rect =
-  ## The drawn-symbol box in world coords. A 90/270 rotation swaps the ink
-  ## extents: only square-bodied two-terminal symbols rotate, so their pins
-  ## still land, but a resistor's zigzag becomes tall and thin -- which is
-  ## exactly why the label then wants the (short) side, not the (long) end.
+  ## The drawn-symbol box in world coords. 90/270 swaps the ink extents (a
+  ## rotated resistor's label wants the short side).
   var w = p.inkW
   var h = p.inkH
   if abs(p.rotation - 90.0) < 1e-9 or abs(p.rotation - 270.0) < 1e-9:
@@ -37,8 +32,8 @@ proc textWidth(s: string, size: float): float {.inline.} =
 
 proc lineBox(originX, baseline: float, s: string, anchor: TextAnchor,
              size: float): Rect =
-  ## The ink box of one rendered line. SVG `y` is the baseline; monospace
-  ## glyphs rise ~0.8*size above it and drop ~0.2*size below.
+  ## The ink box of one line: SVG `y` is the baseline; glyphs rise ~0.8 and
+  ## drop ~0.2 of `size`.
   let w = textWidth(s, size)
   let x1 = case anchor
            of taStart: originX
@@ -54,8 +49,8 @@ proc blockHeight(lines: seq[LabelLine]): float =
 proc layoutBlock(lines: seq[LabelLine], refX, refTop: float,
                  anchor: TextAnchor, owner: string):
     tuple[labels: seq[SchematicLabel], box: Rect] =
-  ## Stack `lines` downward from `refTop`, each line's origin at `refX` read
-  ## per `anchor`. Returns the labels and the union of their ink boxes.
+  ## Stack `lines` down from `refTop`, origin `refX` per `anchor`; returns
+  ## labels and their union ink box.
   var y = refTop
   result.box = (Inf, Inf, -Inf, -Inf)
   for ln in lines:
@@ -69,8 +64,8 @@ proc layoutBlock(lines: seq[LabelLine], refX, refTop: float,
 
 proc candidatesAround(ik: Rect, h: float, order: seq[Side]):
     seq[tuple[refX, refTop: float, anchor: TextAnchor]] =
-  ## Candidate top-left anchors for a block of height `h` around ink rect `ik`,
-  ## the four sides in `order` first, then the four corners.
+  ## Candidate top-left anchors around ink rect `ik`: four sides in `order`,
+  ## then the corners.
   let cx = (ik.x1 + ik.x2) / 2.0
   for s in order:
     case s

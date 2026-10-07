@@ -11,9 +11,8 @@ import verax/verify
 let haveNgspice = findExe("ngspice").len > 0
 
 proc divider(cval = "10u", rating = "6.3"): Netlist =
-  ## A 12 V rail into a 10k/10k divider, with a capacitor across the lower
-  ## leg. `mid` sits at 6 V and **nothing annotates it**, which is the shape
-  ## every biased single-supply stage and divider-derived reference has.
+  ## 12 V into a 10k/10k divider with a cap across the lower leg. `mid`
+  ## sits at 6 V with nothing annotating it, like any bias node.
   netlist("b"):
     net gnd, kind = ntGround, name = "0"
     net vin, kind = ntPower:
@@ -44,8 +43,7 @@ else:
   suite "one operating point, solved once":
 
     test "an unknown node is NaN, not zero":
-      # A node the solver never saw must not be reported as sitting at
-      # ground: those are different answers and only one of them is a fact.
+    # A node the solver never saw is not at ground.
       let op = solveOperatingPoint(divider())
       check op.solved
       check abs(voltageAt(op, "mid") - 6.0) < 1e-6
@@ -69,15 +67,13 @@ else:
   suite "the operating point feeding derating":
 
     test "there is no circularity to worry about":
-      # At DC a capacitor is an open circuit, so the operating point cannot
-      # depend on capacitance. That is what makes this a straight line rather
-      # than a fixed point, and it is worth pinning rather than assuming.
+    # A capacitor is open at DC, so the operating point doesn't depend on it.
       let small = solveOperatingPoint(divider("100p"))
       let large = solveOperatingPoint(divider("1000u"))
       check voltageAt(small, "mid") == voltageAt(large, "mid")
 
     test "a capacitor on an unannotated node was invisible, and is not now":
-      # The blind spot covered exactly the nodes where bias is worst.
+    # Unannotated nodes are where bias is worst.
       let without = divider()
       discard expandCapacitorParasitics(without)
       check abs(capOf(without) - 10.0e-6) / 10.0e-6 < 1e-6   # untouched
@@ -86,13 +82,12 @@ else:
       let with = divider()
       discard expandCapacitorParasitics(with, defaultParasitics(),
                                         defaultDerating(), nodeVoltages(op))
-      # 6 V on a 6.3 V part is 95% of rating: about a third of nominal left.
+    # 6 V on a 6.3 V part: about a third of nominal left.
       check capOf(with) < 4.0e-6
       check capOf(with) > 2.5e-6
 
     test "the bias wins over a stated rail, because it is the measurement":
-      # Both are available here; the operating point is the one that knows
-      # what the node is actually doing.
+    # The operating point knows what the node is actually doing.
       let op = solveOperatingPoint(divider())
       let nl = divider()
       nl.nets["mid"].attrs["voltage"] = "1.0"    # wrong, and stated
@@ -109,10 +104,8 @@ else:
       check abs(capOf(nl) - 10.0e-6) / 10.0e-6 < 1e-6
 
   suite "the shared point has a stated lifetime":
-    # It is cached by design identity with no content invalidation, because
-    # nothing down there can tell that a caller edited a netlist. `readiness`
-    # clearing it on both sides is what makes that rule safe -- and this is
-    # the test that would fail if somebody removed those calls.
+    # Cached by design identity; `readiness` clears it on both sides, which
+    # this test guards.
     test "a design edited between checks is not answered from a stale solve":
       let d = design("stale"):
         net gnd, kind = ntGround, name = "0"
@@ -130,7 +123,7 @@ else:
       check before.results.len == 1
       check before.results[0].status == esPass
 
-      # Change what the rail actually is, leaving the claim alone.
+    # Change the rail, not the claim.
       d.netlist.components["V1"].attrs["value"] = "DC 3"
       let after = readiness(d)
       check after.results[0].status == esFail

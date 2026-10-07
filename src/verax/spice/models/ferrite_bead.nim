@@ -1,9 +1,5 @@
-## The ferrite bead as the standard three-element model: a series DC
-## resistance into a parallel R-L-C.
-##
-## A bead is not an inductor and modelling it as one is wrong in the
-## direction that matters. Mutates the `Netlist` it is given; run it on a
-## simulation clone.
+## The ferrite bead as the standard three-element model: series DC
+## resistance into a parallel R-L-C. Mutates its netlist; use a clone.
 
 import std/[math, tables]
 import ../../netlist/types
@@ -18,14 +14,8 @@ type
   BeadModel* = object
     ## The three-element ferrite bead, and the two defaults it needs.
     q*: float
-      ## Shape of the impedance peak. `z_peak` and `f_peak` fix the height
-      ## and the location; something has to fix the *width*, because those
-      ## two only pin down the L-C product and not L and C separately.
-      ##
-      ## 1.0 by default, which is a broad peak -- and beads really are broad,
-      ## because being lossy is the entire point of one. A high-Q bead would
-      ## be an inductor, which is the part it is chosen instead of. A
-      ## datasheet's impedance curve is what pins this down properly.
+      ## Peak width (`z_peak`/`f_peak` fix only L*C). Default 1.0, a broad
+      ## peak: beads are lossy by design. A datasheet curve pins it properly.
     dcr*: Ohms       ## used when the part states none
     fPeak*: Hertz    ## used when the part states none
 
@@ -33,34 +23,16 @@ proc defaultBeadModel*(): BeadModel =
   BeadModel(q: 1.0, dcr: 100.mohm, fPeak: 100.MHz)
 
 proc expandFerriteBeads*(nl: Netlist, d = defaultBeadModel()): seq[Assumption] =
-  ## Rewrites every `kind == "ferrite_bead"` into the standard three-element
-  ## model: a series DC resistance into a parallel R-L-C.
-  ##
-  ## **A ferrite bead is not an inductor, and modelling it as one is wrong in
-  ## the direction that matters.** An inductor's impedance climbs without
-  ## limit; a bead's climbs, peaks where the core goes lossy, and falls again
-  ## as its own parasitic capacitance takes over. The peak is the whole
-  ## product -- it is why a bead is chosen over an inductor for filtering --
-  ## and an inductor model shows none of it. It also has a real DC
-  ## resistance, which an ideal inductor does not, and on a supply rail that
-  ## is a steady IR drop and a floor the filter can never get below.
-  ##
-  ## The parallel R-L-C is the standard fit and it falls out of the three
-  ## numbers a datasheet gives:
+  ## Rewrites every `ferrite_bead` into series DCR + parallel R-L-C. **A
+  ## bead is not an inductor**: its impedance peaks where the core goes lossy
+  ## and falls past self-resonance, and it has real DC resistance.
   ##
   ##     R = z_peak - dcr        L = R / (2*pi*f_peak*Q)
   ##                             C = Q / (2*pi*f_peak*R)
   ##
-  ## At `f_peak` the reactances cancel and the impedance is `R` -- which is
-  ## what makes `z_peak` and `f_peak` land exactly where the datasheet says,
-  ## by construction rather than by fitting.
-  ##
-  ## **This is also what stops a bead being simulated as the wrong device.**
-  ## `ferrite_bead` is in `kinds.conductiveKinds`, so `isPassive` accepts it
-  ## and `expandPinModels` skips it -- but SPICE has no bead device, so
-  ## before this the part reached the deck as `FB1`, and ngspice reads a
-  ## leading `F` as a current-controlled current source. After this pass
-  ## there is no bead left to misread.
+  ## At `f_peak` the reactances cancel and Z = R, so the datasheet's peak
+  ## lands exactly. Also prevents `FB1` reaching the deck (ngspice would
+  ## read `F` as a CCCS).
   var beads: seq[Component]
   for _, c in nl.components:
     if c.kind == "ferrite_bead" and c.subNetlist == nil: beads.add c
@@ -70,19 +42,15 @@ proc expandFerriteBeads*(nl: Netlist, d = defaultBeadModel()): seq[Assumption] =
     if pins.len != 2: continue
     if pins[0].net == nil or pins[1].net == nil: continue
 
-    # `zPeak` is checked for NaN as well as for sign, and not out of caution:
-    # `parseSpiceMagnitude` sets its out-parameter to NaN when it refuses,
-    # and `NaN <= 0.0` is **false**, so a sign test alone lets the failure
-    # straight through and every element value below comes out NaN.
+    # Check `zPeak` for NaN too: a refused parse yields NaN, and `NaN <= 0.0`
+    # is false.
     var zPeak = 0.0
     let zAnn = annotations.annotationFloat(bead, "z_peak")
     if zAnn.has and zAnn.value > 0.0:
       zPeak = zAnn.value
     elif bead.attrs.hasKey("value") and
          spiceFormat.parseSpiceMagnitude(bead.attrs["value"], zPeak):
-      # A bead's `value` is conventionally its impedance in ohms at the
-      # quoted frequency -- "600" means a 600 ohm bead -- so reading it that
-      # way is following the convention rather than guessing at one.
+      # A bead's `value` is conventionally its impedance in ohms ("600").
       result.add note(bead.designator & ": `value` read as " &
         eng(zPeak, "ohm") & " of peak impedance, the convention a bead is " &
         "sold by; state `z_peak` to be explicit")

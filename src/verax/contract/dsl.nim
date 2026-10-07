@@ -20,26 +20,17 @@
 ##           id = "REQ-PWR-001", because = "MCU VDD range is 3.0-3.6 V"
 ## ```
 ##
-## **Part bindings and parameters are told apart by type, not by position.**
-## A `role` statement is a flat list of `key = value` pairs; the expansion
-## routes each one with `when compiles(subjectOf(value))`, so a `Net` or
-## `Component` becomes a binding and a quantity, number or string becomes a
-## parameter. That keeps the syntax flat and readable without the macro
-## needing to consult the role registry, which is a runtime table it cannot
-## see. Getting a binding or a parameter *name* wrong is still caught -- by
-## `addRole`, at the point the role is attached.
+## **Bindings and parameters are told apart by type**: `role` routes each
+## `key = value` with `when compiles(subjectOf(value))`, so a `Net` or
+## `Component` binds and anything else is a parameter -- no registry lookup
+## (a runtime table the macro can't see). Wrong names are caught by
+## `addRole`.
 ##
-## **`require` is spelled with ordinary Nim comparisons** (`==`, `>=`, `<=`)
-## over `quantity(subjects)`, where the quantity is written exactly as the
-## analysis `Measurement` names it (`dc_voltage`, `bw_3db`, `z_max_in_band`).
-## Nim is style-insensitive, so `dc_voltage` and `dcVoltage` are the same
-## identifier; the string used is what you typed.
+## **`require` uses ordinary comparisons** over `quantity(subjects)`, the
+## quantity spelled as its `Measurement` name.
 ##
-## Everything here expands to calls on the runtime API in
-## `verax/contract/design` -- the macro is a convenience for Nim authors and
-## never the only way in. A real board comes from a file, not from
-## hand-written Nim, so anything expressible only through a macro would be
-## unusable on exactly the designs this is meant for.
+## Everything expands to the runtime API in `verax/contract/design`; the
+## macro is never the only way in.
 
 import std/[macros, strutils, tables]
 import ../netlist/types
@@ -52,23 +43,15 @@ import ./evaluate
 import ./evaluators/static
 import ./evaluators/diff
 
-# Importing the authoring DSL registers the built-in evaluators, exactly as
-# importing `roles` registers the built-in roles: a design you can author but
-# whose claims silently have no producer is the surprising half of that pair.
+# Importing the DSL registers the built-in evaluators, as importing `roles`
+# registers the built-in roles.
 export netlistDsl, ctypes, roles, design, evaluate, static, diff, units
 
 # --- runtime helpers the macros expand into ----------------------------
 
 proc subjectOf*(s: Subject): Subject = s
-  ## Identity, so that anything already producing a `Subject` routes as a
-  ## *binding* rather than a parameter.
-  ##
-  ## `role`'s macro tells bindings from parameters with
-  ## `when compiles(subjectOf(value))`, which deliberately consults types
-  ## rather than the role registry -- a runtime table the macro cannot see.
-  ## This one overload opens that test to every helper that returns a
-  ## `Subject`, `design.innerComponent` above all, without the macro learning
-  ## anything about them.
+  ## Identity, so anything returning a `Subject` (e.g.
+  ## `design.innerComponent`) routes as a binding.
 
 proc subjectOf*(n: Net): Subject = Subject(kind: skNet, name: n.name)
 proc subjectOf*(c: Component): Subject = Subject(kind: skComponent, name: c.designator)
@@ -104,8 +87,7 @@ proc mkAssertion*(quantity: string, subjects: seq[Subject], e: Expectation,
   for (k, v) in condition: result.condition[k] = v
 
 proc dep*(name: string, quantity: string, subjects: seq[Subject]): PredicateDep =
-  ## One named dependency of a predicate, in the order the predicate's proc
-  ## receives them.
+  ## One named predicate dependency, in the order the proc receives them.
   PredicateDep(name: name,
                measurement: MeasurementRef(quantity: quantity,
                                            subjects: subjects))
@@ -116,10 +98,9 @@ proc relAssertion*(quantity: string, subjects: seq[Subject],
                    band = 0.0, id = "", rationale = "",
                    severity = sevError,
                    conditions: openArray[(string, string)] = []): Assertion =
-  ## The runtime form of `require q(x) <= 0.2 * r(y)`. The trailing
-  ## conditions are stamped on both the claim and its reference; a caller
-  ## that needs the reference measured under different circumstances builds
-  ## the `MeasurementRef` itself and uses `relative`/`mkAssertion`.
+  ## The runtime form of `require q(x) <= 0.2 * r(y)`. Trailing conditions
+  ## go on both claim and reference; build the `MeasurementRef` yourself for
+  ## different ones.
   var reference = measurementRef(refQuantity, refSubjects)
   for (k, v) in conditions: reference.condition[k] = v
   let e = relative(op, coeff, reference, fracTol = band)
@@ -129,9 +110,8 @@ proc relAssertion*(quantity: string, subjects: seq[Subject],
 proc predicateAssertion*(deps: seq[PredicateDep], pred: PredicateProc,
                          id = "", rationale = "", severity = sevError,
                          conditions: openArray[(string, string)] = []): Assertion =
-  ## The runtime form of `require pred(a = q(x), b = r(y)) do ...`. The
-  ## trailing conditions are stamped on every dependency's measurement, since
-  ## a predicate has no left-hand measurement of its own to carry them.
+  ## The runtime form of `require pred(a = q(x), b = r(y)) do ...`; trailing
+  ## conditions go on every dependency.
   var ds = deps
   for d in ds.mitems:
     for (k, v) in conditions: d.measurement.condition[k] = v
@@ -167,8 +147,7 @@ proc handleRole(dSym: NimNode, stmt: NimNode): NimNode =
   let paramsSym = genSym(nskVar, "params")
   var fromNode: NimNode = nil
   result = newStmtList()
-  # Explicitly typed: the `when` branches below may add to neither, so there
-  # is nothing for Nim to infer an element type from.
+  # Explicitly typed: the `when` branches may add to neither.
   result.add newTree(nnkVarSection,
     newIdentDefs(bindsSym, parseExpr("seq[(string, Subject)]"),
                  newTree(nnkPrefix, ident"@", newTree(nnkBracket))))
@@ -208,11 +187,9 @@ proc handleRole(dSym: NimNode, stmt: NimNode): NimNode =
   result.copyLineInfo(stmt)
 
 proc isMeasurementCall(node: NimNode): bool =
-  ## `quantity(subject, ...)`: a call whose head is a plain identifier.
-  ## The registry is a runtime table a macro cannot see, so -- exactly as the
-  ## `role` macro does for bindings -- the decision is syntactic: on the RHS
-  ## of a `require` a call *is* a measurement reference. A computed plain
-  ## value belongs in a `let` binding first.
+  ## `quantity(subject, ...)`: on the RHS of a `require`, a call is a
+  ## measurement reference (decided syntactically). Put computed values in a
+  ## `let` first.
   node.kind in {nnkCall, nnkCommand} and node.len > 0 and
     node[0].kind == nnkIdent
 
@@ -262,9 +239,8 @@ proc handleComparison(dSym: NimNode, stmt: NimNode, args: seq[NimNode],
       conds.add newTree(nnkTupleConstr, newLit(a[0].strVal),
                         newCall(ident"annText", a[1]))
 
-  # A measurement on the right makes the bound *relative*: `q(x) <= 0.2 *
-  # r(y)`. The only arithmetic the relative form accepts is a plain number
-  # times a measurement, in either order; anything richer is a predicate.
+  # A measurement on the right makes the bound relative. Only a number
+  # times a measurement is accepted; anything richer is a predicate.
   let rhsIsRef = isMeasurementCall(rhs)
   let rhsIsScaled =
     rhs.kind == nnkInfix and rhs[0].strVal == "*" and
@@ -287,9 +263,7 @@ proc handleComparison(dSym: NimNode, stmt: NimNode, args: seq[NimNode],
       of "==": ident"roEq"
       of ">=": ident"roGe"
       else: ident"roLe"
-    # `band` means the same as it does for a plain `==`: the tolerance on the
-    # relative equality. It is ignored for >= and <=, exactly as the plain
-    # path ignores it.
+    # `band` is the tolerance on a relative `==`; ignored for `>=`/`<=`.
     let bandArg =
       if op == "==" and bandNode != nil: newCall(ident"toFloat", bandNode)
       else: newLit(0.0)
@@ -332,9 +306,9 @@ proc handleComparison(dSym: NimNode, stmt: NimNode, args: seq[NimNode],
   result.copyLineInfo(stmt)
 
 proc handlePredicate(dSym: NimNode, stmt: NimNode, head: NimNode): NimNode =
-  ## `require pred(a = q(x), b = r(y), id = ..., f_from = ...) do ...`.
-  ## Dependencies are named; trailing conditions are stamped on every one;
-  ## the proc is non-capturing and receives the dependency values in order.
+  ## `require pred(a = q(x), b = r(y), id = ..., f_from = ...) do ...`:
+  ## named dependencies, conditions on each, a non-capturing proc receiving
+  ## values in order.
   var deps = newTree(nnkBracket)
   var idNode: NimNode = newLit("")
   var becauseNode: NimNode = newLit("")
@@ -433,9 +407,8 @@ proc handleRequire(dSym: NimNode, stmt: NimNode): NimNode =
           "predicate", head)
 
 proc buildDesignBody(dSym, nlSym, globalsSym: NimNode, body: NimNode): NimNode =
-  ## Netlist statements go to `netlist/dsl`'s own handlers; the two design
-  ## statements are handled here. Splitting the body rather than extending
-  ## the netlist DSL keeps `netlist(...)` free of any notion of a claim.
+  ## Netlist statements go to `netlist/dsl`; `role`/`require` are handled
+  ## here, keeping `netlist(...)` free of claims.
   result = newStmtList()
   var netlistStmts = newStmtList()
   var trailing = newStmtList()
@@ -444,8 +417,7 @@ proc buildDesignBody(dSym, nlSym, globalsSym: NimNode, body: NimNode): NimNode =
     if stmt.kind == nnkCommentStmt: continue
     if stmt.kind in {nnkCommand, nnkCall} and stmt.len > 0 and
        (stmt[0].eqIdent("role") or stmt[0].eqIdent("require")):
-      # Roles and requirements are attached after the graph exists, since
-      # they refer to nets and components the netlist statements create.
+      # Roles and requirements attach after the graph exists.
       if stmt[0].eqIdent("role"): trailing.add handleRole(dSym, stmt)
       else: trailing.add handleRequire(dSym, stmt)
     else:
@@ -457,8 +429,7 @@ proc buildDesignBody(dSym, nlSym, globalsSym: NimNode, body: NimNode): NimNode =
   result.add newCall(ident"addImpliedRoles", dSym)
 
 macro design*(name: untyped, body: untyped): untyped =
-  ## Builds a `Design`: a `Netlist` plus the roles and requirements attached
-  ## to it. Accepts every statement `netlist(...)` does, plus `role` and
+  ## Builds a `Design`: everything `netlist(...)` accepts, plus `role` and
   ## `require`.
   name.expectKind(nnkStrLit)
   let nlSym = genSym(nskLet, "nl")

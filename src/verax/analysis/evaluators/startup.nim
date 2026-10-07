@@ -14,8 +14,7 @@ proc measurementOnly(spec: var StartupSpec) =
 
 proc startupKey(ctx: EvalContext, a: Assertion): string =
   let d = ctx.design
-  # `t_run` joins the key for the reason every setup condition does: it is
-  # what was run, so two claims over two run lengths are two runs.
+  # `t_run` is setup, so it joins the key.
   bindingName(d, a, "regulator") & "|" & subjectNet(d, a) & "|" &
     $conditionFloat(a, "t_run", 0.0)
 
@@ -29,11 +28,8 @@ proc startupDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   if regulator.len == 0:
     return "a `.tran` from power-on -- but no `regulator` part is bound, so " &
            "nothing says what drives the rail"
-  # Which of the two things happened is not a detail a reader can be left to
-  # infer. An assumed ramp measures the *output network's* response to a ramp
-  # this tool invented; the part's own model measures the part. The rise time
-  # means something completely different in the two cases, and it is reported
-  # under the same name.
+  # Say which happened: with an assumed ramp the rise time describes the
+  # output network; with the part's own model it describes the part.
   let c = findComponent(d.netlist, regulator)
   let sr = if c == nil: nil else: selectSimModel(c, spStartup)
   if sr == nil:
@@ -61,7 +57,7 @@ proc runStartup(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   let a0 = batch[0]
   let regulator = bindingName(d, a0, "regulator")
   if regulator.len == 0:
-    # The single most likely reason to land here, so say what to do about it.
+    # The likeliest reason to land here; say how to fix it.
     for a in batch:
       result.add notEvaluable(a, name,
         "a start-up measurement needs to know which component drives the " &

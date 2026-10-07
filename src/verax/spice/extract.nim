@@ -1,26 +1,14 @@
-## Extracting a subcircuit out of a larger netlist so only that part needs
-## to be simulated.
-##
-## Two cases:
-##  - `extractInstance` for a component that's already hierarchical (has a
-##    `subNetlist`) -- trivial, `clone()` already produces a detached,
-##    port-preserving `Netlist`.
-##  - `extractSubcircuit` for an arbitrary connected region of a flat (or
-##    partially flat) netlist that isn't already organized as a subckt --
-##    clones the whole netlist (reusing `clone()`'s nested-hierarchy/attrs
-##    handling wholesale), strips everything not selected, and promotes
-##    boundary nets to ports.
-##
-## Both return a plain `Netlist`, so `verax/spice/transform` and
-## `verax/spice/probes` apply to the result with no glue code.
+## Extracting part of a netlist for simulation. `extractInstance` clones an
+## existing hierarchical instance; `extractSubcircuit` clones the whole
+## netlist, strips everything unselected, and promotes boundary nets to
+## ports. Both return a plain `Netlist`.
 
 import std/[tables, sets]
 import ../netlist/types
 import ../netlist/graph
 
 proc extractInstance*(comp: Component, globalNets: var OrderedTable[string, Net]): Netlist =
-  ## `comp.subNetlist` must be non-nil. The result is a fresh clone with
-  ## `.parent` unset -- exactly what "standalone" needs.
+  ## `comp.subNetlist` must be non-nil; returns a detached clone.
   if comp.subNetlist == nil:
     raise newException(NetlistError,
       "component has no subNetlist to extract: " & comp.designator)
@@ -28,12 +16,9 @@ proc extractInstance*(comp: Component, globalNets: var OrderedTable[string, Net]
 
 proc extractSubcircuit*(nl: Netlist, name: string, designators: openArray[string],
                          globalNets: var OrderedTable[string, Net]): Netlist =
-  ## Selects `designators` directly from `nl.components` (no cross-level
-  ## selection -- pass the exact owning `Netlist` for something nested
-  ## inside a child, matching every other proc in this API). Any net with
-  ## at least one pin on a selected component and at least one pin on a
-  ## non-selected component becomes a port on the result, named after
-  ## itself.
+  ## Selects `designators` from `nl.components` only (pass the owning
+  ## netlist for nested parts). Nets touching both selected and unselected
+  ## components become ports, named after themselves.
   var selected = initHashSet[string]()
   for d in designators:
     if not nl.components.hasKey(d):

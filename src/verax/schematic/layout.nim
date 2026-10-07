@@ -1,8 +1,6 @@
-## Compatibility facade and pipeline coordinator for schematic layout.
-##
-## The implementation is split into cohesive internal include files so its
-## private geometry and routing types remain internal to this module while the
-## established public API remains unchanged.
+## Public facade and pipeline coordinator for schematic layout. The
+## implementation is split into include files so private geometry and
+## routing types stay internal.
 
 import std/[algorithm, math, sets, strutils, tables, sequtils, heapqueue]
 import ../netlist/types
@@ -40,9 +38,8 @@ proc layout*(nl: Netlist): Schematic =
   layout(nl, defaultLayoutOptions())
 
 proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
-  ## Places and routes `nl` into a renderer-neutral scene. Read-only with
-  ## respect to the netlist; deterministic given the same netlist object.
-  ## `options.stages` is filtered from the fixed canonical stage order.
+  ## Places and routes `nl` into a renderer-neutral scene. Read-only and
+  ## deterministic. `options.stages` filters the fixed stage order.
   validateLayoutOptions(options)
   result.title = nl.name
 
@@ -52,16 +49,14 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   prepare(ctx)
   forcePlace(ctx)
 
-  # Reassert deterministic left-to-right layers before the existing
-  # legalization pass.
+  # Reassert left-to-right layers before legalization.
   if options.policy == lpConstrainedLayered and
      options.stageEnabled(lsConstrainedRefinement):
     constrainedRefine(ctx)
     restoreCompositeOffsets(ctx)
 
-  # Pick each orientable composite's rigid quarter-turn while there is still
-  # room to move it, before separation legalizes whatever frame it lands in.
-  # A no-op with no orientable composite on the sheet.
+  # Composite quarter-turns, while there's still room to move, before
+  # separation legalizes them.
   if options.policy == lpConstrainedLayered and
      options.stageEnabled(lsCompositeOrient):
     chooseCompositeOrientation(ctx)
@@ -73,11 +68,8 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   separate(ctx)
 
   # --- packing: blocks that share no signal net are pulled back together --
-  # The force layout's only long-range counter-force is a weak gravity, so
-  # two disconnected sub-circuits drift as far apart as the repulsion carries
-  # them. Group the parts by signal-net connectivity and shelf-pack the group
-  # bounding boxes with a fixed gutter. A rigid grid-snapped translation per
-  # group, so separation and the grid snap both survive it.
+  # Only weak gravity opposes repulsion, so disconnected sub-circuits drift
+  # apart. Shelf-pack signal-connected groups with rigid grid-snapped moves.
   if options.stageEnabled(lsPack):
     let group = groupsOf(ctx)
     packGroups(ctx, group)
@@ -85,58 +77,37 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
   if options.policy == lpConstrainedLayered:
     restoreCompositeOffsets(ctx)
 
-  # The hard guarantee behind the separated power/decoupling band: translate
-  # every power-classified unit into a shelf-packed band strictly below every
-  # signal-classified unit now that separation and packing have settled every
-  # centre, and record the resulting `powerSplit` band boundary so
-  # `repairTerminalClearance`/`recoverRouting` below cannot undo it. A no-op
-  # scene, bit-for-bit, when no unit is power-classified or the stage is off.
-  # Runs before `lsLayoutOverrides`: a `layout.side` column is a left/right
-  # band inside whichever y-half a part already landed in.
+  # Power band guarantee (see `enforcePowerBand`), before side overrides:
+  # side columns live within each y-half.
   if options.stageEnabled(lsPowerBand):
     enforcePowerBand(ctx)
 
-  # The hard guarantee behind a `layout.side` override: translate each
-  # overridden unit into its own dedicated column now that separation and
-  # packing have settled every centre, and record the resulting band so
-  # `repairTerminalClearance`/`recoverRouting` below cannot undo it. A no-op
-  # scene, bit-for-bit, when nothing states a side or the stage is off.
+  # Side-override guarantee (see `enforceLayoutSides`).
   if options.stageEnabled(lsLayoutOverrides):
     enforceLayoutSides(ctx)
 
   # --- orientation: the definitive assignment once the centres are final ---
-  # Separation and packing have moved parts since the loop froze rotation, so
-  # re-pick every one from the settled centres. One pass, snapshot-read and
-  # fresh-write like the loop, and with no hysteresis -- this is the answer,
-  # not an increment toward it.
+  # Re-pick every rotation from the settled centres; one snapshot pass, no
+  # hysteresis.
   if options.stageEnabled(lsOrient) and options.policy == lpConstrainedLayered:
     constrainedRecomputeRotations(ctx)
 
-  # The definitive mirror assignment, once the centres (and, for a
-  # constrained-layered sheet, the rotations) are final: a stated
-  # `layout.mirror` override is honoured absolutely, and every other
-  # mirrorable box is scored both ways by the same wirelength metric
-  # orientation uses. A no-op scene, bit-for-bit, when nothing states a
-  # mirror and no box ever scores better mirrored.
+  # Definitive mirroring (see `chooseMirrors`).
   if options.stageEnabled(lsMirror):
     chooseMirrors(ctx)
 
-  # Reserve complete, unshortened rail/ground glyphs before routing, and
-  # repair exact distinct-net terminal-pin coincidences as a hard condition.
-  # This bounded pass moves the smallest implicated symbols first; routing
-  # still owns the defensive shortening/blocking path for irreducible crowding.
+  # Reserve full rail/ground glyphs and repair distinct-net pin
+  # coincidences (hard), moving the smallest symbols first. Routing still
+  # shortens/blocks for irreducible crowding.
   if options.stageEnabled(lsTerminalRepair):
     repairTerminalClearance(ctx)
-  # Terminal repair is allowed to move a composite member; restore the
-  # parallel placement unit before routing/recovery sees the final geometry.
+  # Terminal repair may move a composite member; re-rigidify before routing.
   if options.policy == lpConstrainedLayered:
     restoreCompositeOffsets(ctx)
     constrainedRecomputeRotations(ctx)
 
-  # `recoverRouting` is the bounded routing-aware repair: candidates are
-  # accepted only when they route strictly further. `lsRoutingAwareRepair` is
-  # its dedicated stage name for constrained policy callers; `lsRecoverRouting`
-  # is the older stage name and either enables the same pass.
+  # Bounded routing-aware repair: moves accepted only if they route further.
+  # `lsRoutingAwareRepair` and the older `lsRecoverRouting` both enable it.
   let useRecovery = options.stageEnabled(lsRecoverRouting) or
     (options.policy == lpConstrainedLayered and
      options.stageEnabled(lsRoutingAwareRepair))
@@ -144,14 +115,11 @@ proc layout*(nl: Netlist, options: LayoutOptions): Schematic =
     if useRecovery:
       recoverRouting(ctx)
     else:
-      # A disabled recovery stage still produces the ordinary typed fallback
-      # scene for an unrouteable net rather than raising.
+      # With recovery disabled, unroutable nets still get typed fallbacks.
       routeScene(ctx, withFallbacks = true)
 
-  # Post-route interface-port refinement: pull a ported net's ports onto the y
-  # its routed wire already runs along when a full re-route scores strictly
-  # better. Must precede the scene copy-out so `finishLabels`/`finishBounds`
-  # see the final port geometry.
+  # Port refinement, before the scene copy-out so labels and bounds see the
+  # final port geometry.
   if options.stageEnabled(lsPortRefine):
     refinePortPlacement(ctx)
 

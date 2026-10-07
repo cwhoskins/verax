@@ -5,20 +5,15 @@ import ../analyses/transient
 
 const transientQuantities = ["settled_v", "ripple_pp",
                              "settled_min", "settled_max"]
-  ## Deliberately **not** `final_v`, which `spice.startup` already produces.
-  ## `analyzeTransient` measures one and the report shows it, but a second
-  ## evaluator claiming the quantity would take over every `final_v` claim in
-  ## every design; `registerEvaluator` refuses it outright, and that refusal
-  ## is the reason this list is shorter than the analysis's own output.
+  ## Not `final_v`, which `spice.startup` produces (one producer per
+  ## quantity).
 
 proc measurementOnly(spec: var TransientSpec) =
   spec.settleTol = 0.0       ## explicitly gated on `> 0`
 
 proc transientKey(ctx: EvalContext, a: Assertion): string =
   let d = ctx.design
-  # The window joins the key for the same reason the drive level does on the
-  # large-signal side: it is what was run, not what is claimed, so two claims
-  # over two windows are two runs rather than one run reported twice.
+  # The window is setup, so it joins the key.
   subjectNet(d, a) & "|" & $conditionFloat(a, "t_settle", 0.0) &
                      "|" & $conditionFloat(a, "t_window", 0.0)
 

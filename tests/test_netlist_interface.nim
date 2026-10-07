@@ -30,8 +30,8 @@ suite "interfaces":
     check i["a"].name == "io_a"
     check i.bus("d")[1].name == "io_d_1"
     check findInterface(nl, "io")["a"] == i["a"]
-    # Width is recovered from bus metadata so parameterized definitions keep
-    # their authored width after a clone or registry default is reloaded.
+    # Width comes from bus metadata, so it survives a clone or registry
+    # reload.
     d.signals[0].width = 2; registerInterfaceDef(d)
     check findInterface(nl, "io").bus("a").len == 1
     registerInterfaceDef(simpleDef())

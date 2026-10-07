@@ -1,33 +1,19 @@
-## Op-amp stage analysis: does the feedback network exist, what closed-loop
-## gain and bandwidth does it actually give, and how much stability margin is
-## left.
+## Op-amp stage analysis, as three procs with different costs:
 ##
-## Three separate questions, deliberately answered by three procs, because
-## they cost different amounts and are wrong in different ways if conflated:
-##
-## * `checkFeedback` -- a pure graph walk, no simulation. An amplifier with no
-##   path from its output back to its inverting input is not an amplifier.
+## * `checkFeedback` -- a graph walk: is there a path from output to the
+##   inverting input?
 ## * `analyzeOpAmpResponse` -- one `.ac` sweep of the **closed-loop**
-##   response: DC gain, -3 dB bandwidth, and closed-loop peaking.
-## * `analyzeLoopGain` -- one `.ac` sweep of the **loop gain**, by breaking
-##   the loop at the inverting input and injecting there. This is the only
-##   one of the three that yields a real phase margin.
+##   response: gain, -3 dB bandwidth, peaking.
+## * `analyzeLoopGain` -- one `.ac` sweep of the **loop gain**, breaking the
+##   loop at the inverting input. The only source of a real phase margin.
 ##
-## **Why phase margin is not read off the closed-loop curve.** Phase margin
-## is a property of the loop gain `Aol*beta` at its 0 dB crossing. The
-## closed-loop response is `Aol/(1+Aol*beta)`, a different function with a
-## different phase; reading "180 + phase at unity gain" off it gives a number
-## that looks like a phase margin, moves in roughly the right direction, and
-## is not one. So `analyzeOpAmpResponse` reports *peaking* instead -- a real
-## and honest closed-loop stability indicator, since a peak in the closed-loop
-## magnitude is exactly what low phase margin produces -- and the actual
-## margin comes from `analyzeLoopGain`, which measures the loop.
+## **Phase margin is never read off the closed-loop curve**: that's
+## `Aol/(1+Aol*beta)`, a different function, and "180 + phase at unity gain"
+## off it only looks like a margin. The closed-loop sweep reports peaking.
 ##
-## When the op-amp component carries no model of its own, a single-pole ideal
-## macromodel (`verax/spice/models.idealOpAmp`) is substituted and recorded
-## as an assumption. Read the caveats on that proc: it has one pole and no
-## output impedance, so it can show you what your *feedback network* does but
-## never what a specific part will do.
+## A component with no model gets a single-pole ideal macromodel
+## (`spice/models.idealOpAmp`), recorded as an assumption: it shows what the
+## feedback network does, not what a specific part does.
 
 import std/[complex, math, strutils, tables]
 import ../../netlist/types
@@ -72,55 +58,41 @@ type
     idealAol*, idealGbw*: float
       ## Used only when the component carries no model of its own.
     driveAmplitude*: float
-      ## Volts peak of the sine a large-signal run drives the stage with.
-      ## `0` disables that analysis entirely.
+      ## Volts peak of the large-signal sine; `0` disables that analysis.
     driveFreq*: float
       ## Hz of that sine.
     drivePeriods*: int
-      ## Whole periods kept after settling. More is a better THD floor and a
-      ## longer run; the window is always a whole number of them.
+      ## Whole periods kept after settling (more = better THD floor).
     driveSettlePeriods*: int
-      ## Periods simulated and discarded before measuring, so a coupling or
-      ## bias network has finished charging.
+      ## Periods simulated and discarded before measuring.
     pointsPerPeriod*: int
-      ## Requested `.tran` timestep, as a divisor of the period. ngspice
-      ## takes smaller steps where it needs them, which is why the harmonic
-      ## integration reads timestamps rather than assuming a grid.
+      ## Requested `.tran` timestep as a divisor of the period. ngspice may
+      ## step finer, so harmonic integration reads timestamps.
     thdHarmonics*: int
       ## How many harmonics above the fundamental enter the THD sum.
     maxThd*: float
       ## Percent of THD tolerated before it is flagged; `0` disables.
     boundToRails*: bool
-      ## Clamp the substituted macromodel's output to the amplifier's stated
-      ## supply rails. On by default: an unbounded output cannot saturate, so
-      ## a stage running out of swing would measure perfectly clean. Has no
-      ## effect when the rails state no voltage, which is what
-      ## `io_check.checkRailVoltages` is there to catch.
+      ## Clamp the substituted macromodel's output to the stated supply rails
+      ## (default on); unbounded, a stage can't saturate. No effect when the
+      ## rails state no voltage (`io_check.checkRailVoltages` flags that).
     vsatHeadroom*: float
-      ## Volts by which the part stops short of each rail. `0` means it
-      ## saturates exactly at them, which no real amplifier does -- it makes
-      ## the model an upper bound on swing rather than a prediction of it.
+      ## Volts the output stops short of each rail. `0` makes the model an
+      ## upper bound on swing.
     gainAtFreq*: float
-      ## Hz; when > 0 the response sweep also reports `gain_at_f`, the gain
-      ## at exactly this frequency. `0` disables it. This is how a claim
-      ## states the one number an audio stage is actually specified by --
-      ## "20 dB at 1 kHz" -- rather than inferring it from a corner.
+      ## Hz; when > 0 the sweep also reports `gain_at_f` ("20 dB at 1 kHz").
+      ## `0` disables it.
     maxHops*: int
     pinModels*: PinModelDefaults
     flattenHierarchy*: bool
-      ## Dissolve subcircuit instances into the top level before anything
-      ## else touches the netlist. On by default: left un-flattened, every
-      ## instance is cut at its boundary by `spice/isolate` and no model pass
-      ## reaches inside one. Off restores the older behaviour.
+      ## Flatten subcircuit instances first (default on); otherwise
+      ## `spice/isolate` cuts each instance at its boundary.
     keepInstances*: seq[string]
-      ## Instance paths `flatten` must leave intact, beyond the part this
-      ## analysis was named for (which is added automatically). For a design
-      ## that brings its own subcircuit macromodel and expects it honoured.
+      ## Instance paths `flatten` keeps intact, beyond the analysed part
+      ## (added automatically) -- for a design's own subcircuit macromodel.
     modelUnmodelledParts*: bool
-      ## Stand in for the parts around this fragment that carry no model, so
-      ## the simulation sees something where they sit rather than an open
-      ## circuit. The part this analysis is *about* is never touched by it --
-      ## that one is modelled deliberately further down.
+      ## Stand in for unmodelled parts around the fragment rather than leave
+      ## them open. Never applied to the analysed part.
 
 proc defaultOpAmpSpec*(): OpAmpSpec =
   OpAmpSpec(fStart: 1.0, fStop: 1.0e8, ptsPerDecade: 20, minBandwidth: 0.0,
@@ -139,13 +111,9 @@ proc matchPin(c: Component, names: openArray[string]): Pin =
   nil
 
 proc findOpAmpPins*(c: Component): tuple[pos, neg, outp: Pin] =
-  ## Locates the non-inverting input, inverting input and output by name.
-  ##
-  ## `Pin.kind` cannot do this -- it distinguishes input from output but not
-  ## `+` from `-`, and that distinction is the entire content of "negative
-  ## feedback". So this matches names, tolerantly (`+`/`IN+`/`INP`/... and the
-  ## inverting and output equivalents, case-insensitively), and raises naming
-  ## the pins actually present rather than guessing when none match.
+  ## Locates `+`, `-` and output pins by name (`Pin.kind` can't tell `+`
+  ## from `-`). Tolerant, case-insensitive; raises listing the actual pins
+  ## when none match.
   result = (pos: matchPin(c, posNames), neg: matchPin(c, negNames),
             outp: matchPin(c, outNames))
   if result.pos == nil or result.neg == nil or result.outp == nil:
@@ -158,35 +126,15 @@ proc findOpAmpPins*(c: Component): tuple[pos, neg, outp: Pin] =
 
 proc reachesThroughPassives(fromNet, toNet: Net, excluding: Component,
                             stopAtRails = false): bool =
-  ## Breadth-first walk over nets, crossing only components whose behaviour is
-  ## fully described by their value.
+  ## Breadth-first walk over nets through parts fully described by their
+  ## value. Blocking parts count (a capacitor in feedback is an integrator).
+  ## A part with a signal-passing behavioural model is crossed **forwards
+  ## only**, input to output, matching what `spice/models` builds.
   ##
-  ## Blocking parts count: a capacitor from output to inverting input is an
-  ## integrator, which is negative feedback at every frequency that matters
-  ## even though it is an open circuit at DC. Requiring a DC-conductive path
-  ## would report every integrator and every AC-coupled stage as broken.
-  ##
-  ## A part with a *signal-passing* behavioural model counts too, and only
-  ## because of what that registration means. The reason to exclude an active
-  ## device is that its gain and direction are part of the loop and unknown
-  ## here -- but for a registered kind they are known: the direction is
-  ## input-to-output and the gain is unity or whatever `gain` states. So the
-  ## walk crosses one, and crosses it **forwards only**, entering at the
-  ## input pin and leaving at the output. Refusing would be worse than
-  ## pedantic: `spice/models` is about to build that path for the simulation,
-  ## and a static check calling the loop open while the .ac closes it makes
-  ## the two disagree about the same circuit.
-  ##
-  ## `stopAtRails` refuses to traverse *through* a power or ground net, the
-  ## same rule `spice/isolate` applies for the same reason: a rail is an AC
-  ## ground that every stage on the board hangs off, so a walk that crosses
-  ## one connects things that are not connected in any signal sense. It is
-  ## off by default because `checkFeedback` genuinely wants the permissive
-  ## walk -- a feedback network returning through a bias rail is unusual but
-  ## not impossible -- and on for the injection test, where crossing a rail
-  ## is always a false positive. The TS808's drive stage is the case that
-  ## settled it: `vout` reaches `vamp` through the 47 uF-bypassed 4.5 V bias
-  ## rail, which is not feedback and never was.
+  ## `stopAtRails` refuses to walk through power/ground (an AC ground every
+  ## stage hangs off). Off for `checkFeedback`, which wants the permissive
+  ## walk; on for the injection test, where crossing a bypassed bias rail is
+  ## always a false positive.
   if fromNet == toNet: return true
   var visited = @[fromNet]
   var queue = @[fromNet]
@@ -203,8 +151,7 @@ proc reachesThroughPassives(fromNet, toNet: Net, excluding: Component,
 
       if not isPassive(comp):
         if not passesSignal(comp.kind): continue
-        # Forwards only: entered at the input, leave at the output. Walking
-        # an amplifier backwards would find a path no signal can take.
+        # Forwards only: entered at the input, leave at the output.
         let (inp, outp) = signalPathPins(comp)
         if inp == nil or outp == nil or p != inp or outp.net == nil: continue
         if outp.net == toNet: return true
@@ -222,13 +169,9 @@ proc reachesThroughPassives(fromNet, toNet: Net, excluding: Component,
   false
 
 proc checkFeedback*(nl: Netlist, opamp: string): seq[Issue] =
-  ## Static check, no simulation: is there a path from the output back to the
-  ## inverting input through passives only?
-  ##
-  ## "Through passives only" is what makes this a *feedback* test rather than
-  ## a connectivity test -- a path that leaves through another active device
-  ## is not a feedback path, because that device's own gain and direction are
-  ## part of the loop and unknown here.
+  ## Static check: is there a path from output back to the inverting input
+  ## through passives only? A path through another active device isn't
+  ## feedback (its gain and direction are unknown here).
   let c = findComponent(nl, opamp)
   if c == nil:
     raise newException(NetlistError, "no such component: " & opamp)
@@ -249,33 +192,15 @@ proc checkFeedback*(nl: Netlist, opamp: string): seq[Issue] =
   @[]
 
 proc checkInjectionPoint*(nl: Netlist, opamp, inputNet: string): seq[Issue] =
-  ## Whether driving `inputNet` would destroy the very loop being measured.
+  ## Whether driving `inputNet` would cut the loop being measured. An ideal
+  ## `.ac` source holds its node, so driving a node the feedback returns to
+  ## silently measures the forward path (a Wien bridge driven at `IN+`
+  ## reports its open bandwidth and every claim passes).
   ##
-  ## Every `.ac` proc here works by hanging an ideal source on the stage's
-  ## input net. An ideal source **holds that node**, so anything else feeding
-  ## it is overridden -- which is exactly what you want at an input and
-  ## catastrophic at a node the feedback returns to. The failure is silent:
-  ## the sweep succeeds, the numbers are self-consistent, and they describe
-  ## the forward path of a circuit whose loop has been cut.
-  ##
-  ## A Wien-bridge oscillator is the clean case. Its positive feedback lands
-  ## directly on `IN+`; drive there and the whole R-C bridge is shorted out,
-  ## and what gets measured is a flat gain of 3.2 rolling off at GBW/3.2.
-  ## Measured, that reported `f_hi_3db` as **289 kHz** for a circuit whose
-  ## entire behaviour happens at 1.59 kHz, and every claim made about it
-  ## passed. A wrong number that passes is worse than no number.
-  ##
-  ## The test is a **conjunction**, and both halves are needed:
-  ##
-  ## * the driven net is one of the amplifier's own input pins' nets, and
-  ## * there is a passive path from the output back to it.
-  ##
-  ## Either alone over-triggers. An ordinary inverting amplifier's input net
-  ## reaches the output through `Rin` + `Rf`, so reachability alone would flag
-  ## it -- but that net is not an op-amp pin, and driving it is correct. A
-  ## non-inverting amplifier's input *is* `IN+`, so the pin test alone would
-  ## flag it -- but nothing feeds back to `IN+`, so driving it is also
-  ## correct. Only when both hold is the injection point inside the loop.
+  ## Both must hold: the driven net is one of the amp's input pins' nets,
+  ## **and** the output reaches it through passives. Either alone
+  ## over-triggers (inverting amp's input reaches the output via `Rin`+`Rf`;
+  ## non-inverting amp is driven at `IN+` with nothing feeding back there).
   let c = findComponent(nl, opamp)
   if c == nil: return @[]
   let target0 = findNet(nl, inputNet)
@@ -313,48 +238,29 @@ type Prepared = object
 
 proc prepare(nl: Netlist, opamp, inputNet, outputNet: string,
              spec: OpAmpSpec, bound = false): Prepared =
-  ## Isolates the stage and makes sure there is an op-amp model in it.
-  ##
-  ## `bound` clamps the substituted macromodel to the amplifier's supply
-  ## rails, and **only a large-signal caller asks for it**. Saturation is a
-  ## large-signal idea: `.ac` linearises the circuit about its operating
-  ## point, and the clamp is `min(max(...))`, whose derivative at the clamp
-  ## is zero -- so an `.ac` sweep of a stage whose operating point sits on a
-  ## rail comes back with no gain at all rather than with the small-signal
-  ## gain it has. A single-supply stage with a ground-referenced input sits
-  ## exactly there, so this is not a corner case.
+  ## Isolates the stage and ensures it has an op-amp model. `bound` clamps
+  ## the macromodel to the rails and **only large-signal callers ask for
+  ## it**: the clamp's derivative is zero at a rail, so an `.ac` sweep of a
+  ## stage biased there (common single-supply) would show no gain.
   var isoSpec = defaultIsolationSpec("opamp_" & opamp)
   isoSpec.maxHops = spec.maxHops
   isoSpec.requireKnownRails = false
-  # The signal nets must never be terminated with an ideal source: the input
-  # gets the stimulus and the output is what is being measured.
+  # Signal nets are never terminated: the input gets the stimulus and the
+  # output is measured.
   isoSpec.excludeRails = @[inputNet, outputNet]
 
-  # Before isolating, so that a part in or around the loop is stood in for
-  # rather than refused and cut. A buffer in the feedback path is the case
-  # that matters: cut away, the loop is open, and a loop-gain figure measured
-  # over an open loop is a confident number about a different circuit.
+  # Before isolating, so a part in the loop (a buffer) is stood in for
+  # rather than cut, which would open the loop.
   var cloneNets: OrderedTable[string, Net]
-  # Clone, flatten, *then* apply `simReplace` -- not the combined
-  # `materializeSimNetlist` -- so a nested XSPICE component's `A`-line ports
-  # are rendered from post-flatten net names rather than frozen at
-  # child-template-local ones flatten is about to rename out from under it
-  # (see `spice/flatten`'s module doc). `simReplace` is still honoured: a
-  # component's own stand-in is the design's statement of how it wants that
-  # part simulated, and this analysis used to ignore it entirely.
-  # `bound` is what tells a large-signal caller apart from a small-signal
-  # one, and it is also the only thing here that knows which purpose a part
-  # carrying several models should be stood in for under.
+  # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
+  # nested XSPICE component's ports use post-flatten net names. `bound`
+  # selects which purpose a multi-model part is stood in for.
   let work = clone(nl, cloneNets)
   discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances, opamp)
   applySimReplacements(work, purpose = (if bound: spLargeSignal else: spSmallSignal))
 
-  # Read *after* flattening, and from the work copy. An amplifier inside a
-  # subcircuit has pins on the child's own nets, whose names mean nothing at
-  # the top level -- `amp` inside two instances is two different nodes. Once
-  # flattened those pins sit on `XL.amp` and `XR.amp`, which is what the
-  # fragment will be keyed by. Still before isolation, so the rails read here
-  # are the design's and not the terminations about to replace them.
+  # Read after flattening (a nested amp's pins move to `XL.amp` etc.) and
+  # before isolation (so rails are the design's, not the terminations).
   let pins = findOpAmpPins(findComponent(work, opamp))
 
   if spec.modelUnmodelledParts:
@@ -377,18 +283,14 @@ proc prepare(nl: Netlist, opamp, inputNet, outputNet: string,
     # The design brought its own macromodel; use it untouched.
     result.negPin = findOpAmpPins(result.frag.components[opamp]).neg
   else:
-    # Bounded to the part's supply rails when the design states them. Read
-    # from the pre-isolation work copy, since the fragment's rails have
-    # already been terminated.
+    # Bounded to the stated supply rails, read from the pre-isolation copy.
     let rails = supplyRailsOf(findComponent(work, opamp))
     let clamp = bound and rails.known and spec.boundToRails
     let vHi = if clamp: rails.hi - spec.vsatHeadroom else: Inf
     let vLo = if clamp: rails.lo + spec.vsatHeadroom else: -Inf
 
-    # A stated `gbw` beats the package default. The default is 1 MHz and a
-    # real precision part is ten times that, which on a 40 dB stage is 0.7 dB
-    # of gain at 1 kHz -- more than the entire accuracy budget of an
-    # equalisation network, and invisible unless it can be stated.
+    # A stated `gbw` beats the 1 MHz default, which can cost tenths of a dB
+    # at audio frequencies on a high-gain stage.
     let statedGbw = annotationFloat(findComponent(work, opamp), "gbw")
     let gbw = if statedGbw.has and statedGbw.value > 0.0: statedGbw.value
               else: spec.idealGbw
@@ -416,20 +318,10 @@ proc prepare(nl: Netlist, opamp, inputNet, outputNet: string,
         "pole are represented. State `gbw` on the part to use its own")
 
 proc detachDrivers(frag: Netlist, netName: string): seq[string] =
-  ## Removes anything already driving `netName` with a low impedance.
-  ##
-  ## Driving a stage "at its input" means replacing whatever feeds it with an
-  ## ideal stimulus -- that is what the measurement is. It only became
-  ## necessary once a *preceding* stage started being stood up as a
-  ## macromodel instead of cut away: that stage's output is a VCVS, and
-  ## putting the sweep's own source across a VCVS output is two ideal sources
-  ## on one node. ngspice answers that with a singular matrix, which this
-  ## module surfaced as `key not found: frequency` -- an error about a
-  ## missing vector, three steps removed from the cause.
-  ##
-  ## Only genuinely stiff drivers are removed. A stage fed through a coupling
-  ## capacitor or a series resistor is not driven by anything here, and
-  ## nothing is touched.
+  ## Removes stiff drivers of `netName`, since the measurement replaces them
+  ## with an ideal stimulus. Two ideal sources on one node (e.g. a preceding
+  ## stage's VCVS macromodel) give a singular matrix. Drivers through a
+  ## coupling cap or series resistor are left alone.
   let net = frag.nets.getOrDefault(netName)
   if net == nil: return
   var doomed: seq[Component]
@@ -457,17 +349,14 @@ proc analyzeOpAmpResponse*(nl: Netlist, opamp, inputNet, outputNet: string,
     if findNet(nl, n) == nil:
       raise newException(NetlistError, "no such net: " & n)
 
-  # A stage with no feedback has no closed-loop response to measure, so this
-  # returns the structural finding rather than simulating an open-loop circuit
-  # and reporting its (meaningless) numbers.
+  # No feedback means no closed-loop response; return the finding rather
+  # than simulate an open loop.
   let fb = checkFeedback(nl, opamp)
   if fb.len > 0:
     result.issues = fb
     return
 
-  # Driving a node the feedback returns to measures a circuit that is not
-  # this one, and does it without failing, so it is checked before the sweep
-  # rather than second-guessed after it.
+  # Driving inside the loop fails silently, so check before the sweep.
   let injIssues = checkInjectionPoint(nl, opamp, inputNet)
   if injIssues.len > 0:
     result.issues = injIssues
@@ -508,22 +397,11 @@ proc analyzeOpAmpResponse*(nl: Netlist, opamp, inputNet, outputNet: string,
   if not bw.isNaN:
     result.add "gain_bw_product", pow(10.0, dcGain / 20.0) * bw, "Hz"
 
-  # The band-referenced half of the answer, for a stage that is AC coupled
-  # and therefore has no meaningful gain at DC.
-  #
-  # `gain_dc_db`, `bw_3db` and `peaking_db` above are all referenced to the
-  # *first swept point*, which is right for a DC-coupled low-pass and is the
-  # stopband of every single-supply stage -- there the gain-setting leg is
-  # capacitively coupled, so the gain at DC is unity by construction. The
-  # TS808 drive stage reports `gain_dc_db` of 0.001 dB against a real
-  # midband gain of 32, and a `bw_3db` of 710 kHz measured 3 dB below
-  # *unity*, on the far side of its own hump. Both numbers are arithmetically
-  # correct and answer nothing.
-  #
-  # These four are referenced to the response's maximum instead, so they say
-  # what the stage does rather than what it does at DC. Nothing is removed:
-  # the DC-referenced set stays exactly as it was, because for a DC-coupled
-  # stage it is the right question and the two agree.
+  # The band-referenced half, for AC-coupled stages. `gain_dc_db`, `bw_3db`
+  # and `peaking_db` reference the first swept point, which for an
+  # AC-coupled single-supply stage is unity gain at DC -- correct and
+  # meaningless. These four reference the response maximum instead. Both
+  # sets are reported; for a DC-coupled stage they agree.
   let (gMaxDb, gMaxHz) = gainMax(f, g)
   result.add "gain_max_db", gMaxDb, "dB"
   result.add "f_gain_max", gMaxHz, "Hz"
@@ -531,15 +409,12 @@ proc analyzeOpAmpResponse*(nl: Netlist, opamp, inputNet, outputNet: string,
   result.add "f_lo_3db", edges.lo, "Hz"
   result.add "f_hi_3db", edges.hi, "Hz"
 
-  # `NaN` when the stated frequency is outside the swept band, which reads as
-  # "could not check" rather than as a pass: extrapolating a response past
-  # what was simulated would be inventing data.
+  # `NaN` outside the swept band; no extrapolation.
   if spec.gainAtFreq > 0.0:
     result.add "gain_at_f", valueAt(f, g, spec.gainAtFreq, logX = true), "dB"
 
-  # Peaking: how far the closed-loop magnitude rises above its DC value. A
-  # well-damped stage has none; a peak is what insufficient phase margin
-  # looks like from outside the loop.
+  # Peaking above the DC value: what low phase margin looks like from
+  # outside the loop.
   var peakDb = 0.0
   for x in g:
     if x - dcGain > peakDb: peakDb = x - dcGain
@@ -561,19 +436,10 @@ proc analyzeOpAmpResponse*(nl: Netlist, opamp, inputNet, outputNet: string,
 proc analyzeLoopGain*(nl: Netlist, opamp, inputNet, outputNet: string,
                       spec = defaultOpAmpSpec()): AnalysisReport =
   ## Phase and gain margin, by breaking the loop at the inverting input and
-  ## injecting a test signal across the break.
-  ##
-  ## The break is made at the amplifier's own inverting input because that is
-  ## a low-impedance-drives-high-impedance point: the feedback network drives
-  ## it and the op-amp input barely loads it, so inserting a series source
-  ## there does not disturb the loading the loop actually sees. Injecting at a
-  ## point where impedances are comparable would measure a loop that is not
-  ## the real one.
-  ##
-  ## With the source inserted between the feedback network (node A) and the
-  ## amplifier input (node B), the loop gain is `T = -V(A)/V(B)`; the sign
-  ## accounts for the inversion the op-amp itself contributes, so `T` comes
-  ## out as the conventional positive `Aol*beta`.
+  ## injecting across the break. That point is low impedance driving high
+  ## impedance, so the series source doesn't disturb loop loading. With the
+  ## source between the feedback network (A) and the amp input (B),
+  ## `T = -V(A)/V(B)` (the sign undoes the amp's inversion).
   result.name = "Loop gain of " & opamp
 
   if findComponent(nl, opamp) == nil:
@@ -587,9 +453,7 @@ proc analyzeLoopGain*(nl: Netlist, opamp, inputNet, outputNet: string,
     result.issues = fb
     return
 
-  # Driving a node the feedback returns to measures a circuit that is not
-  # this one, and does it without failing, so it is checked before the sweep
-  # rather than second-guessed after it.
+  # Driving inside the loop fails silently, so check before the sweep.
   let injIssues = checkInjectionPoint(nl, opamp, inputNet)
   if injIssues.len > 0:
     result.issues = injIssues
@@ -605,9 +469,7 @@ proc analyzeLoopGain*(nl: Netlist, opamp, inputNet, outputNet: string,
   disconnect(p.negPin)
   connect(p.negPin, netB)
 
-  # The input source is set to zero while the loop is measured -- the only
-  # excitation must be the injected one, or the response would be a mixture of
-  # the loop gain and the closed-loop response.
+  # Zero the input source so the injected signal is the only excitation.
   let displaced = detachDrivers(p.frag, inputNet)
   if displaced.len > 0:
     result.assumptions.add note(displaced.join(", ") & " drove '" & inputNet &
@@ -650,7 +512,7 @@ proc analyzeLoopGain*(nl: Netlist, opamp, inputNet, outputNet: string,
   result.add "crossover_hz", fx, "Hz"
 
   if fx.isNaN:
-    # Nothing to report a margin against; say so rather than inventing one.
+    # Nothing to report a margin against.
     result.add "phase_margin_deg", NaN, "deg"
     result.add "gain_margin_db", NaN, "dB"
     return
@@ -660,24 +522,11 @@ proc analyzeLoopGain*(nl: Netlist, opamp, inputNet, outputNet: string,
 
   # --- is this actually a loop transmission? -----------------------------
   #
-  # `180 + phase at crossover` is the phase margin *of a loop the break
-  # opened*. Breaking at the inverting input opens the only feedback path a
-  # plain amplifier has, and for those this is exact: a unity-gain follower
-  # and a gain-of-2 stage both measure 90 degrees against an ideal
-  # single-pole model.
-  #
-  # It is not exact for a topology with a second path. A Sallen-Key returns
-  # its first capacitor to the *output*, and that positive path stays closed
-  # across this break -- so the measured ratio is not a loop transmission.
-  # Its phase starts near +79 degrees instead of 0 and climbs through +180
-  # while the magnitude is still above 0 dB, and `180 + phase` then reports
-  # **450 degrees**: not a phase margin, and one that satisfies every
-  # minimum a design could state. A stability claim that cannot fail is
-  # worse than no stability claim, so the three signatures of that are
-  # checked here and the margin is withheld rather than invented. `NaN`
-  # reads as "could not check" everywhere downstream, which is the honest
-  # answer -- and it is deliberately not a *failure*, because the circuit
-  # may well be fine; it is this measurement that cannot say.
+  # Exact for a plain amplifier (the break opens its only feedback path).
+  # A topology with a second path (Sallen-Key's capacitor to the output)
+  # stays partly closed, so `180 + phase` can read 450 degrees -- a margin
+  # that passes any minimum. The three signatures are checked here and the
+  # margin withheld as `NaN` (not checked, not failed).
   var crossings = 0
   for i in 1 ..< tDb.len:
     if (tDb[i - 1] < 0.0) != (tDb[i] < 0.0): inc crossings
@@ -714,10 +563,8 @@ proc analyzeLoopGain*(nl: Netlist, opamp, inputNet, outputNet: string,
 
   result.add "phase_margin_deg", pm, "deg"
 
-  # Gain margin: how far below 0 dB the loop gain has fallen by the time its
-  # phase reaches -180. A one- or two-pole loop approaches -180 degrees
-  # asymptotically without reaching it, so there is often no such frequency;
-  # that is reported as NaN rather than as a large finite margin.
+  # Gain margin at the -180 degree crossing. One- or two-pole loops never
+  # reach it, so it's often `NaN` rather than a large finite number.
   let f180 = interpCrossing(f, tPhase, -180.0, logX = true)
   if f180.isNaN:
     result.add "gain_margin_db", NaN, "dB"
@@ -736,33 +583,16 @@ proc analyzeLoopGain*(nl: Netlist, opamp, inputNet, outputNet: string,
 
 proc analyzeLargeSignal*(nl: Netlist, opamp, inputNet, outputNet: string,
                          spec = defaultOpAmpSpec()): AnalysisReport =
-  ## What the stage does when it is *driven*, rather than what its transfer
-  ## function is.
+  ## What the stage does when driven with a sine, for circuits whose
+  ## nonlinearity is the point (clipping stages) -- `.ac` linearises it away.
   ##
-  ## Everything else in this module is small-signal: `.ac` linearises the
-  ## circuit about its operating point, so a clipping diode is whatever
-  ## conductance it happens to have at rest and never actually clips. That is
-  ## the right model for gain, bandwidth and stability and it is the wrong
-  ## one for an overdrive pedal, where the clipping *is* the product. This
-  ## drives a sine in and measures what comes out.
+  ## **The stimulus carries the node's own DC bias**, found by an `.op` on
+  ## the same fragment: `SIN(0 ...)` would clamp a mid-rail input to zero,
+  ## and coupling through a large capacitor makes settling take seconds.
   ##
-  ## **The stimulus carries the node's own DC bias, and that is not a
-  ## detail.** A single-supply stage sits at some mid-rail operating point;
-  ## hanging a `SIN(0 ...)` source off its input would clamp that node to
-  ## zero and measure a circuit biased into its own stop. So an operating
-  ## point is found first, on the same fragment, and the sine is offset onto
-  ## it. The alternative -- coupling the source through a large capacitor --
-  ## keeps the bias but makes the settling time constant the input
-  ## resistance times that capacitor, which is seconds for an ordinary input
-  ## network and turns a millisecond run into an unusable one.
-  ##
-  ## What this still does not model: the substituted op-amp macromodel has
-  ## no slew-rate limit, no output current limit and no supply rails, so it
-  ## will not clip on its own. Distortion measured here is distortion the
-  ## *network* produces -- diodes, saturating parts, anything with a real
-  ## model. A stage whose only nonlinearity is the amplifier running out of
-  ## swing will read as clean, and that is a limit of the model rather than
-  ## a finding about the circuit.
+  ## The macromodel has no slew-rate or output-current limit, so distortion
+  ## measured here comes from the network (diodes, modelled parts) and the
+  ## rail clamp only.
   result.name = "Large-signal response of " & opamp
 
   if findComponent(nl, opamp) == nil:
@@ -786,9 +616,7 @@ proc analyzeLargeSignal*(nl: Netlist, opamp, inputNet, outputNet: string,
     result.assumptions.add note(displaced.join(", ") & " drove '" & inputNet &
       "' and was removed so the stage could be driven instead")
 
-  # The operating point the stimulus has to sit on. Found on the fragment
-  # with nothing driving the input yet, which is the bias the design gives
-  # that node.
+  # The bias the design gives the input, with nothing driving it.
   var bias = 0.0
   try:
     let op = run(p.frag, @[".op"], label = "large signal bias:" & opamp)
@@ -812,9 +640,7 @@ proc analyzeLargeSignal*(nl: Netlist, opamp, inputNet, outputNet: string,
   let settle = float(spec.driveSettlePeriods) * period
   let stop = settle + float(spec.drivePeriods) * period
   let step = period / float(spec.pointsPerPeriod)
-  # `tstart` discards the settling transient from the saved data rather than
-  # from the simulation, so the window handed to the harmonic integration is
-  # already steady-state.
+  # `tstart` drops the settling transient from the saved data.
   let card = ".tran " & spiceFormat.spiceValue(step) & " " &
     spiceFormat.spiceValue(stop) & " " & spiceFormat.spiceValue(settle)
 
@@ -836,10 +662,8 @@ proc analyzeLargeSignal*(nl: Netlist, opamp, inputNet, outputNet: string,
   let d = thd(t, vo, spec.driveFreq, spec.thdHarmonics)
   result.add "thd_pct", d * 100.0, "%"
 
-  # Gain *at this drive level*, from the fundamental alone -- which is what
-  # separates it from the small-signal figure. A stage that is compressing
-  # has a fundamental smaller than its linear gain would give, and the
-  # difference between this and `gain_at_f` is the compression.
+  # Gain at this drive level, from the fundamental alone; its difference
+  # from `gain_at_f` is the compression.
   let amps = harmonicAmplitudes(t, vo, spec.driveFreq, spec.thdHarmonics)
   if amps.len > 0 and amps[0] > 0.0:
     result.add "gain_compressed_db",

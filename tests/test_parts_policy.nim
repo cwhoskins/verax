@@ -7,14 +7,11 @@ import verax/netlist/graph
 import verax/netlist/annotations
 
 suite "a module asks by function, a board answers by part":
-  # The asymmetry the submodule exists for: the module knows what a part is
-  # *for*, the board knows what environment it lives in, and neither can
-  # choose it alone.
+  # The module knows what a part is for; the board knows its environment.
 
   test "function decides the dielectric, and timing is not a preference":
-    # A Class 2 dielectric loses capacitance to DC bias and to temperature.
-    # A capacitor that sets a corner must not, so C0G here is forced by
-    # physics rather than chosen -- which is what makes it safe to default.
+    # A Class 2 dielectric loses capacitance to bias and temperature; a
+    # corner-setting cap can't, so C0G is forced by physics.
     let timing = defaultCapacitor(CapRequest(value: 22.nF, use: cuTiming))
     check timing.dielectric == "C0G"
     check isClass1(timing.dielectric)
@@ -24,8 +21,7 @@ suite "a module asks by function, a board answers by part":
     check not isClass1(decoupling.dielectric)
 
   test "the decoupling guess is defaulted and said out loud, every time":
-    # It is a genuine judgement rather than physics, and it is also exactly
-    # where a wrong guess cost a factor of seven in measured rail impedance.
+    # A real judgement, and where a wrong guess costs most in rail impedance.
     let ch = defaultCapacitor(CapRequest(value: 10.uF, use: cuDecoupling))
     check ch.notes.len == 1
     check "X7R assumed" in ch.notes[0]
@@ -36,39 +32,29 @@ suite "a module asks by function, a board answers by part":
       CapRequest(value: 100.nF, use: cuDecoupling, working: 3.3.V))
     check float(known.voltageRating) == 10.0        # 2x 3.3 rounded up
 
-    # Zero working voltage means the module genuinely does not know -- a
-    # coupling capacitor in an unbiased stage -- and inventing a rating for
-    # it would be inventing the circuit.
+    # Zero working voltage means unknown; a rating would invent the circuit.
     let unknown = defaultCapacitor(CapRequest(value: 100.nF, use: cuDecoupling))
     check float(unknown.voltageRating) == 0.0
 
   test "an inductor is rated above the peak it was told about, not at it":
-    # An inductor near saturation has less inductance than its label, so the
-    # ripple is larger than designed, which pushes it further in. The error
-    # compounds rather than averaging out.
+    # Saturation lowers inductance, raising ripple, which compounds.
     let ch = defaultInductor(IndRequest(value: 3.3.uH, use: iuPower, carrying: 5.A))
     check float(ch.isat) > 5.0
     check float(ch.currentRating) > 5.0
     check float(ch.isat) > float(ch.currentRating)
 
   test "package sizing climbs with capacitance, and with voltage rating too":
-    # Same capacitance, higher rating -> a physically bigger case, because a
-    # higher-voltage MLCC needs a thicker dielectric per layer.
+    # Higher rating -> bigger case for the same capacitance.
     check smallestCeramicPackage(100.nF, 16.V) == "0603"
     check smallestCeramicPackage(100.nF, 50.V) == "0805"
-    # The lookup never returns anything bigger than 1206, this module's
-    # ceiling -- a capacitance beyond what 1206 plausibly holds still gets
-    # 1206 back, not a guess at something larger.
+    # Never bigger than 1206, this module's ceiling.
     check smallestCeramicPackage(1.F, 100.V) == "1206"
-    # Unstated voltage reads as the most permissive tier, the same
-    # "don't know, don't invent" rule the voltage rating itself follows.
+    # Unstated voltage is the most permissive tier.
     check smallestCeramicPackage(100.nF) == smallestCeramicPackage(100.nF, 16.V)
 
   test "a Choice carries the use that produced it, spelled for part_use":
-    # `Choice.use` is what closes `docs/bom_compiler_plan.md`'s fact 4 --
-    # without it, a policy's output carried a capacitor's dielectric and
-    # tolerance but not *why* that dielectric was picked, so a timing part
-    # and a bypass part reading "C0G" looked identical downstream.
+    # `Choice.use` records why the dielectric was picked, so a timing "C0G"
+    # and a bypass "C0G" stay distinguishable.
     check defaultCapacitor(CapRequest(value: 22.nF, use: cuTiming)).use == "timing"
     check defaultCapacitor(CapRequest(value: 100.nF, use: cuCoupling)).use == "coupling"
     check defaultCapacitor(CapRequest(value: 100.nF, use: cuDecoupling)).use == "decoupling"
@@ -77,9 +63,7 @@ suite "a module asks by function, a board answers by part":
     check defaultResistor(ResRequest(value: 1.kohm, use: ruGeneral)).use == "general"
     check defaultResistor(ResRequest(value: 1.kohm, use: ruPower)).use == "power"
     check defaultInductor(IndRequest(value: 10.uH, use: iuFilter)).use == "filter"
-    # Both `ResUse.ruPower` and `IndUse.iuPower` spell "power" -- `part_use`'s
-    # allowed list is the union of what the three enums mean, not three
-    # disjoint vocabularies.
+    # `part_use` allows the union of the three enums' meanings.
     check defaultInductor(IndRequest(value: 10.uH, use: iuPower)).use == "power"
 
   test "a policy is ordinary data, so a project's own is not second class":
@@ -95,9 +79,7 @@ suite "a module asks by function, a board answers by part":
 
 suite "a choice lands as ordinary registered annotations":
   test "everything a policy decided is visible the way a spec: block would be":
-    # Nothing here is private to the parts submodule: what the policy chose
-    # is the same vocabulary a designer would have typed, so everything
-    # downstream reads it identically either way.
+    # The policy writes the same vocabulary a designer would type.
     let nl = netlist("t"):
       net gnd, kind = ntGround, name = "0"
       net vdd, kind = ntPower
@@ -110,23 +92,16 @@ suite "a choice lands as ordinary registered annotations":
     check c.attrs["dielectric"] == "X7R"
     check annotationFloat(c, "voltage_rating").value == 10.0
     check c.attrs.hasKey("package")
-    # ...and with provenance, so nobody mistakes a derived choice for a
-    # datasheet figure.
+    # ...with provenance, so it isn't mistaken for a datasheet figure.
     check annotation(c, "dielectric").source == annDerived
-    # The use that decided the dielectric is visible too, not just its
-    # consequence -- `part_use`, alongside `dielectric`/`tolerance`, is what
-    # lets a BOM compiler (or a reviewer) tell a timing capacitor from a
-    # bypass one on a finished netlist.
+    # `part_use` lets a BoM compiler or reviewer tell timing from bypass.
     check c.attrs["part_use"] == "decoupling"
     check partUse(c).value == "decoupling"
     check partUse(c).source == annDerived
 
   test "a bad part_use that reaches attrs some other way is caught at readiness":
-    # `setAnnotation` refuses a bad `part_use` immediately (see
-    # `test_netlist_annotations.nim`), so this is reachable only the way a
-    # file reader or hand-written attrs could reach it -- bypassing the
-    # setter, `test_netlist_annotations.nim`'s own convention for exercising
-    # `validateAnnotations` on a value nothing typed goes through checks for.
+    # `setAnnotation` refuses a bad `part_use`, so this bypasses it the way a
+    # file reader or raw attrs would.
     let nl = netlist("t"):
       net gnd, kind = ntGround, name = "0"
       net vdd, kind = ntPower

@@ -9,37 +9,19 @@ const currentQuantities = ["i_peak", "i_rms", "i_avg", "i_pp",
                            "i_min", "i_max",
                            "i_peak_derating", "i_rms_derating",
                            "i_out_derating"]
-  ## `i_out_derating` is the odd one out and is here rather than in an
-  ## evaluator of its own for one reason: it is read off the **same run**.
+  ## `i_out_derating` lives here because it reads the **same run**: the
+  ## sense part's current (a buck's inductor, a linear's pass element)
+  ## against the *regulator's* rating, which only the adapter (with the role
+  ## binding) can compute. A separate evaluator would double the `.tran`.
   ##
-  ## The other two derating figures divide a part's measured current by a
-  ## rating that part states. This one divides it by a rating a *different*
-  ## part states -- the regulator's, against the current measured through
-  ## whatever carries its output (a buck's inductor, a linear's pass
-  ## element). `analyzeCurrent` cannot compute it, because it is handed
-  ## designators and knows nothing about roles; the adapter below can,
-  ## because it has both the subject and the role binding. Registering a
-  ## second evaluator for it would double the `.tran` -- and on
-  ## `designs/lt8640a_buck.nim` that run is the switching model at fifty
-  ## timepoints a cycle, which is most of the check.
-  ##
-  ## The price is one line of honesty in `verax quantities`. `binds` is a
-  ## property of an *evaluator*, not of a quantity, so declaring
-  ## `binds: @["regulator"]` here would mark `i_peak` and the rest as
-  ## reachable only through a role -- which is false and is exactly the
-  ## conflation that column exists to prevent. Left empty, the table reports
-  ## `i_out_derating` as "`require` / role: regulator" where only the second
-  ## half is true. The runtime message covers the difference: a bare
-  ## `require i_out_derating(L1)` comes back naming the missing binding
-  ## rather than failing obscurely.
+  ## The cost: `binds` is per evaluator, so declaring `@["regulator"]` would
+  ## wrongly mark `i_peak` etc. role-only. Left empty, `verax quantities`
+  ## overstates `i_out_derating`'s reach; a bare `require` gets a message
+  ## naming the missing binding.
 
 proc currentKey(ctx: EvalContext, a: Assertion): string =
-  ## **Deliberately not keyed by the part.** One `.tran` answers every part in
-  ## the design at once -- the currents are all readings of the same set of
-  ## waveforms -- so the setup is the window and nothing else. Keying by part
-  ## would simulate a switching model once per claimed part to read one run
-  ## several ways, which on `lt8640a_buck` is fifty timepoints a cycle paid
-  ## twice for an inductor and its input capacitor.
+  ## **Not keyed by part**: one `.tran` answers every part, so the setup is
+  ## the window alone (keying by part would re-simulate per part).
   $conditionFloat(a, "t_settle", 0.0) & "|" &
   $conditionFloat(a, "t_window", 0.0)
 
@@ -65,12 +47,9 @@ proc currentDoc(ctx: EvalContext, batch: seq[Assertion]): string =
 
 proc harvestPart(a: Assertion, rep: AnalysisReport, part, evaluator: string):
     AssertionResult =
-  ## `harvest`, restricted to the measurements belonging to one part.
-  ##
-  ## One run produces `i_peak` for every claimed part, so a lookup by quantity
-  ## alone would answer a claim about the input capacitor with the inductor's
-  ## number. `Measurement.at` carries the designator, and matching on it is
-  ## what keeps the batching honest.
+  ## `harvest` restricted to one part's measurements (`Measurement.at`
+  ## carries the designator), so one batched run answers each claim with the
+  ## right part's number.
   for m in rep.measurements:
     if m.name == a.quantity and m.at == part:
       return verdict(a, m.value, m.unit, evaluator, rep.assumptions,
@@ -89,21 +68,11 @@ proc harvestPart(a: Assertion, rep: AnalysisReport, part, evaluator: string):
 
 proc harvestOutputDerating(d: Design, a: Assertion, rep: AnalysisReport,
                            part, evaluator: string): AssertionResult =
-  ## The sense part's RMS current as a fraction of the **regulator's** own
-  ## continuous rating.
-  ##
-  ## Both halves are deliberate. The current is read where it actually flows:
-  ## a regulator that reaches the deck as a code model or a subcircuit has no
-  ## terminal current of its own, so a converter's output current is its
-  ## inductor's and a linear's is its pass element's, and the role says which
-  ## by binding `sense`. The rating is read off the regulator, because that
-  ## is the part it describes -- a 5 A converter's limit is not a property of
-  ## the inductor somebody chose to put after it, and writing it on the
-  ## inductor would put the wrong number in the BoM.
-  ##
-  ## `NaN` when the regulator states no `current_rating`, on the rule
-  ## `current_path` already follows: a part nobody has chosen yet reads as
-  ## *not evaluated*, never as infinite headroom.
+  ## The sense part's RMS current as a fraction of the **regulator's**
+  ## continuous rating. Current is read where it flows (a code-model
+  ## regulator has no terminal current); the rating is the regulator's (a
+  ## converter's limit isn't the inductor's). `NaN` when the regulator states
+  ## no `current_rating`.
   var rms = NaN
   for m in rep.measurements:
     if m.name == "i_rms" and m.at == part:

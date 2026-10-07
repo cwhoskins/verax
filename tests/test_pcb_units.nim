@@ -34,8 +34,8 @@ test "toNm converts every source unit a reader can encounter":
   check toNm(1.0, luInch) == inch(1.0)
 
 test "ODB++ 2.5nm quantum rounds to the nearest nanometre as documented":
-  # 1/400 micron is the finest resolution ODB++ permits; nanometre storage
-  # cannot hold it exactly, and the loss is bounded by half a nanometre.
+  # ODB++'s finest resolution (1/400 um) isn't exact in nm; the loss is
+  # under half a nanometre.
   let quantum = um(0.0025)
   check abs(quantum.raw.float - OdbQuantumNm) <= 0.5
   # The full ODB++ coordinate range still fits comfortably in int64.

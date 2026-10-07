@@ -78,14 +78,8 @@ X2 c d BUF
   check xLines == 2
 
 test "an instance's own partNumber never changes which SUBCKT block its X line names":
-  # `graph.instantiate` used to stamp a new instance's `partNumber` with the
-  # template netlist's name, and the deck writer read that field back to
-  # spell both the `X` card and the `collectTemplates` dedup key -- so the
-  # two agreed only because `instantiate` kept them in lockstep. A design
-  # stating its own `partNumber` on an instance (the DSL's `instance ...,
-  # partNumber = "..."` field-override path) must not be able to desync the
-  # two: the deck always names the block the writer actually wrote
-  # (`child.name`), independent of whatever `partNumber` now says.
+  # The deck names the block the writer actually wrote (`child.name`),
+  # whatever an instance's `partNumber` says.
   var tmpl = newNetlist("BUF")
   let inNet = addNet(tmpl, newNet("IN"))
   let outNet = addNet(tmpl, newNet("OUT"))
@@ -165,9 +159,8 @@ Z1 n1 n2 n3 weirdmodel
   check z1.attrs["value"] == "weirdmodel"
 
 test "the device letter comes from kind, not from the designator":
-  # SPICE infers device type from the first letter and nothing else, so a
-  # designator that disagrees with `kind` silently simulates a different
-  # part. These are all ordinary EDA designators.
+  # SPICE infers the device from the first letter, so these ordinary EDA
+  # designators must be corrected.
   var nl = newNetlist("d")
   let a = addNet(nl, newNet("a"))
   let b = addNet(nl, newNet("0", ntGround))
@@ -194,14 +187,14 @@ test "a designator that already agrees with its kind is left alone":
     check deckDesignator(c) == desig
 
 test "a kind with no known letter keeps its designator":
-  # Nothing to correct it against. Such a part is substituted before it ever
-  # reaches a deck, or written as a subcircuit instance.
+  # No letter to correct against; such parts are substituted or written as
+  # subcircuit instances.
   var nl = newNetlist("d")
   let c = addComponent(nl, newComponent("U1", kind = "mcu"))
   check deckDesignator(c) == "U1"
 
 test "the corrected letter is prepended, never substituted":
-  # Substituting would merge FB1 and L1 into one device on a board with both.
+  # Substituting would merge FB1 and L1 on a board with both.
   var nl = newNetlist("d")
   let a = addNet(nl, newNet("a"))
   let b = addNet(nl, newNet("0", ntGround))

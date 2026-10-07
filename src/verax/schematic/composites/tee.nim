@@ -1,16 +1,12 @@
 ## The tee motif: two flat two-terminal *series* parts meeting at a private
-## mid node that also carries one flat two-terminal *shunt-to-ground* part and
-## nothing else -- `docs/composites.md` idea 1 (series chain) plus idea 2
-## (midpoint tap), tapped to ground. Canonical drawing: the two series parts
-## in a horizontal row, the shunt hanging straight down to ground from the
-## junction between them.
+## mid node that also carries one *shunt-to-ground* part and nothing else.
+## Drawn with the series parts in a row and the shunt hanging down from the
+## junction.
 ##
-## Recognition is topology-only: the mid net has exactly three pins, all on
-## flat two-terminal parts, is neither an interface port nor ground/rail, and
-## exactly one of its three legs goes to ground. The mid net is wholly
-## internal -- `teeInternalRoute` draws its T-junction and `routing.nim` skips
-## external routing for it (a fully-internal composite net). Members are raw
-## singletons; registered after `parallelStackKind` and `piKind`.
+## Topology-only: the mid net has exactly three pins on flat two-terminal
+## parts, isn't a port, ground or rail, and exactly one leg goes to ground.
+## The mid net is internal (`teeInternalRoute` draws it). Registered after
+## `parallelStackKind` and `piKind`.
 
 proc teeRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]] =
   var groups: seq[seq[int]]
@@ -74,15 +70,15 @@ proc teeMidNet(comps: seq[Component], members: seq[int]): string =
 
 proc teeInternalLayout(comps: seq[Component], syms: seq[SymbolDef],
                        members: seq[int]): seq[Point] =
-  ## series A and B in a horizontal row two grid pitches either side of the
-  ## origin; the shunt one pitch below, vertical, ground pin down.
+  ## Series parts two pitches either side of the origin; the shunt one pitch
+  ## below, ground down.
   @[Point(x: -2.0 * pinSpan, y: 0.0),   # seriesA
     Point(x: 0.0, y: 2.0 * pinSpan),     # shunt
     Point(x: 2.0 * pinSpan, y: 0.0)]     # seriesB
 
 proc teeExternalPins(comps: seq[Component], members: seq[int]): seq[CompositePort] =
-  ## Only the mid net -- fully internal. `covered` is parallel to `members`
-  ## ([seriesA, shunt, seriesB]) so `teeInternalRoute` can tell them apart.
+  ## Only the mid net (fully internal). `covered` is parallel to `members`
+  ## ([seriesA, shunt, seriesB]).
   let mid = teeMidNet(comps, members)
   var port = CompositePort(net: mid)
   for mem in members:
@@ -93,15 +89,13 @@ proc teeExternalPins(comps: seq[Component], members: seq[int]): seq[CompositePor
 proc teePickRepresentative(parts: seq[SchematicPart], footprint: seq[Obstacle],
                            port: CompositePort):
     tuple[partIdx: int, pinName: string] =
-  ## The mid net never reaches the external router, so the deterministic
-  ## default stands.
+  ## The mid net never reaches the external router.
   port.representative
 
 proc teeInternalRoute(parts: seq[SchematicPart],
                       port: CompositePort): seq[SchematicWire] =
   ## The T-junction: seriesA -- seriesB straight through, the shunt tapping
-  ## down to the point on that line under its own pin. Two wires meeting at
-  ## one vertex, never a shared collinear run.
+  ## down to it. Two wires sharing one vertex.
   proc at(c: tuple[partIdx: int, pinName: string]): Point =
     for pin in parts[c.partIdx].pins:
       if pin.name == c.pinName: return Point(x: pin.x, y: pin.y)
@@ -117,8 +111,8 @@ proc teeRotationCandidates(nl: Netlist, comps: seq[Component],
                            syms: seq[SymbolDef], pos: seq[Point],
                            current: seq[float],
                            members: seq[int]): seq[seq[float]] =
-  ## One canonical assignment: series parts horizontal with their mid pins
-  ## facing the junction, the shunt vertical with its mid pin up (ground down).
+  ## Series parts horizontal with mid pins facing the junction; shunt
+  ## vertical, ground down.
   let mid = teeMidNet(comps, members)
   let right = Point(x: 1.0, y: 0.0)
   let left = Point(x: -1.0, y: 0.0)

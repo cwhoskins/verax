@@ -1,25 +1,12 @@
-## Power-distribution-network impedance: how much the rail voltage moves when
-## the load's current draw changes, as a function of frequency.
+## Power-distribution-network impedance: how much the rail moves as load
+## current changes, vs frequency (dV = Z(f)*dI, so targets are impedances).
 ##
-## This is the question a decoupling scheme exists to answer. A digital load
-## drawing a step of dI develops dV = Z(f)*dI on its own supply pin, so the
-## design target is stated as an impedance: "keep Z below 100 mohm out to
-## 100 MHz". The three things that make or break that are exactly the three
-## things an ideal-capacitor model cannot show:
+## What matters is what an ideal-capacitor model can't show: the **ESR
+## floor**, **self-resonance**, and **anti-resonance** -- the peak where one
+## capacitor's inductance rings against another's capacitance, created by
+## adding decoupling. So `expandCapacitorParasitics` is essential here.
 ##
-## * the **ESR floor** -- below it no amount of capacitance helps;
-## * **self-resonance**, above which a capacitor is an inductor; and
-## * **anti-resonance**, the impedance *peak* where a bulk capacitor's
-##   inductance rings against a ceramic's capacitance. This is the failure
-##   mode. It is created by adding decoupling, it sits between the two
-##   capacitors' own resonances, and it is invisible to any analysis that
-##   models capacitors as ideal.
-##
-## So `verax/spice/models.expandCapacitorParasitics` is not an optional
-## refinement here; without it this analysis has nothing to report.
-##
-## Like every simulation-backed check in this submodule, the design netlist
-## passed in is never mutated or simulated directly -- `isolate` clones first.
+## The design is never mutated; `isolate` clones first.
 
 import std/[math, strutils, tables]
 import ../../netlist/types
@@ -49,55 +36,38 @@ type
     targetZ*: float
       ## Design target in ohms, enforced only from `targetFrom` upward.
     targetFrom*: float
-      ## Lowest frequency at which `targetZ` is meaningful, in Hz.
-      ##
-      ## Below the supply's regulation bandwidth it is the *regulator*, not
-      ## the decoupling network, that holds the rail up -- and this analysis
-      ## does not model the regulator at all, having cut it away at the
-      ## boundary. A bare capacitor bank is necessarily high-impedance down
-      ## there, so checking a decoupling target against the low-frequency end
-      ## would flag every well-designed board for a problem it does not have.
-      ## The 100 kHz default is a typical crossover for a switching
-      ## regulator; lower it for a design whose loop is slower.
+      ## Lowest frequency `targetZ` applies at, Hz. Below the regulator's
+      ## crossover the regulator holds the rail (cut away here), so a bare
+      ## bank would always fail. 100 kHz suits a typical switcher; lower it
+      ## for a slower loop.
     targetTo*: float
-      ## Highest frequency at which `targetZ` is meaningful, in Hz.
-      ##
-      ## The mirror of `targetFrom` at the other end. Above roughly 100 MHz
-      ## the rail impedance is set by plane capacitance, package and via
-      ## inductance and die-level decoupling -- none of which is in a netlist,
-      ## and none of which discrete capacitors control. The sweep deliberately
-      ## runs past this so the rise is visible, but checking a discrete-
-      ## decoupling target up there would flag every board for something no
-      ## change to the capacitor selection can fix.
+      ## Highest frequency `targetZ` applies at, Hz. Above ~100 MHz plane,
+      ## package and via inductance dominate -- not in a netlist and not
+      ## fixable by capacitor choice. The sweep runs past it so the rise is
+      ## visible.
     reportAt*: seq[float]
       ## Frequencies to report Z at explicitly, in Hz.
     maxHops*: int
     parasitics*: ParasiticDefaults
     sourceZ*: SourceDefaults
-      ## Output impedance substituted for a supply that states none. Set
-      ## `modelSources = false` to leave sources ideal, which reports the
-      ## rail as a dead short whenever one is present.
+      ## Output impedance for a supply that states none. `modelSources =
+      ## false` leaves sources ideal (the rail then reads as a dead short).
     pinModels*: PinModelDefaults
       ## Per-pin-kind impedance substituted for a part carrying no model.
     modelSources*: bool
     flattenHierarchy*: bool
-      ## Dissolve subcircuit instances into the top level before anything
-      ## else touches the netlist. On by default: left un-flattened, every
-      ## instance is cut at its boundary by `spice/isolate` and no model pass
-      ## reaches inside one. Off restores the older behaviour.
+      ## Flatten subcircuit instances first (default on); otherwise
+      ## `spice/isolate` cuts each instance at its boundary.
     keepInstances*: seq[string]
-      ## Instance paths `flatten` must leave intact, beyond the part this
-      ## analysis was named for (which is added automatically). For a design
-      ## that brings its own subcircuit macromodel and expects it honoured.
+      ## Instance paths `flatten` keeps intact, beyond the analysed part
+      ## (added automatically) -- for a design's own subcircuit macromodel.
     bias*: OrderedTable[string, float]
-      ## A solved operating point, node name -> volts, used to work out the DC
-      ## across each capacitor for bias derating. Empty falls back to reading
-      ## a stated rail voltage off the net, which misses every capacitor on an
-      ## unannotated node. See `analysis/operating`.
+      ## A solved operating point (node -> volts) for capacitor bias
+      ## derating. Empty falls back to stated rail voltages, missing
+      ## unannotated nodes. See `analysis/operating`.
     modelUnmodelledParts*: bool
-      ## When false, a part nothing describes is cut away at the boundary
-      ## instead of being stood in for -- the older behaviour, which reports
-      ## a rail loaded by nothing at all.
+      ## When false, undescribed parts are cut away instead of stood in for
+      ## (the rail then sees no load).
 
 proc defaultPdnSpec*(): PdnSpec =
   PdnSpec(fStart: 1.0e3, fStop: 1.0e9, ptsPerDecade: 20,
@@ -111,11 +81,9 @@ proc defaultPdnSpec*(): PdnSpec =
 
 proc analyzePdn*(nl: Netlist, powerNet: string, groundNet = "",
                  spec = defaultPdnSpec()): AnalysisReport =
-  ## Isolates everything hanging off `powerNet`, expands capacitor
-  ## parasitics, injects 1 A of AC current into the rail and sweeps.
-  ##
-  ## `groundNet` may be left empty when the design already names its ground
-  ## `"0"` or tags it `ntGround`.
+  ## Isolates everything on `powerNet`, expands capacitor parasitics,
+  ## injects 1 A AC into the rail and sweeps. `groundNet` may be empty if
+  ## ground is `"0"` or tagged `ntGround`.
   result.name = "PDN impedance on '" & powerNet & "'"
 
   if not nl.nets.hasKey(powerNet):
@@ -124,26 +92,16 @@ proc analyzePdn*(nl: Netlist, powerNet: string, groundNet = "",
   var isoSpec = defaultIsolationSpec("pdn_" & powerNet)
   isoSpec.maxHops = spec.maxHops
   isoSpec.groundNet = groundNet
-  # The rail under test must stay undriven: an ideal source is an AC short,
-  # and terminating it would report zero impedance at every frequency.
+  # The rail under test stays undriven (an ideal source would short it).
   isoSpec.excludeRails = @[powerNet]
-  # Any *other* rail reached (e.g. through a ferrite bead) is left floating
-  # rather than blocking the run; it is reported as an assumption instead.
+  # Other rails reached (e.g. through a ferrite) float, as an assumption.
   isoSpec.requireKnownRails = false
 
-  # Stand in for the parts nothing describes *before* isolating, not after:
-  # `isolate` refuses to traverse an unmodellable component and records it in
-  # `dropped`, so by the time it has run there is nothing left to model. Once
-  # each becomes a per-pin impedance it is passive, and the rail sees what it
-  # actually hangs off instead of an open circuit.
+  # Stand in for undescribed parts *before* isolating; `isolate` won't
+  # traverse them afterwards.
   var cloneNets: OrderedTable[string, Net]
-  # Clone, flatten, *then* apply `simReplace` -- not the combined
-  # `materializeSimNetlist` -- so a nested XSPICE component's `A`-line ports
-  # are rendered from post-flatten net names rather than frozen at
-  # child-template-local ones flatten is about to rename out from under it
-  # (see `spice/flatten`'s module doc). `simReplace` is still honoured: a
-  # component's own stand-in is the design's statement of how it wants that
-  # part simulated, and this analysis used to ignore it entirely.
+  # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
+  # nested XSPICE component's ports use post-flatten net names.
   let work = clone(nl, cloneNets)
   discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances)
   applySimReplacements(work, purpose = spSmallSignal)
@@ -169,9 +127,8 @@ proc analyzePdn*(nl: Netlist, powerNet: string, groundNet = "",
 
   result.assumptions.add expandCapacitorParasitics(
     frag, spec.parasitics, defaultDerating(), spec.bias)
-  # A supply left ideal is a dead short at AC: the rail would read 0 ohm and
-  # pass any target. `excludeRails` already stops one being *synthesized* for
-  # the rail under test; this handles one the design carries itself.
+  # An ideal supply in the design would short the rail at AC; give it
+  # impedance.
   if spec.modelSources:
     result.assumptions.add expandSourceImpedance(frag, spec.sourceZ)
   if iso.dropped.len > 0:
@@ -193,19 +150,16 @@ proc analyzePdn*(nl: Netlist, powerNet: string, groundNet = "",
   let f = result.raw.freq()
   # A 1 A drive means the node voltage is numerically the impedance.
   let z = result.raw.mag(probe.label)
-  # The composite self-resonance: the frequency this decoupling scheme is
-  # actually good at, and the ESR floor it bottoms out on.
+  # Composite self-resonance: where the scheme works best, and its ESR
+  # floor.
   var minI = 0
   for i in 1 ..< z.len:
     if z[i] < z[minI]: minI = i
   result.add "z_min", z[minI], "ohm"
   result.add "f_z_min", f[minI], "Hz"
 
-  # The worst impedance inside the band the target applies to. Deliberately
-  # not the global maximum: a sweep starting below the bulk capacitor's
-  # resonance always peaks at its very first point, in the capacitive region
-  # the regulator owns, so a global maximum would say nothing at all about
-  # the decoupling network.
+  # Worst impedance inside the target band, not globally: a sweep starting
+  # below the bulk cap's resonance always peaks at its first point.
   var maxI = -1
   for i in 0 ..< z.len:
     if f[i] >= spec.targetFrom and f[i] <= spec.targetTo and
@@ -214,10 +168,8 @@ proc analyzePdn*(nl: Netlist, powerNet: string, groundNet = "",
     result.add "z_max_in_band", z[maxI], "ohm"
     result.add "f_z_max_in_band", f[maxI], "Hz"
 
-  # The worst anti-resonance anywhere in the sweep. An interior maximum is
-  # two capacitor families ringing against each other -- one's inductance
-  # against the other's capacitance -- and it is the failure mode that adding
-  # more of the same capacitor makes worse rather than better.
+  # The worst anti-resonance: an interior maximum where two capacitor
+  # families ring, made worse by adding more of the same capacitor.
   let peaks = localMaxima(f, z)
   var worst = -1
   for i, pk in peaks:

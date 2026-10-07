@@ -1,43 +1,17 @@
-## One operating point, solved once and handed to everything that needs it.
+## One operating point, solved once and shared.
 ##
-## ## Why this can exist at all
+## A straight line, not a fixed point: **at DC a capacitor is open, so the
+## operating point doesn't depend on capacitance**. So an `.op` can be solved
+## first, its node voltages used to derate Class 2 ceramics, and the
+## `.ac`/`.tran` run against the derated values, with no iteration.
 ##
-## Chaining simulations usually means a fixed point: analysis B needs a result
-## from A, and A's inputs depend on B's outputs, so you iterate and hope. That
-## is not the case here, and the reason is worth stating because it is what
-## makes the whole thing a straight line rather than a loop:
+## Uses: DC-bias derating on nodes with no annotated voltage (biased stages,
+## divider references, charge pumps), and one shared solve for `dc_voltage`
+## and `analysis/derating`.
 ##
-## **At DC a capacitor is an open circuit, so the operating point cannot depend
-## on capacitance.** Measured, on a divider with a capacitor across the lower
-## leg: `v(mid)` is bit-identical with 100 pF and with 1000 uF. So an `.op`
-## may be solved *first*, its node voltages used to derate every Class 2
-## ceramic in the design, and the `.ac` or `.tran` that follows run against the
-## derated values -- with no iteration, no convergence question and no
-## ordering ambiguity.
-##
-## ## What it buys
-##
-## The immediate consumer is DC-bias derating. Before this, `spice/models`
-## could only read a *stated* rail voltage off a net, so a capacitor on any
-## node whose voltage nobody had annotated was not derated at all -- and that
-## blind spot covers exactly the nodes where bias is worst: a biased
-## single-supply stage, a divider-derived reference, a charge pump. Measured:
-## a 10 uF rated 6.3 V sitting on a 12 V divider's midpoint, therefore at 95%
-## of its rating, came through completely underated because `mid` carried no
-## `voltage` annotation. The `.op` says 6.000 V.
-##
-## The second consumer is arithmetic: `dc_voltage` and `analysis/derating`
-## each used to run their own `.op` over the same design. Now they read this
-## one. A design claiming two rails plus derating on both went from three
-## solves to one.
-##
-## ## What it is not
-##
-## **A `.tran` bias moves with time**, and one number from t = 0 does not
-## describe it. A charge pump's flying capacitor and a rail that is still
-## soft-starting have no single DC across them, so derating them from this is
-## wrong -- less wrong than not derating them at all, but wrong. Anything that
-## cares should recompute per operating region rather than lean on this.
+## Limitation: **a `.tran` bias moves with time** (a soft-starting rail, a
+## charge pump's flying cap); derating from one operating point is then
+## approximate.
 
 import std/[math, strutils, tables]
 
@@ -53,17 +27,13 @@ type
   OperatingPoint* = object
     ## Every node voltage in a design, or the reason there are none.
     voltages*: OrderedTable[string, float]
-      ## Keyed by net name as it appears **after flattening**, which is the
-      ## name a fragment will use too -- `XL.amp`, not `amp`.
+      ## Keyed by net name **after flattening** (`XL.amp`), as fragments use.
     solved*: bool
     reason*: string
-      ## Why not, when not. A design with no ground reference or no source is
-      ## not solvable as authored, and that is a fact worth carrying rather
-      ## than reducing to an empty table.
+      ## Why not, when not (e.g. no ground reference or no source).
     assumptions*: seq[Assumption]
-      ## What standing in for unmodelled parts invented to get here. A rail
-      ## whose voltage depends on what an IC loads it with is resting on a
-      ## guess, and every consumer of this inherits that guess.
+      ## What standing in for unmodelled parts invented; consumers inherit
+      ## it.
 
   OperatingSpec* = object
     pinModels*: PinModelDefaults
@@ -76,18 +46,10 @@ proc defaultOperatingSpec*(): OperatingSpec =
   result.flattenHierarchy = true
 
 proc solveOperatingPoint*(nl: Netlist, spec = defaultOperatingSpec()): OperatingPoint =
-  ## Solves the design **as authored** -- deliberately not isolated.
-  ##
-  ## Isolation terminates a cut rail with an ideal source at the rail's
-  ## *nominal* voltage, which is the number half the consumers here are trying
-  ## to find out. Isolating first would hand back the assumption. The whole
-  ## design has to solve for itself, which is the same reasoning
-  ## `contract_eval`'s `dc_voltage` has always run on.
-  # Clone, flatten, *then* apply `simReplace` -- not the combined
-  # `materializeSimNetlist` -- so a nested XSPICE component's `A`-line ports
-  # are rendered from post-flatten net names rather than frozen at
-  # child-template-local ones flatten is about to rename out from under it
-  # (see `spice/flatten`'s module doc).
+  ## Solves the design **as authored**, not isolated: isolation would
+  ## terminate rails at the nominal voltages consumers are trying to find.
+  # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
+  # nested XSPICE component's ports use post-flatten net names.
   var globalNets: OrderedTable[string, Net]
   let simNl = clone(root(nl), globalNets)
   if spec.flattenHierarchy: discard flatten(simNl)
@@ -109,9 +71,7 @@ proc solveOperatingPoint*(nl: Netlist, spec = defaultOperatingSpec()): Operating
   result.solved = true
 
 proc voltageAt*(op: OperatingPoint, net: string): float =
-  ## `NaN` when this operating point says nothing about `net` -- which is a
-  ## different answer from zero, and the distinction is the point: a node the
-  ## solver never saw must not be reported as sitting at ground.
+  ## `NaN` when this operating point says nothing about `net` (not zero).
   if net.len == 0: return NaN
   if net == "0": return 0.0
   if op.voltages.hasKey(net): return op.voltages[net]
@@ -128,7 +88,6 @@ proc across*(op: OperatingPoint, a, b: string): float =
   abs(va - vb)
 
 proc nodeVoltages*(op: OperatingPoint): OrderedTable[string, float] =
-  ## The bare table, for passing to `spice/models`, which may not import this
-  ## module: `models` is exported by the backend-agnostic `spice` hub and
-  ## solving an operating point needs a backend.
+  ## The bare table, for `spice/models`, which can't import this module
+  ## (solving needs a backend).
   op.voltages

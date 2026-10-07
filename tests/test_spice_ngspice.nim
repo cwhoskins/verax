@@ -38,8 +38,8 @@ test "writeDeck round-trips topology plus analysis cards":
   check lines[^2] == ".op" # written just before .END
 
 test "run() rejects more than one analysis card":
-  # Still true, and for the original reason: ngspice's default `write` keeps
-  # only the last analysis's plot and a SimResult holds one plot.
+  # ngspice's default `write` keeps only the last plot, and a SimResult
+  # holds one.
   let nl = dividerNetlist()
   expect(SpiceSimError):
     discard run(nl, @[".op", ".tran 1u 1m"])
@@ -47,9 +47,7 @@ test "run() rejects more than one analysis card":
     discard run(nl, ".tran 1u 1m", setup = @[".op"])
 
 test "a setup card is not an analysis card":
-  # What the old guard got wrong: it counted cards, so one analysis plus one
-  # setup line was refused as "two cards". `.ic` configures the analysis that
-  # follows and produces no plot of its own.
+  # Setup cards like `.ic` produce no plot and don't count as analyses.
   check isAnalysisCard(".op")
   check isAnalysisCard(".TRAN 1u 1m")
   check isAnalysisCard(".ac dec 10 1 1k")
@@ -72,10 +70,8 @@ if not haveNgspice:
   echo "SKIP: ngspice not found on PATH, skipping real-simulation tests"
 else:
   test "an .ic kicks a circuit that will not start from its operating point":
-    # This is what `docs/findings.md` §23 called blocked. An LC tank has no
-    # source: from its own operating point it sits at 0 V forever, which is a
-    # correct answer to a question nobody asked. Kicked with an initial
-    # capacitor voltage it rings at 1/(2*pi*sqrt(LC)) = 5033 Hz.
+    # A source-less LC tank sits at 0 V from its operating point; kicked
+    # with an initial capacitor voltage it rings at 5033 Hz.
     let tank = netlist("tank"):
       net gnd, kind = ntGround, name = "0"
       net vout, kind = ntSignal
@@ -98,7 +94,7 @@ else:
         if x > hi: hi = x
       hi - lo
 
-    # Left to its own devices it does nothing at all.
+    # Unkicked, it does nothing.
     check swing(run(tank, ".tran 1u 5m")) < 1e-6
 
     let kicked = run(tank, ".tran 1u 5m uic", setup = @[".ic v(vout)=1.0"])
@@ -127,11 +123,8 @@ else:
     check abs(result[probe.label][0] - 0.005) < 1e-6
 
   test "a malformed deck raises SpiceSimError instead of a crash":
-    # A deliberately unparseable component value (rather than e.g. a fully
-    # disconnected device) so ngspice fails gracefully -- exit 1, no raw
-    # file -- instead of hitting the internal assertion crash ngspice-46
-    # triggers on an .op analysis over a circuit with zero valid devices
-    # (confirmed empirically; see ngspice.nim's `run` doc comment).
+    # An unparseable value makes ngspice fail gracefully (exit 1, no raw
+    # file); a circuit with zero valid devices crashes ngspice-46 on .op.
     let nl = newNetlist("bad")
     let gnd = addNet(nl, newNet("0", ntGround))
     let a = addNet(nl, newNet("a"))
@@ -143,11 +136,8 @@ else:
       discard run(nl, @[".op"])
 
 suite "a rawfile is not the same as a solution":
-  # ngspice reports a failed DC solve as a *warning*, writes whatever its
-  # last iterate was, and exits zero -- so the numbers arrive looking exactly
-  # like an answer. The LT8640A reference design found this: one node left
-  # floating at DC made the matrix singular and the 5 V rail read 1.71 V, as
-  # a clean FAIL against a real number rather than as an error.
+  # ngspice reports a failed DC solve as a warning, writes its last iterate
+  # and exits zero, so the numbers look like an answer.
 
   test "a node with no DC path is refused rather than reported":
     if not haveNgspice:
@@ -163,7 +153,7 @@ suite "a rawfile is not the same as a solution":
         component R1, kind = "resistor", value = "1k":
           pin "1", vin, kind = ptPassive
           pin "2", gnd, kind = ptPassive
-        # Reachable only through capacitors, so it has no DC path anywhere.
+        # Reachable only through capacitors: no DC path.
         component C1, kind = "capacitor", value = "100n":
           pin "1", vin, kind = ptPassive
           pin "2", orphan, kind = ptPassive

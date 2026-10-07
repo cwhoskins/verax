@@ -1,58 +1,22 @@
-## Preferred values: the numbers a resistor or a capacitor is actually sold in.
+## Preferred values: the numbers resistors and capacitors are sold in (E12,
+## E24 for 5%, E96 for 1%).
 ##
-## An equation returns 713.152 ohm and nothing sells that. What is stocked is a
-## **preferred series** -- a geometric ladder of values per decade, sized so
-## that parts at a given tolerance cover the whole range with roughly even
-## proportional spacing and without excessive overlap. E24 is the 5% ladder,
-## E96 the 1% one; E12 is what capacitors are mostly stocked in whatever their
-## tolerance.
+## **Rounding is asked for, never applied by default**: a builder that
+## quietly rounds builds something other than what you asked for. A caller
+## passing a `PreferredSeries` must recompute the circuit from the values it
+## will actually have.
 ##
-## ## Rounding is a decision, so it is asked for rather than assumed
+## **Tables are written out, not computed**: E24 deviates from `10^(n/24)`
+## through mid-decade (2.7, 3.0, 3.3 ... not 2.61, 2.87, 3.16), and the
+## formula would give unbuyable values. E96 is written out too, for
+## consistency.
 ##
-## Nothing here is applied by default anywhere in this library, and that is
-## the position `designs/lib/filters.nim` states: a builder that quietly
-## rounds hands back the number you asked for while building something else.
-## `PreferredSeries` is the hook a caller passes *in*, and the caller's
-## obligation is to recompute what the circuit then does from the values it
-## will actually have -- `designs/lib/adjreg.nim` is the worked example, where
-## the output voltage is recomputed from the rounded divider rather than
-## reported back as the voltage that was requested.
+## **Nearest is logarithmic**: `abs(ln(candidate/wanted))`, including the
+## next decade's first value.
 ##
-## ## Why the tables are written out and not computed
-##
-## The obvious implementation is `10^(n/24)` rounded to two significant
-## figures, and it is wrong. The standard series deviate from the geometric
-## ideal through the middle of the decade, by historical accident that is now
-## simply what is manufactured:
-##
-##     n:        10     11     12     13     14     15     16
-##     ideal:   2.61   2.87   3.16   3.47   3.83   4.22   4.64
-##     E24:     2.7    3.0    3.3    3.6    3.9    4.3    4.7
-##
-## Seven of E24's twenty-four values are not what the formula gives. Computing
-## them would produce a plausible ladder of numbers that cannot be bought,
-## which is the one failure mode this module exists to prevent. E96 does come
-## out of the formula cleanly, and is written out anyway -- a table that is
-## sometimes the standard and sometimes a derivation of it is worse than one
-## that is always the standard.
-##
-## ## Nearest, in the logarithmic sense
-##
-## The ladder is geometric, so the error that matters is proportional: 2050
-## against a wanted 2044 is a 0.27% error whether it happens at 2 kohm or at
-## 2 Mohm, and picking by absolute difference would bias every choice
-## downwards. `nearest` compares `abs(ln(candidate/wanted))`, and includes the
-## next decade's first value as a candidate, since for a mantissa just under
-## 10 the nearest preferred value is 10 and not the top of the table.
-##
-## ## What this does not know
-##
-## A series says which values *exist*, not which are stocked, in what
-## tolerance, in what package, or at what price. Every E96 value is a real 1%
-## part; not every one of them is a real 1% part in an 0402 at your
-## distributor. That is a preferred-parts database's job -- and the reason
-## `PreferredSeries` is a proc value rather than an enum is so that one can be
-## substituted here without anything else changing, exactly as `PartPolicy` is.
+## A series says which values exist, not which are stocked; a
+## preferred-parts database can be substituted since `PreferredSeries` is a
+## proc.
 
 import std/math
 
@@ -63,21 +27,14 @@ type
     ## One preferred-value ladder.
     name*: string
     mantissas*: seq[float]
-      ## One decade's values, each in `[1, 10)` and strictly increasing. The
-      ## ladder repeats by powers of ten, which is what makes one decade
-      ## enough to describe all of it.
+      ## One decade's values in `[1, 10)`, strictly increasing.
     tolerance*: Fraction
-      ## The part tolerance the series was spaced for. It is **not** the
-      ## tolerance of a part you buy at one of these values -- E24 values are
-      ## routinely stocked at 1% -- but it is what says whether rounding to
-      ## this ladder is even coherent: rounding to E12 a value whose ratio has
-      ## to hold to 1% is a decision to miss.
+      ## The tolerance the series was spaced for -- not a bought part's
+      ## (E24 values are stocked at 1%), but whether rounding is coherent.
 
   PreferredSeries* = proc (r: Ohms): Ohms {.nimcall.}
-    ## Rounds a computed resistance to a value that can be bought. Proc-valued
-    ## for the same reason `PartPolicy` is: a project with its own stock list
-    ## substitutes one and behaves identically, and a builder taking one as a
-    ## parameter never has to know which it was given.
+    ## Rounds a computed resistance to a buyable value. Proc-valued so a
+    ## project's own stock list can be substituted.
 
 const
   seriesE12* = ESeries(name: "E12", tolerance: Fraction(0.10), mantissas: @[
@@ -98,11 +55,8 @@ const
     7.50, 7.68, 7.87, 8.06, 8.25, 8.45, 8.66, 8.87, 9.09, 9.31, 9.53, 9.76])
 
 proc nearest*(s: ESeries, x: float): float =
-  ## The nearest value of `s` to `x`, nearest meaning smallest ratio.
-  ##
-  ## A value that is not a positive, finite magnitude comes back unchanged.
-  ## There is no preferred value near zero or near infinity, and inventing one
-  ## would turn a caller's arithmetic mistake into a plausible component.
+  ## The nearest value of `s` to `x` by ratio. A non-positive or non-finite
+  ## value comes back unchanged.
   if s.mantissas.len == 0: return x
   if x.classify notin {fcNormal, fcSubnormal} or x <= 0.0: return x
 
@@ -110,9 +64,8 @@ proc nearest*(s: ESeries, x: float): float =
   let m = x / decade
   var best = s.mantissas[0]
   var bestErr = Inf
-  # The next decade's first value is 10 in this decade's terms, and for a
-  # mantissa just under it that is the nearest preferred value: 9.9 is 1.0%
-  # below 10.0 and 1.4% above E96's 9.76.
+  # The next decade's 10.0 can be nearest (9.9 is closer to 10.0 than to
+  # 9.76).
   for cand in s.mantissas & @[10.0]:
     let err = abs(ln(cand / m))
     if err < bestErr:
@@ -121,14 +74,11 @@ proc nearest*(s: ESeries, x: float): float =
   best * decade
 
 proc nearest*[T: Quantity](s: ESeries, v: T): T =
-  ## As above, for any `verax/units` quantity. A ladder is a ladder: the same
-  ## E12 values that are resistors in ohms are capacitors in farads.
+  ## As above, for any `verax/units` quantity.
   T(nearest(s, float(v)))
 
 proc relativeError*(s: ESeries, x: float): float =
-  ## How far `nearest(s, x)` lands from `x`, as a fraction of `x`. Signed, so
-  ## the direction is visible -- which matters wherever a rounding has to be
-  ## traded against a tolerance stack rather than merely reported.
+  ## Signed fractional error of `nearest(s, x)` from `x`.
   if x == 0.0: return 0.0
   (nearest(s, x) - x) / x
 
@@ -139,7 +89,5 @@ proc exactSeries*(r: Ohms): Ohms {.nimcall.} =
 proc e12*(r: Ohms): Ohms {.nimcall.} = nearest(seriesE12, r)
 proc e24*(r: Ohms): Ohms {.nimcall.} = nearest(seriesE24, r)
 proc e96*(r: Ohms): Ohms {.nimcall.} = nearest(seriesE96, r)
-  ## The three ladders as `PreferredSeries` procs, which is the form a builder
-  ## takes. Anything else -- a stock list, a series with values struck out, a
-  ## rounder that prefers a pair it already has on the board -- is an ordinary
-  ## proc of the same shape.
+  ## The ladders as `PreferredSeries` procs; anything else of the same shape
+  ## works too.

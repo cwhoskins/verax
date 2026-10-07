@@ -1,28 +1,17 @@
 ## Core data model for a physical printed circuit board.
 ##
-## The electrical side is **not** re-modelled here: a `Pcb` owns a `Netlist`
-## from `verax/netlist`, built through the existing `netlist/graph` API, and
-## every PCB entity holds a *forward* reference into it (`Copper.net: Net`,
-## `Placement.component: Component`, `Copper.pin: Pin`). `netlist/types` is
-## untouched and stays geometry-free, so a netlist-only consumer carries none
-## of this weight -- while an analysis pass can still walk from a trace to the
-## pins it connects in a single hop.
+## The electrical side is not re-modelled: a `Pcb` owns a `Netlist`, and PCB
+## entities hold forward references into it (`Copper.net`, `Copper.pin`,
+## `Placement.component`). `netlist/types` stays geometry-free.
 ##
-## Two lookups are first-class, matching what layout analysis actually asks:
-## by **net name** (`Pcb.netCopper`) and by **location**
-## (`Pcb.index`, see `verax/pcb/index`).
+## Two first-class lookups: by net name (`Pcb.netCopper`) and by location
+## (`Pcb.index`). All mutation goes through `verax/pcb/graph`. Entities carry
+## the same open `attrs` bag as `netlist/types`.
 ##
-## As everywhere else in this codebase, mutation goes through one module --
-## `verax/pcb/graph` -- which is the only place allowed to set the
-## back-references and keep the two indexes in step. Every entity carries the
-## same open-ended `attrs` bag used by `netlist/types`, so a format module
-## never needs to extend this schema.
-##
-## .. warning:: ODB++ cross-references everything **positionally** -- `FID`
-##   feature numbers, `CMP`/`PKG`/`NET` record indexes. `PcbLayer.copper` is
-##   therefore kept in source order and must never be re-sorted or deduped,
-##   and `Copper.sourceIndex` is only meaningful immediately after a load.
-##   `graph.removeCopper` invalidates it.
+## .. warning:: ODB++ cross-references **positionally** (`FID`, record
+##   indexes), so `PcbLayer.copper` stays in source order -- never re-sort or
+##   dedup -- and `Copper.sourceIndex` is valid only right after a load
+##   (`graph.removeCopper` invalidates it).
 
 import std/tables
 import ./units
@@ -34,8 +23,8 @@ export nltypes.Netlist, nltypes.Net, nltypes.Component, nltypes.Pin
 
 type
   PcbError* = object of CatchableError
-    ## Raised on graph-consistency violations, e.g. a duplicate layer name or
-    ## reference designator within the same `Pcb`.
+    ## Raised on graph-consistency violations (e.g. duplicate layer name or
+    ## designator).
 
   LayerFunction* = enum
     lfUnknown, lfSignal, lfPlane, lfMixed, lfDielectric,
@@ -78,17 +67,15 @@ type
   GridKey* = tuple[layer: int32, cx, cy: int32]
 
   SpatialIndex* = ref object
-    ## Uniform-grid location index over copper. Algorithms live in
-    ## `verax/pcb/index`; only the storage is declared here so `Pcb` can
-    ## hold one without a circular import.
+    ## Uniform-grid location index over copper; storage only (algorithms in
+    ## `verax/pcb/index`).
     cell*: Nm
       ## Grid pitch. 1 mm by default.
     origin*: Point
     buckets*: Table[GridKey, seq[Copper]]
     oversized*: Table[int32, seq[Copper]]
-      ## Per-layer overflow for shapes spanning more than `maxCells` cells --
-      ## a board-sized plane would otherwise land in every bucket, which is
-      ## the one real failure mode of a uniform grid on PCB data.
+      ## Per-layer overflow for shapes spanning more than `maxCells` cells, so
+      ## a board-sized plane doesn't land in every bucket.
     maxCells*: int
     dirty*: bool
       ## Set by `verax/pcb/graph` on any mutation; `index.rebuild` clears it.
@@ -112,29 +99,21 @@ type
     attrs*: OrderedTable[string, string]
 
   Stackup* = ref object
-    ## Physical build-up, top to bottom. Both source formats make this
-    ## optional in practice (KiCad omits the block on real boards, ODB++
-    ## spreads it over matrix rows plus layer attributes), so a reader may
-    ## leave per-entry thickness zero and fill only `totalThickness`.
+    ## Physical build-up, top to bottom. Often partial in source files, so a
+    ## reader may fill only `totalThickness`.
     entries*: seq[StackEntry]
     totalThickness*: Nm
     copperFinish*: string
     attrs*: OrderedTable[string, string]
     rev*: int
-      ## Whole-block granularity, deliberately **not** per-`StackEntry`:
-      ## `(setup (stackup))` is a block whose child order *is* the physical
-      ## stack (finding 3), so a per-entry override could let entries be
-      ## reordered in the model without the written block reflecting it --
-      ## the KiCad writer refuses on any stackup edit regardless (see the
-      ## refusal table in `formats/kicad.nim`), which is what this field is
-      ## actually for: detecting that an edit happened, not describing it.
+      ## Whole-block, not per-entry: KiCad's stackup child order *is* the
+      ## stack, and the writer refuses any stackup edit -- this only detects
+      ## that one happened.
 
   PcbLayer* = ref object
     name*: string
-      ## Canonical source name (`"F.Cu"`, `"top"`) and the lookup key. Layers
-      ## are keyed by name and **never** by ordinal: KiCad renumbered every
-      ## layer ID in v9 (`B.Cu` went 31 -> 2), and ODB++ `ROW` numbers are
-      ## explicitly allowed to be non-sequential.
+      ## Canonical source name and lookup key. **Never key by ordinal**: KiCad
+      ## v9 renumbered layer IDs and ODB++ rows may be non-sequential.
     function*: LayerFunction
     side*: LayerSide
     index*: int
@@ -142,30 +121,20 @@ type
     copperIndex*: int
       ## 0-based among copper layers; `-1` when not copper.
     negative*: bool
-      ## ODB++ `POLARITY=NEGATIVE`: features on this layer are *clearances*,
-      ## not copper. Ignoring this inverts the meaning of every feature on a
-      ## typical plane layer.
+      ## ODB++ `POLARITY=NEGATIVE`: features are clearances, not copper.
     refLayer*: PcbLayer
       ## For mask/paste/silk: the copper layer it belongs to (ODB++ `REF`).
     copper*: seq[Copper]
-      ## Copper features in source order -- see the ordinal warning above.
+      ## Copper features in source order (see the ordinal warning).
     shapes*: seq[Shape]
-      ## Non-copper graphics: silkscreen, mask, paste, fabrication, docs.
-      ## Mutate only through `graph.addShape`/`setShape`/`removeShape` --
-      ## direct `seq` access (how this field was written before a format
-      ## writer existed) cannot be dirty-tracked, and `formats/kicad.writePcb`
-      ## does not regenerate graphics at all (see `Copper.rev` below), so an
-      ## edit that bypasses those three procs is invisible to the writer and
-      ## silently kept stale on the next write.
+      ## Non-copper graphics. Mutate only through `graph.addShape`/`setShape`/
+      ## `removeShape`, or the KiCad writer can't see the edit.
     pcb*: Pcb
     attrs*: OrderedTable[string, string]
     rev*: int
-      ## Stamped by `graph.touch(pcb, layer)` on every mutation that reaches
-      ## this layer (a copper add/remove, a shape edit). Compared against
-      ## `KicadDoc.snapshotRev` by `writePcb` to decide whether the layer's
-      ## graphics changed since the read -- and since the writer cannot
-      ## regenerate graphics, a change here is exactly what turns into a
-      ## refusal rather than a silently-stale write.
+      ## Stamped by `graph.touch` on any mutation reaching this layer. A
+      ## change after the read makes `writePcb` refuse (it can't regenerate
+      ## graphics) rather than write stale data.
 
   Copper* = ref object
     ## One conductive (or, when `negative`, clearance-defining) feature.
@@ -186,27 +155,17 @@ type
       ## Ordinal within `layer.copper` as read (ODB++ `FID` feature number).
     attrs*: OrderedTable[string, string]
     rev*: int
-      ## See `PcbLayer.rev`. `formats/kicad.nim`'s correctness net compares a
-      ## regenerated `(segment)`/`(arc)`/`(via)` against this rather than
-      ## trusting `rev` alone, so a direct field write that bypassed
-      ## `graph.touch` is still caught -- but `rev` is still what decides
-      ## *whether to run that comparison at all* on the fast path.
+      ## See `PcbLayer.rev`. The KiCad writer also compares regenerated
+      ## tracks/vias against source bytes, catching writes that bypassed
+      ## `touch`; `rev` decides whether that comparison runs.
 
   Zone* = ref object
     ## An authored copper pour, plane, or keepout/rule area.
     ##
-    ## The *authored* outline (`outline`, `areas`) and the *derived* fill
-    ## (`fills`) are both modelled, and are not the same claim: `outline` is
-    ## what the design says to pour, `fills` is what a router or `kicad-cli`
-    ## actually poured after clearances, thermal reliefs and priority against
-    ## other zones -- KiCad's `filled_polygon`, ODB++'s `SNT PLN` surface.
-    ## `fills` is empty on an unfilled board (nothing has run a fill pass)
-    ## and on a keepout (nothing is ever poured there); a caller must treat
-    ## empty as "not answerable" and never as "no copper", exactly as
-    ## `fem/extrude.extrudeZones` does -- meshing `outline` as if it were
-    ## `fills` would model a solid slab where the real board has a Swiss
-    ## cheese of clearances and thermal spokes, the class of wrong answer
-    ## that looks plausible.
+    ## `outline`/`areas` are what the design says to pour; `fills` is what a
+    ## fill pass actually poured (after clearances and thermals). `fills` is
+    ## empty on an unfilled board or a keepout: treat empty as "not
+    ## answerable", never "no copper", and never mesh `outline` as if poured.
     name*: string
     net*: Net
     isKeepout*: bool
@@ -216,28 +175,19 @@ type
     layers*: seq[PcbLayer]
       ## Multi-layer zones are normal in both formats.
     areas*: seq[Copper]
-      ## One `ckZone` record per layer, holding the *authored* outline --
-      ## see `graph.addZone`'s "one hazard" note on why `extrudeCopper` must
-      ## skip these rather than meshing them as if they were real copper.
+      ## One `ckZone` record per layer holding the authored outline; copper
+      ## walks must skip these.
     fills*: seq[Copper]
-      ## Derived fill geometry: one `ckFill`/`shFill` record per filled
-      ## polygon a reader found, added through `graph.addZoneFill` so each
-      ## lands in `Pcb.netCopper` and the spatial index exactly like any
-      ## other copper feature -- a plane-shape or return-path query should
-      ## not have to know a fill came from a zone rather than a track.
+      ## Derived fill: one `ckFill` per filled polygon, added via
+      ## `graph.addZoneFill` so it indexes like any other copper.
     attrs*: OrderedTable[string, string]
     rev*: int
 
   Hole* = ref object
-    ## A drilled hole: via, plated component hole, or non-plated mounting
-    ## hole.
-    ##
-    ## This unifies two very different encodings. KiCad states the span
-    ## directly. ODB++ has no hole record at all -- holes are ordinary pad
-    ## features on a `TYPE=DRILL` layer, classified by the matrix row's
-    ## `START_NAME`/`END_NAME`, the `.drill` attribute, and the layer's
-    ## `tools` file keyed by the feature's dcode. `finishedDia` is separate
-    ## from `drillDia` because ODB++ `tools` distinguishes them.
+    ## A drilled hole: via, plated component hole, or non-plated hole. KiCad
+    ## states the span; ODB++ encodes holes as pad features on a drill layer.
+    ## `finishedDia` is separate from `drillDia` because ODB++ distinguishes
+    ## them.
     kind*: HoleKind
     viaKind*: ViaKind
     at*: Point
@@ -266,7 +216,7 @@ type
       ## Key in `Pcb.placements`; matches `Component.designator`.
     component*: Component
       ## `verax/netlist` component, or `nil` for a board-only footprint
-      ## (fiducials, tooling, logo art).
+      ## (fiducials, logos).
     footprint*: string
       ## `"Lib:Name"` in KiCad, the `PKG` name in ODB++.
     at*: Point
@@ -283,37 +233,29 @@ type
     lands*: OrderedTable[string, seq[Copper]]
       ## Pin name -> its copper, which may span several layers.
     sections*: OrderedTable[string, Component]
-      ## Section name -> the netlist component that is that section, for a
-      ## multi-channel package. Empty for the 1:1 case, where `component` is
-      ## the whole part. When this is populated `component` is deliberately
-      ## nil: a dual op-amp *is* no single netlist component.
+      ## Section name -> netlist component, for a multi-channel package;
+      ## `component` is then nil. Empty in the 1:1 case.
     holes*: seq[Hole]
     pcb*: Pcb
     attrs*: OrderedTable[string, string]
-      ## KiCad `property` nodes / ODB++ `PRP` records and `BOM DATA` block.
-      ## This is where per-part BoM data from the board file lands.
+      ## KiCad `property` / ODB++ `PRP` and `BOM DATA`: per-part BoM data
+      ## from the board file.
     rev*: int
 
   Outline* = ref object
     ## Board boundary and cutouts.
     ##
-    ## ODB++ hands this over directly as the step `profile`. KiCad has no
-    ## explicit outline at all: it must be stitched from `Edge.Cuts` graphics
-    ## with a tolerance, **including items owned by footprints** -- scanning
-    ## only top-level graphics produces a wrong outline.
+    ## Board boundary and cutouts. ODB++ provides it as the step `profile`;
+    ## KiCad must be stitched from `Edge.Cuts` with a tolerance, **including
+    ## footprint-owned items**.
     boundary*: Polygon
     pieces*: seq[Polygon]
       ## More than one for a panel or a deliberately disjoint board.
     stitchTolerance*: Nm
     attrs*: OrderedTable[string, string]
     rev*: int
-      ## A re-stitched outline is written back as a unit, not per-piece --
-      ## KiCad has no outline node to modify in the first place (it is
-      ## stitched from `Edge.Cuts` graphics), so any edit here is out of
-      ## scope for `formats/kicad.writePcb` regardless of `rev`; the field
-      ## exists so `touch` has somewhere to record the change happened at
-      ## all, for whichever format eventually does write it back (ODB++'s
-      ## `profile` is a direct node, unlike KiCad's stitched one).
+      ## Records that the outline changed. The KiCad writer can't write an
+      ## outline back (it's stitched), so any edit is out of scope there.
 
   Pcb* = ref object
     name*: string
@@ -329,41 +271,24 @@ type
     apertures*: OrderedTable[string, Aperture]
       ## Interned pad shapes, shared rather than duplicated per pad.
     netCopper*: OrderedTable[string, seq[Copper]]
-      ## Net **name** -> every copper feature on it. Answers "give me every
-      ## trace on GND" in one hash lookup.
+      ## Net **name** -> every copper feature on it.
       ##
-      ## .. note:: ODB++ net names are not unique -- the spec says they are
-      ##   "for reference only", each `NET` record is a distinct net even on a
-      ##   collision, and the reserved `$NONE$` repeats with *mutually
-      ##   disconnected* meaning. A reader must synthesise unique names and
-      ##   keep the raw one in `attrs` before registering here.
+      ## .. note:: ODB++ net names aren't unique (`$NONE$` repeats with
+      ##   disconnected meaning); readers synthesise unique names and keep the
+      ##   raw one in `attrs`.
     index*: SpatialIndex
     origin*: Point
-      ## Source-file datum, retained for round-tripping. KiCad's
-      ## `(setup (aux_axis_origin x y))`; `nm(0), nm(0)` when the source
-      ## states none.
+      ## Source-file datum for round-tripping (KiCad's `aux_axis_origin`);
+      ## `nm(0), nm(0)` if none.
     attrs*: OrderedTable[string, string]
     source*: RootRef
-      ## Opaque, format-owned round-trip state -- a parsed `KicadDoc`
-      ## (`formats/kicad.nim`) today, an eventual ODB++ equivalent later.
-      ## `pcb/` never reads this field; only the format module that set it
-      ## downcasts it back. Same type-erasure move, for the same layering
-      ## reason, as `contract/evaluate.EvalContext.scratch`: `pcb/graph` must
-      ## not gain an edge to a format module just to hold onto what that
-      ## module needs to write the board back out.
+      ## Opaque, format-owned round-trip state (a `KicadDoc`), downcast only
+      ## by the format module that set it, so `pcb/` needs no edge to formats.
     rev*: int
-      ## Monotonic mutation counter, incremented by `graph.touch` on every
-      ## change and stamped into the mutated entity's own `rev` at the same
-      ## time -- so "has `e` changed since time T" is just `e.rev > T`, which
-      ## also identifies an entity *created* since T for free, with no
-      ## separate flag: a brand-new `Placement` has `rev` set to whatever
-      ## `pcb.rev` became at the moment it was added, which is by
-      ## construction greater than the `T` any earlier snapshot recorded.
-      ## `formats/kicad.readPcb` snapshots this value at the end of a read
-      ## (`KicadDoc.snapshotRev`) and `writePcb` compares against it to
-      ## decide whether anything changed at all -- `pcb.rev == snapshotRev`
-      ## is the fast path that skips the whole regenerate-and-compare walk
-      ## and just copies the original bytes.
+      ## Monotonic mutation counter. `graph.touch` bumps it and stamps the
+      ## entity's own `rev`, so "changed or created since T" is `e.rev > T`.
+      ## `writePcb` takes the byte-copy fast path when `pcb.rev ==
+      ## KicadDoc.snapshotRev`.
 
 proc newSpatialIndex*(cell = mm(1.0), maxCells = 256): SpatialIndex =
   SpatialIndex(cell: cell, origin: pt(nm(0), nm(0)), maxCells: maxCells,

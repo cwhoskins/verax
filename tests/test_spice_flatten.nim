@@ -48,22 +48,19 @@ suite "flattening hierarchy for simulation":
     check not nl.components.hasKey("XA")
 
   test "two instances of one subcircuit do not collide":
-    # The reason a stereo board is two instances rather than two copies: the
-    # values are written once, and nothing here may merge them.
+    # Values are written once; flattening must not merge instances.
     let nl = board()
     discard flatten(nl)
     check nl.components["XA.R1"] != nl.components["XB.R1"]
     check nl.nets["XA.mid"] != nl.nets["XB.mid"]
 
   test "a port net merges into the parent net it was wired to":
-    # A port is not a net of its own -- the net inside and the net outside
-    # were always one conductor, joined by the instance pin.
+    # A port isn't a net: inside and outside were always one conductor.
     let nl = board()
     discard flatten(nl)
     check not nl.nets.hasKey("XA.OUT")
     check not nl.nets.hasKey("XB.IN")
-    # XA's output and XB's input were both wired to `b`, so R1 of XB and C1
-    # of XA must now share it.
+    # XA's output and XB's input both wired to `b`.
     var onB: seq[string]
     for p in nl.nets["b"].pins: onB.add p.component.designator
     check "XA.C1" in onB
@@ -80,8 +77,7 @@ suite "flattening hierarchy for simulation":
     let nl = netlist("top"):
       instance XA, openBus, {"S": open, "DQ": open}
 
-    # An opened group creates one marked scalar net per exposed port, not a
-    # shared dangling net for the whole group.
+    # An opened group makes one marked net per exposed port.
     check nl.nets["nc_XA_S"].attrs["iface.nc"] == "1"
     check nl.nets["nc_XA_DQ_0"].attrs["iface.nc"] == "1"
     check nl.nets["nc_XA_DQ_1"].attrs["iface.nc"] == "1"
@@ -104,9 +100,8 @@ suite "flattening hierarchy for simulation":
     check not nl.nets.hasKey("XB.0")
 
   test "annotations and role tags survive being re-homed":
-    # `adopt*` moves the object rather than copying it, precisely so that
-    # `attrs` -- which carries voltage, esr, and the role.* membership tags
-    # that must outlive any transform -- comes along untouched.
+    # `adopt*` moves the object, so `attrs` (voltage, esr, role tags) comes
+    # along.
     let nl = board()
     nl.children["XA"].components["C1"].attrs["role.bus0"] = "filter"
     discard flatten(nl)
@@ -128,9 +123,8 @@ suite "flattening hierarchy for simulation":
     check nl.components.hasKey("XB.R1")
 
   test "a keep entry matching no instance raises rather than protecting nothing":
-    # The hazard it guards against is that the thing it was meant to protect
-    # gets dissolved and the failure surfaces three steps later as a missing
-    # component -- the same shape as a misspelled `without` suffix.
+  # Otherwise a dissolved protected instance surfaces later as a missing
+  # component.
     let nl = board()
     expect NetlistError:
       discard flatten(nl, ["XZ"])
@@ -154,8 +148,8 @@ suite "flattening hierarchy for simulation":
     check nl.components.hasKey("XO.XI.R9")
 
   test "identical model cards collapse, conflicting ones are mangled":
-    # `xspice/instance` derives a `.MODEL` name from the designator, so two
-    # instances of one block really do register the same name twice.
+    # `.MODEL` names derive from the designator, so two instances register
+    # the same name.
     proc diodeBlock(card: string): Netlist =
       subckt("D", [A, K]):
         net A, kind = ntSignal
@@ -187,10 +181,8 @@ suite "flattening hierarchy for simulation":
     check differ.components["XB.D1"].attrs["value"] == "XB.PART"
 
   test "the flattened deck carries no subcircuit and spells devices correctly":
-    # A flattened `XA.R1` starts with `X`, which SPICE reads as a subcircuit
-    # call. `deckDesignator` takes the letter from `kind` and *prepends* it,
-    # so the line is `RXA.R1` -- the same invariant that turns `FB1` into
-    # `LFB1`, now load-bearing far more often.
+    # `XA.R1` starts with `X` (a subcircuit call in SPICE), so
+    # `deckDesignator` prepends the letter from `kind`: `RXA.R1`.
     let nl = board()
     discard flatten(nl)
     let s = newStringStream()
@@ -210,9 +202,8 @@ suite "flattening hierarchy for simulation":
 suite "name collisions flattening produces, and the ones it cannot":
 
   test "a generated name colliding with an existing one names both sides":
-    # The instance designator is unique among its siblings by construction, so
-    # sibling instances never collide. What can collide is a name the design
-    # already spelled the way flatten is about to.
+    # Sibling instances can't collide; a name the design already spelled the
+    # flattened way can.
     let nl = netlist("top"):
       net gnd, kind = ntGround, name = "0", global = true
       net a, kind = ntSignal
@@ -245,12 +236,9 @@ suite "name collisions flattening produces, and the ones it cannot":
     check "flattening instance 'XA'" in msg
 
   test "graph uniqueness does not imply deck uniqueness":
-    # `deckDesignator` *prepends* the device letter from `kind` rather than
-    # substituting it -- which is what stops `FB1` and `L1` collapsing onto
-    # one name, and is deliberately not reversible. So two components that
-    # are distinct in the graph can be one line in the deck. Flatten makes
-    # generated dotted designators ordinary, which is what moves this from
-    # theoretical to reachable.
+    # `deckDesignator` prepends rather than substitutes (so `FB1` and `L1`
+    # stay distinct), which isn't reversible: two distinct components can be
+    # one deck line.
     let nl = netlist("top"):
       net gnd, kind = ntGround, name = "0", global = true
       net a, kind = ntSignal
@@ -279,12 +267,9 @@ suite "name collisions flattening produces, and the ones it cannot":
     check "RXA.R1" in s.data
 
 suite "flatten before applySimReplacements, for a nested XSPICE component":
-  # The pairing that fixed the bug `designs/lib/lt8640a.nim`'s `buckConfig`
-  # doc comment describes finding and documenting:
-  # `test_spice_transform.nim` proves the ports string freezes
-  # to the right names in isolation, and this proves the two passes
-  # actually compose into a deck ngspice can read -- no `.SUBCKT`, and the
-  # `A` line naming nets that exist.
+  # With `test_spice_transform.nim` (ports freeze to the right names), this
+  # shows the two passes compose into a readable deck: no `.SUBCKT`, and the
+  # `A` line names nets that exist.
 
   proc gainSpec(): ModelSpec =
     ModelSpec(
@@ -296,8 +281,7 @@ suite "flatten before applySimReplacements, for a nested XSPICE component":
                           nullAllowed: true)])
 
   proc buildGainStandin(nl: Netlist, old: Component): Component =
-    ## As `test_spice_transform.nim`'s: prepend `"A"` to whatever designator
-    ## `old` carries when this runs, dotted and all.
+    ## Prepends `"A"` to the designator, dotted and all.
     let inNet = old.pins["IN"].net
     let outNet = old.pins["OUT"].net
     let desig = old.designator
@@ -333,10 +317,8 @@ suite "flatten before applySimReplacements, for a nested XSPICE component":
     check "AXA.U1 vin vout" in deck
 
   test "the old order (replace, then flatten) leaves the deck's A line naming nets that do not exist":
-    ## The bug, end to end through a written deck rather than the frozen
-    ## attribute alone: `materializeSimNetlist` (replace while still nested)
-    ## followed by `flatten` is what every analysis used to do, and this is
-    ## what an ngspice deck derived that way actually contained.
+    ## The wrong order through a written deck: replace while nested, then
+    ## flatten.
     let templ = subckt("AMP2", [IN, OUT]):
       net IN, kind = ntSignal
       net OUT, kind = ntSignal
@@ -358,10 +340,7 @@ suite "flatten before applySimReplacements, for a nested XSPICE component":
     let s = newStringStream()
     writeNetlist(work, s)
     let deck = s.data
-    # The A line is written verbatim from the frozen string -- "IN"/"OUT",
-    # not "vin"/"vout" -- so it names nodes nothing else in the flattened
-    # deck uses. `net.pins.len` accounting elsewhere in this suite is what
-    # would go wrong reading a deck like this into ngspice: two floating
-    # nodes and a duplicate "vin"/"vout" pair with no device on them.
+    # The A line keeps the frozen "IN"/"OUT", nodes nothing else uses: two
+    # floating nodes in ngspice.
     check "XA.AU1 IN OUT" in deck
     check "XA.AU1 vin vout" notin deck

@@ -1,26 +1,11 @@
-## Power-rail start-up: how fast a regulated rail comes up, whether it
-## overshoots, and how much current the output capacitor bank pulls on the
-## way (inrush).
+## Power-rail start-up: rise, overshoot, and inrush into the output bank.
 ##
-## **What this measures, and what it does not.** A netlist names a regulator;
-## it does not describe one. Unless the component carries a `simReplace`
-## (see `verax/spice/transform`), this analysis substitutes an ideal source
-## following an assumed soft-start ramp and then measures what the *output
-## network* does in response: the RC/RLC rise of the rail into its capacitor
-## bank and load, the overshoot that network produces, and the current the
-## capacitors demand while charging.
-##
-## That is a real and frequently-asked question -- "how much inrush does my
-## cap bank pull, and does the rail settle in time for the reset release" --
-## and it is answerable from the netlist alone. It is **not** a model of the
-## regulator: no control loop, no current limit or foldback, no dropout, no
-## load regulation, no thermal behaviour. A rail that overshoots here would
-## overshoot on a real board, but a rail that looks clean here can still
-## misbehave for loop-stability reasons this cannot see. Every assumed value
-## is listed in `AnalysisReport.assumptions`; attach a vendor macromodel via
-## `simReplace` when the regulator's own dynamics matter.
-##
-## Unlike the frequency-domain analyses this needs no `.ac`, only `.tran`.
+## Without a `simReplace`, the regulator becomes an ideal source on an
+## assumed soft-start ramp, and this measures what the *output network* does
+## (rise into the bank, overshoot, charging current). It is **not** a
+## regulator model: no loop, current limit, dropout, load regulation or
+## thermal behaviour. Assumptions are listed in the report; attach a vendor
+## model via `simReplace` when the regulator's dynamics matter. `.tran` only.
 
 import std/[math, strutils, tables, sets]
 import ../../netlist/types
@@ -46,38 +31,25 @@ const
 
 type
   StartupStart* = enum
-    ## What the circuit looks like at t = 0, which for a start-up measurement
-    ## is not a detail.
-    ##
-    ## A regulator this analysis stands up **itself** -- the assumed PWL ramp
-    ## -- has no state of its own, so solving the operating point first is
-    ## free and helps everything else in the fragment converge.
-    ##
-    ## A regulator that brought **its own model** is the opposite case: the
-    ## whole reason to honour that model is that it soft-starts, and its soft
-    ## start is state. Solving an operating point finds the state it settles
-    ## *to* -- reference charged, output in regulation -- and the `.tran` then
-    ## begins at the end of the ramp and reports a flat line. Measured on
-    ## `designs/lt8640a_buck.nim`, that is a `rise_time_10_90` of zero for a
-    ## part whose datasheet arithmetic says 4.08 ms.
+    ## The state at t = 0. A ramp this analysis builds has no state, so an
+    ## operating point is free and aids convergence. A regulator's own model
+    ## soft-starts, and an operating point would start the `.tran` at the end
+    ## of the ramp (a rise time of zero).
     ssAuto
-      ## Solve the operating point, unless the regulator stands itself up, in
-      ## which case start from zero.
+      ## Solve the operating point unless the regulator brought its own
+      ## model; then start from zero.
     ssOperatingPoint
-      ## Always solve the operating point first. For a vendor macromodel that
-      ## models no soft start and needs a bias to converge.
+      ## Always solve the operating point (a macromodel with no soft start
+      ## that needs a bias to converge).
     ssZero
-      ## Always `uic`: skip the operating-point solve and start every node at
-      ## zero. Nothing is biased, which is the honest picture of a board at
-      ## the instant power is applied and is wrong for anything already up.
+      ## Always `uic`: every node starts at zero, as at power-on.
 
   StartupSpec* = object
     targetV*: float
-      ## Regulated output in volts. `0` means "read it from
-      ## `Net.attrs["voltage"]` on the output net", and raise if absent.
+      ## Regulated output in volts; `0` reads `Net.attrs["voltage"]` on the
+      ## output net and raises if absent.
     softStart*: float
-      ## Assumed regulator ramp time in seconds. Only used when the regulator
-      ## has no `simReplace` of its own.
+      ## Assumed ramp time in seconds; only without a regulator `simReplace`.
     tStop*, tStep*: float
       ## `0` derives both from `softStart`.
     currentLimit*: float
@@ -89,22 +61,16 @@ type
     maxHops*: int
     pinModels*: PinModelDefaults
     flattenHierarchy*: bool
-      ## Dissolve subcircuit instances into the top level before anything
-      ## else touches the netlist. On by default: left un-flattened, every
-      ## instance is cut at its boundary by `spice/isolate` and no model pass
-      ## reaches inside one. Off restores the older behaviour.
+      ## Flatten subcircuit instances first (default on); otherwise
+      ## `spice/isolate` cuts each instance at its boundary.
     keepInstances*: seq[string]
-      ## Instance paths `flatten` must leave intact, beyond the part this
-      ## analysis was named for (which is added automatically). For a design
-      ## that brings its own subcircuit macromodel and expects it honoured.
+      ## Instance paths `flatten` keeps intact, beyond the analysed part
+      ## (added automatically) -- for a design's own subcircuit macromodel.
     modelUnmodelledParts*: bool
-      ## Stand in for the parts around this fragment that carry no model, so
-      ## the simulation sees something where they sit rather than an open
-      ## circuit. The part this analysis is *about* is never touched by it --
-      ## that one is modelled deliberately further down.
+      ## Stand in for unmodelled parts around the fragment rather than leave
+      ## them open. Never applied to the analysed part.
     startFrom*: StartupStart
-      ## Where t = 0 is. See `StartupStart`; `ssAuto` is right for everything
-      ## this analysis has been pointed at so far.
+      ## Where t = 0 is; see `StartupStart`.
 
 proc defaultStartupSpec*(): StartupSpec =
   StartupSpec(targetV: 0.0, softStart: 1.0e-3, tStop: 0.0, tStep: 0.0,
@@ -114,25 +80,12 @@ proc defaultStartupSpec*(): StartupSpec =
               modelUnmodelledParts: true, startFrom: ssAuto)
 
 proc downstreamRails(nl: Netlist, fromNet: string): seq[string] =
-  ## Every rail the regulator's output reaches through passive parts.
-  ##
-  ## During start-up *nothing* downstream of the regulator is at its nominal
-  ## voltage -- a rail ramping from zero is the entire premise of the
-  ## measurement. So a rail on this side must never be terminated with an
-  ## ideal source at its nominal: a ferrite-filtered analog rail one hop from
-  ## the output would be held stiff at 3.3 V while the rail feeding it ramps
-  ## from zero, and would drive current backwards through the filter into it.
-  ## Measured on a real design, that reported **2.8 kA** of inrush where the
-  ## figure is 163 mA.
-  ##
-  ## This is the transient twin of what `IsolationSpec.excludeRails` already
-  ## exists to prevent in `.ac`, where an ideal source is a dead short. The
-  ## same field carries both; only the reason differs.
-  ##
-  ## The walk crosses `kinds.isPassive` parts only, so it stops dead at the
-  ## regulator and never reaches the rail feeding its *input* -- which
-  ## genuinely is up before start-up begins, and must keep its ideal source
-  ## or there is nothing for the regulator to run from.
+  ## Every rail the regulator's output reaches through passive parts. None
+  ## is at nominal during start-up, so none may be terminated with an ideal
+  ## source -- a filtered rail held stiff would drive current backwards into
+  ## the ramping one (inflating inrush by orders of magnitude). The
+  ## transient twin of `excludeRails` in `.ac`. The walk stops at the
+  ## regulator, so its input rail keeps its source.
   var seen = toHashSet([fromNet])
   var queue = @[fromNet]
   while queue.len > 0:
@@ -151,24 +104,14 @@ proc downstreamRails(nl: Netlist, fromNet: string): seq[string] =
 
 proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
                      measureNet = "", spec = defaultStartupSpec()): AnalysisReport =
-  ## Isolates `regulator` together with everything on its output rail,
-  ## replaces the regulator with a ramped source, and runs one `.tran`.
-  ##
-  ## `outputNet` is where the regulator drives; `measureNet` is where the
-  ## rail is judged, defaulting to the same net. They differ whenever there
-  ## is post-regulator filtering -- a ferrite bead or an LC to the load -- and
-  ## that case is exactly where the interesting behaviour lives, because a
-  ## series inductance into a capacitor bank is a resonant circuit that can
-  ## ring the rail well past its target even though the regulator itself
-  ## ramps monotonically. Measuring at the regulator pin would show a clean
-  ## ramp and miss it entirely.
+  ## Isolates `regulator` with its output rail, replaces it with a ramped
+  ## source, and runs one `.tran`. `measureNet` (default `outputNet`) is
+  ## where the rail is judged; with post-regulator filtering it can ring
+  ## even though the regulator pin ramps cleanly.
   let measured = if measureNet.len > 0: measureNet else: outputNet
   result.name = "Start-up of '" & measured & "' from " & regulator
 
-  # `findComponent` rather than the flat key: a regulator on a board that is
-  # instanced into a system is addressed by a `hierSep`-separated path, and
-  # the flat key resolves first anyway, so one call serves an authored
-  # hierarchy and a flattened one alike.
+  # `findComponent`, so a hierarchical path works too.
   let regComp = findComponent(nl, regulator)
   if regComp == nil:
     raise newException(NetlistError, "no such component: " & regulator)
@@ -193,37 +136,23 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
 
   var isoSpec = defaultIsolationSpec("startup_" & measured)
   isoSpec.maxHops = spec.maxHops
-  # Both nets must be expanded (the capacitor bank hanging off them is the
-  # whole point) and neither may be terminated with an ideal source, which
-  # would clamp the very ramp being measured. Seeding does the first,
-  # excluding does the second.
+  # Seed both nets (their capacitor banks are the point) and exclude them
+  # from termination (an ideal source would clamp the ramp).
   var seedNets = @[outputNet]
   if measured != outputNet: seedNets.add measured
-  # Every rail the output feeds is also seeded and also left un-terminated.
-  # Seeding is what pulls that rail's own capacitor bank into the fragment,
-  # and the regulator really does have to charge it, so leaving it out
-  # under-reports the inrush; excluding is what stops it being stood up as a
-  # stiff source and back-feeding the rail it hangs off. See
-  # `downstreamRails` for what that costs when it is not done.
+  # Downstream rails too: seeded so their banks count toward inrush,
+  # excluded so they don't back-feed (see `downstreamRails`).
   for r in downstreamRails(nl, outputNet):
     if r notin seedNets: seedNets.add r
   isoSpec.excludeRails = seedNets
   isoSpec.requireKnownRails = false
 
-  # Stand in for the loads before isolating, for the same reason `analyzePdn`
-  # does: `isolate` will not traverse a part nothing describes, so once it has
-  # run there is nothing left to model. The regulator is excluded -- it is
-  # about to be replaced by a soft-start ramp, and a generic stand-in applied
-  # first would quietly overwrite the one thing this analysis is here for.
+  # Stand in for loads before isolating (`isolate` won't traverse undescribed
+  # parts). The regulator is excluded: it's about to become the ramp.
   var cloneNets: OrderedTable[string, Net]
-  # Clone, flatten, *then* apply `simReplace` -- not the combined
-  # `materializeSimNetlist` -- so a nested XSPICE regulator's `A`-line ports
-  # are rendered from post-flatten net names rather than frozen at
-  # child-template-local ones flatten is about to rename out from under it
-  # (see `spice/flatten`'s module doc). `simReplace` is still honoured for
-  # everything but the regulator: a component's own stand-in is the design's
-  # statement of how it wants that part simulated, and this analysis used to
-  # ignore it entirely.
+  # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
+  # nested XSPICE regulator's ports use post-flatten names. `simReplace` is
+  # honoured for everything but the regulator.
   let work = clone(nl, cloneNets)
   discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances, regulator)
   applySimReplacements(work, [regulator], purpose = spStartup)
@@ -243,23 +172,17 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
   let outNet = frag.nets[outputNet]
   let gnd = frag.nets["0"]
   let srcDesig = $spiceFormat.designatorPrefix("voltage_source") & "REG_" & regulator
-  # The same purpose the materialise above used, so the part stood up here is
-  # the one that would have been stood up there had it not been excluded.
+  # Same purpose as the materialise above.
   let sr = selectSimModel(regComp, spStartup)
 
-  # What ends up standing in for the regulator, whatever route it took there.
-  # The inrush probe needs the component, not the designator, because a
-  # `build` model names it whatever it likes.
+  # The regulator's stand-in, by component: a `build` model may name it
+  # anything.
   var standIn: Component = nil
 
   if sr != nil and sr.build != nil:
-    # **The `build` route.** `kind`/`pinNets` cannot express an XSPICE code
-    # model -- there is a `.MODEL` card to register, an ordered port binding,
-    # and port text to render -- so a model that needs any of those supplies
-    # a proc instead, and it is handed the netlist and the part to stand in
-    # for. Going through `replaceComponent` here would have read an empty
-    # `kind` and an empty `pinNets` and produced a device of no type wired to
-    # nothing.
+    # **The `build` route**: an XSPICE model needs a `.MODEL` card, an ordered
+    # port binding and port text, which `kind`/`pinNets` can't express, so
+    # the model supplies a proc.
     let old = frag.components.getOrDefault(regulator)
     if old == nil:
       raise newException(NetlistError,
@@ -270,9 +193,8 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
       " modelled by its own simReplace '" & sr.name & "', which builds its " &
       "own stand-in rather than naming a device kind")
   elif sr != nil:
-    # The user described the regulator themselves; honour it verbatim except
-    # for the designator, which is taken over so the inrush probe knows which
-    # branch to measure.
+    # A user-described regulator, verbatim except the designator (taken over
+    # so the inrush probe knows the branch).
     var pinNets: seq[(string, Net)]
     for pinName, netName in sr.pinNets:
       if not frag.nets.hasKey(netName):
@@ -301,22 +223,11 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
 
   let vProbe = addVoltageProbe(frag.nets[measured])
 
-  # **The inrush probe is conditional, and saying why is the point.** It works
-  # by splitting a pin off its net and putting a 0 V source in the gap, which
-  # needs a pin on the stand-in that actually sits on `outputNet`. The `"+"`
-  # this used to assume is the pin of the PWL source *this* analysis builds,
-  # and it is not a pin any other model has to have: a design's own
-  # `simReplace` names its pins after the datasheet, and a code model's ports
-  # cannot be re-netted at all -- an `A` line's port text is rendered from the
-  # model spec rather than from the component's pins, so moving a pin would
-  # move it in the graph and not in the deck. `spice/probes` refuses that
-  # outright now; here it is avoided one step earlier.
-  #
-  # A switching regulator is the ordinary case of a part with no such pin: the
-  # LT8640A drives a *switch node* into an inductor, so the current reaching
-  # `vout` is the inductor's and not the part's. Reporting no `inrush_peak`
-  # is the honest answer -- there is no single branch that carries the inrush
-  # -- and every other measurement here is unaffected.
+  # The inrush probe needs a stand-in pin on `outputNet` to split. A
+  # `simReplace` names its own pins, and an XSPICE model's ports can't be
+  # re-netted. A switching regulator usually has no such pin (the inductor
+  # carries the current), so it reports no `inrush_peak`; everything else is
+  # unaffected.
   var iProbe: Probe
   var haveInrush = false
   if standIn != nil and not standIn.attrs.hasKey("xspice.ports"):
@@ -339,9 +250,7 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
   let tStep = if spec.tStep > 0.0: spec.tStep else: tStop / 2000.0
   var card = ".tran " & spiceValue(tStep) & " " & spiceValue(tStop)
 
-  # `uic` where the part starts *itself*. See `StartupStart`: an operating
-  # point solves the state the soft start settles to, so the run would begin
-  # at the end of the ramp this analysis exists to measure.
+  # `uic` when the part starts itself (see `StartupStart`).
   let uic = case spec.startFrom
             of ssOperatingPoint: false
             of ssZero: true
@@ -372,14 +281,11 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
   result.add "overshoot_pct", overshootFrac(v, targetV) * 100.0, "%"
   result.add "settle_time", settleTime(t, v, targetV, spec.settleTol), "s"
 
-  # The probe source's branch current is signed by which pin was split, which
-  # is an artefact of probe wiring rather than anything about the circuit, so
-  # inrush is reported as a magnitude.
+  # The probe's sign is wiring, so inrush is a magnitude.
   var pk = (t: NaN, v: NaN)
   if haveInrush:
     pk = peakAbs(t, result.raw[iProbe.label])
-    # Probed on the source feeding `outputNet`, which is not necessarily the
-    # net the assertion names -- see `Measurement.at`.
+    # Probed at `outputNet`, which may differ from the assertion's net.
     result.add "inrush_peak", abs(pk.v), "A", at = "net '" & outputNet & "'"
     result.add "t_inrush_peak", pk.t, "s", at = "net '" & outputNet & "'"
 

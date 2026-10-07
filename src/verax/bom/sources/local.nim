@@ -1,13 +1,8 @@
-## The hermetic catalogue source: a JSON file of orderable parts, loaded into
-## memory and searched by a linear scan with `source.matches`.
-##
-## This is a project's preferred-parts list (the "preferred-parts database"
-## `parts/CLAUDE.md` points at) and every resolver test's fixture. A list of
-## hundreds to a few thousand rows is microseconds to scan, so there is no
-## index and no database: a real one would cost the library its
-## standard-library-only rule (`db_sqlite` left the stdlib in Nim 2) and
-## buy nothing at this size. The catalogue of millions is a distributor's,
-## reached by a network source.
+## The hermetic catalogue source: a JSON file of orderable parts, loaded
+## into memory and scanned linearly with `source.matches` -- a project's
+## preferred-parts list and the resolver tests' fixture. No index or
+## database: thousands of rows scan in microseconds, and `db_sqlite` would
+## break the stdlib-only rule. Millions of parts belong to a network source.
 ##
 ## ```json
 ## { "schema": "verax.catalog/1",
@@ -19,15 +14,11 @@
 ##       "attrs": { "ipn": "R-0001" } } ] }
 ## ```
 ##
-## **Strict.** A file with any problem -- an unknown field, a family that is
-## not one of `CatalogFamilies`, a `value` written as a string, a tolerance
-## of `1` meaning 1 %, a duplicate `(manufacturer, mpn)` -- raises
-## `CatalogError` naming every problem by row, and nothing is loaded. A
-## skipped row would be a catalogue quietly missing the part it was meant to
-## pin.
+## **Strict**: any problem (unknown field or family, a string `value`, a
+## tolerance of `1`, a duplicate `(manufacturer, mpn)`) raises `CatalogError`
+## naming every problem by row, and nothing loads.
 ##
-## Not registered on import: a file-backed source has nothing to answer with
-## until it is given a file. `registerCatalogFile` loads and registers one.
+## Not registered on import; `registerCatalogFile` loads and registers one.
 
 import std/[json, math, sequtils, strutils, tables]
 
@@ -41,9 +32,8 @@ const
       "resistor": pfResistor, "capacitor": pfCapacitor,
       "inductor": pfInductor, "ferrite_bead": pfFerrite, "other": pfOther,
     }
-    ## The `family` spellings a row may use -- the component kinds
-    ## `classify.builtinPartFamilies` maps, plus `other` for everything
-    ## bought by MPN.
+    ## The `family` spellings rows may use (`classify.builtinPartFamilies`'
+    ## kinds), plus `other` for MPN-bought parts.
   Lifecycles* = ["active", "nrnd", "obsolete"]
 
 type
@@ -143,7 +133,7 @@ proc readPart(row: JsonNode, family: PartFamily, c: Candidate,
 
 proc parseCatalog*(text: string, origin = "<string>"): Catalog =
   ## Parses a catalogue document, raising `CatalogError` listing every
-  ## problem found if there is any.
+  ## problem.
   var problems: seq[string]
   result = Catalog(origin: origin)
   let doc =
@@ -216,8 +206,8 @@ proc parseCatalog*(text: string, origin = "<string>"): Catalog =
       problems: problems)
 
 proc loadCatalog*(path: string): Catalog =
-  ## Reads and parses a catalogue file. An unreadable file is a
-  ## `CatalogError` too, so a caller has one exception to report.
+  ## Reads and parses a catalogue file; an unreadable file is a
+  ## `CatalogError` too.
   let text =
     try: readFile(path)
     except IOError as e:
@@ -226,16 +216,15 @@ proc loadCatalog*(path: string): Catalog =
   parseCatalog(text, path)
 
 proc search*(cat: Catalog, q: PartQuery): seq[Candidate] =
-  ## Every part matching `q`, in file order, as caller-owned copies.
-  ## Ranking is the resolver's job; `q.manufacturers` is ignored here.
+  ## Every part matching `q`, in file order, as copies.
+  ## `q.manufacturers` is ignored (ranking is the resolver's).
   for c in cat.parts:
     if q.limit > 0 and result.len >= q.limit: break
     if c.matches(q): result.add copyCandidate(c)
 
 proc lookup*(cat: Catalog, mpn: string, manufacturer = ""): Candidate =
-  ## The part with this MPN (and manufacturer, when given), ignoring case;
-  ## the first in file order when the manufacturer is not given and two
-  ## manufacturers share the MPN. `nil` when unknown.
+  ## The part with this MPN (and manufacturer, if given), case-insensitive;
+  ## first in file order if ambiguous. `nil` when unknown.
   let m = mpn.strip.toLowerAscii
   let mf = manufacturer.strip.toLowerAscii
   for c in cat.parts:
@@ -245,8 +234,7 @@ proc lookup*(cat: Catalog, mpn: string, manufacturer = ""): Candidate =
   nil
 
 proc catalogSource*(cat: Catalog, name = "local"): CatalogSource =
-  ## A `CatalogSource` answering from `cat`. Its candidates carry `name` as
-  ## their `source`.
+  ## A `CatalogSource` answering from `cat`, stamping `name` as `source`.
   proc stamp(c: Candidate): Candidate =
     if c != nil: c.source = name
     c
@@ -259,7 +247,7 @@ proc catalogSource*(cat: Catalog, name = "local"): CatalogSource =
       stamp(cat.lookup(mpn, manufacturer)))
 
 proc registerCatalogFile*(path: string, name = "local"): Catalog =
-  ## Loads `path` and registers it as a source, after any already
-  ## registered. Raises `CatalogError` before registering anything.
+  ## Loads `path` and registers it after existing sources. Raises
+  ## `CatalogError` before registering anything.
   result = loadCatalog(path)
   registerCatalogSource(catalogSource(result, name))

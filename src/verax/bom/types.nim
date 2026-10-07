@@ -1,10 +1,6 @@
-## What a bill of materials is made of, before any catalogue is asked.
-##
-## What collection produces -- the `PartFamily` that decides how a part is
-## resolved, and the `BomItem` that carries everything the design stated
-## about one physical part -- and what a catalogue answers with: a
-## `Candidate`, one orderable part -- and what the resolver makes of the two:
-## a `Resolution` per item, rolled up into `BomLine`s in a `BomResult`.
+## What a bill of materials is made of: `PartFamily` and `BomItem` (from
+## collection), `Candidate` (from a catalogue), and `Resolution`s rolled up
+## into `BomLine`s in a `BomResult` (from the resolver).
 
 import std/[math, strutils, tables]
 
@@ -17,41 +13,32 @@ export Assumption, Issue
 type
   PartFamily* = enum
     pfResistor, pfCapacitor, pfInductor, pfFerrite
-      ## The parametrically searchable families: a value, a tolerance and a
-      ## case code are enough to buy one.
+      ## Parametrically searchable: value, tolerance and case code suffice.
     pfOther
-      ## Everything else that is bought. Must state an MPN -- there is no
-      ## parametric query for "an op-amp".
+      ## Everything else bought; needs an MPN.
     pfNotAPart
-      ## A simulation-only element with no physical counterpart: a stimulus
-      ## source, a controlled source, a coupling statement. Left off the BOM
-      ## by kind (`classify.familyOf`), so a design never has to flag its own
-      ## test bench.
+      ## Simulation-only (stimulus, controlled source, coupling); left off by
+      ## kind (`classify.familyOf`).
 
   BomItem* = ref object
-    ## One physical part. A multi-section package (`netlist/packages`) is one
-    ## item, not one per section.
+    ## One physical part; a multi-section package is one item.
     designators*: seq[string]
-      ## The board designator(s) a BOM line prints: the hierarchical path
-      ## (`X1.X2.R1`) for a plain part, the `package.ref` (`U10`) for a
-      ## packaged one. One entry per item at collection; a roll-up merges
-      ## items into lines later.
+      ## Designators a line prints: the hierarchical path (`X1.X2.R1`), or
+      ## `package.ref` (`U10`) for a packaged part.
     members*: seq[string]
-      ## The hierarchical path of every component this item was built from --
-      ## one for a plain part, every section for a packaged one. What a
-      ## message should name when it is about a specific section.
+      ## Hierarchical path of every component in this item (every section of
+      ## a package), for messages about a specific section.
     components*: seq[Component]
       ## The same members, as objects, for `Issue.components`.
     generated*: bool
-      ## A member's designator was generated, so it is positional and will
-      ## renumber when a part is inserted earlier -- never a lock key.
+      ## A member's designator was generated (positional) -- never a lock
+      ## key.
     kind*: string
     family*: PartFamily
     value*: float
-      ## SI base units; `NaN` when not a parametric family, or when `value`
-      ## did not parse as a bare magnitude.
+      ## SI base units; `NaN` when not parametric or `value` didn't parse.
     valueText*: string
-      ## The raw `value` attr, verbatim -- a model name for a non-passive.
+      ## The raw `value` attr (a model name for a non-passive).
     tolerance*, voltageRating*, powerRating*, currentRating*, isat*: float
       ## `NaN` when neither the part nor a `bom:` default states it.
     dielectric*, package*, footprint*, caseCode*: string
@@ -60,12 +47,11 @@ type
     mpn*, manufacturer*: string
       ## As stated on the component. Never filled from `partNumber`.
     description*: string
-      ## The `description` annotation: what the part is, in words. Printed
-      ## on its BOM line when no catalogue describes it; never ordered by.
+      ## The `description` annotation, printed when no catalogue describes
+      ## the part; never ordered by.
     partNumber*: string
       ## `Component.partNumber` (or the package definition's) verbatim -- an
-      ## MPN, a house number or a free-text label, which is exactly why it is
-      ## kept apart from `mpn` (the plan's fact 2). Stage 3 may only *try* it.
+      ## MPN, house number or label, so kept apart from `mpn`.
     quantity*: int
     doNotPopulate*, excluded*: bool
     assumptions*: seq[Assumption]
@@ -75,25 +61,22 @@ type
 
   Availability* = object
     stock*: int
-      ## Units on hand; `-1` when the source does not say. Unknown is not
-      ## zero: a low-stock finding is skipped for an unknown, never raised.
+      ## Units on hand; `-1` when unknown (never triggers low stock).
     moq*: int
       ## Minimum order quantity; `-1` when the source does not say.
     lifecycle*: string
       ## `"active"`, `"nrnd"`, `"obsolete"`, or `""` when unknown.
 
   Candidate* = ref object
-    ## One orderable part, as a `bom/source.CatalogSource` reports it.
-    ## Every float a source can leave unstated is `NaN` when unstated, the
-    ## same rule as `BomItem` -- an unknown rating must never pass a minimum.
+    ## One orderable part from a `CatalogSource`. Unstated floats are `NaN`,
+    ## so an unknown rating never passes a minimum.
     mpn*, manufacturer*: string
     family*: PartFamily
       ## `pfResistor`..`pfFerrite` or `pfOther`; never `pfNotAPart`.
     description*, datasheet*: string
     package*: string
     caseCode*: string
-      ## Imperial chip case code (`classify.standardCaseCodes`), or `""` --
-      ## a part with none is found by MPN, never by a parametric search.
+      ## Imperial chip case code or `""` (found by MPN only).
     value*, tolerance*: float
       ## SI base units, and a fraction (0.01 is 1 %).
     voltageRating*, powerRating*, currentRating*: float
@@ -108,18 +91,18 @@ type
     ## What the resolver decided for one `BomItem`.
     item*: BomItem
     chosen*: Candidate
-      ## `nil` when nothing resolved -- including a stated MPN no source
-      ## knows, which the BOM line still carries as stated.
+      ## `nil` when nothing resolved (a stated MPN no source knows still
+      ## prints as stated).
     alternates*: seq[Candidate]
       ## The next-ranked candidates of a parametric search, best first.
     candidates*: int
-      ## How many distinct orderable parts met the requirement; `0` when no
-      ## search ran.
+      ## Distinct orderable parts meeting the requirement; `0` if no search
+      ## ran.
     locked*: bool
       ## A prior result's `LockEntry` decided this.
     signature*: string
-      ## The lockfile key for a parametric item -- its requirement, never
-      ## its designator; `""` for anything bought by MPN.
+      ## The lockfile key: the requirement, never the designator; `""` for
+      ## MPN-bought items.
     issues*: seq[Issue]
       ## The item's own findings from collection, then the resolver's.
 
@@ -130,9 +113,8 @@ type
       ## For a human reading the lockfile only; never matched on.
 
   BomLine* = ref object
-    ## One orderable line: every populated (or every DNP) item resolving to
-    ## the same part. Field names follow `pcb/bom.BomLine`, without importing
-    ## it, so a reconciliation would be a field copy.
+    ## One orderable line: items resolving to the same part (DNP separately).
+    ## Field names follow `pcb/bom.BomLine` without importing it.
     key*: string
     designators*: seq[string]
     quantity*: int
@@ -152,8 +134,8 @@ type
     lines*: seq[BomLine]
       ## Excluded items are on no line; DNP items are, on their own.
     issues*: seq[Issue]
-      ## Findings about the whole BOM or a whole line (`bom_low_stock`);
-      ## per-item findings are on each `Resolution`.
+      ## Whole-BOM or whole-line findings (`bom_low_stock`); per-item ones are
+      ## on each `Resolution`.
     attrs*: OrderedTable[string, string]
 
 proc isParametric*(f: PartFamily): bool =
@@ -162,17 +144,15 @@ proc isParametric*(f: PartFamily): bool =
 proc hasValue*(i: BomItem): bool = not i.value.isNaN
 
 proc effectiveMpn*(i: BomItem): string =
-  ## The MPN the BOM orders by when no catalogue resolved the part: the
-  ## stated `mpn`, else `partNumber` -- which may be a free-text label, so
-  ## the resolver warns whenever it falls back to it unverified.
+  ## The MPN ordered by when nothing resolved: `mpn`, else `partNumber` (the
+  ## resolver warns on that fallback).
   if i.mpn.len > 0: i.mpn else: i.partNumber.strip
 
 proc unknownAvailability*(): Availability =
   Availability(stock: -1, moq: -1, lifecycle: "")
 
 proc copyCandidate*(c: Candidate): Candidate =
-  ## A caller-owned copy. A source hands these out rather than its stored
-  ## refs, so a caller folding stock into one can never edit the catalogue.
+  ## A caller-owned copy, so callers can never edit the catalogue.
   if c == nil: return nil
   result = Candidate()
   result[] = c[]

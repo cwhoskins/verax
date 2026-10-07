@@ -27,8 +27,7 @@ test "the three keys are registered, in degC, at the right scopes":
     check isRegistered(k)
     check annDef(k).unit == "degC"
     check annDef(k).kind == akFloat
-  # The board's range belongs to the board and a rise belongs to a part;
-  # neither is stated where the other is.
+  # Range belongs to the board, rise to a part.
   check annDef("t_ambient_min").scopes == {asNetlist}
   check annDef("t_ambient_max").scopes == {asNetlist}
   check annDef("delta_t").scopes == {asComponent}
@@ -39,14 +38,14 @@ test "a temperature literal cannot be confused with a voltage":
     setAnnotation(nl, "t_ambient_max", 70.0.V)
   expect(NetlistError):
     setAnnotation(findComponent(nl, "U1"), "delta_t", 25.0.V)
-  # And the range is not stateable on a part, nor a rise on the board.
+  # Neither is stateable at the other's scope.
   expect(NetlistError):
     setAnnotation(findComponent(nl, "U1"), "t_ambient_max", 70.degC)
   expect(NetlistError):
     setAnnotation(nl, "delta_t", 25.degC)
 
 test "Celsius renders without SI prefixes":
-  # `500 mdegC` is exactly the misread the typed units exist to remove.
+  # `500 mdegC` is the misread typed units prevent.
   check $(0.5.degC) == "0.5 degC"
   check $(-40.degC) == "-40 degC"
   check $(70.degC) == "70 degC"
@@ -84,8 +83,7 @@ test "half a range is not a range":
   check env.tAmbientMax.has
 
 test "a child netlist reads the board's range, not one of its own":
-  # A subcircuit does not have weather of its own: a model pass holding a
-  # fragment must get the same answer as one holding the whole board.
+  # A model pass on a fragment gets the board's answer.
   let nl = board()
   setOperatingTemperature(nl, 0.degC, 85.degC)
   let child = newNetlist("channel")
@@ -93,8 +91,7 @@ test "a child netlist reads the board's range, not one of its own":
   check environmentOf(child).tAmbientMax.value == 85.0
 
 test "the range survives a clone, which is why it lives in attrs":
-  # Everything that will ever read this holds a *fragment*: analyses clone,
-  # flatten and isolate before they model anything.
+  # Analyses clone, flatten and isolate first, so readers hold fragments.
   let nl = board()
   setOperatingTemperature(nl, -20.degC, 70.degC)
   var globals: OrderedTable[string, Net]
@@ -138,8 +135,7 @@ test "a part's range is the board's, shifted by its own rise at both ends":
   let cool = partTemperatureRange(findComponent(nl, "C1"), env)
   check cool == (-20.0, 70.0)
 
-  # A dissipating one is above it whatever the air is doing -- which is why
-  # the cold end moves too, rather than the rise being added only on top.
+  # A dissipating part is above ambient at both ends.
   let hot = partTemperatureRange(findComponent(nl, "U1"), env)
   check hot == (5.0, 95.0)
   check partTemperature(findComponent(nl, "U1"), 25.0) == 50.0
@@ -184,8 +180,7 @@ test "a well-stated environment reports nothing":
   check validateEnvironment(nl).len == 0
 
 test "an inverted range that got in some other way is reported":
-  # `setOperatingTemperature` refuses it, but a file reader or a raw
-  # annotation can still produce one, and it looks like a specification.
+  # The setter refuses it; a file reader or raw annotation can't be stopped.
   let nl = board()
   setAnnotation(nl, "t_ambient_min", 70.degC)
   setAnnotation(nl, "t_ambient_max", -20.degC)
@@ -203,9 +198,8 @@ test "half a range is reported, naming the end that is missing":
   check "t_ambient_max" in issues[0].message
 
 test "a range stated inside a subcircuit is reported, not silently ignored":
-  # `environmentOf` reads the root, which is the right rule and is exactly
-  # what makes a range written inside a `subckt` invisible once it is
-  # instanced -- indistinguishable, from the design file, from a live one.
+  # `environmentOf` reads the root, so a range written inside a `subckt` is
+  # invisible once instanced.
   let nl = board()
   setOperatingTemperature(nl, 0.degC, 70.degC)
   let child = newNetlist("channel")
@@ -215,7 +209,7 @@ test "a range stated inside a subcircuit is reported, not silently ignored":
   check issues.len == 1
   check issues[0].kind == KindTemperatureRangeNotAtRoot
   check "channel" in issues[0].message
-  # And the board's own figure is what anything reading it still gets.
+  # Readers still get the board's figure.
   check environmentOf(child).tAmbientMax.value == 70.0
 
 test "a rise with no range to add it to is reported, naming the parts":
@@ -247,9 +241,8 @@ test "the environment block states the range from a design file":
   check partTemperatureRange(findComponent(nl, "U1"), env) == (-10.0, 115.0)
 
 test "the environment block is validated at compile time":
-  # The same strictness `spec:` has, and for the same reason: there is no
-  # open-ended bag inside the block for a misspelling to mean anything.
-  # The positive control first, so a false negative cannot pass this test.
+  # As strict as `spec:`: no open bag for a misspelling. Positive control
+  # first.
   check(compiles(block:
     discard netlist("ok"):
       environment:
@@ -258,12 +251,12 @@ test "the environment block is validated at compile time":
     discard netlist("bad"):
       environment:
         t_ambient_maxx = 85.degC))
-  # A key that is registered but belongs on a component is refused here.
+  # A component-scope key is refused here.
   check(not compiles(block:
     discard netlist("bad"):
       environment:
         delta_t = 30.degC))
-  # And a component's `spec:` still refuses the board's keys.
+  # A component's `spec:` refuses the board's keys.
   check(not compiles(block:
     discard netlist("bad"):
       net gnd, kind = ntGround, name = "0"

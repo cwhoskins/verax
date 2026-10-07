@@ -1,7 +1,5 @@
-## `pcb/footprint.nim`'s provider registry: registration order is
-## resolution order, an unknown spec returns `nil` rather than raising, and
-## a source recognising a spec by returning non-nil wins over one that
-## returns `nil` for it.
+## `pcb/footprint.nim`'s provider registry: registration order is resolution
+## order, an unknown spec returns `nil`, and the first non-nil source wins.
 
 import std/unittest
 
@@ -30,10 +28,8 @@ test "a second source is tried when the first returns nil, and the first wins on
       if spec == "B:Other": fakeFootprint("from-second:" & spec)
       elif spec == "A:Part": fakeFootprint("from-second:" & spec)
       else: nil))
-  # "A:Part" still resolves through the first-registered source (registered
-  # in the previous test, and the registry is module-level state -- the
-  # same "sources in registration order" contract `findFootprint`'s own doc
-  # comment states).
+  # "A:Part" still resolves through the first-registered source (the
+  # registry is module-level, so it persists from the previous test).
   check findFootprint("A:Part").name == "A:Part"
   # "B:Other" is claimed only by the second source.
   let fp = findFootprint("B:Other")

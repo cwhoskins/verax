@@ -28,7 +28,7 @@ test "a capacitor becomes C in series with its ESR and ESL":
   # Explicit attributes are data, not assumptions.
   check notes.len == 0
 
-  # The chain really is in series: C1 -> ESR node -> ESL node -> original net.
+  # In series: C1 -> ESR node -> ESL node -> original net.
   check nl.components["C1"].pins["2"].net.name == "C1_ESR_N"
   check nl.components["RC1_ESR"].pins["2"].net.name == "C1_ESL_N"
   check nl.components["LC1_ESL"].pins["2"].net.name == "0"
@@ -36,8 +36,7 @@ test "a capacitor becomes C in series with its ESR and ESL":
 test "a package default is used when nothing is annotated, and reported":
   let nl = oneCap([("package", "0603")])
   let notes = expandCapacitorParasitics(nl)
-  # One assumption per invented value, not one per component: ESR and ESL are
-  # separately sourced and a consumer must be able to tell them apart.
+  # One assumption per invented value, so ESR and ESL are distinguishable.
   check notes.len == 2
   check notes[0].entity == "C1"
   check notes[0].key == "esr"
@@ -52,8 +51,7 @@ test "a package default is used when nothing is annotated, and reported":
 test "an unknown package falls back, and only the invented value is reported":
   let nl = oneCap([("package", "9999"), ("esr", "0.005")])
   let notes = expandCapacitorParasitics(nl)
-  # The ESR was stated, so it is data rather than an assumption; only the ESL
-  # had to be invented.
+  # The ESR was stated; only the ESL is invented.
   check notes.len == 1
   check notes[0].key == "esl"
   check "fallback" in notes[0].detail
@@ -87,8 +85,7 @@ test "idealOpAmp emits a valid SPICE subcircuit with the E devices in order":
   let s = newStringStream()
   writeNetlist(tmpl, s)
   let text = s.data
-  # `Exxx n+ n- nc+ nc- gain` -- the node order is what makes the line mean
-  # what it says, and it comes from the vcvs pin template.
+  # `Exxx n+ n- nc+ nc- gain`: node order comes from the vcvs pin template.
   check "E1 N1 0 INP INN 1.000000000e+05" in text
   check "E2 OUT 0 N2 0 1.000000000e+00" in text
 
@@ -128,8 +125,7 @@ proc valueOf(nl: Netlist, designator: string): float =
 
 suite "source output impedance":
   test "a source is no longer a dead short":
-    # An ideal source pins its rail at zero ohms, so a PDN sweep over a
-    # design carrying its own regulator passes every target that exists.
+    # An ideal source pins the rail at zero ohms and passes every PDN target.
     let nl = railWithSource()
     let notes = expandSourceImpedance(nl)
     check nl.components.hasKey("RV1_ROUT")
@@ -266,8 +262,7 @@ suite "behavioural models":
     check notes.len == 2      # the modelling narrative, and the input's load
 
   test "the modelled source carries the part's voltage, not the rail's":
-    # The whole reason a dc_voltage claim stays worth making: read the output
-    # off the net and the check measures its own assumption back.
+    # Reading the output off the net would measure the assumption back.
     let nl = ldoBoard(vout = "5")
     nl.nets["vdd"].attrs["voltage"] = "3.3"    # what the rail is required to be
     discard expandPinModels(nl)
@@ -277,8 +272,7 @@ suite "behavioural models":
     check abs(v - 5.0) < 1e-9
 
   test "a regulator stating nothing is left alone, not tied to ground":
-    # Two independent resistors to ground would report vdd as 0 V: a
-    # confident wrong answer where refusing to simulate is the honest one.
+    # Two resistors to ground would report 0 V; refusing is honest.
     let nl = ldoBoard()
     let notes = expandPinModels(nl)
     check nl.components.hasKey("U1")
@@ -336,10 +330,8 @@ proc stageWithTwoOpAmps(): Netlist =
     discard connect(u, "V-", gnd, ptGround)
 
 test "an op-amp with no model becomes a macromodel, not impedances to ground":
-  # The pin model is the last resort in the chain, not the first answer: a
-  # part with a registered kind gets that kind's model. Without this every
-  # op-amp but the one an analysis names became three resistors to ground,
-  # which deletes the stage rather than approximating it.
+  # A part with a registered kind gets that kind's model; the pin model is
+  # the last resort (it would delete the stage, not approximate it).
   let nl = stageWithTwoOpAmps()
   discard expandPinModels(nl, exclude = ["U2"])
 
@@ -349,14 +341,13 @@ test "an op-amp with no model becomes a macromodel, not impedances to ground":
   check nl.components.hasKey("RU1_POLE")
   check nl.components.hasKey("CU1_POLE")
   check nl.components.hasKey("EU1_BUF")
-  # ...and no per-pin stand-in was left behind.
+  # ...with no per-pin stand-in left behind.
   check not nl.components.hasKey("RU1_IN+")
   check not nl.components.hasKey("RU1_OUT")
 
 test "the substituted macromodel is flat, so isolate can walk through it":
-  # Built as an instance of `idealOpAmp` instead, every part of it would sit
-  # behind a `subNetlist`, which `spice/isolate` refuses to traverse -- and
-  # the stage would be cut at the very boundary the model exists to bridge.
+  # As an `idealOpAmp` instance it would sit behind a `subNetlist`, which
+  # `spice/isolate` won't traverse.
   let nl = stageWithTwoOpAmps()
   discard expandPinModels(nl, exclude = ["U2"])
   check nl.children.len == 0
@@ -365,8 +356,7 @@ test "the substituted macromodel is flat, so isolate can walk through it":
     check isPassive(nl.components[desig])
 
 test "the macromodel's own pole capacitor never gets parasitics":
-  # It is a modelling element, not a part; an ESL on it would put a
-  # resonance in the amplifier's response that the real device lacks.
+  # A modelling element, not a part: an ESL would add a fake resonance.
   let nl = stageWithTwoOpAmps()
   discard expandPinModels(nl, exclude = ["U2"])
   check nl.components["CU1_POLE"].attrs["parasitics.expanded"] == "true"
@@ -379,20 +369,16 @@ test "a stated gain becomes the macromodel's open-loop gain":
   nl.components["U1"].attrs["gain"] = "2e4"
   let notes = expandPinModels(nl, exclude = ["U2"])
   check parseFloat(nl.components["EU1_AOL"].attrs["value"]) == 2.0e4
-  # Stated, so it is not reported as an invented value.
+  # Stated, so not reported as invented.
   check not notes.anyIt(it.key == "gain" and it.entity == "U1")
 
 test "a stated gbw becomes the macromodel's pole, and is not reported as invented":
-  # This was a `const` in `models.opampModel` until it was noticed that the
-  # assumption line reported 1 MHz as invented while a stated `gbw` sat one
-  # field away unread -- the worst shape a default can take, since the report
-  # then reads as the design not having stated one. `analysis/opamp` already
-  # honoured it, so the two paths disagreed about the same part.
+  # A stated `gbw` must be used, not reported as an invented default.
   let nl = stageWithTwoOpAmps()
   nl.components["U1"].attrs["gain"] = "2e5"
   nl.components["U1"].attrs["gbw"] = "3e6"
   let notes = expandPinModels(nl, exclude = ["U2"])
-  # The pole sits at gbw/aol into a 1 kohm series resistor.
+  # The pole is gbw/aol into a 1 kohm series resistor.
   let rPole = parseFloat(nl.components["RU1_POLE"].attrs["value"])
   let cPole = parseFloat(nl.components["CU1_POLE"].attrs["value"])
   let fPole = 1.0 / (2.0 * PI * rPole * cPole)
@@ -414,8 +400,8 @@ test "an unstated gbw still defaults to 1 MHz and still says that it did":
   check seen
 
 test "an amplifier whose pins cannot be identified is left alone, not grounded":
-  # Tying an unrecognised part's pins to ground independently would open any
-  # loop through it, which is the failure this whole registry exists to stop.
+  # Grounding an unrecognised part's pins independently would open any loop
+  # through it.
   var nl = newNetlist("t")
   let gnd = addNet(nl, newNet("0", ntGround))
   let a = addNet(nl, newNet("a"))
@@ -427,11 +413,8 @@ test "an amplifier whose pins cannot be identified is left alone, not grounded":
   check notes.anyIt("U9" in it.detail)
 
 test "a part with a .MODEL card is never stood in for":
-  # The pin model exists because nothing described the part. A registered
-  # `.MODEL` describes it, so substituting would replace a real device with
-  # two resistors to ground -- which for a clipping diode pair across a
-  # feedback network shunts the inverting node with 500k and quietly acts as
-  # a second gain leg.
+  # A registered `.MODEL` describes the part; substituting resistors to
+  # ground would, e.g., turn a clipping diode pair into a second gain leg.
   var nl = newNetlist("t")
   let gnd = addNet(nl, newNet("0", ntGround))
   let a = addNet(nl, newNet("a"))

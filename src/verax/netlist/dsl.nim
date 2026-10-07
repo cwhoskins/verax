@@ -1,27 +1,13 @@
-## A Nim-macro DSL for authoring `Netlist`s directly in source, as an
-## alternative to hand-calling `verax/netlist/graph`'s API or reading a
-## file format under `verax/netlist/formats/`.
+## A Nim-macro DSL for authoring `Netlist`s in source. Every statement
+## expands to ordinary `graph.nim` calls; this module never sets
+## back-references itself.
 ##
-## Every DSL statement expands to ordinary calls into `graph.nim` -- this
-## module never hand-sets `.net`/`.pins`/`.component`/`.parent`/`.children`/
-## `.instanceOf` itself, keeping the bidirectional-reference bookkeeping
-## centralized where `graph.nim` already owns it.
+## `kind`/`name`/`partNumber` are typed field assignments; any other
+## `key = value` on a statement head goes to `attrs`, so a typo of a known
+## field (`kidn = ...`) silently becomes an attr. `spec:` is the strict form.
 ##
-## `kind`/`name`/`partNumber` (the handful of typed "known fields" on
-## `Net`/`Component`/`Pin`) get direct, type-checked field assignment; any
-## other `key = value` pair in a `net`/`component`/`pin`/`instance`
-## statement is routed to that entity's open-ended `attrs` bag instead. A
-## *typo* of a known field name (e.g. `kidn = "resistor"`) is therefore not
-## a compile error -- it silently becomes an `attrs` entry, consistent with
-## `attrs` already being an open-ended bag elsewhere in this codebase (e.g.
-## the SPICE reader's `value`/model passthrough).
-##
-## A `component` block may also contain one `simReplace` statement, which
-## records a simulation-only replacement for that component (see
-## `verax/spice`) without describing anything about the real design -- it
-## only ever sets `Component.simReplace`, never `connect`s/mutates the
-## component itself:
-##
+## A `component` block may contain `simReplace`, which only records a
+## simulation-only replacement (see `verax/spice`):
 ## ```nim
 ## component U1, kind = "regulator_ic", partNumber = "LM317":
 ##   pin "IN", vin
@@ -45,12 +31,9 @@
 ##     pin "2", vout, kind = ptPassive
 ## ```
 ##
-## A reusable sub-circuit is defined once with `subckt` (which produces a
-## free-standing template `Netlist`, never registered into any parent) and
-## instantiated any number of times afterwards with `instance`, which
-## expands to `graph.instantiate` -- each instance is an independent clone,
-## except for nets declared `global = true`, which stay the identical
-## shared object across every instance (e.g. a common ground):
+## `subckt` defines a free-standing template; `instance` expands to
+## `graph.instantiate` (an independent clone, except `global = true` nets,
+## which stay shared):
 ##
 ## ```nim
 ## let GATE = subckt("GATE", [VDD, GND]):
@@ -90,9 +73,8 @@ const
   pinKnownFields = ["kind"]
 
 proc globalNetsTypeNode(): NimNode =
-  ## `OrderedTable[string, Net]` -- built with `bindSym` for `OrderedTable`
-  ## so DSL users don't need their own `import std/tables` just to satisfy
-  ## the internal `globalNets` plumbing.
+  ## `OrderedTable[string, Net]` via `bindSym`, so users needn't import
+  ## `std/tables`.
   newTree(nnkBracketExpr, bindSym("OrderedTable"), ident"string", ident"Net")
 
 proc newGlobalsVarSection(sym: NimNode): NimNode =
@@ -106,35 +88,17 @@ proc stripTrailingBlock(args: seq[NimNode]): (seq[NimNode], NimNode) =
     (args, nil)
 
 proc deckSafeValue*(x: float): string =
-  ## Mirrors `netlist/formats/spice.spiceValue` deliberately, not by
-  ## importing it: a format module may depend on `netlist/`, never the other
-  ## way, so this core module cannot reach into `formats/spice.nim` for it.
-  ## Always scientific notation with an explicit exponent, because SPICE
-  ## reads a trailing letter as a unit multiplier (`1m` is milli, `1MEG` is
-  ## mega) and `value` is the one annotation key that reaches a device line
-  ## verbatim -- any format that could end in a letter is a silent-misread
-  ## hazard there. `dispatchField` is the one caller.
+  ## Mirrors `formats/spice.spiceValue` (this core module can't import a
+  ## format). Always scientific notation: `value` reaches the deck verbatim,
+  ## and a trailing letter would be read as a SPICE multiplier.
   formatFloat(x, ffScientific, 9)
 
 proc dispatchField(entityVar: NimNode, knownFields: openArray[string], pair: NimNode): NimNode =
-  ## Known field name -> direct, type-checked field assignment.
-  ## Anything else -> `.attrs[key] = $value` -- except the `value` key with a
-  ## `Quantity`-typed right-hand side (`value = 2.2.kohm`), which is written
-  ## through `deckSafeValue` instead.
-  ##
-  ## `value` is the one annotation that reaches a SPICE device line verbatim
-  ## (`formats/spice.formatDeviceLine` appends `attrs["value"]` after the
-  ## nodes with no parsing), and `units.nim`'s own `$` renders a `Quantity`
-  ## as a human-readable string with a space and a unit suffix (`"2.2
-  ## kohm"`) -- exactly the extra tokens on a deck line that corrupt it.
-  ## `2.2.kohm` is not a string to disambiguate, only a typed Nim expression,
-  ## so nothing here parses RKM or any other ambiguous notation: the `when`
-  ## branch below is chosen once, at the call site's own compile time, by the
-  ## expression's *static* type, the identical idiom
-  ## `contract/dsl.handleRole` already uses to tell a role binding from a
-  ## parameter (`when compiles(subjectOf(value))`). A plain string (a model
-  ## name, a source spec such as `"DC 5"`) takes the untouched `$value`
-  ## branch exactly as before.
+  ## Known field name -> typed field assignment; anything else ->
+  ## `.attrs[key] = $value`, except a `Quantity`-typed `value`
+  ## (`value = 2.2.kohm`), written through `deckSafeValue` because `$` gives
+  ## `"2.2 kohm"`, which corrupts a deck line. The branch is chosen by static
+  ## type, so no notation is parsed; a plain string passes through as is.
   pair.expectKind(nnkExprEqExpr)
   let key = pair[0]
   key.expectKind(nnkIdent)
@@ -149,28 +113,16 @@ proc dispatchField(entityVar: NimNode, knownFields: openArray[string], pair: Nim
       else:
         setRawAnnotation(`entityVar`, "value", $(`value`))
   else:
-    # Through `setRawAnnotation` rather than `attrs[k] = v` directly, so a DSL
-    # user does not need `import std/tables` just to set an unrecognised key.
+    # Via `setRawAnnotation` so users needn't import `std/tables`.
     result = newCall(ident"setRawAnnotation", entityVar, newLit(key.strVal),
                      newCall(ident"$", value))
   result.copyLineInfo(pair)
 
 proc handleSpec(entityVar: NimNode, scope: AnnScope, stmt: NimNode,
                 what = "spec"): NimNode =
-  ## `spec:` is the strict counterpart of the permissive `key = value` pairs
-  ## on the statement head. Those land in `attrs` whatever they are spelled,
-  ## deliberately, because a file format needs somewhere to put data this
-  ## library has never heard of. Inside `spec:` there is no such bag: every
-  ## key is meant to be part of the shared vocabulary, so an unrecognised one
-  ## is a misspelling and is rejected at compile time.
-  ##
-  ## That is the same split the repo already makes between `netlist/dsl` and
-  ## `xspice/dsl` -- permissive where an unknown name can still mean
-  ## something, strict where it cannot.
-  ##
-  ## Only bare, registered keys are accepted here. A namespaced key belongs to
-  ## whoever owns the namespace, so it goes through the statement head or the
-  ## runtime API rather than through the shared vocabulary's front door.
+  ## `spec:` is the strict counterpart of statement-head pairs: every key
+  ## must be a registered, bare annotation, so a misspelling is a compile
+  ## error. Namespaced keys go through the statement head or runtime API.
   var args: seq[NimNode]
   for i in 1 ..< stmt.len: args.add stmt[i]
   let (rest, blk) = stripTrailingBlock(args)
@@ -206,12 +158,9 @@ proc handleSpec(entityVar: NimNode, scope: AnnScope, stmt: NimNode,
   result.copyLineInfo(stmt)
 
 proc handleNotes(entityVar: NimNode, stmt: NimNode): NimNode =
-  ## `notes:` is `spec:`'s opposite: free-form `key = value` pairs verax
-  ## stores and never interprets -- a supplier SKU, a reviewer's remark, an
-  ## assembly instruction. Each is kept under `annotations.notesPrefix`
-  ## (`notes.<key>`), a namespace, so `validateAnnotations` skips it and no
-  ## evaluator, resolver or exporter ever mistakes it for vocabulary. A key
-  ## is an identifier or, for one with spaces, a string literal.
+  ## `notes:` is `spec:`'s opposite: free-form pairs stored under
+  ## `notes.<key>` and never interpreted (skipped by `validateAnnotations`).
+  ## A key is an identifier or a string literal.
   var args: seq[NimNode]
   for i in 1 ..< stmt.len: args.add stmt[i]
   let (rest, blk) = stripTrailingBlock(args)
@@ -238,10 +187,8 @@ proc handleNotes(entityVar: NimNode, stmt: NimNode): NimNode =
   result.copyLineInfo(stmt)
 
 proc layoutSideNode(valueNode: NimNode): NimNode =
-  ## Maps the bare ident `left`/`right`/`auto` to the matching `LayoutSide`
-  ## enum symbol, at compile time, so a design file never has to spell
-  ## `sideLeft` itself. Shared by `handleLayout` (the `component` block) and
-  ## `handleInstance`'s head keyword, so the two spellings cannot drift.
+  ## Maps bare `left`/`right`/`auto` to a `LayoutSide` at compile time.
+  ## Shared by `handleLayout` and `handleInstance`.
   if valueNode.kind != nnkIdent:
     error("a layout `side` must be one of left, right, auto", valueNode)
   case valueNode.strVal
@@ -253,11 +200,8 @@ proc layoutSideNode(valueNode: NimNode): NimNode =
         valueNode.strVal & "'", valueNode)
 
 proc layoutMirrorNode(valueNode: NimNode): NimNode =
-  ## Maps the bare ident `true`/`false`/`auto` to the matching `LayoutMirror`
-  ## enum symbol, at compile time -- `layoutSideNode`'s shape. `true`/`false`
-  ## arrive as `nnkIdent` here, same as any other bare identifier, since this
-  ## is an untyped macro context and neither has been bound to `system.bool`
-  ## yet.
+  ## Maps bare `true`/`false`/`auto` to a `LayoutMirror` (they arrive as
+  ## `nnkIdent` in this untyped context).
   if valueNode.kind != nnkIdent:
     error("a layout `mirror` must be one of true, false, auto", valueNode)
   case valueNode.strVal
@@ -269,8 +213,7 @@ proc layoutMirrorNode(valueNode: NimNode): NimNode =
         valueNode.strVal & "'", valueNode)
 
 proc layoutPowerNode(valueNode: NimNode): NimNode =
-  ## Maps the bare ident `true`/`false`/`auto` to the matching `LayoutPower`
-  ## enum symbol, at compile time -- `layoutMirrorNode`'s shape.
+  ## Maps bare `true`/`false`/`auto` to a `LayoutPower`.
   if valueNode.kind != nnkIdent:
     error("a layout `power` must be one of true, false, auto", valueNode)
   case valueNode.strVal
@@ -282,13 +225,8 @@ proc layoutPowerNode(valueNode: NimNode): NimNode =
         valueNode.strVal & "'", valueNode)
 
 proc handleLayout(entityVar: NimNode, stmt: NimNode): NimNode =
-  ## `layout:` inside a `component` block -- the strict counterpart to the
-  ## permissive statement-head fallback, exactly the split `handleSpec` makes
-  ## for the electrical annotation vocabulary. Only `layoutHintKeys`
-  ## (`netlist/layouthints`) are accepted, so a typo is a compile error
-  ## naming the real keys rather than a silently ignored `attrs` entry -- and
-  ## the list is the one place a future hint (a pin placement, an absolute
-  ## position) gets added on this side of the DSL.
+  ## `layout:` in a `component` block: only `layoutHintKeys` are accepted, so
+  ## a typo is a compile error naming the real keys.
   var args: seq[NimNode]
   for i in 1 ..< stmt.len: args.add stmt[i]
   let (rest, blk) = stripTrailingBlock(args)
@@ -323,12 +261,8 @@ proc handleLayout(entityVar: NimNode, stmt: NimNode): NimNode =
       call.copyLineInfo(pair)
       result.add call
     of "variant":
-      # Unlike `side`/`mirror`/`power`, a variant name is an open-ended
-      # string (`pcb/variant.LayoutVariant` names, a registry this module
-      # cannot see -- `netlist/` must not depend on `pcb/`), not a closed
-      # set of bare idents -- so `pair[1]` is handed to `setLayoutVariant`
-      # exactly as written, the same "value is an arbitrary expression"
-      # treatment `handleSpec` already gives `value =`/`designator =`.
+      # A variant name is an open string (registry lives in `pcb/`, which
+      # `netlist/` can't see), passed through as written.
       let call = newCall(ident"setLayoutVariant", entityVar, pair[1])
       call.copyLineInfo(pair)
       result.add call
@@ -337,20 +271,10 @@ proc handleLayout(entityVar: NimNode, stmt: NimNode): NimNode =
   result.copyLineInfo(stmt)
 
 proc handleBom(nlSym: NimNode, stmt: NimNode): NimNode =
-  ## `bom:` at netlist scope -- board-level procurement defaults for a BOM
-  ## compiler (`docs/bom_compiler_plan.md`), `layout:`'s shape rather than
-  ## `environment:`'s: `bom.*` keys are namespaced, owned by
-  ## `netlist/bomdefaults` rather than registered in
-  ## `netlist/annotations.builtinAnnotations`, so they cannot go through
-  ## `handleSpec`'s registered-annotation path the way `environment:`'s
-  ## `t_ambient_min`/`t_ambient_max` do. Strict at this syntax boundary,
-  ## where an unknown key can only be a mistake -- a compile error naming the
-  ## real keys, `handleLayout`'s rule -- and permissive underneath, in the
-  ## `attrs` bag `bomdefaults` itself owns, where a file reader may one day
-  ## write something this DSL block does not yet parse. `bomDefaultKeys` is
-  ## the one list both this `case` and `bomdefaults.bomDefaults`/
-  ## `validateBomDefaults` read, so a future key is added there once rather
-  ## than drifting between a DSL copy and the runtime one.
+  ## `bom:` at netlist scope: board-level procurement defaults. `bom.*` keys
+  ## are owned by `netlist/bomdefaults`, not the annotation registry, so this
+  ## is its own handler. Strict here (unknown key = compile error naming
+  ## `bomDefaultKeys`); permissive in the underlying `attrs`.
   var args: seq[NimNode]
   for i in 1 ..< stmt.len: args.add stmt[i]
   let (rest, blk) = stripTrailingBlock(args)
@@ -388,9 +312,8 @@ proc handleBom(nlSym: NimNode, stmt: NimNode): NimNode =
   result.copyLineInfo(stmt)
 
 proc traversalPinList(node: NimNode): seq[NimNode] =
-  ## One side of a `<->`: a single pin-name expression, or a bracketed list
-  ## of them (`nnkBracket`). Never checked against the component's own pins
-  ## here -- see `handleTraverse`'s own note on why that has to wait.
+  ## One side of a `<->`: a pin-name expression or a bracketed list. Not
+  ## checked against the component's pins (see `handleTraverse`).
   if node.kind == nnkBracket:
     for e in node: result.add e
   else:
@@ -398,9 +321,7 @@ proc traversalPinList(node: NimNode): seq[NimNode] =
 
 proc handleTraverseEdge(entityVar: NimNode, infixNode: NimNode,
                         conducts: bool): NimNode =
-  ## One `"A" <-> "B"`/`"A" <-> [...]`/`[...] <-> [...]` statement, expanded
-  ## to the cross product of its two sides -- `"RFC" <-> ["RF1", "RF2"]` is
-  ## two edges, not one, since each names a genuinely different pin pair.
+  ## One `<->` statement, expanded to the cross product of its sides.
   infixNode.expectKind(nnkInfix)
   if not infixNode[0].eqIdent("<->"):
     error("expected a pin pair written `\"A\" <-> \"B\"` inside `traverse`",
@@ -415,41 +336,18 @@ proc handleTraverseEdge(entityVar: NimNode, infixNode: NimNode,
       result.add call
 
 proc handleTraverse(entityVar: NimNode, stmt: NimNode): NimNode =
-  ## `traverse:` inside a `component` block -- states which pin pairs
-  ## conduct through this part, for the N-pin case `netlist/kinds`'
-  ## `classifyConductivity` and `schematic`'s two-terminal-only walk cannot
-  ## express (an 8-pin RF switch is the motivating case,
-  ## `designs/xbar_rf.nim`'s ADG904). Modelled on `handleLayout` immediately
-  ## above: a strict, compile-time-checked block for a namespaced `attrs`
-  ## family, the counterpart to the permissive statement-head fallback.
+  ## `traverse:` in a `component` block: which pin pairs conduct, for N-pin
+  ## parts `classifyConductivity` can't describe (e.g. an 8-pin RF switch).
   ##
-  ## Accepted statements (`nim --eval`, verified against exactly these
-  ## shapes): `"A" <-> "B"` (`nnkInfix`, one conducting edge); `"A" <-> [...]`
-  ## or `[...] <-> [...]` (bracket on either/both sides, the cross product);
-  ## `blocks "A" <-> "B"` (`nnkCommand` wrapping the infix -- a schematic path
-  ## that is not a DC path, e.g. an AC-coupling capacitor's two pins are
-  ## connected on the page but never conduct); the bare idents `none`
-  ## (explicitly not traversable at all -- the way to override the 2-pin
-  ## default on an ordinary resistor) and `all` (every pin pair, answered by
-  ## `classifyConductivity` -- opting a whole part into the kind-table
-  ## answer regardless of how many pins it has connected).
+  ## Statements: `"A" <-> "B"`; brackets on either side for a cross product;
+  ## `blocks "A" <-> "B"` (connected on the page, no DC path, e.g. a coupling
+  ## cap); bare `none` (not traversable) and `all` (defer to
+  ## `classifyConductivity`).
   ##
-  ## **Pin names are never checked against the component's own pins here.**
-  ## They are arbitrary expressions, not necessarily literals, and the block
-  ## may -- as in the worked example -- precede the `pin` statements that
-  ## declare what the component's pins even are; `netlist/traversal.
-  ## validateTraversal` is where an unknown pin name is caught, at check
-  ## time rather than compile time, exactly the split `handleLayout` makes
-  ## for an unparseable *value* (though not for an unknown *key*, which this
-  ## block does still catch here, since the key vocabulary itself -- `<->`,
-  ## `blocks`, `none`, `all` -- is fixed and closed, unlike a pin name).
-  ##
-  ## **Directionality (`->`) is deliberately out of scope.** The one
-  ## directional case that exists -- an op-amp or buffer passing a signal
-  ## input-to-output only -- is already handled, and handled better, by
-  ## `spice/models/behavioral.passesSignal` plus `signalPathPins`
-  ## (`analysis/analyses/opamp.nim` reads them). A second, weaker directional
-  ## mechanism here would give two answers to one question.
+  ## Pin names are arbitrary expressions and may precede the `pin`
+  ## statements, so unknown pins are caught by
+  ## `traversal.validateTraversal`, not here. Directionality is out of
+  ## scope: `behavioral.passesSignal` + `signalPathPins` already cover it.
   var args: seq[NimNode]
   for i in 1 ..< stmt.len: args.add stmt[i]
   let (rest, blk) = stripTrailingBlock(args)
@@ -480,8 +378,7 @@ proc handleTraverse(entityVar: NimNode, stmt: NimNode): NimNode =
   result.copyLineInfo(stmt)
 
 proc primaryLabel(node: NimNode): (NimNode, NimNode) =
-  ## Splits a `net`/`component`/`instance` primary label into
-  ## (identifier-to-bind-or-nil, string-literal-for-the-registered-name).
+  ## Splits a primary label into (identifier-to-bind-or-nil, registered name).
   case node.kind
   of nnkIdent:
     (node, newLit(node.strVal))
@@ -518,16 +415,9 @@ proc handleNet(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
   if rest.len == 0:
     error("`net` requires a name", stmt)
 
-  # `net [a, b, c], kind = ntSignal` -- a bracketed group of otherwise
-  # identical nets, read the same way a bracket already reads everywhere
-  # else in this DSL (`traverse:`'s pin lists, `instance`'s port list): "one
-  # of these per entry". Each entry gets its own `addNet` call and its own
-  # bound identifier -- a real `let` per name, not a runtime loop, so unlike
-  # a `for` over a seq of names every one of them stays addressable by
-  # identifier for the rest of the block. `name =` is refused rather than
-  # silently applied to every net in the group: it would give all of them
-  # the same SPICE name, which `addNet` would only catch as a duplicate-net
-  # error pointing at the wrong line.
+  # `net [a, b, c], ...`: one `addNet` and one bound `let` per entry, so
+  # each stays addressable. `name =` is refused -- every net would get the
+  # same SPICE name.
   if rest[0].kind == nnkBracket:
     if rest[0].len == 0:
       error("`net [...]` requires at least one name", rest[0])
@@ -566,8 +456,8 @@ proc handleNet(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
   result.copyLineInfo(stmt)
 
 macro interfaceDef*(name: untyped, body: untyped): untyped =
-  ## Defines and registers an interface vocabulary.  Definitions are ordinary
-  ## runtime values so parameterised definitions remain ordinary Nim procs.
+  ## Defines and registers an interface vocabulary. Definitions are runtime
+  ## values, so parameterised ones are ordinary procs.
   name.expectKind(nnkStrLit)
   let defSym = genSym(nskVar, "interfaceDef")
   result = newStmtList()
@@ -703,9 +593,8 @@ proc handlePin(compVar: NimNode, stmt: NimNode): NimNode =
     a.expectKind(nnkExprEqExpr)
     case a[0].strVal
     of "kind": kindNode = a[1]
-    # Handled explicitly rather than left to `dispatchField`, which would write
-    # an unregistered bare `function` key that `validateAnnotations` then
-    # reports as a misspelling.
+    # Not via `dispatchField`, which would write an unregistered bare
+    # `function` key.
     of "function": functionNode = a[1]
     else: fieldPairs.add(a)
 
@@ -735,16 +624,9 @@ proc handleSimReplacePin(replVar: NimNode, stmt: NimNode): NimNode =
   result.copyLineInfo(stmt)
 
 proc handleSimReplace(compVar: NimNode, stmt: NimNode): NimNode =
-  ## Builds a `SimReplacement` and adds it to `compVar.simModels`. This only
-  ## ever produces a data assignment -- never a `connect`/`addPort`/
-  ## `instantiate` call -- so it doesn't touch the component being described;
-  ## the override is inert data sitting next to it (see `verax/spice`).
-  ##
-  ## `addSimModel` rather than an assignment, so a component may carry more
-  ## than one `simReplace` block -- each with its own `name` and the `suits`
-  ## that says which question it answers. Writing two with the same name is a
-  ## runtime error naming the component, which is the same treatment a
-  ## duplicate designator gets and for the same reason.
+  ## Adds a `SimReplacement` to `compVar.simModels` -- inert data, never a
+  ## `connect`. Several `simReplace` blocks may coexist, each with its own
+  ## `name` and `suits`; a duplicate name raises.
   var args: seq[NimNode]
   for i in 1 ..< stmt.len: args.add stmt[i]
   let (rest, blk) = stripTrailingBlock(args)
@@ -763,8 +645,7 @@ proc handleSimReplace(compVar: NimNode, stmt: NimNode): NimNode =
     of "partNumber": partNumberNode = a[1]
     of "name": nameNode = a[1]
     of "suits":
-      # A bare string is the common case (`suits = spSteadyState`); a bracket
-      # is how a model that answers two questions says so.
+      # A string for one purpose, a bracket for several.
       suitsNode =
         if a[1].kind == nnkBracket: a[1]
         else: newTree(nnkBracket, a[1])
@@ -798,19 +679,10 @@ proc handleComponent(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
   if rest.len == 0:
     error("`component` requires a designator or a `kind`", stmt)
 
-  # A component may omit its label entirely, in which case every argument is
-  # a field and the designator is generated from `kind` at construction:
-  #
-  #     component kind = "capacitor", value = "100n":
-  #
-  # Worth doing for the parts nobody ever refers to -- a decoupling bank, a
-  # termination network -- where hand-authoring twenty designators is work
-  # that buys nothing. It is *not* free: a generated designator is positional,
-  # so inserting a part earlier renumbers everything after it, and a
-  # designator is the join key to a board, a BoM line and silkscreen text.
-  # Generated ones are marked so a layout flow can tell them apart, and a part
-  # that something names or places should keep a written one -- which is
-  # self-selecting, since needing to name it is the signal.
+  # A component may omit its label; the designator is then generated from
+  # `kind`. Useful for parts nobody refers to (decoupling banks), but
+  # positional: inserting a part renumbers later ones, and designators join
+  # to the board and BoM. Generated ones are marked.
   let generated = rest[0].kind == nnkExprEqExpr
   var identSym: NimNode = nil
   var designatorStrNode: NimNode = nil
@@ -837,10 +709,8 @@ proc handleComponent(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
   let compVar = if identSym != nil: identSym else: genSym(nskLet, "comp")
   result = newStmtList()
   if generated and designatorStrNode == nil:
-    # `kind` is an expression and may not be a literal, so the designator is
-    # chosen at construction rather than at macro expansion -- which is also
-    # what makes this work inside a `for`, where the macro cannot know how
-    # many parts there will be.
+    # `kind` may not be a literal, so the designator is chosen at
+    # construction (which also makes it work inside a `for`).
     let kindVar = genSym(nskLet, "kind")
     result.add newLetStmt(kindVar, kindNode)
     result.add newLetStmt(compVar,
@@ -888,12 +758,9 @@ proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
   let (identSym, initialDesignatorStr) = primaryLabel(rest[0])
   var designatorStrNode = initialDesignatorStr
   let templNode = rest[1]
-  # Ports may be given positionally (`[a, b, gnd]`) or **by name**
-  # (`{"vin": a, "gnd": gnd}`). By name is what a system assembled from
-  # `boundary.asSubcircuit` templates wants: those port lists come from
-  # whichever nets the connectors sat on, two boards in one system routinely
-  # both call a port `vin`, and swapping two same-shaped nets is a miswiring
-  # that raises nothing and simulates happily.
+  # Ports positionally (`[a, b, gnd]`) or by name (`{"vin": a, ...}`). By
+  # name avoids silent miswiring when port lists come from
+  # `boundary.asSubcircuit` and several are same-shaped.
   let portsNode = rest[2]
   var byName = false
   var portsSeq: NimNode
@@ -941,10 +808,8 @@ proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
     of "kind": kindNode = a[1]
     of "designator": designatorStrNode = a[1]
     of "with": tweakNode = a[1]
-    # `side =` here is `layout:`'s head-keyword counterpart -- `instance`
-    # takes no trailing block at all (see the check above), so this is the
-    # only place an instantiated subcircuit's own layout hint can be stated.
-    # Same mapping (`layoutSideNode`), so the two spellings cannot drift.
+    # `side =` is the only place an instance's layout hint can go (no
+    # trailing block); shares `layoutSideNode`.
     of "side": sideNode = layoutSideNode(a[1])
     else: fieldPairs.add(a)
 
@@ -963,22 +828,10 @@ proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
     result.add newCall(ident"setLayoutSide", instVar, sideNode)
   result.add newCall(ident"promotePortDirections", instVar)
 
-  # `with = <proc(Netlist)>` runs against **this instance's own clone**,
-  # immediately after `instantiate` and before anything else sees it.
-  #
-  # It exists so that a module can be varied per instance without anybody
-  # inventing an identifier for its parts. `instantiate` deep-clones, so the
-  # proc is handed a netlist nothing else shares, and inside it the only
-  # names in play are the module's *own local* designators -- few,
-  # author-controlled, and meaningful precisely because they never leave the
-  # module. Contrast the alternative, reaching in from the board afterwards,
-  # which needs a name that is unique across the whole design and stable
-  # against edits: exactly the identifier nobody wants to hand-author.
-  #
-  # It is a *construction* step rather than a mutation of something already
-  # built. That distinction is the same one `Component.simReplace` draws: a
-  # post-hoc hook that adds a simulation view is fine, one that changes what
-  # the board *is* after the fact is not.
+  # `with = <proc(Netlist)>` runs against this instance's own clone right
+  # after `instantiate`, so a module can be varied per instance using its
+  # own local designators instead of design-wide names. A construction step,
+  # not a post-hoc mutation.
   if tweakNode != nil:
     let tweakSym = genSym(nskLet, "tweak")
     result.add newLetStmt(tweakSym, tweakNode)
@@ -986,81 +839,46 @@ proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
   result.copyLineInfo(stmt)
 
 proc handleModel(nlSym: NimNode, stmt: NimNode): NimNode =
-  ## `model "1N4148", "D IS=2.52n RS=0.568 N=1.752"` -> a `.MODEL` card.
-  ##
-  ## The body is passed through **verbatim**, exactly as `Netlist.models`
-  ## already stores it and the deck writer already emits it. Parsing a model
-  ## card structurally would mean tracking every parameter of every device
-  ## type in every SPICE dialect, and getting one wrong silently simulates a
-  ## different part -- whereas passing it through means the simulator reads
-  ## precisely what the datasheet said.
-  ##
-  ## What this buys beyond the card reaching the deck: a component whose
-  ## `value` names a model is no longer *unmodelled*, so `spice/models`
-  ## stops standing it in with per-pin impedances and `spice/isolate` will
-  ## traverse it. A diode with a model is a diode; without one it was two
-  ## resistors to ground, which is not a diode in any useful sense.
+  ## `model "1N4148", "D IS=2.52n ..."` -> a `.MODEL` card, body passed
+  ## through verbatim (parsing every dialect's parameters risks silently
+  ## simulating a different part). A component whose `value` names a model
+  ## is no longer unmodelled, so `spice/models` doesn't stand it in and
+  ## `spice/isolate` traverses it.
   if stmt.len != 3:
     error("model takes a name and a card body: " &
           "model \"1N4148\", \"D IS=2.52n RS=0.568\"", stmt)
   newCall(ident"setModel", nlSym, stmt[1], stmt[2])
 
 proc buildNetlistBody*(nlSym, globalsSym: NimNode, body: NimNode): NimNode =
-  ## Expands the `net`/`component`/`instance` statement vocabulary against an
-  ## existing netlist symbol.
-  ##
-  ## Exported as an extension point: a higher-level DSL that wants everything
-  ## a `netlist` block accepts *plus* statements of its own (see
-  ## `verax/contract/dsl`'s `design`) reuses this rather than duplicating the
-  ## handlers and drifting from them.
+  ## Expands the netlist statement vocabulary against an existing netlist
+  ## symbol. Exported so higher-level DSLs (`contract/dsl.design`) reuse it.
   result = newStmtList()
   for stmt in body:
     if stmt.kind == nnkCommentStmt:
       continue
 
-    # `for`, `if` and `case` are the ordinary Nim the vocabulary admits, and
-    # all three are admitted the same way: as **control flow over DSL
-    # statements**, not as an opening to arbitrary code. The header -- the
-    # loop variable, the condition, the selector -- passes through untouched,
-    # and every branch body is expanded by this same proc, so whatever is
-    # inside is still a `net`, `component`, `instance` or `model` and nothing
-    # else. `echo` in a loop body is still `unknown DSL statement`.
+    # `for`/`if`/`case`/`when` are admitted as control flow over DSL
+    # statements only: the header passes through, every body is expanded by
+    # this proc, so `echo` in a body is still `unknown DSL statement`.
     #
-    # `for` earns it by removing repetition: a decoupling bank or a channel
-    # per lane is otherwise N nearly-identical lines, which is where a value
-    # gets corrected in one copy and not the others. `if` and `case` earn it
-    # by removing the *other* way that happens -- a board with build variants
-    # kept as two files that drift apart, or as one file with the unused half
-    # commented out, which is the same thing with worse tooling.
-    #
-    # The one consequence worth stating rather than discovering: the `let` a
-    # `net`/`component` statement binds is scoped to the **branch or
-    # iteration**, so nothing generated inside one can be referenced by
-    # identifier afterwards -- address it by name through
-    # `graph.findComponent`/`findNet` instead. A typo in an identifier used
-    # *within* the branch is still a compile error, and `spec:` keys are still
-    # validated at compile time, because neither depends on whether the branch
-    # runs. Nothing is lost on duplicate designators either: `addComponent`
-    # has always raised at runtime rather than at compile time.
+    # A `let` bound inside a branch or iteration is scoped to it; reference
+    # such parts by name (`findComponent`/`findNet`) afterwards. Duplicate
+    # designators still raise at runtime.
     if stmt.kind in {nnkForStmt, nnkIfStmt, nnkCaseStmt, nnkWhenStmt}:
       var ctl = copyNimTree(stmt)
       if stmt.kind == nnkForStmt:
         # The body is the last child; everything before it is the header.
         ctl[^1] = buildNetlistBody(nlSym, globalsSym, stmt[^1])
       else:
-        # A `case` keeps its selector in child 0, which is an expression and
-        # not a branch -- hence matching on the branch node kind rather than
-        # counting children.
+        # A `case` selector is child 0, so match on branch node kind.
         for i in 0 ..< ctl.len:
           if ctl[i].kind in {nnkElifBranch, nnkOfBranch, nnkElse}:
             ctl[i][^1] = buildNetlistBody(nlSym, globalsSym, ctl[i][^1])
       result.add ctl
       continue
 
-    # A bare `discard` is the only no-op, and it exists for one reason:
-    # `if`/`case` branches need a body, and "this variant adds no parts" is an
-    # ordinary thing for a branch to say. `discard <expr>` is *not* accepted --
-    # that is arbitrary code wearing a keyword.
+    # Bare `discard` only, for empty `if`/`case` branches; `discard <expr>`
+    # would be arbitrary code.
     if stmt.kind == nnkDiscardStmt:
       if stmt.len == 1 and stmt[0].kind == nnkEmpty:
         continue
@@ -1084,27 +902,14 @@ proc buildNetlistBody*(nlSym, globalsSym: NimNode, body: NimNode): NimNode =
     elif head.eqIdent("model"):
       result.add handleModel(nlSym, stmt)
     elif head.eqIdent("environment"):
-      # The board-level conditions every part on it shares -- today the
-      # ambient temperature range. It is `spec:` at netlist scope and is
-      # spelled differently only because that is what it says: a range read
-      # off an enclosure specification is not a property of the netlist in
-      # the way a net's rail voltage is, and calling the block `environment`
-      # is what makes a design file legible at the point somebody adds
-      # humidity or altitude beside it.
+      # Board-level conditions (ambient range): `spec:` at netlist scope.
       result.add handleSpec(nlSym, asNetlist, stmt, "environment")
     elif head.eqIdent("bom"):
-      # The board's procurement defaults -- see `handleBom`'s own doc
-      # comment for why this is a dedicated strict handler rather than
-      # another `handleSpec` call: `bom.*` is a namespaced family
-      # `netlist/bomdefaults` owns, not part of the registered annotation
-      # vocabulary `environment:` reads from.
+      # Procurement defaults (see `handleBom`).
       result.add handleBom(nlSym, stmt)
     elif head.eqIdent("role") or head.eqIdent("require"):
-      # Reachable only from inside control flow: `design`'s splitter hoists
-      # these out at the top level, so seeing one here means it was nested.
-      # They cannot be, and the reason is not arbitrary -- a claim is attached
-      # once the whole netlist exists, so it has no defined place inside a
-      # `for`/`if`/`case` that is still building it.
+      # Claims are hoisted by `design` at the top level; nested ones have no
+      # defined place while the netlist is still being built.
       error("`" & head.repr & "` cannot appear inside a `for`, `if` or " &
             "`case`: claims are attached once the netlist is complete. " &
             "Build the parts conditionally, then state the claims after.",
@@ -1113,9 +918,7 @@ proc buildNetlistBody*(nlSym, globalsSym: NimNode, body: NimNode): NimNode =
       error("unknown DSL statement: " & head.repr, stmt)
 
 macro netlist*(name: untyped, body: untyped): untyped =
-  ## Builds a flat (non-template) `Netlist` from `net`/`component` (with
-  ## nested `pin`) and `instance` statements. See the module doc comment
-  ## for a full example.
+  ## Builds a flat `Netlist` from `net`/`component`/`instance` statements.
   name.expectKind(nnkStrLit)
   let nlSym = genSym(nskLet, "nl")
   let globalsSym = genSym(nskVar, "globalNets")

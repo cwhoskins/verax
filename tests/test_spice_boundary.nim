@@ -32,13 +32,11 @@ proc board(): Netlist =
       pin "2", gnd, kind = ptPassive
 
 suite "a connector is a boundary, not a part":
-  # Each of its pins touches exactly one net, so there is nothing to pass
-  # through *to*: a connector's electrical behaviour is entirely whatever is
-  # plugged into it, which a netlist cannot know.
+  # Each pin touches one net, so there's nothing to pass through: a
+  # connector's behaviour is whatever is plugged in.
 
   test "its nets become ports, named after the nets":
-    # Named by net rather than by `J1.VBUS`, because a net name is already
-    # unique where a composite one would have to be invented and checked.
+    # Named by net, which is already unique.
     var ports: seq[string]
     for (p, _) in connectorPorts(board()): ports.add p
     check ports == @["vbus", "dp"]
@@ -49,8 +47,7 @@ suite "a connector is a boundary, not a part":
       check p != "0"
 
   test "asSubcircuit removes the connector it replaced":
-    # Leaving both would put a part with no SPICE device on the very boundary
-    # it defines.
+    # A part with no SPICE device must not sit on the boundary it defines.
     let sub = asSubcircuit(board(), "USB_BOARD")
     check not sub.components.hasKey("J1")
     check sub.ports.len == 2
@@ -63,9 +60,8 @@ suite "a connector is a boundary, not a part":
     check orig.ports.len == 0
 
   test "and it writes as a .SUBCKT, ports and all":
-    # `writeNetlist` drops `Netlist.ports` -- correct for a board, since a
-    # top-level deck has no port concept, and silently wrong for a template
-    # built to be reused.
+    # `writeNetlist` drops `Netlist.ports`: right for a board, wrong for a
+    # reusable template.
     let s = newStringStream()
     writeSubcktDefinition(asSubcircuit(board(), "USB_BOARD"), s)
     check ".SUBCKT USB_BOARD vbus dp" in s.data
@@ -75,8 +71,7 @@ suite "a connector is a boundary, not a part":
 suite "driving a board's ports":
 
   test "a port nobody described is left alone, not defaulted":
-    # Inventing a supply for a pin nobody described is how a rail comes to
-    # measure its own assumption back.
+  # An invented supply would make the rail measure its own assumption.
     let h = harness(board(), {"dp": driveOpen()})
     check not h.netlist.components.hasKey("V_EXT_vbus")
 
@@ -85,9 +80,8 @@ suite "driving a board's ports":
       discard harness(board(), {"nosuchnet": driveLoad(50.ohm)})
 
   test "a source is attached through its own output impedance":
-    # An ideal source is a dead short at AC, so a port driven by one reports
-    # the rail behind it as 0 ohm at every frequency and passes any
-    # decoupling target. The R and L must be in the path.
+    # An ideal source is an AC short, hiding the rail behind it; the R and L
+    # must be in the path.
     let h = harness(board(), {"vbus": driveSource(5.0.V, rout = 100.mohm,
                                                   lout = 2.uH)})
     check h.netlist.components.hasKey("V_EXT_vbus")
@@ -114,9 +108,8 @@ suite "driving a board's ports":
     echo "SKIP: ngspice not found on PATH"
   else:
     test "an undriven connector leaves the board with no supply at all":
-      # The wrong answer this exists to fix. `expandPinModels` stands each
-      # pin in with an impedance to ground, so a USB inlet becomes 1 Mohm to
-      # ground and VBUS sits at zero.
+      # Without a drive, `expandPinModels` makes the inlet 1 Mohm to ground
+      # and VBUS sits at zero.
       let naive = board()
       discard expandPinModels(naive)
       let r = run(naive, @[".op"])
@@ -126,15 +119,12 @@ suite "driving a board's ports":
       let h = harness(board(), {"vbus": driveSource(5.0.V, rout = 100.mohm)})
       discard expandPinModels(h.netlist)
       let r = run(h.netlist, @[".op"])
-      # 5 V through 100 mohm into the board's 100 ohm load.
+      # 5 V through 100 mohm into a 100 ohm load.
       check abs(r["v(vbus)"][0] - 5.0 * 100.0 / 100.1) < 1e-6
 
 suite "stating a drive on the design itself":
-  # A `SimReplacement.build` proc is `{.nimcall.}` and so has no environment
-  # to capture a drive in. Recording it on the pin is therefore not merely
-  # tidier -- it is what makes the mechanism work -- and it has the better
-  # property anyway: the drive is ordinary netlist data, visible and
-  # survivable, rather than a closure nothing can read back.
+  # A `{.nimcall.}` build proc can't capture the drive, so it's recorded on
+  # the pin as ordinary, readable netlist data.
 
   test "a drive round-trips through the pin it is recorded on":
     let nl = board()
@@ -159,9 +149,7 @@ suite "stating a drive on the design itself":
       driveConnector(nl.components["J1"], {"NOSUCH": driveLoad(50.ohm)})
 
   test "the design netlist keeps the connector; only the sim copy loses it":
-    # This is the whole reason it goes through `simReplace` rather than
-    # mutating the board: a BoM and a layout still see the part that gets
-    # soldered.
+    # Through `simReplace`, so BoM and layout still see the soldered part.
     let nl = board()
     driveConnector(nl.components["J1"], {"VBUS": driveSource(5.0.V)})
     check nl.components.hasKey("J1")
@@ -174,8 +162,7 @@ suite "stating a drive on the design itself":
     echo "SKIP: ngspice not found on PATH"
   else:
     test "and the supply reaches an analysis that used to ignore simReplace":
-      # `analysis/pdn`, `startup` and `opamp` plain-cloned, so a component's
-      # own statement of how it wants to be simulated was silently dropped.
+      # Analyses must keep a component's own simulation statement.
       let nl = board()
       driveConnector(nl.components["J1"],
                      {"VBUS": driveSource(5.0.V, rout = 100.mohm)})
@@ -186,8 +173,8 @@ suite "stating a drive on the design itself":
       check abs(r["v(vbus)"][0] - 5.0 * 100.0 / 100.1) < 1e-6
 
 suite "a port the board drives, rather than one that drives it":
-  # `driveConnector` is symmetric: `driveSource` is a supply coming in,
-  # `driveLoad`/`driveSink` are what the board powers going out.
+  # `driveSource` is a supply coming in; `driveLoad`/`driveSink` what the
+  # board powers going out.
 
   proc supplying(): Netlist =
     netlist("supply"):
@@ -207,8 +194,8 @@ suite "a port the board drives, rather than one that drives it":
     check h.netlist.components.hasKey("R_EXT_vout")
 
   test "a constant-current sink attaches a current source, pulling the right way":
-    # `I<name> N+ N- value` drives current from N+ through the source to N-,
-    # so N+ on the port and N- on the reference is a sink.
+    # `I<name> N+ N- value` pushes current N+ -> N-, so N+ on the port is a
+    # sink.
     let h = harness(supplying(), {"vout": driveSink(100.mA)})
     let i = h.netlist.components["I_EXT_vout"]
     check i.kind == "current_source"
@@ -217,12 +204,9 @@ suite "a port the board drives, rather than one that drives it":
     check "0.1" in i.attrs["value"] or "1.0" in i.attrs["value"]
 
   test "a source attached at a port is ideal, and says so":
-    # The output impedance is already explicit in the R and L beside it.
-    # Left unannotated, `expandSourceImpedance` sees a bare voltage_source
-    # and adds its own default 10 mohm and 1 uH on top -- and that microhenry
-    # rang against a board's 865 nF at 178 kHz and reported the rail at
-    # 10.5 ohm where it is 10 mohm. A factor of a thousand, built entirely
-    # out of impedance nobody asked for.
+    # The output impedance is already explicit; unannotated,
+    # `expandSourceImpedance` would add its default 10 mohm + 1 uH, which
+    # rings against the decoupling and wildly overstates impedance.
     let h = harness(supplying(), {"vout": driveLoad(33.ohm)})
     discard h
     let h2 = harness(board(), {"vbus": driveSource(5.0.V, rout = 100.mohm)})
@@ -250,10 +234,8 @@ suite "a port the board drives, rather than one that drives it":
         check abs(r["v(vout)"][0] - 3.3) < 1e-6
 
     test "but they are not interchangeable, and the difference is at AC":
-      # A resistor's current follows the rail, so it *damps* the decoupling
-      # network; a constant-current sink is an open circuit at AC and damps
-      # nothing. Modelling a regulated load as a resistor understates the
-      # anti-resonant peak -- which is the thing a PDN sweep is run to find.
+      # A resistive load damps the decoupling; a current sink is open at AC.
+      # A resistor understates the anti-resonant peak a PDN sweep looks for.
       proc peakWith(drive: PortDrive): float =
         let b = supplying()
         let c1 = addComponent(b, newComponent("C1", kind = "capacitor"))
@@ -277,9 +259,7 @@ suite "a port the board drives, rather than one that drives it":
       check (undamped - damped) / damped > 0.05
 
 suite "boards as a system, and boards on their own":
-  # The same board has to answer two questions: what does it do on the bench,
-  # and what does it do plugged into the rest of the product. `asSubcircuit`
-  # is what lets one description serve both.
+  # `asSubcircuit` lets one board serve on the bench and inside a system.
 
   proc supplyBoard(): Netlist =
     netlist("supply"):
@@ -321,8 +301,7 @@ suite "boards as a system, and boards on their own":
     check toSeq(asSubcircuit(sensorBoard()).ports.keys) == @["vin"]
 
   test "a system wires them by name, because both call a port 'vin'":
-    # Position would be a trap here: swapping two same-shaped nets raises
-    # nothing and simulates happily.
+    # Positional binding would let two same-shaped nets swap silently.
     let sys = system()
     check sys.children.len == 2
     var globals: OrderedTable[string, Net]
@@ -362,7 +341,7 @@ suite "boards as a system, and boards on their own":
     echo "SKIP: ngspice not found on PATH"
   else:
     test "a board on its own answers only as well as its assumed load":
-      # Which is the reason to assemble a system at all.
+      # The reason to assemble a system.
       proc alone(sink: Amps): float =
         let h = harness(supplyBoard(),
                         {"vin": driveSource(5.0.V, rout = 100.mohm),

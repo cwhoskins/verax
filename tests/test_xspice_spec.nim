@@ -3,9 +3,7 @@ import std/[unittest]
 import verax/spice/xspice
 
 proc gainSpec(): ModelSpec =
-  ## The `analog/gain` model from ngspice's own icm library, which is the
-  ## smallest spec that still exercises every table: two ports of opposite
-  ## direction, two real parameters, and one static var.
+  ## ngspice's `analog/gain`: the smallest spec exercising every table.
   ModelSpec(
     name: "gain", cFunction: "cm_gain",
     description: "a gain block",

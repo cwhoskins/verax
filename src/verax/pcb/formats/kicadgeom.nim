@@ -1,28 +1,10 @@
-## KiCad geometry primitives shared by every reader of KiCad's s-expression
-## dialect: a board (`formats/kicad.nim`) and a library footprint
-## (`formats/kicadmod.nim`) use the **same** `(pad ...)`/`(fp_line ...)`/
-## `(at ...)` node shapes -- a `.kicad_mod` file is, byte for byte, the body
-## of the `(footprint ...)` node `kicad.readFootprint` already parses, minus
-## `(at)` and plus `(version)`/`(generator)`. Two independent copies of
-## "how big is a roundrect corner" or "which layer does `*.Cu` expand to"
-## would eventually disagree on a ratio or a wildcard, and a pad would land
-## somewhere different on the board than it does in the source library --
-## the class of divergence that stays invisible until a fab file is wrong.
-## So this module holds nothing KiCad-specific beyond parsing the shapes both
-## readers already need, and both import it rather than each other.
+## KiCad geometry primitives shared by the board reader (`kicad.nim`) and the
+## library reader (`kicadmod.nim`), which parse the same node shapes -- two
+## copies would eventually disagree and pads would land differently.
 ##
-## Every proc here is a pure read off a `sexp.SexpDoc`: no `Pcb` mutation, no
-## write-side formatting (`kicadfmt.nim` owns that half). `expandPadLayers`
-## is the one exception that *does* take a `Pcb` -- a board pad's wildcard
-## layer token (`*.Cu`, `*.Mask`) can only be expanded against a stack that
-## is already known, which is exactly the board `kicad.readFootprint` is
-## reading into and exactly what a standalone `.kicad_mod` file does not
-## have. `formats/kicadmod.nim` therefore keeps a pad's layer tokens raw
-## (`FootprintPad.layers`) and leaves their expansion to whichever `Pcb` the
-## footprint is eventually placed on (`pcb/assemble.nim`) -- see that
-## module's own note on why re-deriving the wildcard grammar there, against a
-## `seq[string]` rather than a live `SexpDoc`, is a difference in input shape
-## rather than a second copy of this proc.
+## Pure reads off a `SexpDoc` (writing is `kicadfmt.nim`). Only
+## `expandPadLayers` takes a `Pcb`: wildcards (`*.Cu`) need a layer stack,
+## so `kicadmod` keeps tokens raw and `pcb/assemble` expands them later.
 
 import std/[tables, sets, strutils, math]
 
@@ -51,8 +33,8 @@ proc readDeg*(d: SexpDoc, n: int32): Deg =
   deg(v)
 
 proc readXy*(d: SexpDoc, n: int32): Point =
-  ## A two-argument coordinate node (`(xy x y)`, `(start x y)`, ...):
-  ## KiCad Y-down to canonical Y-up (finding 5 -- exact, `int64` negation).
+  ## A two-argument coordinate node (`(xy x y)`, `(start x y)`): KiCad Y-down
+  ## to canonical Y-up (exact `int64` negation).
   pt(readMm(d, arg(d, n, 0)), -readMm(d, arg(d, n, 1)))
 
 proc classifyPadShape(name: string): ApertureKind =
@@ -100,11 +82,8 @@ proc buildAperture*(d: SexpDoc, padNode: int32): Aperture =
     discard   # no general polygon reconstruction attempted for a custom pad shape yet
 
 proc expandPadLayers*(pcb: Pcb, d: SexpDoc, padNode: int32): seq[PcbLayer] =
-  ## Wildcard layer-token expansion (`*.Cu`, `*.Mask`, ...) against `pcb`'s
-  ## already-built layer stack. Takes a live `Pcb` because a wildcard cannot
-  ## be resolved without one -- `formats/kicadmod.nim` reads a pad's layer
-  ## tokens raw instead, for exactly that reason (see this module's doc
-  ## comment).
+  ## Wildcard layer-token expansion (`*.Cu`, `*.Mask`) against `pcb`'s layer
+  ## stack.
   let layersChild = d.child(padNode, "layers")
   if layersChild < 0: return
   var seen: HashSet[string]
@@ -129,9 +108,8 @@ proc graphicNodeLayer*(d: SexpDoc, node: int32): string =
   if lc >= 0: d.text(arg(d, lc, 0)) else: ""
 
 proc graphicCurves*(d: SexpDoc, node: int32): seq[Curve] =
-  ## The geometry of one graphics node, in the frame it was written --
-  ## board coordinates for a top-level `gr_*`, footprint-local for an
-  ## `fp_*` (its caller applies a `Transform` afterwards).
+  ## One graphics node's geometry in its written frame: board coordinates
+  ## for `gr_*`, footprint-local for `fp_*` (caller transforms).
   case d.head(node)
   of "gr_line", "fp_line":
     let s = d.child(node, "start")

@@ -6,28 +6,18 @@ import ../analyses/transient
 const loadStepQuantities = ["step_droop_v", "step_droop_pct",
                             "step_overshoot_v", "step_overshoot_pct",
                             "step_recover_s", "step_v_min", "step_v_max"]
-  ## Deliberately none of `overshoot_pct` or `settle_time`, which
-  ## `spice.startup` already produces and `registerEvaluator` would refuse a
-  ## second producer of. That refusal is right here rather than merely
-  ## procedural: a start-up overshoot is what a rail does on the way up from
-  ## nothing, and a step overshoot is what it does on the way back down from
-  ## a load. Two different measurements about two different events, and one
-  ## name for both would let a claim about one be answered with the other.
+  ## Not `overshoot_pct`/`settle_time`, which `spice.startup` produces:
+  ## start-up and load-step overshoot are different events, and one name
+  ## would let one answer the other.
 
 proc measurementOnly(spec: var LoadStepSpec) =
-  ## `analyzeLoadStep` states no limits of its own -- every figure it emits is
-  ## a measurement and the assertion is the only judge -- so there is nothing
-  ## to disable. Present so the module's shape holds and so a limit field
-  ## added later cannot be forgotten here.
+  ## Nothing to disable yet; kept so a future limit field isn't forgotten.
   discard spec
 
 proc loadStepKey(ctx: EvalContext, a: Assertion): string =
   let d = ctx.design
-  # Everything that changes the run joins the key. The step *magnitude* in
-  # particular: two claims at two magnitudes are two different questions --
-  # a rail that holds up under 1 A may not under 3 A -- and pooling them
-  # would answer one with the other's number, which is exactly what the
-  # swept range does for `spice.dc_sweep`.
+  # Everything that changes the run joins the key, the step magnitude above
+  # all (1 A and 3 A are different questions).
   subjectNet(d, a) & "|" & $conditionFloat(a, "step_from", 0.0) &
     "|" & $conditionFloat(a, "step_to", 0.0) &
     "|" & $conditionFloat(a, "step_edge", 0.0) &

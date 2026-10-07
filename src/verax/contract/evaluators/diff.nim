@@ -1,23 +1,12 @@
-## Evaluators for differential pairs.
+## Evaluators for differential pairs, declared as two nets bound to the
+## `diff_pair` role's `p`/`n` (usually via `diffPairInterface`).
 ##
-## A pair is declared with nothing new: two nets bound to the `diff_pair`
-## role's `p`/`n` parts, ordinarily via a two-signal `InterfaceDef` (see
-## `netlist/interfaces/std.diffPairInterface`). What is genuinely new is the
-## checking, here.
-##
-## `diff_pair_symmetry` is the one quantity this file can actually answer
-## from the graph alone: it walks each leg through `kinds.conductiveExits`
-## and compares what it finds, part for part. `intra_pair_skew`, `z_diff`
-## and `inter_pair_skew` are registered but decline every claim -- skew and
-## characteristic impedance are routing properties, and nothing in this
-## repository accumulates trace length or solves a stackup yet (`pcb/`
-## carries tracks and a stackup with `epsilonR`, but no length walk, no Z0
-## formula, and `Design` holds no `Pcb`). Registering them anyway is
-## deliberate: `evaluableQuantities()` is what `verax quantities` renders and
-## what `didYouMean` ranks against, so a registered-but-unevaluable quantity
-## is discoverable and a claim naming it gets a true reason, while an
-## unregistered one reports "no evaluator produces X", which reads as "you
-## made that up".
+## `diff_pair_symmetry` is answered from the graph: both legs walked via
+## `kinds.conductiveExits` and compared part for part. `intra_pair_skew`,
+## `z_diff` and `inter_pair_skew` are registered but decline every claim --
+## they need routing data, and a `Design` holds no `Pcb`. Registering them
+## gives a claim a true reason (and makes them discoverable) instead of "no
+## evaluator produces X".
 
 import std/[sets, strutils, tables]
 import ../../netlist/types
@@ -29,24 +18,15 @@ export evaluate
 
 const
   maxLegHops = 12
-    ## A differential pair's own two-terminal series chain -- an AC-coupling
-    ## cap, a common-mode choke winding, a series termination resistor --
-    ## rarely runs deeper than a handful of parts before it reaches a
-    ## connector or IC pin. This is a walk bound, not a claim about circuit
-    ## depth: exceeding it stops the comparison rather than failing it, on
-    ## the same reasoning `static.rc_corner` invents a capacitance and says
-    ## so rather than refusing to answer.
+    ## Walk bound for a pair's series chain (coupling cap, choke winding,
+    ## termination), which rarely runs deep. Exceeding it stops the
+    ## comparison rather than failing it.
   valueTolFrac = 0.01
-    ## Two legs' series parts are compared as *values*, not as designators --
-    ## R47 and R48 both being 22.1R is a match. A 1% band absorbs float
-    ## round-trip noise in a parsed magnitude without absorbing a real
-    ## mismatch; standard resistor/capacitor tolerances are wider than this,
-    ## but that is a derating question, not a symmetry question.
+    ## Series parts compare by value, not designator. 1% absorbs float
+    ## round-trip noise, not real mismatch.
 
 proc magnitudeOf(c: Component): tuple[has: bool, value: float] =
-  ## As `evaluators/static.magnitudeOf`, duplicated rather than imported:
-  ## that one is private to `static.nim` and this module reads no more of it
-  ## than this.
+  ## As `static.magnitudeOf` (private there).
   if not c.attrs.hasKey("value"): return (false, 0.0)
   var v: float
   if spiceFormat.parseSpiceMagnitude(c.attrs["value"], v): (true, v)
@@ -56,18 +36,14 @@ proc valuesAgree(a, b: Component): bool =
   let (haveA, va) = magnitudeOf(a)
   let (haveB, vb) = magnitudeOf(b)
   if not haveA or not haveB:
-    # Neither side states a bare magnitude (a diode, an IC, a part carrying
-    # only a part number) -- kind already matched, and there is nothing
-    # numeric left to disagree about.
+    # Neither side states a bare magnitude; kinds already matched.
     return true
   if va == 0.0 and vb == 0.0: return true
   abs(va - vb) <= valueTolFrac * max(abs(va), abs(vb))
 
 proc seriesNeighbors(n: Net, exclude: Net): seq[tuple[c: Component, farNet: Net]] =
-  ## Every component touching `n` with exactly two connected pins -- an
-  ## ordinary series element, not a branch point -- paired with the net on
-  ## its far side. `exclude` is the net the walk arrived from, so a leg does
-  ## not immediately double back through the part it just crossed.
+  ## Every two-pin component on `n` (a series element, not a branch point),
+  ## paired with its far net. `exclude` is the net the walk came from.
   var seen: HashSet[string]
   for p in n.pins:
     let c = p.component
@@ -82,12 +58,9 @@ proc seriesNeighbors(n: Net, exclude: Net): seq[tuple[c: Component, farNet: Net]
         result.add (c, far)
 
 proc compareLegs(pStart, nStart: Net): tuple[symmetric: bool, reason: string, part: Component] =
-  ## Walks both legs of a pair in lock-step, one series part at a time, and
-  ## reports the first place they disagree -- a mismatched part count
-  ## (a leg that branches where the other does not), a mismatched kind, or a
-  ## mismatched value. A leg that dead-ends -- an IC or connector pin -- ends
-  ## the walk for both sides at once, since `nextP.len == nextN.len == 0` is
-  ## the ordinary termination, not a mismatch.
+  ## Walks both legs in lock-step and reports the first disagreement: part
+  ## count (one leg branches), kind, or value. Both legs dead-ending (an IC
+  ## or connector pin) is ordinary termination.
   var curP = pStart
   var curN = nStart
   var fromP: Net = nil
@@ -102,10 +75,8 @@ proc compareLegs(pStart, nStart: Net): tuple[symmetric: bool, reason: string, pa
         "/" & (if fromN == nil: nStart.name else: curN.name) & " (" & $nextP.len &
         " onward parts on one leg, " & $nextN.len & " on the other)", nil)
     if nextP.len != 1:
-      # More than one parallel series path on both legs (e.g. a pair of
-      # series/shunt legs at a termination network): match as multisets by
-      # kind and value rather than assuming a pairing order, and do not walk
-      # past a branch -- there is no single "far net" to continue from.
+    # Several parallel paths on both legs (a termination network): match as
+    # multisets by kind and value, and stop -- there's no single far net.
       var usedN = newSeq[bool](nextN.len)
       for pr in nextP:
         var matched = false
@@ -126,10 +97,7 @@ proc compareLegs(pStart, nStart: Net): tuple[symmetric: bool, reason: string, pa
       return (false, cp.designator & " and " & cn.designator & " have mismatched values", cp)
     fromP = curP; curP = farP
     fromN = curN; curN = farN
-  # Walk-depth exceeded with both legs still matching hop for hop: treated
-  # as symmetric on the evidence gathered, the same trade-off `rc_corner`
-  # makes when it invents a number and reports it as an assumption rather
-  # than refusing to answer.
+  # Depth bound reached with every hop matching: symmetric on the evidence.
   (true, "", nil)
 
 proc runDiffPairSymmetry(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
@@ -181,7 +149,7 @@ proc interPairDoc(ctx: EvalContext, batch: seq[Assertion]): string =
 
 proc registerDiffEvaluators*() =
   ## Called at module init; exposed so an application that clears the
-  ## registry can put these back, matching `static.registerStaticEvaluators`.
+  ## registry can restore these.
   registerEvaluator(Evaluator(
     name: "diff.pair_symmetry",
     produces: @["diff_pair_symmetry"],

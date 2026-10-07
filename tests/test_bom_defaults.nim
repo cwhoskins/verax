@@ -160,8 +160,8 @@ test "a with = proc overrides one instance and leaves its sibling alone":
   check bomDefaults(top).dielectric == ""       # nor is the board
 
 test "a with = proc can override one component's own spec on one instance":
-  # A default never reaches a part's own `spec:`; naming the component on
-  # the instance is how a higher-level netlist changes it.
+  # A default never reaches a part's own `spec:`; name the component on the
+  # instance to change it.
   let sheet = subckt("rc", [a]):
     net a
     component C1, kind = "capacitor", value = "10n":
@@ -228,9 +228,7 @@ test "a bad value stated inside an instanced sheet is reported, by path":
 # --- compile-time strictness ------------------------------------------------
 
 test "the bom block is validated at compile time":
-  # The `test_netlist_environment.nim` convention for pinning a DSL block's
-  # compile-time strictness: the positive control first, so a false negative
-  # in the macro cannot pass this test silently.
+  # Positive control first, so a false negative can't pass silently.
   check(compiles(block:
     discard netlist("ok"):
       bom:

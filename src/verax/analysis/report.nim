@@ -1,23 +1,11 @@
-## Result type for the simulation-backed analyses in this submodule.
+## Result type for the simulation-backed analyses. Unlike an `Issue`
+## (something is wrong), an analysis yields a curve plus derived scalars: an
+## `AnalysisReport` holds the measurements, the `Issue`s they imply, and the
+## raw `SimResult` for plotting.
 ##
-## `verax/analysis/issue.Issue` answers a yes/no question about a netlist:
-## something is wrong, here is what and where. A frequency response or a
-## start-up transient is not that shape -- it is a *curve* plus derived
-## scalars, some of which may be perfectly acceptable. So an analysis returns
-## an `AnalysisReport`: the measurements it extracted, the `Issue`s those
-## measurements imply, and the raw `SimResult` so a caller can plot or do its
-## own math without re-running the simulation.
-##
-## `assumptions` is not decoration. Every analysis here works by filling in
-## data a netlist does not carry -- an assumed regulator soft-start ramp, a
-## package-typical capacitor ESL, a substituted ideal op-amp macromodel --
-## and a number derived from an invented input must say so where the reader
-## will actually see it.
-##
-## They are `Assumption` records (from `netlist/annotations`), not prose, so
-## a consumer can count them, filter them by provenance, or eventually rank
-## them by influence. `invented` is the filter that matters: it is the set of
-## values the result rests on that nobody actually stated.
+## `assumptions` is load-bearing: every invented input (a soft-start ramp,
+## a package ESL, an ideal op-amp) is an `Assumption` record, so it can be
+## counted and filtered. `invented` is the set nobody stated.
 
 import std/[math, strutils, tables]
 import ../eng
@@ -25,34 +13,23 @@ import ../netlist/annotations
 import ../spice/backend
 import ./issue
 
-# `AnalysisReport.raw` is a `SimResult`, so anything holding a report needs the
-# accessors that read one (`freq`, `mag`, `db`, `phaseDeg`, `[]`) without a
-# second import.
+# Re-export the `SimResult` accessors, so holders of a report need no second
+# import.
 export issue, backend, eng, annotations
 
 type
   Measurement* = object
     name*: string
-      ## Open-ended identifier, e.g. `"bw_3db"`, `"z_min"`, `"inrush_peak"` --
-      ## a string rather than an enum, matching `Issue.kind` and
-      ## `Component.kind` elsewhere in this codebase, so a new analysis adds
-      ## its own names without editing this type.
+      ## Open identifier (`"bw_3db"`, `"z_min"`), a string so new analyses add
+      ## names freely.
     value*: float
     unit*: string
       ## e.g. `"Hz"`, `"V"`, `"A"`, `"dB"`, `"ohm"`, `"deg"`, `"s"`, `""`.
     at*: string
-      ## What the number is *about*, when that is not the subject the
-      ## assertion names. Empty means they are the same thing.
-      ##
-      ## They can differ because an assertion's subject does two jobs at
-      ## once: it says what the claim is about, and it selects the analysis
-      ## setup. `inrush_peak` is probed on the source feeding the regulator's
-      ## output, so the figure is the current into that net whatever the
-      ## subject says -- while the subject still has to name the *judged*
-      ## net, because that is what the isolation seeds on, and naming the
-      ## other one reports 2.8 kA instead of 163 mA. Both are right and they
-      ## are not the same net, so the report says where the number came from
-      ## rather than letting the subject imply it.
+      ## What the number is *about* when that isn't the assertion's subject;
+      ## empty means the same. The subject also selects the setup:
+      ## `inrush_peak` is probed on the source feeding the output net, while
+      ## the subject must name the judged net the isolation seeds on.
     attrs*: OrderedTable[string, string]
 
   AnalysisReport* = object
@@ -78,17 +55,14 @@ proc hasMeasurement*(r: AnalysisReport, name: string): bool =
   false
 
 proc `[]`*(r: AnalysisReport, name: string): float =
-  ## The named measurement's value. Raises `KeyError` if the analysis did not
-  ## produce it -- distinct from producing it as `NaN`, which means "measured,
-  ## and the answer is 'never happened in the swept range'".
+  ## The named measurement's value. Raises `KeyError` if not produced
+  ## (distinct from `NaN`, "measured, never happened in range").
   for m in r.measurements:
     if m.name == name: return m.value
   raise newException(KeyError, "no such measurement: " & name)
 
 proc invented*(r: AnalysisReport): seq[Assumption] =
-  ## Every value behind this result that the design did not state. The
-  ## question "how much of this answer did we make up?" is unanswerable while
-  ## assumptions are prose.
+  ## Every value behind this result that the design didn't state.
   for a in r.assumptions:
     if a.source != annAuthored: result.add a
 
@@ -98,10 +72,8 @@ proc worstSeverity*(r: AnalysisReport): Severity =
     if i.severity > result: result = i.severity
 
 proc `$`*(m: Measurement): string =
-  ## `at` is printed when it is set, because an analysis that measures the
-  ## same quantity for several subjects (`analyzeCurrent`, one `i_peak` per
-  ## part) otherwise prints identical-looking lines with no way to tell which
-  ## part each belongs to.
+  ## Prints `at` when set, so per-part measurements (`analyzeCurrent`) are
+  ## distinguishable.
   result = m.name & " = " & eng(m.value, m.unit)
   if m.at.len > 0: result &= "  [" & m.at & "]"
 

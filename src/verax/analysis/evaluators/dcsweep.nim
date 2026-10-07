@@ -1,9 +1,6 @@
-## `spice.dc_sweep` -- source sweeps and load sweeps, via `.dc`.
-##
-## One evaluator for both sweeps, because `registerEvaluator` allows one
-## producer per quantity and the envelope figures genuinely come out of
-## either. Which of the two ran is decided by the `sweep` condition, not by
-## the quantity: a batch is grouped by setup key, and the key carries it.
+## `spice.dc_sweep` -- source and load sweeps, via `.dc`. One evaluator for
+## both (one producer per quantity); the `sweep` condition, carried in the
+## setup key, picks which runs.
 
 import ./common
 import ../analyses/dcsweep
@@ -14,22 +11,15 @@ const dcSweepQuantities = ["dc_out_min", "dc_out_max", "dc_out_delta",
                            "load_reg_pct", "z_out_dc"]
 
 proc sweepKind(a: Assertion): string =
-  ## `"source"` or `"load"`, from the role that expanded the claim.
-  ##
-  ## Empty when nothing said, which is refused rather than defaulted. A sweep
-  ## has to know what it is sweeping *and over what range*, and an assertion
-  ## carries no channel for either except its conditions -- so guessing here
-  ## would run some sweep and report the answer as though it were the one
-  ## asked for.
+  ## `"source"` or `"load"`, from the expanding role. Empty is refused, not
+  ## defaulted: guessing would run some sweep and report it as the one asked.
   let s = conditionOf(a, "sweep")
   if s.isNone: "" else: s.get
 
 proc dcSweepKey(ctx: EvalContext, a: Assertion): string =
   let d = ctx.design
-  # Everything that changes the run joins the key: which source, which node,
-  # and the range. Two claims over two ranges are two runs, and their answers
-  # are not comparable -- every quantity here is a difference taken across
-  # the range.
+  # Source, node and range all join the key (answers are differences across
+  # the range).
   sweepKind(a) & "|" & bindingName(d, a, "source") & "|" &
   bindingName(d, a, "input") & "|" & subjectNet(d, a) & "|" &
   $conditionFloat(a, "sweep_from", 0.0) & "|" &

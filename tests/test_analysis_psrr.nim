@@ -6,13 +6,8 @@ import verax/analysis/analyses/psrr
 let haveNgspice = findExe("ngspice").len > 0
 
 proc rcDivider(r = "9k", c = "0"): Netlist =
-  ## A supply, a resistive divider, and nothing that regulates: the rejection
-  ## is the divider ratio and is exact at every frequency.
-  ##
-  ## R1 = 9k over R2 = 1k attenuates by 10, which is 20 dB. That is the whole
-  ## point of the fixture -- a number this file knows from arithmetic rather
-  ## than from a previous run of itself, and one both methods have to agree
-  ## with and with each other.
+  ## A supply and a resistive divider, nothing regulating: R1 = 9k over
+  ## R2 = 1k rejects exactly 20 dB at every frequency, by arithmetic.
   result = newNetlist("rc")
   let vin = addNet(result, newNet("vin"))
   let vout = addNet(result, newNet("vout"))
@@ -22,8 +17,7 @@ proc rcDivider(r = "9k", c = "0"): Netlist =
   discard connect(v1, "+", vin)
   discard connect(v1, "-", gnd)
   v1.attrs["value"] = "DC 12"
-  # Ideal, so the divider ratio is the whole answer: the default 10 mohm +
-  # 1 uH would sit above R1 and add a pole of its own.
+  # Ideal: the default 10 mohm + 1 uH would add a pole above R1.
   v1.attrs["rout"] = "0"
   v1.attrs["lout"] = "0"
 
@@ -47,9 +41,8 @@ proc rcDivider(r = "9k", c = "0"): Netlist =
     c1.attrs["esl"] = "1e-15"
 
 proc idealRail(): Netlist =
-  ## A rail held by a part carrying no model, which `spice/models` stands in
-  ## for as an ideal source at its stated output voltage. Nothing on its
-  ## input can reach its output: this is the shape the guard exists for.
+  ## A rail held by a model-less part, stood in for as an ideal source:
+  ## nothing on its input reaches its output. The case the guard exists for.
   result = newNetlist("ideal")
   let vin = addNet(result, newNet("vin", ntPower))
   let vout = addNet(result, newNet("vout", ntPower))
@@ -83,9 +76,8 @@ suite "psrr, swept":
       spec.modelSources = false   ## the fixture states its own
       let r = analyzePsrrAc(rcDivider(), "V1", "vin", "vout", spec)
 
-      # 10 kohm over 1 kohm is a factor of ten, which is 20 dB, and a
-      # resistive divider has no frequency in it -- so the worst point in the
-      # band and the point at 1 kHz are the same number.
+      # A factor of ten is 20 dB, and a divider has no frequency in it, so
+      # the band minimum equals the 1 kHz point.
       check abs(r["psrr_min_db"] - 20.0) < 0.1
       check abs(r["psrr_at_f"] - 20.0) < 0.1
 
@@ -93,10 +85,8 @@ suite "psrr, swept":
     if not haveNgspice:
       skip()
     else:
-      # A capacitor across the bottom leg makes rejection *improve* with
-      # frequency, so the worst point is the low end; inverting the network
-      # would put it at the high end. Either way it has to be found on the
-      # curve.
+      # A cap across the bottom leg makes rejection improve with frequency,
+      # so the worst point is at the low end and must be found on the curve.
       var spec = defaultPsrrSpec()
       spec.fStart = 10.0
       spec.fStop = 1.0e6
@@ -142,8 +132,8 @@ suite "psrr, one tone":
       let r = analyzePsrrTone(rcDivider(), "V1", "vin", "vout", spec)
 
       check abs(r["psrr_db"] - 20.0) < 0.2
-      # The ratio is quoted against what actually reached the input node, and
-      # with an ideal supply that is the injected amplitude.
+      # Quoted against what reached the input; with an ideal supply, the
+      # injected amplitude.
       check abs(r["in_ripple_v"] - 0.5) / 0.5 < 0.02
       check abs(r["out_ripple_v"] - 0.05) / 0.05 < 0.03
 
@@ -151,9 +141,8 @@ suite "psrr, one tone":
     if not haveNgspice:
       skip()
     else:
-      # The same divider with a second, much larger source at a different
-      # frequency on the output node. A peak-to-peak reading would report
-      # that instead; extracting at the injected frequency does not.
+      # A larger interferer at another frequency on the output: peak-to-peak
+      # would report it; extraction at the injected frequency doesn't.
       let nl = rcDivider()
       let vout = findNet(nl, "vout")
       let gnd = findNet(nl, "0")
@@ -178,10 +167,8 @@ suite "psrr, one tone":
       spec.modelSources = false
       let r = analyzePsrrTone(nl, "V1", "vin", "vout", spec)
 
-      # RN in parallel with R2 halves the bottom leg to 500 ohm, so the
-      # 1 kHz tone now divides by 9k/500 + 1 = 19 -> 25.6 dB. The 50 kHz
-      # interferer is four times larger than the tone at the output and does
-      # not appear in the answer at all.
+      # RN || R2 = 500 ohm, so the tone divides by 19 -> 25.6 dB. The 50 kHz
+      # interferer, four times larger at the output, doesn't appear.
       check abs(r["psrr_db"] - 20.0 * log10(19.0)) < 0.5
 
   test "a rail nothing can ripple is refused by the tone method too":

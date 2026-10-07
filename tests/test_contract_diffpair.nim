@@ -1,14 +1,11 @@
-## Differential pairs: declaration through the ordinary interface mechanism,
-## and the `diff_pair` role's claims.
+## Differential pairs via the ordinary interface mechanism, and the
+## `diff_pair` role.
 ##
-## A pair needs no new declaration syntax -- `diffPairInterface()` is a
-## two-signal `InterfaceDef` (`p`/`n`) that `implies "diff_pair"`, the same
-## shape `i2cInterface()` uses for `"i2c"`. This file pins that the implied
-## instance is created (once, and per array member), that an explicit `role
-## ... from =` pre-empts it, that the same-net mistake is caught at attach
-## time, that `diff_pair_symmetry` actually walks the graph, and that
-## `intra_pair_skew`/`z_diff`/`inter_pair_skew` decline every claim with a
-## reason naming the missing board.
+## `diffPairInterface()` is a two-signal `InterfaceDef` that implies
+## `"diff_pair"`. Pinned: the implied instance is created once per member,
+## an explicit `role ... from =` pre-empts it, the same-net mistake is
+## caught at attach time, `diff_pair_symmetry` walks the graph, and the
+## board-dependent claims decline with a reason.
 
 import std/[math, strutils, tables, unittest]
 
@@ -71,8 +68,8 @@ suite "differential pairs":
         pin "N", pair["n"], kind = ptInOut
       role "diff_pair", pair, p = pair["p"], n = pair["n"],
            skew_intra_max = 5.ps
-    # `addImpliedRoles` skips an instance name already taken -- exactly one
-    # `pair` instance exists, carrying the explicitly-stated parameter.
+    # `addImpliedRoles` skips a taken name: one `pair` instance, with the
+    # explicit parameter.
     check d.roles.len == 1
     let claims = expandInstance(d.roles["pair"])
     var found = false

@@ -1,14 +1,8 @@
-## The `verax` binary: check a design, and find out what can be claimed.
-##
-## Two jobs, and the second matters as much as the first. `check` compiles a
-## design file and runs it. The discovery subcommands -- `roles`, `role`,
-## `quantities`, `annotations`, `guide` -- answer "what am I allowed to say?"
-## from the live registries, which is the only way an author working in a
-## repository that is not this one can find out. They read no files and write
-## none; every one of them is safe to run speculatively.
-##
-## Only this module and `verax/verify` link the simulator-backed evaluators.
-## Importing the library does not.
+## The `verax` binary. `check` compiles and runs a design; the discovery
+## subcommands (`roles`, `role`, `quantities`, `annotations`, `guide`)
+## answer "what may I claim?" from the live registries, read nothing and
+## write nothing. Only this module and `verify` link the simulator-backed
+## evaluators.
 
 import std/[hashes, os, osproc, strutils]
 
@@ -18,13 +12,11 @@ import ./netlist/interfaces/std
 
 const
   version = "0.1.0"
-  # Read at compile time, so the binary carries them and neither `docs/` nor
-  # `templates/` needs to survive installation.
+  # Embedded at compile time, so `docs/` and `templates/` needn't be
+  # installed.
   guideText = staticRead("../../docs/authoring.md")
-  # Ordered the way a reader should meet them rather than alphabetically:
-  # `verax new` with an unknown name lists these, and that list is the only
-  # menu most people will ever see. `templates/README.md` says what each one
-  # is for.
+  # Ordered for a reader, not alphabetically: this is the menu `verax new`
+  # shows. `templates/README.md` describes each.
   templates = {
     "blank": staticRead("../../templates/blank.nim"),
     "divider": staticRead("../../templates/divider.nim"),
@@ -49,18 +41,10 @@ proc validLibDir(dir: string): bool =
   dir.len > 0 and fileExists(dir / "verax" / "contract" / "dsl.nim")
 
 proc locateLib(designFile, flag: string): tuple[dir, how: string] =
-  ## Where to point `--path:` when compiling a design file.
-  ##
-  ## Every candidate is *validated* rather than trusted. In particular the
-  ## compiled-in path is checked for existence: nimble builds a package that
-  ## declares binaries inside a temporary directory and removes it afterwards,
-  ## so for an installed `verax` the path baked in here can be a directory
-  ## that no longer exists. It is still tried, because for a locally built
-  ## binary it is correct and costs nothing.
-  ##
-  ## An empty result is not a failure -- it means "pass no `--path` and let
-  ## Nim's own config resolve it", which is right for a design repository that
-  ## has run `nimble setup` and has verax in its `nimble.paths`.
+  ## Where to point `--path:` when compiling a design. Every candidate is
+  ## validated: nimble builds in a temporary directory, so a compiled-in path
+  ## may no longer exist. An empty result means pass no `--path` and let
+  ## `nimble.paths` resolve it.
   if flag.len > 0:
     if not validLibDir(flag):
       raise newException(ValueError,
@@ -94,7 +78,7 @@ proc locateLib(designFile, flag: string): tuple[dir, how: string] =
 # --- check ----------------------------------------------------------------
 
 proc cacheDirFor(file: string): string =
-  ## Stable per design file, so the warm compile stays warm across runs.
+  ## Stable per design file, so the compile cache stays warm.
   getTempDir() / "verax-check" / $hash(file.absolutePath())
 
 proc cmdCheck(file: string, pathFlag: string, forward: seq[string]): int =
@@ -116,22 +100,16 @@ proc cmdCheck(file: string, pathFlag: string, forward: seq[string]): int =
   createDir(cache)
   let bin = cache / "design".addFileExt(ExeExt)
 
-  # A design may import an XSPICE code model to instantiate it, and that
-  # module's FFI entry point is the one thing in it that needs ngspice's MIF
-  # headers -- which exist only in a configured source tree. A design never
-  # calls that entry point; ngspice does, out of the built `.cm`. So compile
-  # the declaration without the implementation and a design stays buildable
-  # on a machine that has ngspice but not its sources.
+  # Compile model declarations without their FFI entry points
+  # (`-d:xspiceSpecOnly`), so designs build without ngspice sources.
   var args = @["c", "--hints:off", "-d:xspiceSpecOnly"]
   if lib.len > 0: args.add "--path:" & lib
   args.add "--nimcache:" & cache / "nc"
   args.add "--out:" & bin
   args.add file
 
-  # Compile and run as two processes, never `nim c -r`: that merges "this
-  # file does not compile" and "an assertion failed" into one exit status,
-  # and a reader who cannot tell those apart edits the circuit to fix a
-  # syntax error.
+  # Compile and run as two processes, never `nim c -r`, so "doesn't
+  # compile" stays distinct from "a claim failed".
   let compile = startProcess(findExe("nim"), args = args,
                              options = {poParentStreams})
   let rc = compile.waitForExit()
@@ -151,13 +129,9 @@ proc cmdCheck(file: string, pathFlag: string, forward: seq[string]): int =
 
 proc cmdLayout(file, pathFlag, outPath: string, layers: int, size: string,
                extra: seq[string]): int =
-  ## `cmdCheck`'s exact two-process shape, reused rather than duplicated:
-  ## the design *is* a Nim program, only the compiled design binary holds
-  ## the `Design`, and `--schematic-only` is already exactly this mechanism
-  ## (a flag `verify.parseVerifyArgs` reads inside the running design).
-  ## `--layout-out`/`--layout-layers`/`--layout-size` are the same kind of
-  ## flag, so this only has to build the forwarded argument list and hand it
-  ## to `cmdCheck` -- there is no second compile step to write.
+  ## Reuses `cmdCheck`: the layout flags are read by
+  ## `verify.parseVerifyArgs` inside the design binary, like
+  ## `--schematic-only`.
   var forward = @["--layout-out=" & outPath]
   if layers > 0: forward.add "--layout-layers=" & $layers
   if size.len > 0: forward.add "--layout-size=" & size
@@ -167,9 +141,8 @@ proc cmdLayout(file, pathFlag, outPath: string, layers: int, size: string,
 # --- bom --------------------------------------------------------------
 
 proc cmdBom(file, pathFlag, outPath: string, extra: seq[string]): int =
-  ## `cmdLayout`'s shape: build the forwarded flags, hand them to `cmdCheck`.
-  ## `verify.parseVerifyArgs` reads them inside the design binary, the only
-  ## place a `Design` exists.
+  ## As `cmdLayout`: forward flags to `cmdCheck`; the design binary reads
+  ## them.
   var forward = @["--bom"]
   if outPath.len > 0: forward.add "--bom-out=" & outPath
   forward.add extra
@@ -323,10 +296,8 @@ proc main(): int =
 
   case cmd
   of "check":
-    # The file is the first argument that is not a flag, rather than simply
-    # the first one: every flag here is forwarded to the design binary, so
-    # both orders are natural to type and `check --offline foo.nim` used to
-    # report `no such file: --offline`.
+    # The file is the first non-flag argument, so flags may come before or
+    # after it.
     var file = ""
     var forward: seq[string]
     for a in rest:

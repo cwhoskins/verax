@@ -1,7 +1,6 @@
 ## The behavioural-model registry: parts with a path through them, keyed by
-## `Component.kind`, stood in for by a network that keeps their *function*.
-## `spice/models/pin_models` consults this before falling through to per-pin
-## impedances, which would destroy any path through the part.
+## `Component.kind`, replaced by a network that keeps their function.
+## Consulted before per-pin impedances, which would destroy the path.
 
 import std/tables
 import ../../netlist/types
@@ -9,18 +8,13 @@ import ../../netlist/annotations
 
 type
   BehavioralResult* = tuple[handled: bool, notes: seq[Assumption]]
-    ## `handled` says the model replaced the component itself. **False means
-    ## leave the part exactly as it is** -- emphatically not "fall back to
-    ## per-pin impedances". A part known to carry a path from one pin to
-    ## another, stood in for by two independent resistors to ground, reports
-    ## its output rail at 0 V: a confident wrong answer where refusing to
-    ## simulate would have been an honest one.
+    ## `handled`: the model replaced the component. **False means leave the
+    ## part as is** -- not per-pin impedances, which would give a confident
+    ## wrong answer.
 
   BehavioralModel* = proc (nl: Netlist, c: Component, gnd: Net): BehavioralResult {.nimcall.}
-    ## Replaces one component with a network that keeps its *function*.
-    ## Registered by `Component.kind`, so a part nobody has modelled falls
-    ## through to the per-pin defaults, which is right for an MCU and wrong
-    ## for a regulator.
+    ## Replaces one component with a function-preserving network, registered
+    ## by kind.
 
 type BehavioralDef = tuple[model: BehavioralModel, passesSignal: bool]
 
@@ -28,16 +22,10 @@ var behavioral: OrderedTable[string, BehavioralDef]
 
 proc registerBehavioralModel*(kind: string, m: BehavioralModel,
                               passesSignal = false) =
-  ## A runtime table for the same reason the role and evaluator registries
-  ## are: a part family nobody here anticipated must be modellable without
-  ## editing this module.
-  ##
-  ## `passesSignal` says the stand-in keeps a path from the part's input to
-  ## its output. A regulator does not (its output is a source); a buffer
-  ## does. It is declared here rather than inferred because a *static* check
-  ## has to know the answer without simulating -- `analysis/opamp`'s feedback
-  ## walk asks exactly this, and would otherwise call a loop open that the
-  ## simulation is about to close.
+  ## A runtime table, so unanticipated part families can be added.
+  ## `passesSignal` (declared, not inferred) says the stand-in keeps an
+  ## input -> output path, so static checks like `analysis/opamp`'s feedback
+  ## walk agree with simulation.
   behavioral[kind] = (model: m, passesSignal: passesSignal)
 
 proc behavioralModelFor*(kind: string): BehavioralModel =

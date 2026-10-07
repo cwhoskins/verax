@@ -1,5 +1,5 @@
-## Helpers shared across the `spice/models` model files: pin ordering, the
-## pin-name vocabularies the stand-ins match on, and the ground reference.
+## Shared helpers for `spice/models`: pin ordering, pin-name vocabularies,
+## the ground reference.
 
 import std/[strutils, tables]
 import ../../netlist/types
@@ -9,8 +9,7 @@ proc orderedPins*(c: Component): seq[Pin] =
   for _, p in c.pins: result.add p
 
 proc groundOf*(nl: Netlist): Net =
-  ## The node everything is referenced to: SPICE's `"0"` if it exists, else
-  ## the first net that reads as ground by kind or by pin.
+  ## The reference node: `"0"` if present, else the first ground-like net.
   if nl.nets.hasKey("0"): return nl.nets["0"]
   for _, n in nl.nets:
     if isGround(n): return n
@@ -19,19 +18,14 @@ proc groundOf*(nl: Netlist): Net =
 const
   outNames* = ["out", "vout", "output", "o", "vo"]
   inNames* = ["in", "vin", "input", "i", "vi"]
-  # Kept deliberately identical to `analysis/opamp`'s lists. `Pin.kind`
-  # cannot make this distinction -- it separates input from output but not
-  # `+` from `-`, and that difference is the entire content of "negative
-  # feedback" -- so both modules match on names, and they must agree.
+  # Must match `analysis/opamp`'s lists: `Pin.kind` can't tell `+` from `-`,
+  # so both match on names.
   opampPosNames* = ["+", "in+", "inp", "vin+", "ninv", "noninv"]
   opampNegNames* = ["-", "in-", "inn", "vin-", "inv"]
   opampOutNames* = ["out", "vout", "o", "output"]
 
-  # Transformer / coupled-inductor / common-mode-choke winding terminals,
-  # dotted end first. Kept here for the same reason the op-amp lists are: a
-  # second model file (a future S-parameter one) will match on them and the
-  # two must agree. A two-winding part names its windings PRI/SEC; a
-  # common-mode choke's two windings are its two lines, same terminals.
+  # Winding terminals, dotted end first (a choke's two lines use the same
+  # names).
   priDotNames* = ["p1", "pri+", "pri1", "p+", "1a", "a"]
   priRetNames* = ["p2", "pri-", "pri2", "p-", "1b"]
   secDotNames* = ["s1", "sec+", "sec1", "s+", "2a", "b"]

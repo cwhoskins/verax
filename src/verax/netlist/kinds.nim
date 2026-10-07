@@ -1,17 +1,7 @@
-## Electrical classification of the open-ended strings in `Component.kind`
-## and of a `Net`'s power/ground role.
-##
-## This is deliberately its own module rather than living in whichever
-## consumer needed it first. Two independent subsystems ask the same
-## questions -- `verax/analysis/io_check` walks DC paths, and
-## `verax/spice/isolate` decides what to absorb into a simulation fragment
-## and where to stop -- and they must agree, or a net that terminates one
-## walk would be traversed by the other. `analysis` already depends on
-## `spice`, so the shared answer cannot live in either of them without
-## inverting that.
-##
-## It stays free of policy: it says what a component *is* electrically and
-## whether a net *is* a rail, never what to do about it.
+## Electrical classification of `Component.kind` strings and a `Net`'s
+## power/ground role. Its own module because `analysis/io_check` and
+## `spice/isolate` must agree, and `analysis` depends on `spice`. Policy-free:
+## what a part *is*, never what to do about it.
 
 import std/[strutils, tables]
 import ./types
@@ -26,57 +16,32 @@ type
 const
   conductiveKinds* = ["resistor", "inductor", "voltage_source", "wire", "jumper",
                       "ferrite_bead", "fuse"]
-    ## Ideal DC-conductive two-terminal parts. An ideal voltage source's
-    ## near-zero internal impedance ties its terminals for path-*existence*
-    ## purposes -- this classification never asks about value, only about
-    ## topology.
+    ## Ideal DC-conductive two-terminal parts (by topology, never value; an
+    ## ideal voltage source ties its terminals).
   blockingKinds* = ["capacitor", "current_source"]
-    ## `capacitor` blocks DC despite being `ptPassive`-pinned, same as a
-    ## resistor conducts -- which is exactly why classification is keyed on
-    ## `Component.kind` (what the device physically *is*), not `Pin.kind`
-    ## (which cannot distinguish a resistor from a capacitor). An ideal
-    ## current source has infinite internal impedance, the opposite of a
-    ## voltage source, so it is blocking too.
+    ## Keyed on `Component.kind`, not `Pin.kind` (which can't tell a
+    ## resistor from a capacitor). A current source's infinite impedance
+    ## blocks.
 
 proc classifyConductivity*(c: Component): Conductivity =
-  ## Never meaningful for a component with `subNetlist != nil` -- hierarchy is
-  ## walked structurally via `Pin.hierNet`/`Netlist.instanceOf`, not by kind
-  ## lookup. Any `kind` not in the built-in tables (a diode, transistor, IC,
-  ## or custom part) is `condAmbiguous`, never silently guessed as either
-  ## conductive or blocking.
+  ## Not meaningful for an instance (hierarchy is walked via `hierNet`).
+  ## Any unlisted kind is `condAmbiguous`, never guessed.
   if c.kind in blockingKinds: condBlocking
   elif c.kind in conductiveKinds: condConductive
   else: condAmbiguous
 
 proc conductivityBetween*(c: Component, a, b: Pin): Conductivity =
-  ## `classifyConductivity` answers for the whole component; this answers
-  ## *per pin pair*, which is the question an N-pin part with a declared
-  ## `netlist/traversal` spec actually poses -- an ADG904 conducts RFC to
-  ## whichever RFn is selected and nothing between any other pair, and
-  ## `classifyConductivity` alone has no way to say that (it is never
-  ## widened to try: `kinds.isPassive` and `schematic/placement.portDrives`
-  ## both still ask its whole-component question, and widening it would
-  ## silently move both).
+  ## Conductivity *per pin pair*, for N-pin parts with a `traversal` spec
+  ## (an RF switch conducts RFC to the selected RFn only).
+  ## `classifyConductivity` is not widened, since `isPassive` and
+  ## `placement.portDrives` rely on its whole-component answer.
   ##
-  ## The fallback ladder:
-  ##   1. `c` states a traversal spec (`statesTraversal`) -> that spec answers
-  ##      *exclusively*, nothing else is consulted. `tmNone` is `condBlocking`
-  ##      for every pair (the way to override the 2-pin default on, say, a
-  ##      resistor stated not to conduct); `tmAll` is `classifyConductivity(c)`
-  ##      for every pair (opt every pin pair into the kind-table answer); a
-  ##      pair matching a declared edge is `condConductive`/`condBlocking` by
-  ##      that edge's `conducts` flag; a pair matching *no* declared edge on a
-  ##      part that declared some is `condBlocking` -- a declaration is
-  ##      exhaustive, the entire point of writing one is to say what *does*
-  ##      connect, so an unlisted pair is not a gap to guess at.
-  ##   2. Nothing stated, and `c` has exactly two connected pins ->
-  ##      `classifyConductivity(c)`, today's answer, unchanged.
-  ##   3. Nothing stated, and `c` has more than two connected pins ->
-  ##      `condAmbiguous`, never guessed. No member of `conductiveKinds` has
-  ##      more than two terminals, so this is not a behavioural change for
-  ##      any undeclared part today -- it is the rule that was already true,
-  ##      made explicit for the N-pin case the old whole-component question
-  ##      never had to face.
+  ## Ladder:
+  ##   1. A stated spec answers exclusively: `tmNone` -> blocking; `tmAll` ->
+  ##      `classifyConductivity`; a declared edge -> its `conducts`; an
+  ##      undeclared pair -> blocking (a declaration is exhaustive).
+  ##   2. No spec, two connected pins -> `classifyConductivity`.
+  ##   3. No spec, more than two -> `condAmbiguous`.
   if statesTraversal(c):
     let spec = traversal(c)
     case spec.mode
@@ -93,15 +58,9 @@ proc conductivityBetween*(c: Component, a, b: Pin): Conductivity =
   if connected == 2: classifyConductivity(c) else: condAmbiguous
 
 proc conductiveExits*(c: Component, fromPin: Pin): seq[Net] =
-  ## Every distinct net conduction reaches from `fromPin` through `c` -- each
-  ## other pin's net where `conductivityBetween(c, fromPin, pin)` is
-  ## `condConductive`. The walkers' entry point: `analysis/io_check.dcReachable`
-  ## and `contract/evaluators/static.dcConnected` both used to `case` on
-  ## `classifyConductivity(comp)` once per component and enqueue every *other*
-  ## connected net when it read conductive; this is the per-pin replacement
-  ## that lets an undeclared two-terminal part answer exactly as before (one
-  ## exit) while a declared multi-throw switch answers with only the nets its
-  ## spec actually names.
+  ## Every net conduction reaches from `fromPin` through `c` (per
+  ## `conductivityBetween`). The DC walkers' entry point: one exit for a
+  ## plain two-terminal part, only the declared nets for a switch.
   for _, p in c.pins:
     if p == fromPin or p.net == nil or p.net == fromPin.net: continue
     if conductivityBetween(c, fromPin, p) == condConductive and
@@ -110,31 +69,16 @@ proc conductiveExits*(c: Component, fromPin: Pin): seq[Net] =
 
 const
   couplingKinds* = ["mutual_inductance"]
-    ## The SPICE `K` card -- a *relationship* between two inductors, not a
-    ## device with terminals. Synthesized only: `spice/models/magnetics`
-    ## emits one per winding pair when it expands a `transformer` or a
-    ## `common_mode_choke`.
-    ##
-    ## `isPassive` accepts it so `spice/isolate` pulls it into a fragment
-    ## whenever both the inductors it couples are already there -- otherwise
-    ## the coupling is silently dropped and the fragment is a different
-    ## circuit. `classifyConductivity` still calls it `condAmbiguous`, and
-    ## deliberately: a `K` card has no nodes to walk *through*, which for a
-    ## transformer is precisely the isolation barrier `analysis/io_check`
-    ## must not cross.
+    ## The SPICE `K` card: a relationship between two inductors, not a
+    ## device (synthesized by `spice/models/magnetics`). `isPassive` accepts
+    ## it so isolation keeps the coupling when both inductors are present;
+    ## it stays `condAmbiguous` so DC walks don't cross a transformer's
+    ## isolation barrier.
 
   behaviouralKinds* = ["vcvs", "vccs", "cccs", "ccvs", "bsource"]
-    ## Controlled sources. Never real parts -- these only ever appear because
-    ## something in `spice/models` synthesized one to stand in for a part that
-    ## carries no model.
-    ##
-    ## Deliberately **not** in `conductiveKinds`: a controlled source is not a
-    ## DC path in the conduction sense (its output *is* a source, not a
-    ## connection to its input), so `classifyConductivity` keeps calling one
-    ## ambiguous and `analysis/io_check` keeps refusing to walk through it.
-    ## But its behaviour genuinely *is* fully described by its value -- the
-    ## gain -- so a simulation fragment can absorb one, which is what
-    ## `isPassive` is actually asked.
+    ## Controlled sources, only ever synthesized by `spice/models`. Not
+    ## conductive (the output is a source, not a connection), but fully
+    ## described by their gain, so `isPassive` lets isolation absorb them.
 
 const builtinDesignatorPrefixes* = {
     "resistor": "R", "capacitor": "C", "inductor": "L", "ferrite_bead": "FB",
@@ -155,38 +99,13 @@ const builtinDesignatorPrefixes* = {
     "code_model": "A", "subcircuit": "X",
     "attenuator": "AT", "balun": "T", "coupler": "DC",
     "transmission_line": "TL"}
-    ## The last four are phase 0 of the RF vocabulary: a designator prefix
-    ## only, cosmetic like every other entry in this table, added ahead of
-    ## any model or `formats/spice.nim` device letter for the kind. `balun`
-    ## sharing `"T"` with `transformer`/`coupled_inductor` is intentional --
-    ## duplicate values across keys are already normal here (`opamp`/`mcu`/
-    ## `regulator` all map to `"U"`) and a balun genuinely is a transformer
-    ## for designator purposes. Deliberately **not** added for `lna`/
-    ## `power_amplifier`/`vga`/`mixer`/`circulator`/`sparam_block`/
-    ## `microstrip`/`stripline`: the `"U"` fallback already gives each of
-    ## those a sensible schematic letter, and the transmission-line-family
-    ## kinds get a *real* one only once phase 3's `mlin`/`tline` model makes
-    ## that letter mean something -- adding one now with no model behind it
-    ## is the same half-added-kind trap `tests/test_spice_spellable.nim`
-    ## exists to catch, just approached from the opposite direction (a
-    ## `conductiveKinds` entry with no letter, rather than a letter with no
-    ## conductivity classification).
-  ## Reference-designator prefixes by component kind.
-  ##
-  ## **Deliberately a separate table from `formats/spice.prefixByDeviceKind`,
-  ## and it must stay separate**, because the two genuinely disagree. A
-  ## ferrite bead's designator on a schematic is `FB` while the letter it
-  ## needs in a deck is `L`; a battery is `BT` on a board and `V` in a deck.
-  ## They answer different questions -- one is a naming convention for people,
-  ## the other is how SPICE decides what device it is reading -- and deriving
-  ## either from the other is how `FB1` came to be simulated as a
-  ## current-controlled current source in the first place.
-  ##
-  ## `U` is the fallback for anything unrecognised, which is the schematic
-  ## convention for an integrated circuit. Unlike a SPICE device letter, a
-  ## wrong designator prefix is cosmetic rather than a wrong answer, so
-  ## guessing here is cheap where guessing there was not -- and
-  ## `registerDesignatorPrefix` exists for a project with its own kinds.
+    ## Cosmetic prefixes. `balun` sharing `"T"` is intentional. RF amplifier,
+    ## mixer and transmission-line kinds fall back to `"U"` until they have a
+    ## model.
+  ## Reference-designator prefixes by kind. **Must stay separate from
+  ## `formats/spice.prefixByDeviceKind`**: a ferrite is `FB` on a schematic
+  ## but `L` in a deck. `U` is the fallback; a wrong prefix is only
+  ## cosmetic. Projects can `registerDesignatorPrefix`.
 
 var designatorPrefixes = block:
   var t: Table[string, string]
@@ -194,8 +113,7 @@ var designatorPrefixes = block:
   t
 
 proc registerDesignatorPrefix*(kind, prefix: string) =
-  ## Runtime, like every other registry here, so a project's own kinds are
-  ## not second class.
+  ## Runtime, so a project's own kinds are first-class.
   designatorPrefixes[kind] = prefix
 
 proc designatorPrefixFor*(kind: string): string =
@@ -203,19 +121,9 @@ proc designatorPrefixFor*(kind: string): string =
   designatorPrefixes.getOrDefault(kind.toLowerAscii, "U")
 
 proc hasDeviceModel*(c: Component): bool =
-  ## Whether a `.MODEL` card in the owning netlist describes this part.
-  ##
-  ## SPICE binds a device to a model by name: the model name is the last
-  ## token of the device line, which is what `Component.attrs["value"]`
-  ## becomes. So a diode whose `value` is `"1N4148"` is fully modelled if and
-  ## only if the netlist carries a `1N4148` card, and a part that *is*
-  ## modelled must never be stood in for -- the stand-in exists precisely
-  ## because nothing described the part.
-  ##
-  ## Matched case-insensitively, because SPICE is: a deck that says `1n4148`
-  ## against a card that says `1N4148` binds in the simulator, and a check
-  ## that disagreed with the simulator about the same part is the failure
-  ## this whole area keeps producing.
+  ## Whether a `.MODEL` card in the owning netlist names this part's `value`
+  ## (SPICE binds models by name). A modelled part must never be stood in
+  ## for. Case-insensitive, as SPICE is.
   if c == nil or c.netlist == nil: return false
   if not c.attrs.hasKey("value"): return false
   let toks = c.attrs["value"].split()
@@ -226,23 +134,16 @@ proc hasDeviceModel*(c: Component): bool =
   false
 
 proc isPassive*(c: Component): bool =
-  ## Whether a simulation fragment can absorb this part wholesale without
-  ## needing a model for it -- because its behaviour is fully described by its
-  ## value. True of an ideal two-terminal part, and of a synthesized
-  ## controlled source, which would otherwise be discarded by the very
-  ## isolation that was meant to keep the path it stands in for.
+  ## Whether a fragment can absorb this part without a model, because its
+  ## value fully describes it: ideal two-terminal parts and synthesized
+  ## controlled sources.
   classifyConductivity(c) != condAmbiguous or c.kind in behaviouralKinds or
     c.kind in couplingKinds or hasDeviceModel(c)
 
 proc isRail*(net: Net): bool =
-  ## Whether `net` is a power or ground rail, by *either* signal: the net's
-  ## own `kind`, or any connected pin's `kind`.
-  ##
-  ## The two are populated inconsistently depending on where the netlist came
-  ## from -- a netlist read from a SPICE deck only sets `ntGround` for node
-  ## "0" and never touches `Pin.kind`, while a DSL author might tag a pin
-  ## `ptPower` without tagging the net, or the reverse. Requiring both would
-  ## make every realistic partially-annotated netlist look railless.
+  ## Whether `net` is a power or ground rail by *either* the net's `kind` or
+  ## any pin's `kind`; sources set them inconsistently, so requiring both
+  ## would find no rails.
   if net == nil: return false
   if net.kind in {ntPower, ntGround}: return true
   for p in net.pins:

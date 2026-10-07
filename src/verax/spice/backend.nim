@@ -1,42 +1,28 @@
-## Shared contract for SPICE simulation-backend modules.
+## Shared contract for SPICE simulation backends (the runner; the deck
+## reader/writer is `verax/netlist/formats/spice`).
 ##
-## This is the *simulation runner* half of the "spice" name in this
-## codebase; for the *file-format* deck reader/writer see
-## `verax/netlist/formats/spice`.
-##
-## Every backend module (e.g. `verax/spice/ngspice`) implements the same
-## proc names operating only on the core `verax/netlist` types plus this
-## module's result/error types, so callers needing more than one backend at
-## once can import both and disambiguate with module-qualified calls:
+## Every backend implements the same procs over `verax/netlist` types plus
+## this module's result/error types, so several can be imported and
+## module-qualified:
 ##
 ## .. code-block:: nim
 ##   proc writeDeck*(nl: Netlist, cards: seq[string], s: Stream)
 ##   proc writeDeckFile*(nl: Netlist, cards: seq[string], path: string)
 ##   proc run*(nl: Netlist, cards: seq[string]): SimResult
 ##
-## `cards` are raw analysis card lines only (e.g. `@[".op"]`, `@[".tran 1u 1m"]`
-## or `@[".ac dec 20 1k 1G"]`); a backend decides internally how to capture
-## output for them. Only one analysis card is supported per `run()` call in
-## every backend implemented so far -- see each backend's own doc comment for
-## its specific reasoning/limitations.
+## `cards` are raw analysis cards (`@[".op"]`, `@[".ac dec 20 1k 1G"]`); one
+## analysis per `run()` (see each backend).
 ##
-## **Real vs complex results.** `.op`/`.tran`/`.dc` produce real vectors;
-## `.ac` produces complex ones. `SimVector` is an *object variant* over that
-## distinction rather than a real-valued vector with a "is it complex?" flag,
-## so reading an `.ac` result as `seq[float]` is not merely discouraged --
-## the field does not exist on that branch. The `[]` accessor still raises a
-## `SpiceSimError` (rather than letting a bare `FieldDefect` escape) so the
-## failure stays catchable as a `CatchableError`, like every other failure in
-## this submodule.
+## **`SimVector` is a variant over real/complex**, so reading an `.ac`
+## result as `seq[float]` is impossible; `[]` raises `SpiceSimError` (not a
+## `FieldDefect`) so the failure stays catchable.
 
 import std/[complex, math, strutils, tables]
 
 type
   SpiceSimError* = object of CatchableError
-    ## Raised when a simulation run fails to produce usable results --
-    ## covers both "the backend process itself failed" and "it produced
-    ## output we couldn't parse" -- and when a result is read at the wrong
-    ## `SimDataKind`.
+    ## Raised when a run fails (process failure or unparseable output), or a
+    ## result is read as the wrong `SimDataKind`.
 
   SimDataKind* = enum
     sdReal      ## `.op`, `.tran`, `.dc`
@@ -53,11 +39,9 @@ type
   SimResult* = object
     plotName*: string
     dataKind*: SimDataKind
-      ## Kind of every vector in `vectors`; a plot never mixes the two.
-      ## Defaults to `sdReal`, so a zero-initialized `SimResult` behaves as
-      ## it always has.
+      ## Kind of every vector (a plot never mixes). Defaults to `sdReal`.
     vectors*: OrderedTable[string, SimVector]
-      ## Keyed by lowercased backend vector name (e.g. `"v(vout)"`).
+      ## Keyed by lowercased vector name (`"v(vout)"`).
 
 proc newSimVector*(name: string, kind: SimDataKind = sdReal): SimVector =
   case kind
@@ -84,9 +68,8 @@ proc wrongKind(name: string, got: SimDataKind): ref SpiceSimError =
       "vector '" & name & "' is real (.op/.tran/.dc), not complex: read it with []")
 
 proc `[]`*(r: SimResult, name: string): seq[float] =
-  ## Looks up a real vector's values by name (case-insensitive, matching how
-  ## SPICE vector names are conventionally treated). Raises `KeyError` if
-  ## `name` isn't present, or `SpiceSimError` if it is complex.
+  ## A real vector's values by name (case-insensitive). Raises `KeyError` if
+  ## absent, `SpiceSimError` if complex.
   let key = name.toLowerAscii
   if r.vectors[key].kind != sdReal:
     raise wrongKind(name, sdComplex)
@@ -100,8 +83,7 @@ proc cplx*(r: SimResult, name: string): seq[Complex64] =
   r.vectors[key].cvalues
 
 proc mag*(r: SimResult, name: string): seq[float] =
-  ## Magnitude per point. Defined for both kinds (`abs` of a real value), so
-  ## an impedance/gain reader needn't branch on the analysis type.
+  ## Magnitude per point, for either kind.
   let key = name.toLowerAscii
   case r.vectors[key].kind
   of sdReal:
@@ -110,15 +92,13 @@ proc mag*(r: SimResult, name: string): seq[float] =
     for c in r.vectors[key].cvalues: result.add abs(c)
 
 proc db*(r: SimResult, name: string): seq[float] =
-  ## `20*log10(|x|)`. An exactly-zero magnitude yields `-Inf` rather than
-  ## raising -- a null in a response is a real result, not an error.
+  ## `20*log10(|x|)`; an exact zero gives `-Inf` (a real null, not an error).
   for m in mag(r, name):
     result.add(if m <= 0.0: -Inf else: 20.0 * log10(m))
 
 proc unwrapDeg*(phases: openArray[float]): seq[float] =
-  ## Removes the +-360 discontinuities `arctan2` introduces, so a phase curve
-  ## is continuous and a phase-margin calculation reads the true accumulated
-  ## lag rather than a wrapped value.
+  ## Removes `arctan2`'s +-360 jumps so a phase curve shows true accumulated
+  ## lag.
   var offset = 0.0
   for i, p in phases:
     if i > 0:
@@ -128,9 +108,7 @@ proc unwrapDeg*(phases: openArray[float]): seq[float] =
     result.add p + offset
 
 proc phaseDeg*(r: SimResult, name: string): seq[float] =
-  ## Unwrapped phase in degrees. Complex vectors only -- asking for the phase
-  ## of a `.op`/`.tran` vector is a category error, so it raises rather than
-  ## returning a meaningless 0/180 sequence.
+  ## Unwrapped phase in degrees. Complex vectors only; raises otherwise.
   let key = name.toLowerAscii
   if r.vectors[key].kind != sdComplex:
     raise wrongKind(name, sdReal)
@@ -140,9 +118,8 @@ proc phaseDeg*(r: SimResult, name: string): seq[float] =
   unwrapDeg(raw)
 
 proc freq*(r: SimResult): seq[float] =
-  ## The `.ac` sweep axis. ngspice emits `frequency` as a complex vector with
-  ## a zero imaginary part, so this pulls the real part rather than making
-  ## every caller do it. Raises `KeyError` on a plot with no frequency axis.
+  ## The `.ac` sweep axis (ngspice writes `frequency` as complex with zero
+  ## imaginary part). Raises `KeyError` if absent.
   let key = "frequency"
   case r.vectors[key].kind
   of sdReal:

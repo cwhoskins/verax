@@ -1,50 +1,24 @@
 ## Stitching a net's copper into a route, and resolving each run's return
-## path.
+## path. `extractRoutes` collects a net's copper into nodes (pin, via,
+## junction, dead end, pour) and edges (one per track), then collapses runs
+## of plain copper, so a Y comes back as one trunk plus two branches. (Not
+## `route.nim`, to avoid confusion with `schematic/router.nim`.)
 ##
-## `pcb/graph`/`pcb/index` answer "what copper is on this net" and "what is
-## at this point" -- neither answers "what is *between* these two pins".
-## This module is the join: `extractRoutes` collects a net's copper into
-## nodes (pin, via, junction, dead end, pour) and edges (one per drawn
-## track), then collapses every run of plain, unlabelled copper into a
-## single `RouteEdge` -- so a driver feeding two receivers through a Y comes
-## back as one shared trunk plus two branches, not two independent
-## point-to-point paths that happen to overlap.
+## **Read-only over a `Pcb`**: never `touch` or a mutator, or `writePcb`'s
+## byte-exact fast path (`pcb.rev == snapshotRev`) would break.
 ##
-## Named `trace.nim` rather than `route.nim` to avoid colliding with
-## `schematic/router.nim`, which solves an unrelated problem (where to draw a
-## wire) with an unrelated algorithm.
+## **`ckZone` is skipped, `ckFill` is not.** `ckZone` is the authored
+## outline, not copper: walking it would double-count and treat the
+## pre-clearance outline as the return path.
 ##
-## **Read-only over a `Pcb`.** Every proc here only calls `copperOn`,
-## `hitTest`, `near` and `dielectricBetween` -- never `graph.touch` or any
-## mutator -- because `formats/kicad.writePcb`'s byte-exact fast path is
-## `pcb.rev == snapshotRev`, and extracting a route is exactly the kind of
-## "just looking" operation that must never bump that counter (`pcb/CLAUDE.md`
-## on `Pcb.rev`).
+## **A via is a node, never a mid-edge event.** Any node carrying a `Hole`
+## is excluded from the degree-2 collapse, since collapsing would merge two
+## layers (each needing its own `Z0`) into one section. Hence
+## `RouteEdge.vias` is always `0`.
 ##
-## **`ckZone` is skipped, `ckFill` is not.** `graph.addZone` pushes one
-## `ckZone` record per layer holding the *authored* outline -- not real
-## copper, the same trap `fem/extrude.extrudeCopper` already guards against
-## (`pcb/CLAUDE.md`'s `Zone.fills` section). Walking it here would double the
-## length of every net that has a pour and, worse, treat the pre-clearance,
-## pre-thermal-relief outline as if it were the poured copper a signal
-## actually returns through.
-##
-## **A via is a node, never a mid-edge event.** `RouteEdge.vias` is `0` "by
-## construction": the only thing that ever marks a layer change is a `Hole`
-## tying two `Copper` rings together (`graph.attachPad`), and any node
-## carrying a `Hole` is excluded from the degree-2 collapse below on purpose
-## -- collapsing through it would silently merge two different physical
-## layers, each needing its own `Z0`, into one `RouteSection` that claims a
-## single width and layer.
-##
-## **The degree-2 collapse is what makes the tree mirror branching.** A
-## plain node with no pin, no via and no pour, touched by exactly two edges,
-## is nothing but where KiCad happened to end one track object and start the
-## next (necking under a pad, a manual "break track" edit, a re-route). Only
-## a node with three or more edges, or one carrying a pin/via/pour identity,
-## survives into the reported graph -- so a straight run stays one edge and
-## a Y stays a trunk plus two branches, regardless of how many `ckTrack`
-## records KiCad happened to split it into.
+## **The degree-2 collapse** removes only pin-less, via-less, pour-less
+## nodes touched by exactly two edges (where KiCad split a track object), so
+## the graph mirrors real branching regardless of how tracks were split.
 import std/[tables, sets, math]
 
 import ./units
@@ -64,10 +38,8 @@ type
     kind*: RouteNodeKind
     at*: Point
     layer*: PcbLayer
-      ## The layer the node sits on; for a via-tied node, whichever layer its
-      ## first-seen ring was read from -- the node itself is layer-less in
-      ## the sense that matters (it ties every layer the hole spans), this
-      ## is only ever used for "where do I sample from" bookkeeping.
+      ## The node's layer; for a via-tied node, the first-seen ring's layer
+      ## (bookkeeping only -- the node spans every layer the hole does).
     pin*: Pin
     hole*: Hole
     pour*: Copper
@@ -76,10 +48,8 @@ type
   ReferenceSide* = enum refAbove, refBelow
 
   ReferencePath* = object
-    ## The return-path claim for one `RouteSection`: which plane, how well
-    ## it covers the run, and what dielectric sits between them. `layer ==
-    ## nil` is the refusal case -- see `resolveReference`'s three named
-    ## refusals below, never a guessed plane.
+    ## The return-path claim for one `RouteSection`. `layer == nil` is a
+    ## refusal (see `resolveReference`), never a guessed plane.
     layer*: PcbLayer
     net*: Net
     side*: ReferenceSide
@@ -88,10 +58,8 @@ type
     height*: float
     er*, tand*: float
     opposite*: ref ReferencePath
-      ## The other side, set only when both above and below independently
-      ## clear `RouteSpec.minCoverage` -- that is what makes the run a
-      ## stripline rather than a microstrip, and `impedance.nim` reads this
-      ## field to decide which formula applies.
+      ## The other side, set only when both sides clear `minCoverage`: a
+      ## stripline. `impedance.nim` picks its formula from this.
 
   RouteSection* = object
     copper*: seq[Copper]
@@ -106,17 +74,11 @@ type
     sections*: seq[RouteSection]
     length*: float
     vias*: int
-      ## Layer changes strictly inside the edge. Always `0`: a layer change
-      ## is exactly what keeps a node from being collapsed away (see the
-      ## module doc), so it can never end up mid-edge.
+      ## Layer changes inside the edge: always `0` (see module doc).
 
   RouteGraph* = object
-    ## The unrooted result of `extractRoutes`: every node and (collapsed)
-    ## edge reachable from one connected island of a net's copper, with no
-    ## notion yet of which pin is the source. `rootedAt` turns this into a
-    ## `RouteTree`; the two share the same node/edge/issue shape because
-    ## rooting adds exactly one thing -- `root`, plus which non-tree edges
-    ## had to be set aside -- and nothing else about the graph changes.
+    ## The unrooted result of `extractRoutes`: nodes and collapsed edges of
+    ## one connected island of a net's copper. `rootedAt` adds a `root`.
     net*: Net
     nodes*: seq[RouteNode]
     edges*: seq[RouteEdge]
@@ -127,13 +89,10 @@ type
     root*: RouteNode
     nodes*: seq[RouteNode]
     edges*: seq[RouteEdge]
-      ## Tree edges, oriented parent -> child (`.a` is always the node
-      ## nearer `root`).
+      ## Tree edges, oriented parent -> child (`.a` nearer `root`).
     extra*: seq[RouteEdge]
-      ## Edges that would close a loop in the BFS from `root`: reported,
-      ## never dropped -- a stitched ring is a legitimate topology, and
-      ## silently discarding one of its edges would make the tree lie about
-      ## how the net is actually connected.
+      ## Edges that would close a loop: reported, never dropped (a stitched
+      ## ring is legitimate topology).
     issues*: seq[Issue]
 
   RouteSpec* = object
@@ -154,29 +113,19 @@ proc idOf(e: RouteEdge): uint {.inline.} = cast[uint](e)
 proc idOf(h: Hole): uint {.inline.} = cast[uint](h)
 
 proc padCentre(s: Shape): Point =
-  ## Every `ckLand`/`ckViaPad` shape is a `shPad` flash by construction (both
-  ## readers build them that way); `box(s).center` is a defensive fallback
-  ## for anything else rather than a raise, on the same "degrade, do not
-  ## crash on a shape this module did not expect" reasoning
-  ## `arcFrom3Points` already uses for collinear input.
+  ## `ckLand`/`ckViaPad` shapes are `shPad` flashes by construction;
+  ## `box(s).center` is a defensive fallback, not a raise.
   if s.kind == shPad: s.at else: box(s).center
 
 proc noReferencePath(): ReferencePath =
-  ## The "not found" value: `layer == nil` is what a caller tests, but every
-  ## numeric field is `NaN` too, on the house rule that not-found is `NaN`
-  ## and never a confident zero (`CLAUDE.md`) -- a stripline whose `height`
-  ## silently read `0.0` because no plane was found would look like a
-  ## perfectly matched zero-dielectric line instead of an unanswered
-  ## question.
+  ## The "not found" value: `layer == nil`, every number `NaN` (never a
+  ## confident zero height).
   ReferencePath(layer: nil, side: refAbove, coverage: 0.0, height: NaN,
                 er: NaN, tand: NaN)
 
 proc identityRank(n: RouteNode): int =
-  ## Which identity wins when two nodes turn out to be the same physical
-  ## point. A pin outranks a via outranks a pour outranks a plain junction,
-  ## because a pin is the most specific claim a node can carry and a bare
-  ## junction is the least -- merging never *downgrades* what a node is
-  ## known to be.
+  ## Which identity wins when two nodes merge: pin > via > pour > junction,
+  ## so merging never downgrades a node.
   case n.kind
   of rnPin: 3
   of rnVia: 2
@@ -185,12 +134,7 @@ proc identityRank(n: RouteNode): int =
 
 type
   Merger = object
-    ## Union-find over `RouteNode` identity, keyed by pointer address (a
-    ## `RouteNode` has no natural key of its own before it is merged with
-    ## anything). `find`/`resolve` are plain iterative lookups with no path
-    ## compression: per-net node counts are small enough that this is not
-    ## worth the extra bookkeeping, and skipping it keeps `union` a five-line
-    ## proc with nothing to get subtly wrong.
+    ## Union-find over `RouteNode` identity, keyed by pointer address.
     byId: Table[uint, RouteNode]
     redirect: Table[uint, uint]
 
@@ -198,23 +142,9 @@ proc register(m: var Merger, n: RouteNode) =
   m.byId[idOf(n)] = n
 
 proc find(m: var Merger, id: uint): uint =
-  ## Union-find root lookup **with path compression**: every id visited on
-  ## the way to the root is repointed straight at it before returning. Without
-  ## this, a net whose copper all merges into one big clump (a ground plane's
-  ## thousands of vias, all tied through one `Hole`-sharing pass and then a
-  ## pour) builds a `redirect` chain one union deeper per merge, and the
-  ## `resolve` call every raw edge and every node needs at the end of
-  ## `extractRoutes` walks that whole chain -- turning one busy net's
-  ## extraction quadratic in its own node count. Measured on `GND` in
-  ## `video.kicad_pcb` (the single busiest net in the `nimble traces` demo
-  ## corpus -- 1372 copper features, almost all of it merging into one
-  ## clump through shared vias and a handful of pours): `extractRoutes`
-  ## dropped from 4.9s to 2.5s once this landed, in isolation from every
-  ## other fix this stage made (see `sampleSideReference`'s own doc comment
-  ## for the rest of that board's story, and why this alone was nowhere
-  ## near enough) -- the same superlinear blow-up `SpatialIndex.oversized`
-  ## exists to prevent on the geometry side, here on the union-find side
-  ## instead.
+  ## Union-find root lookup with path compression. Without it, a net merging
+  ## into one clump (a ground plane's vias and pours) builds long redirect
+  ## chains and extraction goes quadratic.
   result = id
   var path: seq[uint] = @[]
   while m.redirect.hasKey(result):
@@ -251,11 +181,8 @@ proc keyOf(l: PcbLayer, p: Point): tuple[layer: int, x, y: int64] =
 # ---------------------------------------------------------------- reference path
 
 proc pointAtLength(p: Path, s: float): Point =
-  ## The point `s` metres along `p`'s centreline. Clamps past either end
-  ## rather than raising -- a rounding-sized overshoot from the caller's own
-  ## step arithmetic is a certainty, not an edge case, and refusing over a
-  ## few nanometres of float error would be worse than the tiny inaccuracy
-  ## of clamping.
+  ## The point `s` metres along `p`. Clamps past either end: the caller's
+  ## step arithmetic overshoots by rounding error routinely.
   if p.curves.len == 0:
     return pt(nm(0), nm(0))
   var remaining = s
@@ -273,12 +200,9 @@ proc pointAtLength(p: Path, s: float): Point =
   endPoint(p.curves[^1])
 
 proc sampleSection(sec: RouteSection, stepMetres: float): seq[Point] =
-  ## Points along the section's centreline roughly `stepMetres` apart,
-  ## sampled independently per `Copper` piece rather than as one continuous
-  ## parametrisation -- `sec.copper` is already in walk order but individual
-  ## tracks are not guaranteed to share a consistent start/end direction, and
-  ## what a reference-plane coverage check needs is *which points to test*,
-  ## not a single monotonic arc-length axis across the whole run.
+  ## Points roughly `stepMetres` apart along the section, sampled per
+  ## `Copper` piece (tracks needn't share a direction; only the points
+  ## matter).
   for c in sec.copper:
     let plen = length(c.shape.path)
     if plen <= 1e-12:
@@ -308,36 +232,15 @@ proc sampleSideReference(pcb: Pcb, sectionLayer: PcbLayer, samples: seq[Point],
                          net: Net, side: int, minCoverage: float,
                          fillCache: var Table[uint, FlattenedPolygon]
                          ): tuple[layer: PcbLayer, coverage: float, hits: seq[bool]] =
-  ## Walks `graph.copperLayers` outward from `sectionLayer` in one direction
-  ## (`side = -1` toward the top, `+1` toward the bottom), stopping at the
-  ## first candidate whose coverage clears `minCoverage`. When nothing ever
-  ## clears it, returns the *best* candidate seen so it can still be reported
-  ## with its gaps rather than as a bare "not found" -- a plane at 40%
-  ## coverage under a trace is a real defect worth naming, not the same
-  ## answer as no plane existing at all.
+  ## Walks copper layers outward from `sectionLayer` (`side = -1` up, `+1`
+  ## down), stopping at the first whose coverage clears `minCoverage`. If
+  ## none does, returns the best seen, so a partially covered plane is
+  ## reported with its gaps rather than as absent.
   ##
-  ## **Two things below are load-bearing, not optimisations to lose in a
-  ## future cleanup; both were measured against the real KiCad demo corpus,
-  ## not guessed.** First: a `candidates()` bounding-box pre-check against
-  ## the section's own extent, before touching a single sample, so the
-  ## entirely ordinary case -- this candidate layer has no relevant fill
-  ## anywhere nearby at all, true for most of a signal net's non-plane
-  ## layers -- costs one bounded query instead of `samples.len` of them.
-  ## Second, and the larger of the two: `fillCache`, threaded in from
-  ## `extractRoutes` and shared across *every* section of *every* net in one
-  ## call, so a real ground or power pour's outline -- easily thousands of
-  ## vertices once clearances and thermal reliefs are cut around every pad
-  ## on a busy board -- is flattened once (`geometry.flattenPolygon`) rather
-  ## than once per sample point tested against it
-  ## (`geometry.contains(Polygon, Point)`'s ordinary contract, the right one
-  ## for a handful of point tests and the wrong one here). Measured summed
-  ## over every one of `video.kicad_pcb`'s 588 nets (per `rf_analysis_plan.md`,
-  ## 4 copper layers, ~7900 segments): 162.7s with neither fix, 159.6s with
-  ## only the bounding-box pre-check (`Merger.find`'s path compression was
-  ## already in place for both of those two numbers), 12.4s with the flatten
-  ## cache added on top -- the box check alone bought almost nothing on this
-  ## board; the flatten cache is what actually made the sweep viable, by
-  ## roughly 13x.
+  ## Two load-bearing optimisations: a bounding-box pre-check per candidate
+  ## (most layers have no fill nearby), and `fillCache`, shared across every
+  ## section and net, so each pour outline is flattened once rather than per
+  ## sample -- the cache alone made a full-board sweep ~13x faster.
   let layers = copperLayers(pcb)
   var bestLayer: PcbLayer = nil
   var bestCov = -1.0
@@ -377,13 +280,10 @@ proc sampleSideReference(pcb: Pcb, sectionLayer: PcbLayer, samples: seq[Point],
 proc resolveReference(pcb: Pcb, sec: RouteSection, net: Net, spec: RouteSpec,
                       fillCache: var Table[uint, FlattenedPolygon]
                       ): tuple[path: ReferencePath, issues: seq[Issue]] =
-  ## The three refusals named in `pcb/CLAUDE.md`, in the order they are
-  ## checked: no plane on either side at all (`route_no_reference`); zones
-  ## exist but every one of them has an empty `fills` -- an unfilled board,
-  ## where `ckZone`'s authored outline is deliberately still not used as a
-  ## substitute (`reference_unfilled`); and a plane found but under
-  ## `minCoverage`, reported with its gaps rather than silently accepted
-  ## (`route_return_gap`).
+  ## Three named refusals, in order: no plane on either side
+  ## (`route_no_reference`); zones exist but none is filled
+  ## (`reference_unfilled` -- the outline is never substituted); a plane
+  ## below `minCoverage`, reported with its gaps (`route_return_gap`).
   var issues: seq[Issue]
   if sec.layer == nil or sec.copper.len == 0:
     return (noReferencePath(), issues)
@@ -435,10 +335,8 @@ proc resolveReference(pcb: Pcb, sec: RouteSection, net: Net, spec: RouteSpec,
   var belowRp = toRp(refBelow, below)
 
   if aboveOk and belowOk:
-    # Both sides clear coverage: a stripline. The nearer plane (by
-    # dielectric height) is reported as primary and the far one as
-    # `.opposite`, which is what lets `impedance.nim` tell a stripline from
-    # an asymmetric one without either side being an arbitrary pick.
+    # Both sides clear: a stripline. The nearer plane (by dielectric height)
+    # is primary, the far one `.opposite`.
     var oa, ob: ref ReferencePath
     new(oa); oa[] = belowRp
     new(ob); ob[] = aboveRp
@@ -450,13 +348,9 @@ proc resolveReference(pcb: Pcb, sec: RouteSection, net: Net, spec: RouteSpec,
   if aboveOk: return (aboveRp, issues)
   if belowOk: return (belowRp, issues)
 
-  # Neither side clears the threshold but at least one found a *real*
-  # candidate layer -- report it, with gaps, rather than refusing outright.
-  # The comparison must exclude a nil-layer side entirely rather than
-  # comparing its `0.0` placeholder coverage against a real (also possibly
-  # `0.0`) candidate's: a single-sided board has one direction with no
-  # copper layer to search at all, and `0.0 >= 0.0` would otherwise pick the
-  # phantom side and dereference a `nil` layer below.
+  # Neither side clears but one found a real layer: report it with gaps.
+  # Exclude a nil-layer side outright -- on a single-sided board `0.0 >= 0.0`
+  # would pick the phantom side.
   var winner: tuple[rp: ReferencePath, layer: PcbLayer, coverage: float]
   if above.layer != nil and (below.layer == nil or above.coverage >= below.coverage):
     winner = (aboveRp, above.layer, above.coverage)
@@ -471,9 +365,8 @@ proc resolveReference(pcb: Pcb, sec: RouteSection, net: Net, spec: RouteSpec,
 # ---------------------------------------------------------------- extraction
 
 proc buildSections(chain: seq[Copper]): seq[RouteSection] =
-  ## Splits a contracted chain of track `Copper` into uniform runs: a new
-  ## section starts wherever width changes (layer cannot change mid-chain --
-  ## see the module doc on why a via always survives as a node).
+  ## Splits a chain of track `Copper` into uniform runs, a new section per
+  ## width change (layer can't change mid-chain).
   var i = 0
   while i < chain.len:
     let w = chain[i].shape.width
@@ -489,10 +382,7 @@ proc buildSections(chain: seq[Copper]): seq[RouteSection] =
     i = j
 
 proc extractRoutes*(pcb: Pcb, net: Net, spec = defaultRouteSpec()): seq[RouteGraph] =
-  ## §2's whole algorithm: collect -> node -> edge -> collapse -> split into
-  ## connected islands. See the module doc for the two decisions that shape
-  ## it (`ckZone` skipped, a via is a node) and `resolveReference`'s doc for
-  ## the return-path half.
+  ## Collect -> node -> edge -> collapse -> split into connected islands.
   result = @[]
   if pcb == nil or net == nil: return
 
@@ -504,7 +394,7 @@ proc extractRoutes*(pcb: Pcb, net: Net, spec = defaultRouteSpec()): seq[RouteGra
     of ckFill:
       if spec.includePours: pours.add(c)
     of ckZone, ckOther:
-      discard  ## the authored outline, not copper -- see the module doc.
+      discard  ## the authored outline, not copper
   if tracks.len == 0 and pads.len == 0 and pours.len == 0: return
 
   var m: Merger
@@ -540,9 +430,8 @@ proc extractRoutes*(pcb: Pcb, net: Net, spec = defaultRouteSpec()): seq[RouteGra
     m.register(n)
 
   # --- union pass 1: pad/via/pour capture -------------------------------
-  # `hitTest` applies the exact `geometry.contains` predicate, so a track
-  # ending inside a pad rather than at its flash centre -- the normal case
-  # -- still resolves.
+  # `hitTest` uses exact containment, so a track ending inside a pad (not
+  # at its centre) still resolves.
   for k, n in byKey:
     if n.layer == nil: continue
     var landHit, viaHit, fillHit: Copper
@@ -564,9 +453,8 @@ proc extractRoutes*(pcb: Pcb, net: Net, spec = defaultRouteSpec()): seq[RouteGra
       m.union(n, pourNodeOf[idOf(fillHit)])
 
   # --- union pass 2: layer tie ------------------------------------------
-  # Every pad/via ring sharing one `Hole` is the same physical connection
-  # point seen from each layer it spans -- the only structural marker a
-  # layer change happened.
+  # Rings sharing one `Hole` are one connection point -- the only marker of
+  # a layer change.
   var byHole = initTable[uint, RouteNode]()
   for c in pads:
     if c.hole == nil: continue
@@ -578,9 +466,7 @@ proc extractRoutes*(pcb: Pcb, net: Net, spec = defaultRouteSpec()): seq[RouteGra
       byHole[hk] = n
 
   # --- union pass 3: tolerance sweep -------------------------------------
-  # Only genuinely dangling ends (exactly one track touches this exact
-  # point, and pass 1 found no pad/via/pour there) are worth searching --
-  # a real junction of several tracks meeting exactly is not "unjoined".
+  # Only truly dangling ends (one track, no pad/via/pour) are searched.
   for k, n in byKey:
     if m.resolve(n).kind != rnJunction: continue
     if trackTouch.getOrDefault(k) != 1: continue
@@ -660,10 +546,8 @@ proc extractRoutes*(pcb: Pcb, net: Net, spec = defaultRouteSpec()): seq[RouteGra
     for idx in adj.getOrDefault(idOf(n), @[]):
       if not usedEdge[idx]:
         walkChain(n, idx)
-  # A closed ring of nothing but pass-through nodes has no anchor at all --
-  # vanishingly rare (copper touching no pin, via or pour anywhere), but a
-  # second unrestricted pass turns it into a self-loop edge instead of
-  # silently dropping it.
+  # A closed ring of pass-through nodes has no anchor; a second pass turns
+  # it into a self-loop edge instead of dropping it.
   for n in allNodes:
     for idx in adj.getOrDefault(idOf(n), @[]):
       if not usedEdge[idx]:
@@ -680,10 +564,7 @@ proc extractRoutes*(pcb: Pcb, net: Net, spec = defaultRouteSpec()): seq[RouteGra
 
   # --- per-edge issues: a run into a pour, and every section's reference
   var edgeIssues = initTable[uint, seq[Issue]]()
-  # Shared for the whole net, not per edge or per section: the same
-  # ground/power pour is very often *the* reference plane for every run on
-  # this net, and `sampleSideReference`'s own doc comment has the measured
-  # cost of re-flattening it once per sample instead of once per net.
+  # Shared per net: the same pour is usually the reference for every run.
   var fillCache = initTable[uint, FlattenedPolygon]()
   for e in edges:
     var eis: seq[Issue] = @[]
@@ -741,10 +622,8 @@ proc extractRoutes*(pcb: Pcb, net: Net, spec = defaultRouteSpec()): seq[RouteGra
 # ---------------------------------------------------------------- rooting
 
 proc rootedAt*(g: RouteGraph, p: Pin): RouteTree =
-  ## BFS from the node carrying pin `p`. A `route_open` refusal (`p` reaches
-  ## no copper on this net -- an empty tree, `root == nil`) rather than a
-  ## crash: the pin the caller named is exactly what a wiring mistake is
-  ## most likely to have broken.
+  ## BFS from the node carrying pin `p`. A pin reaching no copper gets a
+  ## `route_open` refusal (empty tree, `root == nil`), not a crash.
   var root: RouteNode = nil
   for n in g.nodes:
     if n.pin == p:
@@ -800,12 +679,8 @@ proc rootedAt*(g: RouteGraph, p: Pin): RouteTree =
            extra: extra, issues: issues)
 
 proc traceTree*(pcb: Pcb, net: Net, source: Pin, spec = defaultRouteSpec()): RouteTree =
-  ## Convenience: extract, then root at `source` in whichever resulting
-  ## island actually reaches it. A pin unreachable from *any* island (no
-  ## copper at all, not merely a different one) gets the identical
-  ## `route_open` refusal `rootedAt` gives for a pin missing from a single
-  ## graph -- one failure shape regardless of which way the pin turned out
-  ## to be unreachable.
+  ## Extract, then root at `source` in whichever island reaches it. An
+  ## unreachable pin gets the same `route_open` refusal as `rootedAt`.
   for g in extractRoutes(pcb, net, spec):
     for n in g.nodes:
       if n.pin == source:
@@ -816,10 +691,8 @@ proc traceTree*(pcb: Pcb, net: Net, source: Pin, spec = defaultRouteSpec()): Rou
       net = net, pins = @[source])])
 
 proc pathTo*(t: RouteTree, p: Pin): seq[RouteEdge] =
-  ## root -> `p`, as an ordered list of tree edges. Empty when `t` was never
-  ## rooted (`root == nil`) or `p` is not in this tree -- the same "answer
-  ## honestly, do not raise on a plausible caller question" shape every
-  ## other lookup in `pcb/graph` and `pcb/index` uses.
+  ## root -> `p` as ordered tree edges; empty when unrooted or `p` isn't in
+  ## the tree.
   if t.root == nil: return @[]
   var byParent = initTable[uint, seq[RouteEdge]]()
   for e in t.edges:

@@ -1,18 +1,8 @@
-## Supply rejection -- `spice.psrr_tone` (via `.tran`) and `spice.psrr_ac`
-## (via `.ac`).
+## Supply rejection: `spice.psrr_tone` (`.tran`) and `spice.psrr_ac` (`.ac`).
 ##
-## **Two evaluators and two disjoint quantity sets, not one of each.**
-##
-## `spice.dc_sweep` is one evaluator for two sweeps and the precedent does
-## not carry: both of *its* modes are `.dc`, while these need different
-## capabilities, and `Evaluator.needs` is a single set. One evaluator would
-## have to declare `{capSpiceAc, capSpiceTran}` and would then be refused on
-## a host offering only one of them -- under-serving both to serve neither.
-##
-## The names differ for a reason beyond the mechanics, too. A swept curve's
-## worst point and a single tone's rejection are different measurements, and
-## one name for both would let a claim about a band be answered with a number
-## from one frequency.
+## **Two evaluators**: they need different capabilities, and one evaluator
+## needing both would be refused on a host offering either alone. The
+## quantity names differ too (a band's worst point vs one tone).
 
 import ./common
 import ../analyses/psrr
@@ -21,20 +11,14 @@ const psrrToneQuantities = ["psrr_db", "in_ripple_v", "out_ripple_v"]
 const psrrAcQuantities = ["psrr_min_db", "f_psrr_min", "psrr_at_f"]
 
 proc measurementOnly(spec: var PsrrSpec) =
-  ## Nothing to disable: every figure `analysis/psrr` emits is a measurement
-  ## and its only limit -- the noise floor and the signal-to-noise margin --
-  ## decides whether a number exists at all, not whether it passes.
+  ## Nothing to disable: the only limits (noise floor, SNR margin) decide
+  ## whether a number exists, not whether it passes.
   discard spec
 
 proc psrrParts(d: Design, a: Assertion): tuple[src, inp, outp, reason: string] =
-  ## The supply to ripple, the node the ripple is quoted at, and the node it
-  ## is quoted against.
-  ##
-  ## `output` is the assertion's own subject; the other two come off the role
-  ## that expanded it, because an assertion carries subjects and nothing
-  ## else. Rejection is a relation between two nodes and a stimulus, and none
-  ## of the three is recoverable from a netlist: which of a board's several
-  ## sources is "the supply" is a design statement.
+  ## The supply to ripple, the measured node, and the reference node.
+  ## `output` is the subject; the others come off the expanding role (which
+  ## source is "the supply" is a design statement).
   result.outp = subjectNet(d, a)
   result.src = bindingName(d, a, "source")
   result.inp = bindingName(d, a, "input")
@@ -66,10 +50,7 @@ proc psrrSpecOf(a: Assertion): PsrrSpec =
 proc psrrToneKey(ctx: EvalContext, a: Assertion): string =
   let d = ctx.design
   let p = psrrParts(d, a)
-  # The amplitude joins the key and that is not over-caution: a `.tran` is
-  # not linear, so a tone big enough to move a converter's duty cycle gets a
-  # different answer, which is the whole reason to run one instead of a
-  # sweep.
+  # The amplitude joins the key: `.tran` isn't linear.
   p.src & "|" & p.inp & "|" & p.outp & "|" &
     $conditionFloat(a, "ripple_f", 0.0) & "|" &
     $conditionFloat(a, "ripple_v", 0.0) & "|" &
@@ -80,8 +61,7 @@ proc psrrToneKey(ctx: EvalContext, a: Assertion): string =
 proc psrrAcKey(ctx: EvalContext, a: Assertion): string =
   let d = ctx.design
   let p = psrrParts(d, a)
-  # The amplitude is absent on purpose: an `.ac` analysis is linear, so it
-  # cannot move the answer and two claims that differ only in it are one run.
+  # No amplitude: `.ac` is linear, so it can't change the answer.
   p.src & "|" & p.inp & "|" & p.outp & "|" &
     $conditionFloat(a, "f_from", 0.0) & "|" & $conditionFloat(a, "f_to", 0.0)
 
@@ -119,8 +99,7 @@ proc psrrAcDoc(ctx: EvalContext, batch: seq[Assertion]): string =
            "ripple"
 
 template psrrRun(evName: string, analyze: untyped) =
-  ## The two adapters differ only in which proc they call, so the resolution,
-  ## the refusals and the harvest are written once.
+  ## Shared resolution, refusals and harvest for both adapters.
   let d {.inject.} = ctx.design
   let p {.inject.} = psrrParts(d, batch[0])
   if p.reason.len > 0:

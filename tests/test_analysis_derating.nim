@@ -28,10 +28,8 @@ proc board(rating: string, dielectric = "X7R"): Netlist =
       pin "2", gnd, kind = ptPassive
 
 suite "DC-bias derating changes the capacitance, not just the paperwork":
-  # The largest silent error in the PDN path, and bigger than every other
-  # correction in spice/models put together: an X5R bank at two thirds of its
-  # rating measured 1.23 ohm of worst in-band rail impedance where the same
-  # parts at their nominal values said 173 mohm.
+  # The largest silent error in the PDN path: an X5R bank at two thirds of
+  # rating can show several times the nominal rail impedance.
 
   test "a Class 2 ceramic on a rail loses capacitance":
     let nl = board("16")
@@ -66,9 +64,8 @@ suite "DC-bias derating changes the capacitance, not just the paperwork":
     check abs(got - 10.0e-6) / 10.0e-6 < 1e-9
 
   test "a capacitor with no DC across it is left alone":
-    # A coupling capacitor between two signal nets. The working voltage is
-    # not knowable before there is an operating point, and guessing at it
-    # would be inventing the circuit.
+    # A coupling cap's working voltage isn't knowable before an operating
+    # point; guessing would invent the circuit.
     let nl = netlist("c"):
       net gnd, kind = ntGround, name = "0"
       net a, kind = ntSignal
@@ -109,9 +106,8 @@ suite "is every part inside its ratings":
     echo "SKIP: ngspice not found on PATH"
   else:
     test "a part over its ceiling is reported, naming what it sees":
-      # 5 V across a 5.5 V part is 91% of rating, past the 80% ceramic
-      # ceiling. A 6.3 V part would be 79% and deliberately would *not* be
-      # reported -- the ceiling is a threshold, not a nudge.
+    # 5 V on a 5.5 V part is 91%, past the 80% ceramic ceiling; a 6.3 V part
+    # (79%) would not be reported.
       let r = analyzeDerating(board("5.5"))
       check r["worst_voltage_derating"] > 0.85
       check r["parts_over_derating"] >= 1.0
@@ -138,8 +134,8 @@ suite "is every part inside its ratings":
       check sev == sevError
 
     test "a design stating no rating is told so, not passed":
-      # An operating point cannot tell a 6.3 V part from a 50 V one, so a
-      # silent pass here would be the tool inventing the answer.
+    # An operating point can't tell a 6.3 V part from a 50 V one; passing
+    # silently would invent the answer.
       let nl = netlist("n"):
         net gnd, kind = ntGround, name = "0"
         net vdd, kind = ntPower:

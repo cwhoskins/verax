@@ -1,11 +1,6 @@
-## The regeneration path: modify, insert, delete -- over small, hand-written
-## boards rather than the committed fixture, so each test isolates exactly
-## the one KiCad shape it is proving (an insert-anchor fallback needs a
-## board with *no* existing track; a delete-splice proof needs *two*, so the
-## surviving one's bytes can be checked). Every test: mutate -> `writePcb`
-## to `getTempDir()` -> `readPcb` back -> assert with `summarize()` (or a
-## direct byte/uuid comparison, where that is the actual claim) that the
-## mutation is visible and nothing else moved.
+## The regeneration path (modify, insert, delete) over small hand-written
+## boards, each isolating one KiCad shape. Every test: mutate -> `writePcb`
+## -> `readPcb` -> assert the mutation is visible and nothing else moved.
 
 import std/[algorithm, os, sequtils, strutils, tables, unittest]
 
@@ -114,7 +109,7 @@ test "a moved placement changes exactly one summary line":
   check after != before
   check reread.placements["R1"].at.x.raw == mm(15.0).raw
   check reread.placements["R1"].at.y.raw == mm(-10.0).raw
-  # Every other placement/track line is unchanged.
+  # Everything else is unchanged.
   check reread.placements["C1"].at.x.raw == mm(20.0).raw
   check reread.placements["C1"].at.y.raw == mm(-20.0).raw
 
@@ -202,7 +197,7 @@ test "a removed track's node is dropped and its neighbour's bytes are byte-ident
       if origDoc.head(c) == "segment" and survivorUuid in origDoc.raw(c): origNode = c
   check outNode >= 0 and origNode >= 0
   check outDoc.raw(outNode) == origDoc.raw(origNode)
-  # And the removed track's uuid is entirely gone.
+  # The removed track's uuid is gone.
   let outText = readFile(tmp)
   check "0000000000c1" notin outText
 
@@ -210,7 +205,7 @@ test "an unrelated footprint keeps its exact source bytes when a sibling track i
   let path = writeTemp("verax_edit_unrelated.kicad_pcb", twoFootprintBoard)
   defer: removeFile(path)
   let pcb = readPcb(path)
-  # Move R1; C1's footprint block must not change a single byte.
+  # Move R1; C1's footprint block is byte-identical.
   let r1 = pcb.placements["R1"]
   r1.at = pt(mm(11.0), mm(10.0))
   touch(pcb, r1)
@@ -247,8 +242,7 @@ test "a new net gets the next free code with no renumbering of existing referenc
   check "(net 1 \"GND\")" in outText
   check "(net 2 \"VCC\")" in outText
   check "(net 3 \"SPARE\")" in outText
-  # Every existing `(net N)` reference on the original tracks/pads is
-  # unrenumbered.
+  # Existing `(net N)` references are not renumbered.
   check "(net 2)" in outText   # the two original segments, unchanged
   let reread = readPcb(tmp)
   check reread.netlist.nets.hasKey("SPARE")
@@ -273,11 +267,8 @@ test "writePcb on a new placement raises PcbFormatError naming both the class an
   check raised
 
 test "a direct field write with no touch call is still written correctly":
-  # The token-verification net: the writer regenerates and compares every
-  # mapped track/via against its source text *independent of rev*, so a
-  # caller that bypassed `graph`'s mutators (wrote `.shape`/`.net` directly)
-  # is still caught. If this test starts failing, that net has been
-  # optimized away.
+  # The writer re-compares every mapped track/via against its source text
+  # independent of rev, so direct field writes are still caught.
   let path = writeTemp("verax_edit_bypass.kicad_pcb", twoFootprintBoard)
   defer: removeFile(path)
   let pcb = readPcb(path)
@@ -287,13 +278,10 @@ test "a direct field write with no touch call is still written correctly":
     if cu.kind == ckTrack and cu.attrs.getOrDefault("kicad.uuid", "").contains("c1"):
       target = cu
   check target != nil
-  # Bypass every graph mutator: hand-edit the shape directly, as
-  # `graph.nim`'s own doc comment says a caller may, at the cost of being
-  # invisible to `index.dirty` -- and, this stage, to `rev`.
+  # Bypass the graph mutators by writing the shape directly (invisible to
+  # `index.dirty` and `rev`).
   target.shape = stroke(path(@[seg(pt(mm(10.0), mm(10.0)), pt(mm(99.0), mm(10.0)))]), mm(0.2))
-  # Force *some* other change so `pcb.rev` moves and `writePcb` takes the
-  # slow path at all (otherwise nothing triggers the regenerate-and-compare
-  # walk in the first place).
+  # Some other change so `pcb.rev` moves and the slow path runs.
   let c1 = pcb.placements["C1"]
   c1.at = c1.at
   touch(pcb, c1)
@@ -306,9 +294,7 @@ test "a direct field write with no touch call is still written correctly":
   check foundBypassed
 
 test "the writer's own output re-parses and re-renders byte-identically":
-  ## Self-consistency: an inserted or regenerated node is well-formed and
-  ## correctly spanned, or a second parse of the writer's own output would
-  ## not reconstruct it byte for byte.
+  ## An inserted or regenerated node must re-parse byte for byte.
   let path = writeTemp("verax_edit_selfconsist.kicad_pcb", twoFootprintBoard)
   defer: removeFile(path)
   let pcb = readPcb(path)

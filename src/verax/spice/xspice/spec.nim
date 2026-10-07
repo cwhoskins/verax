@@ -1,39 +1,27 @@
-## The declarative interface of an XSPICE code model, as plain Nim data.
+## The declarative interface of an XSPICE code model, as plain data: the
+## single source that `xspice/ifs.nim` renders into `ifspec.ifs` and
+## `xspice/dsl.nim` reads for accessor indices, so the two can't drift (as
+## ngspice's two hand-maintained files can).
 ##
-## This is the single source of truth that `xspice/ifs.nim` renders into an
-## `ifspec.ifs` file *and* that `xspice/dsl.nim` reads to resolve accessor
-## indices. That sharing is the whole point of the submodule: in the upstream
-## C workflow `ifspec.ifs` and `cfunc.mod` are two hand-maintained files with
-## no cross-check, and ngspice's `cmpp` only discovers a disagreement between
-## them as a yacc error. Here one `ModelSpec` drives both halves, so they
-## cannot drift.
+## **Declaration order is load-bearing**: `cmpp` indexes `param[i]` by row
+## position, so `ports`/`params`/`stateVars` positions are those indices.
 ##
-## **Declaration order is load-bearing.** `cmpp` translates `PARAM(gain)` into
-## `mif_private->param[i]->element[0].rvalue` where `i` is the row's position
-## in the `.ifs` tables. `ports`/`params`/`stateVars` are `seq`s precisely so
-## that position in the seq *is* that index, for both the renderer and the
-## accessor rewriter.
-##
-## Nothing here touches C, ngspice, or the filesystem, so this module is
-## usable (and testable) on a machine with no ngspice source tree.
+## No C, ngspice or filesystem, so usable without a source tree.
 
 import std/[strutils, sequtils, tables]
 
 type
   XspiceSpecError* = object of CatchableError
-    ## Raised by `validate` for a `ModelSpec` that `cmpp` would reject, or
-    ## that would produce a code model whose accessors are wrongly typed.
+    ## Raised by `validate` for a spec `cmpp` would reject or whose
+    ## accessors would be wrongly typed.
 
   PortDir* = enum
     ## `Direction:` in a `PORT_TABLE`.
     xdIn, xdOut, xdInout
 
   PortType* = enum
-    ## `Default_Type:` / `Allowed_Types:` in a `PORT_TABLE`.
-    ##
-    ## The prefix is `xp`, not `pt`, deliberately: `verax/netlist/types.nim`
-    ## already exports `ptPassive`/`ptPower`/... and a user importing both
-    ## modules would otherwise hit ambiguity on unqualified enum values.
+    ## `Default_Type:` / `Allowed_Types:`. Prefixed `xp`, not `pt`, to avoid
+    ## clashing with `netlist/types`' `ptPassive` etc.
     xpV,      ## `v`    single-ended voltage
     xpVd,     ## `vd`   differential voltage
     xpI,      ## `i`    single-ended current
@@ -50,12 +38,8 @@ type
     xtBool, xtInt, xtReal, xtComplex, xtString
 
   Bound* = object
-    ## One `Limits:` or `Vector_Bounds:` cell.
-    ##
-    ## Endpoints are held as text rather than numbers because the `.ifs`
-    ## format is textual and permits an *open* side -- `[1e-12 -]` is legal
-    ## and means "at least 1e-12, no upper limit". Use the `bounds`/`atLeast`/
-    ## `atMost` constructors rather than filling this in by hand.
+    ## One `Limits:`/`Vector_Bounds:` cell. Endpoints are text because a side
+    ## may be open (`[1e-12 -]`). Use `bounds`/`atLeast`/`atMost`.
     active*: bool   ## `false` renders the whole cell as `-`
     lo*, hi*: string  ## empty renders as `-`
 
@@ -64,9 +48,8 @@ type
     description*: string
     dir*: PortDir
     default*: PortType
-      ## Also decides which `Mif_Value_t` member the accessors read: ngspice's
-      ## `put_conn_type` maps digital to `.pvalue` and *every* analog type to
-      ## `.rvalue`.
+      ## Also picks the `Mif_Value_t` member: digital -> `.pvalue`, every
+      ## analog type -> `.rvalue`.
     allowed*: seq[PortType]
     vector*: bool
     vectorBounds*: Bound
@@ -77,17 +60,16 @@ type
     description*: string
     dataType*: DataType
     default*: string
-      ## Rendered verbatim into `Default_Value:`. Use `defaultOf` to format a
-      ## typed value correctly (strings get quoted, bools become TRUE/FALSE).
+      ## Rendered verbatim into `Default_Value:`; use `defaultOf` (quotes
+      ## strings, TRUE/FALSE bools).
     limits*: Bound
     vector*: bool
     vectorBounds*: Bound
     nullAllowed*: bool
 
   StateVarSpec* = object
-    ## A `STATIC_VAR_TABLE` row -- per-instance storage that persists across
-    ## calls. Note ngspice does *not* roll these back when it rejects a
-    ## timestep; `cm_analog_alloc` state is what gets rolled back.
+    ## A `STATIC_VAR_TABLE` row: per-instance storage across calls. *Not*
+    ## rolled back on a rejected timestep (`cm_analog_alloc` state is).
     name*: string
     description*: string
     dataType*: DataType
@@ -140,9 +122,8 @@ func ifsName*(t: DataType): string =
   of xtString: "string"
 
 func isDigital*(t: PortType): bool =
-  ## Digital and user-defined ports read `Mif_Value_t.pvalue`; every analog
-  ## type reads `.rvalue`. A port whose `allowed` set spanned both would make
-  ## the accessor's field choice unsound, which is why `validate` rejects it.
+  ## Digital ports read `.pvalue`, analog `.rvalue`; `validate` rejects a
+  ## port allowing both.
   t == xpD
 
 func defaultOf*(v: float): string = $v
@@ -159,9 +140,8 @@ func isIdent(s: string): bool =
   true
 
 proc validate*(spec: ModelSpec) =
-  ## Raise `XspiceSpecError` for anything `cmpp` would reject, plus the two
-  ## soundness rules the accessor layer depends on (see `isDigital`, and the
-  ## `default in allowed` rule that keeps the rendered `.ifs` self-consistent).
+  ## Raise `XspiceSpecError` for anything `cmpp` would reject, plus the
+  ## accessor soundness rules (`isDigital`, `default in allowed`).
   if not spec.name.isIdent:
     raise newException(XspiceSpecError,
       "Spice_Model_Name must be an identifier, got: " & spec.name.escape)
@@ -218,9 +198,8 @@ proc validate*(spec: ModelSpec) =
       raise newException(XspiceSpecError,
         "parameter '" & pa.name & "' is not a vector but sets Vector_Bounds")
     if pa.default.len > 0 and not pa.nullAllowed:
-      # cmpp: "Default value given for parameter X but the user must set
-      # instance value (Null_Allowed: no)". Caught here so it surfaces as a
-      # Nim error rather than a cmpp failure deep in the build driver.
+      # cmpp rejects a default with `Null_Allowed: no`; caught here as a Nim
+      # error instead of deep in the build.
       raise newException(XspiceSpecError,
         "parameter '" & pa.name & "' has a Default_Value but Null_Allowed is " &
         "no; a default is only meaningful if the parameter may be omitted")
@@ -236,9 +215,8 @@ proc validate*(spec: ModelSpec) =
     seenVars[sv.name] = i
 
 func portIndex*(spec: ModelSpec, name: string): int =
-  ## Declaration-order index, i.e. the `i` in `mif_private->conn[i]`.
-  ## Returns -1 when absent, so the DSL can emit its own `error()` with the
-  ## offending AST node rather than raising at macro-expansion time.
+  ## Declaration-order index (`conn[i]`); -1 when absent, so the DSL can
+  ## report against the AST node.
   for i, p in spec.ports:
     if p.name == name: return i
   -1

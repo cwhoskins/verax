@@ -7,10 +7,8 @@ import verax/spice/xspice
 import verax/spice/xspice/build
 import verax/spice/xspice/instance
 
-## Building a `.cm` needs a *configured* ngspice source tree, which a distro
-## `-devel` package does not provide. Gated the same way `test_spice_ngspice`
-## gates on the `ngspice` binary, so a machine without one skips rather than
-## fails.
+## Building a `.cm` needs a configured ngspice source tree; skipped without
+## one.
 
 let repoRoot = currentSourcePath().parentDir.parentDir
 let ngsSrc = getEnv("NGSPICE_SRC")
@@ -61,24 +59,23 @@ else:
     check "XSPICE" in flags
 
   test "checkAbi warns when the tree lacks CIDER":
-    # It cannot be detected from `ngspice -v`, so a missing CIDER must always
-    # produce a warning rather than a silent pass -- the resulting segfault
-    # gives no diagnostic of its own.
+    # Undetectable from `ngspice -v`, and the resulting segfault says
+    # nothing, so a missing CIDER always warns.
     let warnings = tc.checkAbi()
     if "CIDER" notin tc.configFlags:
       check warnings.len > 0
       check "CIDER" in warnings.join(" ")
 
-  # Built once at module scope: `defer` inside unittest's `test` template does
-  # not scope the way it reads, and one build is enough for both assertions.
+  # Built once at module scope: `defer` in unittest's `test` doesn't scope
+  # as it reads.
   let outDir = createTempDir("verax_xbuild_", "")
   let cm = buildCodeModel(repoRoot / "examples" / "xspice_gain.nim",
                           outDir / "gain.cm", tc)
 
   test "buildCodeModel turns a DSL model source into a loadable .cm":
     check fileExists(cm)
-    # The model function is emitted N_LIB_PRIVATE and reached through the
-    # SPICEdev table, so it is cmDEVices that must be exported, not cm_nimgain.
+    # The model function is private and reached through the SPICEdev table,
+    # so cmDEVices is the export.
     let syms = execCmdEx(quoteShellCommand(@["nm", "-D", cm])).output
     check "cmDEVices" in syms
     check "cm_nimgain_info" in syms
@@ -89,13 +86,12 @@ else:
     check fileExists(safe)
 
   test "the built .cm loads in ngspice and computes gain*(in+offset)":
-    # 2.0 * (3.0 + 0.5); a hard-coded gain would still pass a plain 2*vin
-    # check, so the offset is what proves both parameters arrive.
+    # 2.0 * (3.0 + 0.5): the offset proves both parameters arrive.
     check abs(opVoltage(deckSafeCmPath(cm), deckTemplate) - 7.0) < 1e-6
 
   test "author, build, instantiate and simulate, all from verax":
-    # The spec here must mirror examples/xspice_gain.nim; a drift shows up as
-    # an ngspice model-resolution error rather than a silent wrong answer.
+    # Must mirror examples/xspice_gain.nim; drift shows as a model-resolution
+    # error.
     let spec = ModelSpec(
       name: "nimgain", cFunction: "cm_nimgain",
       ports: @[
@@ -118,8 +114,7 @@ else:
     discard addCodeModelInstance(nl, "a1", spec, [vin, vout],
                                  {"gain": "2.0", "in_offset": "0.5"})
 
-    # An XSPICE analog output with nothing else on it can give ngspice a
-    # singular matrix, so give the node a DC path.
+    # A lone XSPICE analog output can be singular; give it a DC path.
     let r1 = addComponent(nl, Component(designator: "R1", kind: "resistor"))
     r1.attrs["value"] = "1meg"
     discard connect(r1, "1", vout)
@@ -129,12 +124,9 @@ else:
     check abs(res["v(vout)"][0] - 7.0) < 1e-6
 
   test "analog state, integration and breakpoints round-trip through a .cm":
-    # The third shape a code model comes in, after memoryless and
-    # event-driven: continuous-time with memory. `analogAlloc`/`analogVar`
-    # reserve a slot ngspice rolls back with a rejected timepoint,
-    # `analogIntegrate` integrates with the simulator's own method, and
-    # `setPermBkpt` forces a timepoint. A switching-regulator model needs all
-    # three; this checks them against a closed form instead.
+    # Continuous-time with memory: `analogAlloc`/`analogVar` roll back with a
+    # rejected timepoint, `analogIntegrate` uses the simulator's method, and
+    # `setPermBkpt` forces timepoints. Checked against a closed form.
     let intCm = buildCodeModel(repoRoot / "examples" / "xspice_integrator.nim",
                                outDir / "nimint.cm")
     let spec = ModelSpec(
@@ -165,15 +157,11 @@ else:
     let res = run(nl, @[".tran 1u 1m"], codemodels = @[intCm])
     let t = res["time"]
     let v = res["v(vout)"]
-    # The integral of a constant 2 V scaled by 1000 is 2000 * t, and it holds
-    # at every sample rather than only at the end -- an integrator that had
-    # merely landed on the right final value could still be integrating the
-    # wrong thing.
+    # 2000 * t at every sample, not just the end.
     check abs(v[0]) < 1e-9
     for i in 0 ..< t.len:
       check abs(v[i] - 2000.0 * t[i]) < 1e-6
-    # `tsample` forced a timepoint every 100 us; without breakpoints the
-    # solver has no reason to land on those exact times.
+    # `tsample` forces a timepoint every 100 us.
     var onGrid = 0
     for x in t:
       if abs(x / 1.0e-4 - round(x / 1.0e-4)) * 1.0e-4 < 1.0e-12: inc onGrid

@@ -1,7 +1,5 @@
-## The `.dc` source sweep: the analysis, the roles, and the evaluator.
-##
-## The simulated half is skipped rather than failed when `ngspice` is not on
-## `PATH`, matching `tests/test_spice_ngspice.nim`.
+## The `.dc` source sweep: analysis, roles and evaluator. The simulated half
+## is skipped without `ngspice`.
 
 import std/[math, os, strutils, tables, unittest]
 
@@ -22,11 +20,8 @@ proc resultFor(rs: seq[AssertionResult], id: string): AssertionResult =
 # --- fixtures -----------------------------------------------------------
 
 proc dividerNetlist(top = "75k", bot = "25k"): Netlist =
-  ## 10 V across a 100 k string tapped at 25%: the tap sits at 2.5 V, follows
-  ## the input with a slope of exactly 0.25, and looks back into
-  ## 75k || 25k = 18.75 k. Every one of those is a closed-form identity, so a
-  ## measurement that disagrees is the tool being wrong rather than the
-  ## fixture being approximate.
+  ## 10 V across 100 k tapped at 25%: 2.5 V, slope 0.25, and a 18.75 k
+  ## source impedance -- all closed form.
   netdsl.netlist("dcdiv"):
     net gnd, kind = ntGround, name = "0", global = true
     net vin, kind = ntPower
@@ -97,8 +92,7 @@ test "source_sweep stamps the range into every claim's condition":
   check claims[0].quantity == "dc_transfer"
   check claims[0].condition["sweep"] == "source"
   check claims[0].condition["sweep_to"] == "10.0"
-  # The unit is empty because a slope in V/V has none, and `unitsAgree` must
-  # not then compare it against volts.
+  # A V/V slope has no unit; `unitsAgree` must not compare it with volts.
   check claims[0].unit == ""
 
 test "load_sweep binds no part and still carries its whole setup":
@@ -128,9 +122,8 @@ test "every sweep claim is opt-in -- a role with no limit claims nothing":
   check d.expandAll().len == 0
 
 test "a bare require is refused, naming the two roles that reach it":
-  # The subjects name the node and nothing else: an assertion has no channel
-  # for what to sweep or over what range, so guessing would run *a* sweep and
-  # report it as the one asked for.
+  # An assertion can't say what to sweep or over what range, so it refuses
+  # rather than guess.
   let d = design("bare"):
     net gnd, kind = ntGround, name = "0"
     net tap, kind = ntSignal
@@ -158,7 +151,7 @@ else:
   test "a load sweep measures the Thevenin resistance of the tap":
     let rep = analyzeLoadSweep(dividerNetlist(), "tap", loadSpec())
     check abs(rep["z_out_dc"] - 18750.0) / 18750.0 < 1.0e-6
-    # 10 uA through 18.75 k is 187.5 mV of sag, against 2.5 V.
+    # 10 uA through 18.75 k sags 187.5 mV from 2.5 V.
     check abs(rep["load_reg_pct"] - 7.5) < 1.0e-3
 
   test "the injected sink is not left in the design netlist":
@@ -179,11 +172,8 @@ else:
       discard analyzeLineSweep(dividerNetlist(), "R1", "tap", lineSpec())
 
   test "an output that never leaves regulation reports no dropout, not zero":
-    # A divider's tap follows its input all the way down, so a wide sweep
-    # does find a dropout -- meaninglessly, but it finds one. Swept over a
-    # range narrower than the 2% band, nothing ever falls out, which is what
-    # an ideal regulator model reports over any range at all: the answer must
-    # then be "not found", never zero.
+    # Swept narrower than the 2% band nothing falls out (as an ideal
+    # regulator over any range): "not found", never zero.
     var spec = lineSpec()
     spec.fromVal = 9.9
     spec.toVal = 10.0
@@ -234,8 +224,8 @@ else:
     check "the .dc capability" in r.reason
 
   test "a source sweep and a load sweep are two runs, not one":
-    # They share a subject and an evaluator and differ only in the `sweep`
-    # condition, which is exactly the case a setup key has to keep apart.
+    # Same subject and evaluator, different `sweep`: the setup key must keep
+    # them apart.
     let p = plan(sweptDesign(), allCapabilities)
     var steps = 0
     for s in p.steps:

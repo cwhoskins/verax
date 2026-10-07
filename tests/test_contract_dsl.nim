@@ -190,8 +190,8 @@ test "a design with no contract at all is still a valid design":
   check "no roles or assertions" in d.explain()
 
 test "a role naming a net that does not exist fails when it is attached":
-  # Compile-time checking covers annotation keys; binding validity is a
-  # runtime check, because the role registry is a runtime table.
+  # Annotation keys are checked at compile time; bindings at runtime, since
+  # the role registry is a runtime table.
   expect(NetlistError):
     discard design("bad"):
       net a, kind = ntSignal
@@ -199,11 +199,9 @@ test "a role naming a net that does not exist fails when it is attached":
 
 # --- compile-time strictness -------------------------------------------
 #
-# `check not compiles(...)` is unusable for a macro that calls `error()`:
-# the same trap `tests/test_xspice_dsl.nim` documents. A macro error aborts
-# the compilation rather than making an expression ill-formed, so the only
-# honest way to assert one is to compile a fixture in a subprocess and read
-# what the compiler said.
+# `check not compiles(...)` can't catch a macro `error()` (it aborts
+# compilation), so fixtures are compiled in a subprocess and the compiler
+# output read.
 
 import std/[os, osproc, tempfiles]
 
@@ -243,7 +241,7 @@ test "a misspelled annotation key is a compile error naming the real keys":
 """)
   check not ok
   check "unknown annotation 'esrr'" in output
-  # The message has to say what *is* valid, or it just moves the guessing.
+  # The message must say what is valid.
   check "esr" in output
   check "package" in output
 
@@ -257,8 +255,8 @@ test "an annotation used on the wrong kind of entity is a compile error":
   check "does not apply to a net" in output
 
 test "the permissive statement-head fallback is untouched by any of this":
-  # An unknown key on the head still lands in attrs, deliberately: a file
-  # format needs somewhere to put data this library has never heard of.
+  # An unknown key on the head still lands in attrs: a file format needs
+  # somewhere to put unknown data.
   let (ok, output) = compileFixture(preamble & """
   net gnd, kind = ntGround, name = "0"
   component R1, kind = "resistor", somethingNobodyKnows = "yes":
@@ -268,8 +266,8 @@ test "the permissive statement-head fallback is untouched by any of this":
   if not ok: echo output
 
 test "arithmetic over a measurement is refused with the predicate escape hatch":
-  # `number * measurement` is the only arithmetic a relative bound accepts;
-  # anything richer must be a `pred(...)`.
+  # A relative bound accepts only `number * measurement`; richer needs
+  # `pred(...)`.
   let (ok, output) = compileFixture(preamble & """
   net a, kind = ntSignal
   net b, kind = ntSignal
@@ -325,10 +323,8 @@ proc stereo(): Design =
     instance XR, stage(), [inR, outR, vp, gnd]
 
 suite "binding a role to something inside a subcircuit instance":
-  # A stereo board is one channel instanced twice. A claim about the left
-  # channel's amplifier has no way to say *which* amplifier it means unless a
-  # subject can address into the instance -- and the identifier `U1` was
-  # bound inside a `subckt` in another module and is long out of scope.
+  # A claim about one channel's amplifier must address into the instance;
+  # the subckt's `U1` identifier is out of scope.
 
   test "an instance can be asked for a component inside it":
     let d = stereo()
@@ -347,8 +343,7 @@ suite "binding a role to something inside a subcircuit instance":
       check "RF" in e.msg
 
   test "a role binds it, and the two channels do not cross-talk":
-    # `instantiate` deep-clones, so XL's U1 and XR's U1 are distinct objects;
-    # role membership is tagged on the entity and must land on exactly one.
+    # `instantiate` deep-clones, so role membership lands on exactly one U1.
     var d = stereo()
     discard d.addRole("opamp_stage", "left", {
       "opamp": d.netlist.components["XL"].innerComponent("U1"),
@@ -376,10 +371,8 @@ suite "binding a role to something inside a subcircuit instance":
 
 suite "claims cannot be made inside control flow":
   test "a role nested in a for is refused with the reason":
-    # `design`'s splitter hoists role/require to after the netlist is built,
-    # so a nested one has no defined place: the netlist it would attach to
-    # does not exist yet. Reachable only via `for`, which is why the message
-    # lives in the netlist dispatcher.
+    # `design` hoists role/require after the netlist is built, so a nested
+    # one has nowhere to attach. Reachable only via `for`.
     check(not compiles(block:
       discard design("r"):
         net gnd, kind = ntGround, name = "0"

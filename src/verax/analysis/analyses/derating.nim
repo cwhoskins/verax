@@ -1,34 +1,14 @@
-## Is every part inside its ratings?
+## Is every part inside its ratings? (Distinct from `spice/models` using
+## `voltage_rating` to place a ceramic on its DC-bias curve.)
 ##
-## The other half of what a rating is for. `spice/models` uses
-## `voltage_rating` to work out where on the DC-bias curve a ceramic sits,
-## which changes the answer; this asks the separate question of whether the
-## part is being *used* within what it can take, which does not change any
-## answer but is the difference between a board that works and one that fails
-## in the field.
+## Checks `voltage_rating` against DC across each part, and a resistor's
+## `power_rating` against V^2/R -- what one `.op` can answer.
+## `current_rating` and `isat` aren't in an `.op`; `transient.analyzeCurrent`
+## checks them (`current_path` role).
 ##
-## It needs an operating point, so it is opt-in per import like every other
-## simulation-backed analysis here.
-##
-## **Scope, stated rather than discovered.** Two ratings are checked:
-##
-##   * `voltage_rating`, against the DC voltage actually across the part. The
-##     `.op` gives every node voltage, so this needs nothing extra.
-##   * `power_rating` on a resistor, against V^2/R.
-##
-## `current_rating` and `isat` are **not** checked here, and the reason is the
-## `.op`: a branch current is not in an operating point for anything but a
-## voltage source, and an inductor's peak is a property of a waveform rather
-## than of an instant. Both are checked by `analysis/transient.analyzeCurrent`
-## over a settled `.tran` window instead, which is where the current exists --
-## see the `current_path` role. This module stays what its capability says it
-## is: what one `.op` can answer about every part at once.
-##
-## Ceilings are per dielectric family because the reason to derate differs:
-## a tantalum is derated to half because it fails *short* and takes the rail
-## with it, whereas a ceramic's headroom is mostly about capacitance, which
-## `spice/models` already models directly -- so applying the tantalum rule to
-## ceramics would double-count it.
+## Ceilings are per dielectric family: tantalum is derated to half (it fails
+## short), while a ceramic's headroom is mostly capacitance, already modelled
+## -- applying the tantalum rule there would double-count.
 
 import std/[math, strutils, tables]
 
@@ -60,27 +40,18 @@ type
     modelUnmodelledParts*: bool
     flattenHierarchy*: bool
     precomputed*: OrderedTable[string, float]
-      ## A shared operating point to use instead of solving another. Empty
-      ## means solve one here.
+      ## A shared operating point to reuse; empty solves one here.
     onlyTouching*: string
-      ## When set, only parts with a pin on this net are considered.
-      ##
-      ## A rating is a property of a part, not of a net, so a design-global
-      ## answer is the honest one -- but a *claim* needs a subject the
-      ## contract layer can name, and "every part on this rail is inside its
-      ## ratings" is both expressible and the question a designer actually
-      ## asks. The cost is one `.op` per claimed rail rather than one for the
-      ## design; a `.op` is the cheapest run there is, and a design claiming
-      ## more than two or three rails is unusual.
+      ## When set, only parts with a pin on this net are considered -- so a
+      ## claim can name a subject ("every part on this rail"). Costs one
+      ## `.op` per claimed rail.
 
 proc defaultDeratingSpec*(): DeratingSpec =
   result.defaultCeiling = 0.8
   result.pinModels = defaultPinModels()
   result.modelUnmodelledParts = true
   result.flattenHierarchy = true
-  # Tantalums fail short, and a shorted bulk capacitor takes the rail down
-  # with it -- which is why the 50% rule for them is an order of magnitude
-  # more insisted-upon than the equivalent for a ceramic.
+  # Tantalums fail short and take the rail with them.
   result.ceilingByFamily["tantalum"] = 0.5
   result.ceilingByFamily["electrolytic"] = 0.8
   result.ceilingByFamily["film"] = 0.6
@@ -111,17 +82,10 @@ proc nodeVoltage(sim: SimResult, pre: OrderedTable[string, float],
   except CatchableError: NaN
 
 proc analyzeDerating*(nl: Netlist, spec = defaultDeratingSpec()): AnalysisReport =
-  ## Runs one `.op` over the whole design and checks every part that states a
-  ## rating against what it is actually seeing.
-  ##
-  ## Like `contract_eval`'s `dc_voltage`, this **does not isolate**: a rating
-  ## check is about the design as built, and a fragment terminated with ideal
-  ## sources would be checking parts against voltages the boundary invented.
-  # Clone, flatten, *then* apply `simReplace` -- not the combined
-  # `materializeSimNetlist` -- so a nested XSPICE component's `A`-line ports
-  # are rendered from post-flatten net names rather than frozen at
-  # child-template-local ones flatten is about to rename out from under it
-  # (see `spice/flatten`'s module doc).
+  ## One `.op` over the whole design, checking every part that states a
+  ## rating. **Not isolated**: boundary sources would invent the voltages.
+  # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
+  # nested XSPICE component's ports use post-flatten net names.
   var globalNets: OrderedTable[string, Net]
   let simNl = clone(root(nl), globalNets)
   if spec.flattenHierarchy: discard flatten(simNl)

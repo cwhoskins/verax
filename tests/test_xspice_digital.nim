@@ -6,16 +6,11 @@ import verax/spice/ngspice
 import verax/spice/xspice
 import verax/spice/xspice/build
 
-## Event-driven (digital) code models. Gated the same way as
-## `test_xspice_build.nim`, since producing a `.cm` needs an ngspice source
-## tree.
+## Event-driven (digital) code models; needs an ngspice source tree.
 ##
-## The raw-text deck below is kept because it pins the waveform precisely.
-## The final test builds the *same* mixed-signal circuit through
-## `netlist/graph` instead, including the vector-port `adc_bridge`/`dac_bridge`
-## instances -- which is what `xspice/instance.nim`'s vector support is for.
-## Converting `q` back to analog via `dac_bridge` is what makes the result
-## visible to a rawfile reader at all.
+## The raw-text deck pins the waveform precisely. The final test builds the
+## same mixed-signal circuit through `netlist/graph` with vector-port
+## bridges; `dac_bridge` makes `q` visible in the rawfile.
 
 let repoRoot = currentSourcePath().parentDir.parentDir
 let ngsSrc = getEnv("NGSPICE_SRC")
@@ -83,8 +78,8 @@ else:
     check fileExists(cm)
 
   test "q samples data on rising clock edges":
-    # Clock rises at 10/30/50/70/90us; data is high 5-35us and 65-95us.
-    # So q takes 1,1,0,1,1 -- meaning transitions only at 10, 50 and 70us.
+    # Clock rises at 10/30/50/70/90us, data high 5-35us and 65-95us, so q
+    # goes 1,1,0,1,1: transitions at 10, 50 and 70us only.
     let (first, edges) = qEdges(cm, "1n", "0")
     check first == 0
     check edges.len == 3
@@ -96,9 +91,8 @@ else:
     check edges[2].level == 1
 
   test "no event is emitted when the sampled value is unchanged":
-    # The clock edges at 30us and 90us sample the value q already holds.
-    # Without `outputChanged(q) = false` the model would emit an event at
-    # each of them; the edge count above is what proves it does not.
+    # The 30us and 90us edges sample the value q holds; `outputChanged(q) =
+    # false` suppresses those events.
     let (_, edges) = qEdges(cm, "1n", "0")
     for e in edges:
       check abs(e.time - 30e-6) > 1e-6
@@ -116,14 +110,12 @@ else:
     let (first1, edges1) = qEdges(cm, "1n", "1")
     check first0 == 0
     check first1 == 1
-    # Starting high, the 10us edge samples data=1, so the first transition is
-    # the 50us one.
+    # Starting high, the first transition is at 50us.
     check edges1.len == 2
     check abs(edges1[0].time - 50e-6) < 0.5e-6
 
   test "a whole mixed-signal deck can be built through netlist/graph":
-    # adc_bridge and dac_bridge both have vector ports at both ends, so this
-    # is only expressible since instance.nim learned to emit `[a b]`.
+    # Both bridges have vector ports at both ends (`[a b]`).
     proc bridge(name: string, inT, outT: PortType,
                 params: openArray[string]): ModelSpec =
       result = ModelSpec(name: name, cFunction: "cm_" & name,

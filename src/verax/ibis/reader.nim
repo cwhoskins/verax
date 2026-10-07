@@ -1,19 +1,9 @@
-## Building the typed `IbisFile` from the lexer's keyword tree.
+## Building the typed `IbisFile` from the lexer's tree:
+## `readIbis(s)`/`readIbisFile(path)`. No writer.
 ##
-## Implements the file-format contract used everywhere else in this codebase
-## -- `readIbis(s: Stream)` / `readIbisFile(path)`, names that do not stutter
-## the format, matching `verax/netlist/formats/common`. There is **no
-## writer**: emitting IBIS is not a stated need and a half-writer is worse
-## than none.
-##
-## Two behaviours carried over from `verax/netlist/formats/spice`:
-##
-## - **Every failure is an `IbisError` with line context** where the lexer
-##   could supply it (`"line 412: [Pin] row has fewer than 3 columns"`).
-## - **An unrecognised keyword degrades, it does not error.** It lands in
-##   `IbisFile.sections` and nowhere else. That is exactly why a reader
-##   shaped for IBIS 3.2 can still open a 7.x file: the blocks it does not
-##   model are still all there.
+## - **Every failure is an `IbisError` with line context** where possible.
+## - **Unrecognised keywords degrade, not error**: they stay in
+##   `IbisFile.sections`, so a 3.2-shaped reader can open a 7.x file.
 
 import std/[streams, strutils, tables]
 import ./types
@@ -22,8 +12,8 @@ import ./parse
 export types
 
 proc tokens(s: string): seq[string] =
-  ## IBIS table rows are whitespace-separated; `=` is noise around a
-  ## subparameter value (`Vinl = 0.8`).
+  ## Whitespace-separated row tokens; `=` around a value (`Vinl = 0.8`) is
+  ## noise.
   for t in s.splitWhitespace():
     if t != "=": result.add t
 
@@ -66,8 +56,8 @@ proc parseIv(sec: IbisSection): IvTable =
     result.add IvPoint(v: v, i: parseTriplet(tk, 1))
 
 proc pairTriplets(tk: seq[string], first: int): tuple[a, b: Triplet] =
-  ## `[Ramp]` writes each corner as `dV/dt`. Split each `a/b` token and
-  ## build one triplet of the `a`s and one of the `b`s.
+  ## `[Ramp]` corners are `dV/dt`: split each into a `dV` and a `dt`
+  ## triplet.
   var aToks, bToks: seq[string]
   for k in 0 .. 2:
     let idx = first + k
@@ -229,17 +219,16 @@ proc parseModelSelector(sec: IbisSection): ModelSelector =
     result.choices.add (model: tk[0], description: tk[1 .. ^1].join(" "))
 
 proc headerText(sec: IbisSection): string =
-  ## Free-text keywords (`[Notes]`, `[Disclaimer]`) put their content on the
-  ## keyword line, in the body, or both.
+  ## Free-text keywords (`[Notes]`) may put content on the keyword line, in
+  ## the body, or both.
   if sec.args.len > 0: return sec.args
   var parts: seq[string]
   for ln in sec.body: parts.add ln.text
   parts.join(" ")
 
 proc readIbis*(s: Stream, name = ""): IbisFile =
-  ## Parse an IBIS stream into the typed model. `name` is used only in error
-  ## messages. Raises `IbisError` on malformed structure or an unparseable
-  ## number in a modelled field.
+  ## Parse an IBIS stream (`name` for messages). Raises `IbisError` on bad
+  ## structure or an unparseable modelled number.
   let secs = splitSections(s, name)
   result.sections = secs
   for sec in secs:
@@ -259,8 +248,7 @@ proc readIbis*(s: Stream, name = ""): IbisFile =
     else: discard   # kept in result.sections, modelled nowhere -- by design
 
 proc readIbisFile*(path: string): IbisFile =
-  ## Path wrapper around `readIbis`. Raises `IbisError` if the file cannot be
-  ## opened.
+  ## `readIbis` on a file; raises `IbisError` if it can't be opened.
   var s: FileStream
   try:
     s = openFileStream(path, fmRead)

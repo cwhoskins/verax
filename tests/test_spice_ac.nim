@@ -95,9 +95,8 @@ if not haveNgspice:
 else:
   test "a real .ac run of an RC low-pass matches the closed-form response":
     let nl = rcLowPass()
-    # The corner is deliberately a sweep point: `dec 20` from 100 Hz places
-    # points at 100 * 10^(k/20), and none lands exactly on 1591.5 Hz, so this
-    # also exercises reading a point either side of the corner.
+    # `dec 20` from 100 Hz never lands exactly on 1591.5 Hz, so points either
+    # side are read.
     let res = run(nl, @[".ac dec 20 100 100k"])
     check res.plotName == "AC Analysis"
     check res.dataKind == sdComplex
@@ -110,9 +109,8 @@ else:
 
     let fc = 1.0 / (2.0 * PI * 1000.0 * 100e-9)
 
-    # Find the sweep point nearest the corner and check it against the exact
-    # first-order response at that same frequency (not against 1/sqrt(2) at a
-    # frequency the sweep never visits).
+    # Check the point nearest the corner against the exact first-order
+    # response at that frequency.
     var best = 0
     for i in 1 ..< f.len:
       if abs(f[i] - fc) < abs(f[best] - fc): best = i

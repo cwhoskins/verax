@@ -1,9 +1,5 @@
-## Self-contained SVG writer for a `Schematic`.
-##
-## This is the reference visualizer's export step: every colour is resolved to
-## a literal and every style is inlined, so the file opens standalone with no
-## stylesheet, no font dependency beyond a generic family, and no external
-## resources. Pure string building over the scene -- no DOM, no interactivity.
+## Self-contained SVG writer for a `Schematic`: colours and styles inlined,
+## no stylesheet or external resources. Pure string building.
 
 import std/[math, strutils]
 import ../netlist/types
@@ -22,8 +18,8 @@ proc xmlEscape(s: string): string =
     else: result.add ch
 
 proc num(x: float): string =
-  ## A world coordinate as a clean, deterministic decimal (grid-snapped
-  ## coordinates render as "40", not "40.000").
+  ## A world coordinate as a clean deterministic decimal ("40", not
+  ## "40.000").
   if abs(x) < 0.0005: return "0"
   let r = round(x * 1000.0) / 1000.0
   if abs(r) < 0.0005: return "0"
@@ -50,10 +46,8 @@ proc textAt(x, y: float, s: string, anchor = "start", size = 12): string =
     xmlEscape(s) & "</text>"
 
 proc lineAt(x1, y1, x2, y2: float, stroke = "#333333", width = "2"): string =
-  ## `stroke`/`width` default to the historical literals, so every existing
-  ## call site emits the identical string. A bus/interface wire passes a
-  ## colour and stroke 4; stroke width is purely cosmetic (it stays inside
-  ## `wireMinSeparation`'s 8-unit gap), so the router needs no per-net rule.
+  ## A bus/interface wire passes a colour and stroke 4; width is cosmetic
+  ## (within `wireMinSeparation`), so the router needs no per-net rule.
   "<line x1=\"" & num(x1) & "\" y1=\"" & num(y1) &
     "\" x2=\"" & num(x2) & "\" y2=\"" & num(y2) &
     "\" stroke=\"" & stroke & "\" stroke-width=\"" & width & "\"/>"
@@ -69,8 +63,7 @@ proc isJunction(junctions: seq[SchematicJunction], net: string, p: Point): bool 
 
 proc chamferedWirePoints(wire: SchematicWire,
                         junctions: seq[SchematicJunction]): seq[Point] =
-  ## Renderer-only corner cuts. Scene geometry remains the routed orthogonal
-  ## polyline so JSON, routing, and junction semantics remain unchanged.
+  ## Renderer-only corner cuts; scene geometry stays orthogonal.
   if wire.points.len < 3:
     return wire.points
 
@@ -99,11 +92,9 @@ proc chamferedWirePoints(wire: SchematicWire,
   result.add wire.points[^1]
 
 proc roundedPath(pts: seq[Point], radius: float): string =
-  ## An SVG path following `pts` with each interior corner rounded to at most
-  ## `radius` (never more than half of either adjacent leg). The `wkChain` arc
-  ## uses it -- a renderer-only smoothing of routed orthogonal points, the same
-  ## treatment `chamferedWirePoints` gives at 4 units, at a larger radius and
-  ## with a curve rather than a bevel.
+  ## An SVG path along `pts` with interior corners rounded to at most
+  ## `radius` (at most half of either leg). Renderer-only smoothing for the
+  ## `wkChain` arc.
   if pts.len < 2: return ""
   var d = "M " & num(pts[0].x) & " " & num(pts[0].y)
   if pts.len == 2:
@@ -158,18 +149,15 @@ proc drawPart(p: SchematicPart): seq[string] =
   let hh = p.bodyH / 2.0
   let rot = if abs(p.rotation) > 1e-9: p.rotation else: 0.0
   if rot != 0.0:
-    # Rotate the body around the part centre. The pin slots were rotated by
-    # the same SVG transform in `layout.rotatedSlot`, so the drawn symbol
-    # lands exactly on the wire endpoints. Labels are added after the group
-    # closes, deliberately outside it, so they stay upright.
+    # Rotate the body about the centre (slots were rotated identically in
+    # `rotatedSlot`). Labels go outside the group, so they stay upright.
     result.add "<g transform=\"rotate(" & num(rot) & " " & num(cx) & " " &
       num(cy) & ")\">"
 
   case p.symbol
   of "box":
-    # `bodyW`/`bodyH` is the pin extent; the visible rectangle is inset by
-    # `boxStub` so every pin juts out on a stub from the drawn edge, with its
-    # name printed just inside.
+    # The visible rectangle is inset by `boxStub` from the pin extent; pins
+    # jut out on stubs with names just inside.
     let bx = cx - hw + boxStub
     let by = cy - hh + boxStub
     result.add "<rect x=\"" & num(bx) & "\" y=\"" & num(by) &
@@ -193,8 +181,7 @@ proc drawPart(p: SchematicPart): seq[string] =
         result.add lineAt(pin.x, cy + hh - boxStub, pin.x, pin.y)
         if pin.name.len > 0:
           result.add textAt(pin.x, cy + hh - boxStub - 6.0, pin.name, "middle", 9)
-    # Designator and value/name stack at the top-left inside corner, clear of
-    # the centred rows and columns of pin labels.
+    # Designator and value at the top-left inside corner.
     result.add textAt(bx + 5.0, by + 13.0,
                       (if p.label.len > 0: p.label else: p.designator), "start")
     if p.count >= 2:
@@ -263,9 +250,8 @@ proc drawPart(p: SchematicPart): seq[string] =
       num(cx + 4.0) & "," & num(cy + 1.0) & "\" fill=\"#333333\"/>"
 
   of "source4":
-    # A rectangular buffer/controlled source: OUT+/OUT- on the right edge,
-    # IN+/IN- on the left edge, each labelled inside the body. No source-type
-    # polarity/arrow marker -- the labels carry the pin identity instead.
+    # Rectangular buffer/controlled source: OUT+/OUT- right, IN+/IN- left,
+    # labelled inside; no polarity marker.
     result.add "<rect x=\"" & num(cx - hw) & "\" y=\"" & num(cy - hh) &
       "\" width=\"" & num(p.bodyW) & "\" height=\"" & num(p.bodyH) &
       "\" fill=\"#ffffff\" stroke=\"#333333\" stroke-width=\"2\"/>"
@@ -275,20 +261,15 @@ proc drawPart(p: SchematicPart): seq[string] =
     result.add textAt(cx + hw - 6.0, cy + 16.0, "OUT-", "end", 10)
 
   of "opamp":
-    # Traditional triangular op-amp symbol: base on the left, apex on the
-    # right where OUT leaves. IN+/IN- land exactly on the base and OUT
-    # exactly on the apex, so none of the three needs a drawn lead. V+/V-
-    # meet the slanted top/bottom edges at mid-width, which is only half as
-    # tall as the base there, so each gets a short lead in to its pin.
+    # Triangular op-amp: IN+/IN- on the base, OUT on the apex (no leads);
+    # V+/V- meet the slanted edges at mid-width, with short leads.
     result.add "<polygon points=\"" & num(cx - hw) & "," & num(cy - hh) &
       " " & num(cx - hw) & "," & num(cy + hh) & " " &
       num(cx + hw) & "," & num(cy) &
       "\" fill=\"#ffffff\" stroke=\"#333333\" stroke-width=\"2\"/>"
     result.add lineAt(cx, cy - hh / 2.0, cx, cy - hh)
     result.add lineAt(cx, cy + hh / 2.0, cx, cy + hh)
-    # The classic +/- summing-junction marks, just inside the base at each
-    # input lead -- the only thing that says which is which, since IN+/IN-
-    # otherwise land on the bare outline.
+    # +/- marks inside the base: the only thing distinguishing IN+ from IN-.
     result.add textAt(cx - hw + 8.0, cy - 16.0 + 4.0, "+", "start", 14)
     result.add textAt(cx - hw + 8.0, cy + 16.0 + 4.0, "-", "start", 14)
 
@@ -301,40 +282,31 @@ proc drawPart(p: SchematicPart): seq[string] =
     result.add lineAt(cx - 16.0, cy - 12.0, cx - 16.0, cy + 12.0)
 
   else:
-    # Should not happen -- `layout` only emits the names above -- but a
-    # graceful box beats a blank for a symbol registry extended later.
+    # Unreachable (`layout` emits only the names above); a box beats a
+    # blank.
     result.add "<rect x=\"" & num(cx - 16.0) & "\" y=\"" & num(cy - 16.0) &
       "\" width=\"32\" height=\"32\" fill=\"#ffffff\" stroke=\"#333333\" stroke-width=\"2\"/>"
 
   if rot != 0.0:
     result.add "</g>"
 
-  # Array-collapse pin decoration: a bus-bar tick (common, suppressed when the
-  # shared net is ground/rail -- a pin that already draws a terminal glyph
-  # says "shared rail" on its own, and on a two-terminal symbol the tick and
-  # the glyph bars would land on top of each other), a diagonal slash + range
-  # tag (distributed), or a forked cap + count (irregular). Hoisted out of the
-  # `"box"` branch and drawn here, after any rotate group closes, so a
-  # collapsed *component* array -- a resistor bank badged `x8`, say -- gets
-  # the same marks a collapsed subsheet box does, not just a box. The world
-  # coordinates in `pin.x`/`pin.y` already reflect rotation (`routing.nim`
-  # rotates every slot before recording it), so this needs no `rotate()`
-  # wrapper of its own.
+  # Array pin decoration: a bus-bar tick (common; suppressed on a rail, whose
+  # glyph would collide), a slash + range tag (distributed), or a forked cap
+  # + count (irregular). Drawn after any rotate group closes so component
+  # arrays get the marks too; `pin.x`/`pin.y` are already rotated.
   let bx = cx - hw + boxStub
   let by = cy - hh + boxStub
   for pin in p.pins:
     if pin.mark == pmNone: continue
     var ox, oy = 0.0
     if p.isBox:
-      # Outward escape unit vector, from which box edge the pin sits on.
+      # Outward unit vector, from the box edge the pin sits on.
       if pin.x < bx + 1e-6: ox = -1.0
       elif pin.x > cx + hw - boxStub - 1e-6: ox = 1.0
       elif pin.y < by + 1e-6: oy = -1.0
       else: oy = 1.0
     else:
-      # A symbol has no edge to test against -- its pin slot already points
-      # outward along the lead, so the direction from the body centre to the
-      # pin *is* the outward escape vector.
+      # A symbol has no edge to test; centre -> pin is the outward vector.
       let dx = pin.x - cx
       let dy = pin.y - cy
       let d = sqrt(dx * dx + dy * dy)
@@ -377,17 +349,13 @@ proc drawPart(p: SchematicPart): seq[string] =
           pin.y + oy * 22.0 + qy * 14.0 + 3.0, label, "middle", 10)
     of pmNone: discard
 
-  # A non-box symbol's designator and value are emitted as SchematicLabels by
-  # `layout`'s label pass (placed against wires and neighbouring bodies), not
-  # drawn here. A box draws its own designator/value inside the body above,
-  # where `boxSlots` has reserved the space.
+  # A non-box symbol's designator/value come from `layout`'s label pass; a
+  # box draws its own inside the body.
 
 proc drawPort(p: SchematicPort): seq[string] =
-  ## An Altium-style port pennant at `p.x, p.y` (its body centre). The
-  ## connecting stub is a separate wire in the scene, meeting the pennant at
-  ## the edge `layout` sized it to: the pointed end for an input, unspecified
-  ## or bidirectional port, the flat end for an output. Signal reads left to
-  ## right, so every arrow points right.
+  ## A port pennant centred at `p.x, p.y`; its stub is a separate scene
+  ## wire. Pointed end for input/unspecified/bidirectional, flat for output;
+  ## every arrow points right.
   let y = p.y
   let h = p.bodyH / 2.0
   let left = p.x - p.bodyW / 2.0
@@ -411,9 +379,8 @@ proc drawPort(p: SchematicPort): seq[string] =
   result.add textAt(p.x, y + 4.0, p.name, "middle", 10)
 
 proc chevronCap(tip: Point, outward: Point): string =
-  ## A two-segment "<" pointing back along `outward` at `tip` -- the solid cap
-  ## that tells a deliberate net-label tag apart from a routing failure's open
-  ## circle. `outward` is the stub's own leaving direction (unit ±x / ±y).
+  ## A "<" chevron at `tip`, pointing back along `outward` -- the cap that
+  ## distinguishes a net-label tag from a routing failure's open circle.
   let o =
     if abs(outward.x) >= abs(outward.y) and outward.x != 0.0:
       Point(x: (if outward.x > 0.0: 1.0 else: -1.0), y: 0.0)
@@ -427,12 +394,9 @@ proc chevronCap(tip: Point, outward: Point): string =
     pointsAttr(@[b + q * 5.0, tip, b - q * 5.0]) & "\"/>"
 
 proc drawFallback(f: SchematicFallback): seq[string] =
-  ## `fbUnrouted`: a dashed amber stub plus an open-endpoint marker -- "this
-  ## net is here, and is deliberately not connected" rather than copper.
-  ## `fbNetLabel`: a solid teal stub plus a chevron cap -- "this net is
-  ## carried by name" (a bus/interface broken out or an unroutable bundle).
-  ## Both never join the occupancy set. A zero-space fallback (empty `points`)
-  ## draws only the cap at the pin.
+  ## `fbUnrouted`: dashed amber stub + open-endpoint marker (deliberately
+  ## not connected). `fbNetLabel`: solid teal stub + chevron (carried by
+  ## name). Zero-space fallbacks draw only the cap.
   case f.kind
   of fbUnrouted:
     const amber = "#e67e22"
@@ -456,11 +420,9 @@ proc drawFallback(f: SchematicFallback): seq[string] =
       result.add chevronCap(Point(x: f.x, y: f.y), Point(x: f.ex, y: f.ey))
 
 proc drawChainArc(wire: SchematicWire): seq[string] =
-  ## A collapsed array's recirculation arc: a dashed `#6e7781` staple over the
-  ## box body from the OUT pin to its lined-up IN pin, an arrowhead into the IN
-  ## end, and -- when `members` is non-empty (the lead of a parallel-chain
-  ## group) -- an `xN` link-count badge at the midpoint of its longest segment.
-  ## Drawn after the parts so the box fill does not cover it.
+  ## An array's recirculation arc: a dashed staple over the box from OUT to
+  ## IN, with an arrowhead and, for a parallel-chain lead, an `xN` badge.
+  ## Drawn after parts so the box fill doesn't cover it.
   if wire.points.len < 2: return
   result.add "<path d=\"" & roundedPath(wire.points, 9.0) &
     "\" fill=\"none\" stroke=\"#6e7781\" stroke-width=\"2\" stroke-dasharray=\"6 4\"/>"
@@ -488,9 +450,8 @@ proc drawChainArc(wire: SchematicWire): seq[string] =
     result.add textAt(mx, my - 4.0, "x" & $wire.members.len, "middle", 11)
 
 proc drawDivider(d: SchematicDivider): seq[string] =
-  ## The separated power/decoupling band's dashed dividing rule plus its
-  ## caption. Drawn right after the grid and before any wire, so a wire or
-  ## symbol's white fill always paints over it rather than the reverse.
+  ## The power band's dashed rule and caption, drawn before wires so their
+  ## fills paint over it.
   result.add "<line x1=\"" & num(d.x1) & "\" y1=\"" & num(d.y) &
     "\" x2=\"" & num(d.x2) & "\" y2=\"" & num(d.y) &
     "\" stroke=\"#999999\" stroke-width=\"1.5\" stroke-dasharray=\"12 8\"/>"
@@ -517,9 +478,8 @@ proc renderSvg*(s: Schematic): string =
     for e in drawDivider(d): L.add "  " & e
 
   for wire in s.wires:
-    # The glyph at a ground/supply stub is drawn perpendicular to the stub, so
-    # a stub that juts sideways or downward (a negative rail on a box's bottom
-    # edge) still gets an upright bar rather than one laid across the wire.
+    # The glyph is perpendicular to the stub, so sideways/downward stubs get
+    # an upright bar.
     proc stubDirs(pts: seq[Point], fallback: Point): tuple[o, q: Point] =
       var o = fallback
       if pts.len >= 2:
@@ -535,9 +495,7 @@ proc renderSvg*(s: Schematic): string =
     of wkSignal, wkPowerLink:
       L.add "  " & polyAt(chamferedWirePoints(wire, s.junctions))
     of wkBus, wkInterface:
-      # Colour is membership (blue bus / purple interface), width is collapse
-      # (>1 member -> one thick wire carrying the whole bundle). A lone
-      # width-1 interface signal draws thin-but-purple.
+      # Colour is membership (blue bus, purple interface); width is collapse.
       let col = if wire.kind == wkInterface: "#8250df" else: "#1f6feb"
       let wd = if wire.members.len > 1: "4" else: "2"
       L.add "  " & polyAt(chamferedWirePoints(wire, s.junctions), col, wd)
@@ -555,19 +513,13 @@ proc renderSvg*(s: Schematic): string =
       let p = wire.points[^1]
       let (_, q) = stubDirs(wire.points, Point(x: 0.0, y: -1.0))
       L.add "  " & bar(p, q, 10.0)
-      # The rail's net name is emitted as an `lrRail` SchematicLabel by
-      # `layout` (placed against the finished geometry), not drawn here.
+      # Rail names are `lrRail` labels from `layout`.
 
-  # Fallback stubs are drawn with the wires -- before junction dots and
-  # symbols -- so a marker under a body stays under its white fill, exactly
-  # like a real wire would.
+  # Fallback stubs are drawn with the wires, under symbol fills.
   for f in s.fallbacks:
     for e in drawFallback(f): L.add "  " & e
 
-  # Junction dots are painted right after the wires and before any symbol:
-  # a dot marks where three or more segments of one net meet, so it must sit
-  # on top of the wires it joins, but under a part body or port pennant should
-  # one ever touch it (a symbol's white fill is the foreground).
+  # Junction dots go on top of wires but under symbols.
   for j in s.junctions:
     L.add "  <circle cx=\"" & num(j.x) & "\" cy=\"" & num(j.y) &
       "\" r=\"3\" fill=\"#333333\"/>"
@@ -578,8 +530,7 @@ proc renderSvg*(s: Schematic): string =
   for p in s.ports:
     for e in drawPort(p): L.add "  " & e
 
-  # Recirculation arcs sit on the box body, so they are drawn last -- after the
-  # opaque box fill that would otherwise hide them.
+  # Recirculation arcs last, over the opaque box fill.
   for wire in s.wires:
     if wire.kind == wkChain:
       for e in drawChainArc(wire): L.add "  " & e

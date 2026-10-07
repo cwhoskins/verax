@@ -2,10 +2,9 @@ import std/[unittest, tables]
 import verax/contract/dsl
 import verax/netlist/interfaces/std
 
-# A def naming its signals `dp`/`dn` rather than `diff_pair`'s own `p`/`n` --
-# `implies`' `RoleClaim.binds` is what lets it still auto-attach the role,
-# by naming which signal each part reads from, built by hand since the
-# `interfaceDef` macro has no `implies "role", binds = {...}` spelling.
+# A def naming its signals `dp`/`dn` rather than `p`/`n`: `RoleClaim.binds`
+# still lets it auto-attach `diff_pair`. Built by hand, as `interfaceDef`
+# has no `binds` spelling.
 let dpPairDef = block:
   var def: InterfaceDef
   def.name = "dp_pair"
@@ -67,8 +66,7 @@ suite "interface contracts":
       check d.roles.hasKey(name)
       check d.roles[name].role == "spi"
       check d.roles[name].member == k
-      # sclk/mosi/miso are shared across every member of the fan-out; only
-      # cs was narrowed.
+      # sclk/mosi/miso are shared; only cs is narrowed.
       check d.roles[name].bindings["sclk"].name == "spi_sclk"
       check d.roles[name].bindings["mosi"].name == "spi_mosi"
       check d.roles[name].bindings["miso"].name == "spi_miso"
@@ -82,8 +80,7 @@ suite "interface contracts":
         port spi, controller
       role "spi", spi_cs0, sclk = spi["sclk"], mosi = spi["mosi"],
            miso = spi["miso"], cs = spi["cs", 0]
-    # The explicit instance is untouched, and the fan-out still attaches the
-    # member it did not shadow.
+    # The explicit instance is untouched; the fan-out attaches the rest.
     check d.roles["spi_cs0"].bindings["cs"].name == "spi_cs_0"
     check d.roles.hasKey("spi_cs1")
     check d.roles["spi_cs1"].member == 1

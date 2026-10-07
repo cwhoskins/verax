@@ -149,16 +149,16 @@ else:
     spec.idealGbw = 1.0e6
     let r = analyzeLoopGain(nonInverting(), "U1", "vin", "vout", spec)
 
-    # Loop gain T = Aol*beta, beta = 1/10, so T(DC) = 1e4 = 80 dB and it
-    # crosses 0 dB at GBW*beta = 100 kHz.
+    # T = Aol*beta with beta = 1/10: 80 dB at DC, crossing at GBW*beta =
+    # 100 kHz.
     check abs(r["loop_gain_dc_db"] - 80.0) < 0.1
     check abs(r["crossover_hz"] - 1.0e5) / 1.0e5 < 0.02
-    # One pole can contribute at most 90 degrees of lag.
+    # One pole contributes at most 90 degrees of lag.
     check abs(r["phase_margin_deg"] - 90.0) < 1.0
 
   test "a second pole in the loop eats the phase margin and is flagged":
-    # A capacitor from the feedback node to ground puts a second pole inside
-    # the loop, at 1/(2*pi*(RF||RG)*C).
+    # A cap from the feedback node to ground adds a second loop pole at
+    # 1/(2*pi*(RF||RG)*C).
     proc withFeedbackCap(value: string): Netlist =
       result = nonInverting()
       let cf = addComponent(result, newComponent("CF", kind = "capacitor"))
@@ -175,17 +175,14 @@ else:
         check "ringing" in i.message
     check flagged
 
-    # More capacitance moves the pole lower, so it must cost more margin and
-    # pull crossover down -- a stronger claim than any single threshold.
+    # More capacitance must cost more margin and pull crossover down.
     let mild = analyzeLoopGain(withFeedbackCap("2n"), "U1", "vin", "vout")
     let severe = analyzeLoopGain(withFeedbackCap("100n"), "U1", "vin", "vout")
     check mild["phase_margin_deg"] > r["phase_margin_deg"]
     check r["phase_margin_deg"] > severe["phase_margin_deg"]
     check mild["crossover_hz"] > severe["crossover_hz"]
 
-    # Two poles approach -180 degrees asymptotically without ever reaching it,
-    # so there is no finite frequency at which to read a gain margin. NaN is
-    # the honest answer, not a large number.
+    # Two poles never reach -180 degrees, so there's no gain margin: NaN.
     check r["gain_margin_db"].isNaN
 
   test "the same second pole shows up as closed-loop peaking":
@@ -227,8 +224,7 @@ suite "a part inside the loop that carries no model":
     rg.attrs["value"] = "10k"
 
   test "a buffer in the feedback path does not read as an open loop":
-    # The static walk crosses it because its direction and gain are known
-    # from its registration -- not because active parts are now waved through.
+    # The walk crosses it because its registration states direction and gain.
     check checkFeedback(stage("buffer"), "U1").len == 0
 
   test "a part whose behaviour is genuinely unknown still opens the loop":
@@ -237,8 +233,8 @@ suite "a part inside the loop that carries no model":
     check issues[0].kind == KindNoFeedback
 
   test "the loop actually closes in simulation, with the right numbers":
-    # beta = 1/2 through the divider, so a 1 MHz GBW crosses at 500 kHz, and
-    # a single-pole loop has 90 degrees of margin and no gain margin at all.
+    # beta = 1/2: a 1 MHz GBW crosses at 500 kHz, 90 degrees margin, no gain
+    # margin.
     let r = analyzeLoopGain(stage("buffer"), "U1", "vin", "vout")
     check abs(r["crossover_hz"] - 500.0e3) / 500.0e3 < 0.1
     check abs(r["phase_margin_deg"] - 90.0) < 5.0
@@ -266,9 +262,9 @@ suite "a part inside the loop that carries no model":
     check macromodelled
 
   proc sallenKey(): Netlist =
-    ## A unity-gain Sallen-Key low-pass: f0 = 21.3 kHz at Q = 0.549. C1
-    ## returns to the *output*, which is a second feedback path and the
-    ## reason the loop cannot be opened at the inverting input alone.
+    ## A unity-gain Sallen-Key low-pass (f0 = 21.3 kHz, Q = 0.549). C1
+    ## returns to the output -- a second feedback path, so the loop can't be
+    ## opened at the inverting input alone.
     result = newNetlist("sk")
     let gnd = addNet(result, newNet("0", ntGround))
     let vin = addNet(result, newNet("vin"))
@@ -290,11 +286,9 @@ suite "a part inside the loop that carries no model":
     discard connect(u, "V-", gnd, ptGround)
 
   test "a loop the break did not open yields no phase margin, not 450 degrees":
-    # `180 + phase at crossover` is only a phase margin if the break opened
-    # the loop. Here it does not: the measured phase starts near +79 degrees
-    # and climbs through +180 while |T| is still above 0 dB, and the naive
-    # arithmetic reports 450 -- a number that is not a margin and that
-    # satisfies every minimum a design could state.
+    # `180 + phase at crossover` is a margin only if the break opened the
+    # loop. Here it doesn't: the phase climbs through +180 above 0 dB and the
+    # naive arithmetic gives 450.
     let r = analyzeLoopGain(sallenKey(), "U1", "vin", "vout")
     check r["phase_margin_deg"].isNaN
     check r["gain_margin_db"].isNaN
@@ -303,8 +297,7 @@ suite "a part inside the loop that carries no model":
     check not r["crossover_hz"].isNaN
 
   test "a loop the break did open still measures its margin":
-    # The guard must not fire on the ordinary case: a single-pole model in a
-    # plain feedback network is exactly 90 degrees.
+    # The guard must not fire on a single-pole stage (exactly 90 degrees).
     for nl in [nonInverting(), nonInverting("99k", "1k")]:
       let r = analyzeLoopGain(nl, "U1", "vin", "vout")
       check not r["phase_margin_deg"].isNaN
@@ -312,10 +305,8 @@ suite "a part inside the loop that carries no model":
       check not r.issues.anyIt(it.kind == KindLoopBreakInvalid)
 
   test "a second amplifier in the path is modelled, so a cascade is measured":
-    # Two Sallen-Key sections. Section 1 is damped and section 2 is peaky;
-    # only their product is flat. With the upstream amplifier stood in for
-    # by impedances to ground the path through it is gone, and this reported
-    # 82 dB of peaking against a response that is flat to 20 kHz.
+    # Two Sallen-Key sections, one damped and one peaky, flat only as a
+    # product: the upstream amplifier must not be stood in for.
     let nl = sallenKey()
     let vout2 = addNet(nl, newNet("vout2"))
     let nc = addNet(nl, newNet("nc"))
@@ -337,18 +328,14 @@ suite "a part inside the loop that carries no model":
     var spec = defaultOpAmpSpec()
     spec.maxHops = 6
     let r = analyzeOpAmpResponse(nl, "U2", "vin", "vout2", spec)
-    # 4th-order and near-Butterworth: flat, cornering just under 20 kHz.
+    # 4th-order near-Butterworth: flat, cornering just under 20 kHz.
     check r["peaking_db"] < 1.0
     check abs(r["bw_3db"] - 19.7e3) / 19.7e3 < 0.1
 
   proc acCoupledStage(): Netlist =
-    ## A non-inverting stage whose gain leg is capacitively coupled -- the
-    ## shape every single-supply amplifier takes. Midband gain is
-    ## 1 + 9k/1k = 10 (20 dB) from about 100 Hz (the gain leg's zero, at
-    ## 1/(2*pi*RG*CG)) up to the amplifier's own 100 kHz. Below that the
-    ## stage falls back to unity, so its gain *at DC* is 0 dB by
-    ## construction -- which is exactly what makes a DC-referenced figure
-    ## useless here.
+    ## A non-inverting stage with a capacitively coupled gain leg: 20 dB from
+    ## ~100 Hz (1/(2*pi*RG*CG)) to 100 kHz, unity at DC -- so a DC-referenced
+    ## figure is useless.
     result = newNetlist("ac")
     let gnd = addNet(result, newNet("0", ntGround))
     let vcc = addNet(result, newNet("vcc", ntPower))
@@ -372,21 +359,17 @@ suite "a part inside the loop that carries no model":
       c.attrs["value"] = value
 
   test "an AC-coupled stage reports its midband gain, not its DC gain":
-    # This is the whole point of the band-referenced set. `gain_dc_db` is
-    # correct and useless here: the gain-setting leg is capacitively coupled,
-    # so the stage really does have unity gain at DC, by design.
+    # `gain_dc_db` is correct but useless: the stage has unity gain at DC.
     let r = analyzeOpAmpResponse(acCoupledStage(), "U1", "vin", "vout")
     check r["gain_dc_db"] < 1.5                   # essentially unity
     check abs(r["gain_max_db"] - 20.0) < 1.0      # 1 + 9k/1k
-    # The low edge is the gain leg's zero, 1/(2*pi*1k*1.6u) = 99.5 Hz, and
-    # the high edge is the amplifier's own GBW/gain = 100 kHz.
+    # Low edge 1/(2*pi*1k*1.6u) = 99.5 Hz; high edge GBW/gain = 100 kHz.
     check abs(r["f_lo_3db"] - 99.5) / 99.5 < 0.15
     check abs(r["f_hi_3db"] - 100.0e3) / 100.0e3 < 0.2
     check r["f_gain_max"] > r["f_lo_3db"]
 
   test "a DC-coupled stage keeps both references, and they agree":
-    # Nothing was taken away: where the first swept point *is* the passband,
-    # the DC-referenced and band-referenced answers are the same measurement.
+    # Where the first point is in the passband, both references agree.
     let r = analyzeOpAmpResponse(nonInverting(), "U1", "vin", "vout")
     check abs(r["gain_max_db"] - r["gain_dc_db"]) < 0.1
     check abs(r["f_hi_3db"] - r["bw_3db"]) / r["bw_3db"] < 0.05
@@ -396,7 +379,7 @@ suite "a part inside the loop that carries no model":
     var spec = defaultOpAmpSpec()
     spec.gainAtFreq = 1000.0
     let r = analyzeOpAmpResponse(acCoupledStage(), "U1", "vin", "vout", spec)
-    # Well inside the passband, so it is the midband gain.
+    # Well inside the passband: the midband gain.
     check abs(r["gain_at_f"] - 20.0) < 1.0
 
   test "gain_at_f outside the swept band is NaN, not an extrapolation":
@@ -415,10 +398,8 @@ suite "a part inside the loop that carries no model":
     check "gain_max_db" in named
 
   proc clippingStage(): Netlist =
-    ## A non-inverting stage with antiparallel diodes across the feedback
-    ## network -- the shape of every soft-clipping overdrive. The diodes
-    ## carry a real model, so they actually clip; without one they would be
-    ## stood in for by resistors to ground and the stage would measure clean.
+    ## A non-inverting stage with antiparallel diodes across the feedback --
+    ## a soft clipper. The diodes carry a real model so they actually clip.
     result = newNetlist("clip")
     let gnd = addNet(result, newNet("0", ntGround))
     let vcc = addNet(result, newNet("vcc", ntPower))
@@ -450,8 +431,7 @@ suite "a part inside the loop that carries no model":
     result.driveFreq = 1000.0
 
   proc railedStage(stated: bool): Netlist =
-    ## Gain of 11 on +-5 V rails. Driven at 1 V peak it asks for 11 V of
-    ## swing from an amplifier that has 5 to give.
+    ## Gain of 11 on +-5 V rails; 1 V peak in asks for 11 V out.
     result = newNetlist("r")
     let gnd = addNet(result, newNet("0", ntGround))
     let vcc = addNet(result, newNet("vcc", ntPower))
@@ -476,16 +456,15 @@ suite "a part inside the loop that carries no model":
       c.attrs["value"] = value
 
   test "a clipping stage distorts, and the distortion is measured":
-    # `.ac` cannot see this at all: it linearises about the operating point,
-    # where the diodes are off and the stage is a clean gain of 101.
+    # `.ac` linearises about the operating point, where the diodes are off.
     let r = analyzeLargeSignal(clippingStage(), "U1", "vin", "vout",
                                lsSpec(0.05))
     check r["thd_pct"] > 5.0
     check not r["output_swing"].isNaN
 
   test "the output is bounded by the clippers, not by the gain":
-    # A linear gain of 101 on 50 mV would swing 10 V peak-to-peak. Diodes
-    # across the feedback network hold it near a diode drop either side.
+    # Linear gain of 101 on 50 mV would be 10 Vpp; the diodes hold it near a
+    # diode drop.
     let r = analyzeLargeSignal(clippingStage(), "U1", "vin", "vout",
                                lsSpec(0.05))
     check r["output_swing"] < 3.0
@@ -498,42 +477,33 @@ suite "a part inside the loop that carries no model":
     let hard = analyzeLargeSignal(clippingStage(), "U1", "vin", "vout",
                                   lsSpec(0.2))
     check hard["gain_compressed_db"] < soft["gain_compressed_db"] - 6.0
-    # And the swing barely grows for a 40x increase in drive.
+    # The swing barely grows for 40x the drive.
     check hard["output_swing"] < soft["output_swing"] * 4.0
 
   test "a linear stage driven inside its range measures clean":
-    # The counterpart: without something nonlinear in it there is nothing to
-    # find, and the number must say so rather than reporting noise.
-    #
-    # On split rails with a ground-referenced input, so the stage really is
-    # biased in the middle of its range. `nonInverting` is deliberately not
-    # used here: it runs on a single supply with V- on ground and its input
-    # referenced to ground, so its output sits *on* the negative rail and
-    # cannot swing down at all -- which the next test checks.
+    # Nothing nonlinear means nothing to find. Split rails with a
+    # ground-referenced input, so the stage is biased mid-range
+    # (`nonInverting` sits on its negative rail; see the next test).
     let r = analyzeLargeSignal(railedStage(true), "U1", "vin", "vout",
                                lsSpec(0.1))
     check r["thd_pct"] < 1.0
 
   test "a stage biased on a rail cannot swing, and now says so":
-    # Before the macromodel was bounded this measured perfectly clean: an
-    # unbounded VCVS output swings straight through a rail the part does not
-    # have. The circuit is real and so is the defect.
+    # The macromodel output is bounded, so it can't swing through a rail.
     let r = analyzeLargeSignal(nonInverting(), "U1", "vin", "vout",
                                lsSpec(0.001))
     check r["thd_pct"] > 20.0
     check r["clip_low"] > -0.1        # pinned at the 0 V rail
 
   test "a large-signal run needs a drive level":
-    # The answer is a function of it, so there is no default to fall back on.
+    # The answer depends on it, so there's no default.
     var spec = defaultOpAmpSpec()
     expect NetlistError:
       discard analyzeLargeSignal(clippingStage(), "U1", "vin", "vout", spec)
 
   test "an amplifier with stated rails runs out of swing":
-    # Unbounded, the macromodel's output is a VCVS -- an ideal source, which
-    # cannot saturate however hard the loop drives it. A stage whose only
-    # nonlinearity is the amplifier running out of swing then measures
-    # perfectly clean, which is a statement about the model.
+    # Unbounded, the output is an ideal VCVS that never saturates, so a
+    # stage limited only by swing measures clean.
     let r = analyzeLargeSignal(railedStage(true), "U1", "vin", "vout",
                                lsSpec(1.0))
     check abs(r["clip_high"] - 5.0) < 0.05
@@ -561,8 +531,7 @@ suite "a part inside the loop that carries no model":
     check stated
 
   test "bounding changes nothing small-signal":
-    # It must be invisible where the amplifier never approaches its rails,
-    # or every existing number moves for no reason.
+    # Invisible where the amplifier stays clear of its rails.
     let free = analyzeOpAmpResponse(railedStage(false), "U1", "vin", "vout")
     let held = analyzeOpAmpResponse(railedStage(true), "U1", "vin", "vout")
     check abs(free["gain_dc_db"] - held["gain_dc_db"]) < 1e-6
@@ -582,8 +551,8 @@ suite "a part inside the loop that carries no model":
     check r["output_swing"] > 20.0
 
 proc wienBridge(): Netlist =
-  ## A Wien-bridge oscillator: the positive feedback returns straight to IN+,
-  ## which is exactly the node an `.ac` sweep wants to drive.
+  ## A Wien-bridge oscillator: positive feedback returns straight to IN+, the
+  ## node an `.ac` sweep would drive.
   netlist("wien"):
     net vcc, kind = ntPower, voltage = "5.0"
     net gnd, kind = ntGround, name = "0"
@@ -620,10 +589,9 @@ proc wienBridge(): Netlist =
       pin "2", vout, kind = ptPassive
 
 proc biasedStage(): Netlist =
-  ## A single-supply non-inverting stage whose input arrives at IN+ and whose
-  ## gain leg returns to the same *bias rail* the input is referenced to.
-  ## There is a passive path from the output back to IN+ -- but it runs
-  ## through the rail, so it is not feedback. This is the TS808's shape.
+  ## A single-supply non-inverting stage whose gain leg returns to the bias
+  ## rail the input is referenced to: a passive output-to-IN+ path through a
+  ## rail, which is not feedback.
   netlist("biased"):
     net vcc, kind = ntPower, voltage = "9.0"
     net gnd, kind = ntGround, name = "0"
@@ -650,12 +618,8 @@ proc biasedStage(): Netlist =
       pin "2", vref, kind = ptPassive
 
 suite "driving a node the loop returns to":
-  # An `.ac` proc measures a stage by hanging an ideal source on its input
-  # net. An ideal source holds that node, so if the feedback returns there,
-  # the sweep measures the forward path of a circuit whose loop has been cut
-  # -- and it does so without failing. Before this check, the Wien bridge
-  # below reported `f_hi_3db` of 289 kHz for a circuit that does everything
-  # it does at 1.59 kHz, and the claim passed.
+  # An ideal source on the input net holds that node, so if feedback returns
+  # there the sweep measures a cut loop without failing.
 
   test "an oscillator's injection point is refused, with the reason":
     let issues = checkInjectionPoint(wienBridge(), "U1", "vp")
@@ -665,13 +629,13 @@ suite "driving a node the loop returns to":
     check "U1.IN+" in issues[0].message
 
   test "and no numbers are produced for it":
-    # notEvaluable, not a confident wrong answer.
+    # notEvaluable, not a wrong answer.
     let r = analyzeOpAmpResponse(wienBridge(), "U1", "vp", "vout")
     check r.measurements.len == 0
     check r.issues.anyIt(it.kind == KindInputInFeedback)
 
   test "the loop-gain sweep refuses the same injection point":
-    # It holds the input at DC 0 AC 0, which clamps the node just as firmly.
+    # It holds the input at DC 0 AC 0, clamping the node just as firmly.
     let r = analyzeLoopGain(wienBridge(), "U1", "vp", "vout")
     check r.issues.anyIt(it.kind == KindInputInFeedback)
 
@@ -680,16 +644,12 @@ suite "driving a node the loop returns to":
     check checkInjectionPoint(nonInverting(), "U1", "vin").len == 0
 
   test "a path that returns through a bias rail is not feedback":
-    # The discriminator that matters in practice: `vout` really does reach
-    # `vin` through passives here, via the 4.5 V rail. A rail is an AC ground
-    # that every stage hangs off, so crossing one connects things that are
-    # not connected in any signal sense -- the same rule `spice/isolate`
-    # applies when it refuses to traverse through a rail.
+    # `vout` reaches `vin` through the 4.5 V rail, but a rail is an AC ground;
+    # like `spice/isolate`, the walk doesn't cross rails.
     check checkInjectionPoint(biasedStage(), "U1", "vin").len == 0
 
   test "a stage with no feedback at all is still reported as open, not as this":
-    # The two findings must not be confused: one says the loop is missing,
-    # the other says the measurement would destroy it.
+    # Missing loop vs. a measurement that would destroy it: distinct findings.
     let nl = nonInverting()
     removeComponent(nl, "RF")
     check checkInjectionPoint(nl, "U1", "vin").len == 0

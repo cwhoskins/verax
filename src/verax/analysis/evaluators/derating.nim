@@ -8,10 +8,8 @@ const deratingQuantities = ["worst_voltage_derating", "worst_power_derating",
                             "parts_over_derating"]
 
 proc deratingKey(ctx: EvalContext, a: Assertion): string = subjectNet(ctx.design, a)
-  ## Keyed by rail, so each claimed rail is one `.op`. Unlike `dc_voltage`,
-  ## which answers every net from a single run, this reduces to a *worst*
-  ## over a filtered set of parts -- so one run cannot serve two subjects
-  ## without returning two answers.
+  ## Keyed by rail: each claim is a worst case over a filtered set of parts,
+  ## so one run can't serve two subjects (unlike `dc_voltage`).
 
 proc deratingDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
@@ -29,9 +27,7 @@ proc runDerating(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] 
   var spec = defaultDeratingSpec()
   spec.onlyTouching = rail
   spec.precomputed = nodeVoltages(sharedOperatingPoint(ctx))
-  # The ceiling belongs to the assertion, not to the analysis. Left in place
-  # it would report the same claim twice, possibly at two thresholds -- the
-  # same reason every other adapter here runs measurement-only.
+  # The assertion owns the ceiling (measurement-only, as everywhere).
   spec.defaultCeiling = Inf
   for k in spec.ceilingByFamily.keys:
     spec.ceilingByFamily[k] = Inf

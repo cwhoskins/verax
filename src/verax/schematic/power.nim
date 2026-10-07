@@ -1,25 +1,13 @@
-## Power/decoupling band classification: which placement units belong in the
-## separated power section `enforcePowerBand` (`state.nim`) carves out below
-## the signal circuit, and why.
+## Power/decoupling band classification: which placement units go in the
+## separated power section below the signal circuit. Plain data only;
+## enforcement is `state.enforcePowerBand`. Included after `./constrained`
+## and before `./state`.
 ##
-## `include`d right after `./constrained` (needs `unitExternallyPurePower`,
-## `CompositePlan`/`rawMembers`) and before `./state` (the actual band
-## enforcement is a `LayoutState`-mutating pass, so it lives in `state.nim`
-## exactly where `placeOverrideUnit`/`enforceLayoutSides` do -- this file
-## holds only the plain-data classification, the `overrides.nim`/
-## `layoutOverridePlan` split). Deliberately plain data throughout: nothing
-## here takes a `LayoutState`, so nothing here has to sit after `state.nim`.
-##
-## Classification runs at the **placement-unit** level (a composite is one
-## unit), exactly `poolSide`'s shape: an authored `layout.power` override
-## wins first-wins across a unit's members, and failing that,
-## `unitExternallyPurePower` (`constrained.nim`) classifies the whole unit as
-## power when every net linking it to the rest of the sheet is a rail or
-## ground -- a decoupling bank, a bulk cap, a ferrite bead or inductor
-## between two rails, an LC/RC filter between planes, a rail-to-rail
-## divider. A unit with any external signal net stays in the signal circuit
-## unless overridden -- an LDO with an enable or feedback pin is exactly this
-## case.
+## Per placement unit (a composite is one): a `layout.power` override wins
+## (first-wins across members); otherwise `unitExternallyPurePower` --
+## every external net a rail or ground (decoupling, bulk caps, a bead between
+## rails, a rail-to-rail divider). Any external signal net (an LDO's enable)
+## keeps a unit in the signal circuit.
 
 type
   PowerClass = enum
@@ -27,28 +15,15 @@ type
 
   PowerPlan = object
     cls: seq[PowerClass]
-      ## Parallel to `CompositePlan.items` (arena index) -- meaningful only
-      ## for the indices `CompositePlan.topLevel` lists, which is exactly
-      ## `powerPlan` iterates and `enforcePowerBand` reads.
+      ## Parallel to `CompositePlan.items`; meaningful for `topLevel` entries.
     any: bool
-      ## True only when the sheet has *both* a signal-classified and a
-      ## power-classified unit -- an all-power or all-signal sheet has
-      ## nothing to separate, so this is the zero-value guarantee every
-      ## consumer below (`enforcePowerBand`, `groupsOf`'s `noMerge`,
-      ## `repairTerminalClearance`/`recoverRouting`'s band check) is gated
-      ## on: false ⇒ byte-identical pre-feature output.
+      ## True only when the sheet has both classes (otherwise nothing to
+      ## separate). Every consumer is gated on it.
 
 proc poolPower(comps: seq[Component], plan: CompositePlan,
               ov: LayoutOverridePlan, item: int): PowerClass =
-  ## The power class a placement-pool unit is forced to. `item` is an arena
-  ## index (`CompositePlan.items`, what `rawMembers` expects and what
-  ## `placementPool`/`CompositePlan.topLevel` entries already are) -- not a
-  ## position in `topLevel`, the same convention `poolSide` documents. A
-  ## composite is one placement unit, so its class is the first non-
-  ## `powerAuto` member's override in canonical member order (deterministic
-  ## first-wins, silently -- see `layoutOverrideReport` for making that
-  ## visible); failing that, `unitExternallyPurePower` classifies the whole
-  ## unit from its external nets.
+  ## The power class of a pool unit (arena index): the first member's
+  ## non-`powerAuto` override, else `unitExternallyPurePower`.
   let members = rawMembers(plan, item)
   if ov.anyPower:
     for i in members:
@@ -71,14 +46,8 @@ proc powerPlan(comps: seq[Component], plan: CompositePlan,
   result.any = anySignal and anyPower
 
 proc rawPowerFlags(power: PowerPlan, plan: CompositePlan, n: int): seq[bool] =
-  ## `power.cls`, projected onto raw component indices -- the shape
-  ## `groupsOf`'s `noMerge` and `repairTerminalClearance`/`recoverRouting`'s
-  ## `isPower` band parameters need, since those already-spliced-earlier
-  ## files cannot see `PowerPlan`/`CompositePlan` types defined or completed
-  ## this late (the same plain-data-escape-hatch reason `arrays.nim`'s
-  ## `extraMembers` gives for `groupsOf`). `@[]` when `power.any` is false --
-  ## the zero-value guarantee every caller's own default-empty parameter is
-  ## gated on.
+  ## `power.cls` projected onto raw component indices, for files spliced
+  ## earlier that can't see these types. `@[]` when `power.any` is false.
   if not power.any: return
   result = newSeq[bool](n)
   for idx in plan.topLevel:

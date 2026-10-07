@@ -1,25 +1,14 @@
 ## Every kind SPICE must be able to read.
 ##
-## The invariant this file exists to hold is narrow and was violated three
-## times before anyone wrote it down:
+## **A `kind` that `kinds.isPassive` accepts must be spellable by the deck
+## writer -- `designatorPrefix` knows its letter, or a model pass rewrites
+## it.**
 ##
-##   **A `kind` that `kinds.isPassive` accepts must be something the deck
-##   writer can spell -- either because `designatorPrefix` knows its device
-##   letter, or because a model pass rewrites it into parts that do.**
+## `spice/isolate` pulls every passive into the fragment, so one with no
+## device letter lands under its own first letter, which ngspice reads as
+## whatever that means (`FB1` a CCCS, `CCCS1` a 2 F capacitor).
 ##
-## Passivity is what makes it load-bearing. `models.expandPinModels` stands in
-## for every part `isPassive` *rejects*, so those never reach a deck as
-## themselves; and `spice/isolate` absorbs every part `isPassive` *accepts*
-## into the fragment, so those do. A kind on the accepted side with no device
-## letter therefore lands in the deck under its own first letter, and ngspice
-## reads that letter as whatever it means -- `FB1` as a current-controlled
-## current source, `CCCS1` as a 2 F capacitor. Silently, in both cases.
-##
-## This is a *generated* test rather than a list, for the same reason
-## `verify.describeQuantities` computes reachability rather than reciting it:
-## a hand-kept list is exactly the thing that drifts from the tables it is
-## meant to describe. Add a kind to `conductiveKinds` with no model and no
-## letter and this file fails.
+## Generated rather than listed, so it can't drift from the tables.
 
 import std/[strutils, streams, tables, unittest]
 
@@ -65,22 +54,20 @@ suite "every passive kind survives to a deck as a device SPICE knows":
              "expanded: it reaches a deck as itself"
 
   test "and no deck line starts with a letter meaning a different device":
-    # The concrete failure, rather than the property: a component whose
-    # designator prefix is a SPICE device letter for something else.
+    # The concrete failure: a designator prefix that's a SPICE letter for
+    # something else.
     for kind in passiveKinds():
       let nl = oneOf(kind)
       discard expandPinModels(nl)
       let s = newStringStream()
       writeNetlist(nl, s)
-      # The first line is the deck title, not a device.
+      # The first line is the title.
       let lines = s.data.splitLines
       for i in 1 ..< lines.len:
         let line = lines[i]
         if line.len == 0 or line[0] == '.' or line[0] == '*': continue
         if not line[0].isUpperAscii and not line[0].isLowerAscii: continue
-        # Whatever the line claims to be, the component it came from must
-        # agree -- which is exactly what `deckDesignator` guarantees when the
-        # kind is known and cannot when it is not.
+        # The line's device letter must agree with its source component.
         var matched = false
         for _, c in nl.components:
           if deckDesignator(c) == line.split(' ')[0]: matched = true
@@ -89,9 +76,8 @@ suite "every passive kind survives to a deck as a device SPICE knows":
           echo "  kind '", kind, "' produced an unattributable line: ", line
 
   test "the kinds that needed a model got one, not a letter":
-    # `ferrite_bead` and the links are expanded rather than lettered, and the
-    # distinction matters: a bead is not an inductor and a fuse's `value` is
-    # amps, so giving either a device letter would have been the wrong fix.
+    # These are expanded rather than lettered: a bead isn't an inductor and a
+    # fuse's `value` is amps.
     for kind in ["ferrite_bead", "wire", "jumper", "fuse"]:
       let nl = oneOf(kind)
       discard expandPinModels(nl)
@@ -99,9 +85,8 @@ suite "every passive kind survives to a deck as a device SPICE knows":
       check nl.components.len > 0
 
   test "a switch stood up as an S element is spellable and self-attributing":
-    # `vswitch`/`iswitch` are never authored -- `spice/models/switch` emits
-    # them -- and they reach passivity through `hasDeviceModel`, not through
-    # any of the three kind lists above. Check the deck line directly.
+    # `vswitch`/`iswitch` are emitted by `spice/models/switch` and reach
+    # passivity via `hasDeviceModel`; check the deck line directly.
     let nl = newNetlist("t")
     let a = addNet(nl, newNet("a", ntSignal))
     let b = addNet(nl, newNet("b", ntSignal))
@@ -122,8 +107,7 @@ suite "every passive kind survives to a deck as a device SPICE knows":
         check deckDesignator(nl.components["SSW1"]) == line.split(' ')[0]
 
   test "a fuse's value is amps and a link's is ohms":
-    # Reading a 2 A fuse's value as 2 ohms would put forty times its real cold
-    # resistance in series with a rail and quietly explain away a drop.
+    # A 2 A fuse read as 2 ohms would put a large false drop on a rail.
     let f = oneOf("fuse")
     f.components["F1"].attrs["value"] = "2"
     discard expandResistiveParts(f)

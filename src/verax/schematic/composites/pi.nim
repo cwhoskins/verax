@@ -1,17 +1,10 @@
-## The pi motif: a flat two-terminal *series* part with a flat two-terminal
-## *shunt-to-ground* part at each of its terminals -- `docs/composites.md`
-## idea 3, "shunt pair flanking any part". Canonical drawing: the series part
-## horizontal, a shunt hanging straight down to ground from each end.
+## The pi motif: a flat two-terminal *series* part with a *shunt-to-ground*
+## part at each terminal. Drawn with the series part horizontal and each
+## shunt hanging down to ground.
 ##
-## Recognition is topology-only, the discipline `isTwoTerminal` documents:
-## `isGround` on a shunt's far net, `isRail`/`isGround` rejected on the series
-## nets, and never a `Component.kind` string or a pin name. Members are always
-## raw flat two-terminal singletons -- `isTwoTerminal`, not the widened
-## `isTraversable` that only `constrained.pathsFrom` calls, is what every
-## `recognize` hook here tests, so a pi never nests another kind's composite
-## and never claims a declared multi-exit part as its series or shunt member;
-## registered after `parallelStackKind`, so a shunt that is really a parallel
-## bank stays a parallel stack and this pi is declined.
+## Topology-only recognition (`isGround` on a shunt's far net; rails and
+## ground rejected on the series nets), using `isTwoTerminal`. Registered
+## after `parallelStackKind`, so a parallel bank stays a stack.
 
 proc piRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]] =
   var groups: seq[seq[int]]
@@ -20,8 +13,8 @@ proc piRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]] =
     var portNets = initHashSet[string]()
     for _, pn in nl.ports:
       if pn != nil: portNets.incl pn.name
-    # net name -> traversable component indices with a pin on it, and total
-    # pin count per net (tables only looked up, never iterated).
+    # Net -> traversable components on it, and pin count per net (lookups
+    # only).
     var traversableOn = initTable[string, seq[int]]()
     var pinCount = initTable[string, int]()
     for i, c in comps:
@@ -32,11 +25,9 @@ proc piRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]] =
         if usable: traversableOn.mgetOrPut(pin.net.name, @[]).add i
 
     proc external(netName: string): bool =
-      ## A pi port must reach beyond the composite: more than the series pin
-      ## and the shunt pin on it, or a declared interface port. A net with
-      ## only those two pins is a *private* junction -- that is the tee's mid
-      ## node, and letting the pi claim it here is what made a real tee
-      ## (`[L1]--mid--[L2]`, shunt at mid) misread as a pi around `L2`.
+      ## A pi port must reach beyond the composite (more than the two pins, or
+      ## a declared port). A two-pin net is a private junction -- a tee's mid
+      ## node, which must not read as a pi.
       netName in portNets or pinCount.getOrDefault(netName) > 2
 
     proc groundShunt(netName: string, exclude: int): int =
@@ -78,8 +69,8 @@ proc piRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]] =
 
 proc piNets(comps: seq[Component], members: seq[int]):
     tuple[a, b: string] =
-  ## The two external nets: `a` is the one `series` shares with `shuntA`
-  ## (`members[0]`), `b` the one it shares with `shuntB` (`members[2]`).
+  ## The two external nets: `a` shared with `shuntA` (`members[0]`), `b`
+  ## with `shuntB` (`members[2]`).
   let series = members[1]
   proc shared(shunt: int): string =
     for _, ps in comps[series].pins:
@@ -90,8 +81,8 @@ proc piNets(comps: seq[Component], members: seq[int]):
 
 proc piInternalLayout(comps: seq[Component], syms: seq[SymbolDef],
                       members: seq[int]): seq[Point] =
-  ## series at the origin (horizontal); each shunt one grid pitch below its
-  ## end pin (vertical, ground pin down). Raw-body-touching, grid-rounded.
+  ## Series at the origin, horizontal; each shunt one pitch below its end
+  ## pin, vertical, ground down.
   @[Point(x: -pinSpan, y: 2.0 * pinSpan),   # shuntA, under the -x end
     Point(x: 0.0, y: 0.0),                   # series
     Point(x: pinSpan, y: 2.0 * pinSpan)]     # shuntB, under the +x end
@@ -109,8 +100,7 @@ proc piExternalPins(comps: seq[Component], members: seq[int]): seq[CompositePort
 proc piPickRepresentative(parts: seq[SchematicPart], footprint: seq[Obstacle],
                           port: CompositePort):
     tuple[partIdx: int, pinName: string] =
-  ## The series pin (covered[0]) exits sideways and clears the footprint, so
-  ## it is returned first; the deterministic default stands otherwise.
+  ## The series pin (covered[0]) exits sideways and clears the footprint.
   result = port.representative
   for candidate in port.covered:
     let part = parts[candidate.partIdx]
@@ -143,9 +133,8 @@ proc piRotationCandidates(nl: Netlist, comps: seq[Component],
                           syms: seq[SymbolDef], pos: seq[Point],
                           current: seq[float],
                           members: seq[int]): seq[seq[float]] =
-  ## One canonical assignment: series horizontal with net `a` on the -x side
-  ## (where `shuntA` sits), each shunt vertical with its series-side pin up so
-  ## its ground pin points down.
+  ## One assignment: series horizontal with `a` on -x (by `shuntA`), shunts
+  ## vertical with ground down.
   let nets = piNets(comps, members)
   let left = Point(x: -1.0, y: 0.0)
   let up = Point(x: 0.0, y: -1.0)

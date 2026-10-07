@@ -1,13 +1,9 @@
-## Scene-native finishing stages.  They consume the completed scene and the
-## private routing metadata retained in `LayoutState`; no transient data leaks
-## into `Schematic`.
+## Scene-native finishing stages, consuming the completed scene and
+## `LayoutState`'s private routing metadata.
 
 proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
                   enabled: bool) =
-  # `routing` is a large object -- Nim passes it by hidden reference, no copy.
-  # The four aliases below are read-only lookups, so `{.cursor.}` keeps each a
-  # borrowed view rather than duplicating the table/seq/set; the scene payload
-  # (parts/wires/...) that `routing` also carries is never touched here.
+  # `{.cursor.}` keeps these read-only aliases borrowed rather than copied.
   let pinPos {.cursor.} = routing.pinPos
   let partIdxByDesig {.cursor.} = routing.partIdxByDesig
   let portedNets {.cursor.} = routing.portedNets
@@ -17,39 +13,28 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
   let arrayNets {.cursor.} = routing.arrayNets
   let arrayLabelReqs {.cursor.} = routing.arrayLabelReqs
 
-  # `ownsPin` mirrors the one inside `routeScene`; the label pass needs the
-  # same rail/ground reading (`isGroundHere`/`isRailHere`, module-level in
-  # `geometry.nim`) when it decides which nets get a name label.
+  # Mirrors `routeScene`'s `ownsPin`, for the same rail/ground reading.
   proc ownsPin(p: Pin): bool =
     p.component != nil and p.component.netlist == nl
 
   # --- label placement --------------------------------------------------------
-  # Part designators/values, signal-net names and supply-rail names are all
-  # placedBoxes here by a first-fit search against the finished geometry, in that
-  # order (a designator adrift from its body reads worse than a net name adrift
-  # from its pin), each tested against every label already placedBoxes. `bodyRects`
-  # are the *drawn* ink boxes and the port bodies -- not the routing-inflated
-  # obstacles: a label may sit in a routing channel, and the wire test already
-  # covers the channels a wire actually took. If every candidate collides,
-  # candidate 0 is used anyway, so a label is never dropped.
+  # Designators/values, then net names, then rail names, each by first-fit
+  # search against the finished geometry and earlier labels. `bodyRects` are
+  # drawn ink and port bodies (labels may sit in routing channels). If every
+  # candidate collides, the least bad is used; labels are never dropped.
   let allWires = scene.wires
   var placedBoxes: seq[Rect]
   var bodyRects: seq[Rect]
   for p in scene.parts: bodyRects.add partInk(p)
   for p in scene.ports: bodyRects.add portBody(p)
-  # The ground/supply glyph `svg` caps each rail/ground stub with reaches
-  # ~10 units perpendicular and ~8 along the stub -- decoration, not a wire, so
-  # add its footprint here or a label would land across the bars.
+  # Add each rail/ground glyph's footprint so labels avoid the bars.
   for w in scene.wires:
     if w.kind in {wkGround, wkSupply} and w.points.len > 0:
       let e = w.points[^1]
       bodyRects.add (e.x - 13.0, e.y - 13.0, e.x + 13.0, e.y + 13.0)
   var newLabels: seq[SchematicLabel]
 
-  # A symbol draws a short lead from each pin in to its glyph -- the span
-  # between the pin (on `bodyW`/`bodyH`) and the ink rect. `svg` strokes those,
-  # not `layout`, so they are not in `allWires`; add them here so a label on a
-  # crowded part's occupied side is still rejected off them.
+  # Add symbol leads (pin to ink, drawn by `svg`) so labels avoid them.
   var leadSegs: seq[tuple[a, b: Point]]
   for p in scene.parts:
     if p.isBox: continue
@@ -64,9 +49,7 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
       if abs(e.x - pt.x) > 1e-6 or abs(e.y - pt.y) > 1e-6:
         leadSegs.add (a: pt, b: e)
 
-  # Fallback stubs are drawn by `svg` like wires (dashed, amber), so a label
-  # must avoid crossing them exactly as it avoids a real wire -- even though
-  # the stub is not connectivity and never appears in `allWires`.
+  # Fallback stubs are drawn like wires; labels avoid them too.
   var fallbackSegs: seq[tuple[a, b: Point]]
   for f in scene.fallbacks:
     for k in 0 ..< f.points.high:
@@ -74,9 +57,7 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
       let b = f.points[k + 1]
       if abs(a.x - b.x) > 1e-6 or abs(a.y - b.y) > 1e-6:
         fallbackSegs.add (a: a, b: b)
-    # `svg` caps an `fbNetLabel` stub with a chevron reaching ~6 units past
-    # the stub end; reserve a short axis-aligned span there so a label never
-    # lands across it.
+    # Reserve the `fbNetLabel` chevron's ~6 units past the stub end.
     if f.kind == fbNetLabel:
       let tip = if f.points.len >= 1: f.points[^1] else: Point(x: f.x, y: f.y)
       fallbackSegs.add (a: tip,
@@ -88,9 +69,8 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
     if w > 0.0 and h > 0.0: w * h else: 0.0
 
   proc penalty(box: Rect, skipBody: int): float =
-    ## 0 when the spot is clear; otherwise a cost, so a fully boxed-in label
-    ## falls back to the *least bad* spot rather than blindly to candidate 0.
-    ## A wire or lead crossing dominates any amount of body/label overlap.
+    ## 0 when clear; else a cost, so a boxed-in label takes the least bad
+    ## spot. A wire or lead crossing outweighs any overlap.
     let ob = @[Obstacle(x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2)]
     for w in allWires:
       for i in 1 ..< w.points.len:
@@ -124,19 +104,15 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
     placedBoxes.add chosen.box
 
   for idx, p in scene.parts:
-    # A box draws its own designator/value inside the body (`svg.drawPart`),
-    # where `boxSlots` reserved the room -- only symbol parts are labelled here.
+    # Boxes label themselves inside the body; only symbols are labelled
+    # here.
     if p.isBox: continue
     var lines: seq[LabelLine]
     let shownDesig = if p.label.len > 0: p.label else: p.designator
     if shownDesig.len > 0: lines.add (shownDesig, designatorSize, lrDesignator)
     if p.value.len > 0: lines.add (p.value, valueSize, lrValue)
-    # A collapsed *component* array's representative symbol (a termination
-    # resistor badged "x8") has no box interior for `svg` to print the count
-    # into, unlike a collapsed subsheet's box -- so it rides along as one more
-    # stacked label line, placed collision-aware by the same first-fit search
-    # as the designator/value above it, rather than a fixed offset that could
-    # land on a wire.
+    # A component array's representative symbol has no interior for its
+    # count, so "xN" is one more stacked label line.
     if p.count >= 2: lines.add ("x" & $p.count, designatorSize, lrDesignator)
     if lines.len == 0: continue
     var occupied: set[Side]
@@ -153,11 +129,9 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
       if s in occupied: order.add s
     place(lines, partInk(p), order, p.designator, idx)
 
-  # Signal-net names: near the net's leftmost-then-topmost owned pin, as before,
-  # but now searched around it -- and the anchor pin's own wire leaves along
-  # its escape direction, so that side is tried last. A net drawn as fallbacks
-  # is labelled at each fallback pin instead (below), so its name is not
-  # duplicated by this pass.
+  # Net names near the leftmost-then-topmost owned pin, trying the wire's
+  # escape side last. Nets drawn as fallbacks are labelled at each fallback
+  # pin instead.
   var fallbackNets = initHashSet[string]()
   for f in scene.fallbacks: fallbackNets.incl f.net
   for _, net in nl.nets:
@@ -194,10 +168,8 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
     let dot: Rect = (anchor.x, anchor.y, anchor.x, anchor.y)
     place(@[(net.name, netLabelSize, lrNet)], dot, order, "", -1)
 
-  # Fallback names: the exact net name at each fallback pin, searched like a
-  # net name but with the pin's escape side -- where the dashed stub leaves --
-  # tried last. A zero-space fallback has no stub but still gets its name at
-  # the pin, so a dangling connection is never anonymous.
+  # Fallback names at each fallback pin, escape side last; zero-space
+  # fallbacks still get a name.
   for f in scene.fallbacks:
     let escSide =
       if f.ex > 0.5: sRight
@@ -211,8 +183,8 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
     let dot: Rect = (f.x, f.y, f.x, f.y)
     place(@[(f.net, netLabelSize, lrNet)], dot, order, "", -1)
 
-  # Non-ported collapsed bundle names: one `"spi[3]"` label at the merged pin,
-  # searched like a net name with the merged pin's own escape side tried last.
+  # One label per non-ported collapsed bundle or array group at the merged
+  # pin.
   for req in bundleLabelReqs & arrayLabelReqs:
     let escSide =
       if req.esc.x > 0.5: sRight
@@ -226,9 +198,8 @@ proc finishLabels(nl: Netlist, scene: var Schematic, routing: RoutingState,
     let dot: Rect = (req.at.x, req.at.y, req.at.x, req.at.y)
     place(@[(req.text, netLabelSize, lrNet)], dot, order, "", -1)
 
-  # Supply-rail names: at the stub end, biased to sit past the glyph. The dot
-  # is inflated to the rail glyph's ~10-unit half-extent so the label clears
-  # the bars.
+  # Rail names at the stub end, past the glyph (dot inflated to its
+  # ~10-unit half-extent).
   for req in railLabelReqs:
     const g = 10.0
     let dot: Rect = (req.at.x - g, req.at.y - g, req.at.x + g, req.at.y + g)
@@ -271,7 +242,7 @@ proc finishBounds(scene: var Schematic, enabled: bool) =
     includePt(f.x, f.y)
     for pt in f.points: includePt(pt.x, pt.y)
     if f.kind == fbNetLabel:
-      # the chevron cap reaches ~6 units past the stub end
+      # the chevron reaches ~6 units past the stub end
       let tip = if f.points.len >= 1: f.points[^1] else: Point(x: f.x, y: f.y)
       includePt(tip.x + f.ex * 6.0, tip.y + f.ey * 6.0)
   for lb in scene.labels:
@@ -294,13 +265,9 @@ proc finishBounds(scene: var Schematic, enabled: bool) =
     scene.maxX = 0.0; scene.maxY = 0.0
 
 proc finishDividers(state: LayoutState, scene: var Schematic) =
-  ## Emits the separated power/decoupling band's dashed rule, spanning the
-  ## finished scene's own bounds -- so it must run **after** `finishBounds`,
-  ## and must not itself feed back into that pass (`svg`/`json` draw/emit it
-  ## independently of `scene.wires`/`scene.parts`). A no-op, `scene.dividers`
-  ## left empty, when `enforcePowerBand` never established a band
-  ## (`state.powerSplit == Inf`) -- the zero-value guarantee every consumer
-  ## of the divider is gated on.
+  ## Emits the power band's dashed rule across the finished scene's bounds,
+  ## so it runs **after** `finishBounds` and doesn't feed back into it. A
+  ## no-op when no band exists (`powerSplit == Inf`).
   if state.powerSplit == Inf: return
   const pad = 20.0
   scene.dividers.add SchematicDivider(

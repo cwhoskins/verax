@@ -1,10 +1,6 @@
-## `verax/pcb/tline`: joins the route (`pcb/trace`) and the cross-section
-## (`pcb/impedance`) into per-frequency Z0/loss, delay, a cascaded ABCD and
-## the `SParams` it converts to. Closed-form cross-checks throughout, per
-## `tests/test_pcb_impedance.nim`'s own reasoning -- the ABCD identities
-## checked here are independently written, not `tline.nim`'s own private
-## `matMul`/`identityAbcd`, so an error in either the test or the module
-## does not silently cancel out.
+## `verax/pcb/tline`: route plus cross-section -> per-frequency Z0/loss,
+## delay, cascaded ABCD and `SParams`. The ABCD identities are written
+## independently here so errors don't cancel.
 
 import std/[math, tables, complex, strutils, unittest]
 
@@ -12,10 +8,8 @@ import verax/netlist
 import verax/pcb
 
 proc abcdOf(spec: LineSpec, f, len: float): array[4, Complex64] =
-  ## The standard uniform-line ABCD from `gamma`/`Zc` -- written directly
-  ## here rather than importing `tline`'s own (unexported) helper, so this
-  ## is a real check of the module's cascade rather than a restatement of
-  ## its own code.
+  ## The uniform-line ABCD from `gamma`/`Zc`, written here rather than
+  ## reusing `tline`'s helper.
   let pr = propagation(spec, f)
   let gl = pr.gamma * complex(len, 0.0)
   let ch = cosh(gl)
@@ -30,10 +24,7 @@ const c0 = 299_792_458.0
 
 let losslessSpec = LineSpec(geometry: lgMicrostrip, w: 0.3e-3, t: 35e-6,
                             h1: 0.5e-3, er: 4.3, tand: 0.0, rho: 1e-15)
-  ## `rho` near-zero rather than exactly `0.0`: `rlgc`'s skin-depth term
-  ## divides by `rho`-derived quantities and would produce `NaN` at exactly
-  ## zero (0/0), which is the right behaviour for "no resistivity stated"
-  ## but wrong for "as close to lossless as this model can represent".
+  ## Near-zero `rho`: exactly zero gives 0/0 in the skin-depth term.
 
 test "cascading two half-length ABCDs equals one whole-length ABCD":
   let f = 2.4e9
@@ -44,9 +35,8 @@ test "cascading two half-length ABCDs equals one whole-length ABCD":
     check abs(whole[i] - cascaded[i]) < 1e-6 * max(1.0, abs(whole[i]))
 
 test "a line at Zc == zRef gives |S11| ~= 0 and |S21| ~= 1 when lossless":
-  # Find the width that puts this microstrip's Zc at 50 ohm, then any
-  # length of *that* line, terminated in the same reference, must reflect
-  # nothing back.
+  # Size the line to Zc = 50 ohm; any length in a 50 ohm reference then
+  # reflects nothing.
   proc z(u: float): float =
     z0(LineSpec(geometry: lgMicrostrip, w: u, t: 1e-9, h1: 1.0, er: 4.3, rho: 1e-15))
   var lo = 0.1
@@ -66,10 +56,8 @@ test "a quarter-wave 70.7 ohm line transforms 100 ohm to 50 ohm at its centre fr
   let fc = 2.0e9
   let spec = LineSpec(geometry: lgStripline, w: 0.2e-3, t: 35e-6, h1: 0.5e-3,
                       h2: 0.5e-3, er: 4.3, tand: 0.0, rho: 1e-15)
-  # Solve for the physical length that makes this spec's Zc equal 70.7 ohm
-  # at a width search, then pick the length that is a quarter-wavelength at
-  # `fc` for *that* spec's own propagation velocity -- both derived from
-  # the module's own formulas, not stated as a fixed geometry.
+  # Size for Zc = 70.7 ohm and a quarter wave at `fc`, both from the
+  # module's own formulas.
   proc zcAt(w: float): float =
     z0(LineSpec(geometry: lgStripline, w: w, t: spec.t, h1: spec.h1, h2: spec.h2,
                er: spec.er, tand: 0.0, rho: 1e-15))
@@ -158,7 +146,7 @@ test "loss rises monotonically with frequency and rises further with roughness":
     check lossRough[i] >= lossSmooth[i]
   check lossRough[^1] > lossSmooth[^1]
 
-  # Defaulting roughness/rho is recorded, by name, as an `Assumption`.
+  # Defaulted roughness/rho are named `Assumption`s.
   let defaulted = characterize(pcb, edge)
   var sawRoughness, sawRho = false
   for a in defaulted.assumptions:

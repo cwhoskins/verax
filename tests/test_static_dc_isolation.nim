@@ -59,11 +59,9 @@ test "dc_path_exists needs two nets that exist":
 # --- a declared `traverse:` spec, beside an undeclared barrier ------------
 
 proc switchAndTransformerDesign(): Design =
-  ## An ADG904-shaped switch declaring `RFC <-> RF1`, and an undeclared
-  ## transformer between two unrelated nets in the same design -- proving
-  ## `dcConnected`'s resolution ladder is per-component: a declaration on
-  ## one part must not loosen (or tighten) what an undeclared part beside it
-  ## answers.
+  ## An ADG904-shaped switch declaring `RFC <-> RF1`, beside an undeclared
+  ## transformer: `dcConnected` resolves per component, so one part's
+  ## declaration doesn't affect its neighbour.
   let nl = newNetlist("t")
   discard addNet(nl, newNet("0", ntGround))
   let rfc = addNet(nl, newNet("rfc", ntSignal))

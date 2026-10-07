@@ -1,23 +1,14 @@
-## Stating a field problem over a region of space: the geometry to be
-## meshed, the material in each part of it, the conditions on its boundary,
-## and what drives it.
+## A field problem statement: geometry, materials, boundary conditions and
+## excitations. Solver-neutral, no results; hand it to a
+## `verax/fem/backend`, get a `FemResult`.
 ##
-## This is the *problem statement* only -- solver-neutral, and carrying no
-## result. One `FemProblem` is enough to hand to any backend
-## (`verax/fem/backend`); what comes back is a `FemResult`.
+## **EM and thermal share one contract**: `Material` carries both physics'
+## constants, since one copper pour is a conductor in one and a heat
+## spreader in the other.
 ##
-## **Electromagnetic and thermal share one contract.** `ProblemKind`
-## discriminates, but `Material` carries the constants for *both* physics in
-## one object rather than a variant, because the same copper pour is a
-## conductor in an EM problem and a heat-spreader in a thermal one, and
-## splitting it into two material types is precisely how the two drift out of
-## agreement about the same region.
-##
-## Deliberately not modelled here: anisotropic or frequency-dispersive
-## materials (one `epsR`, not a tensor or a Debye model), nonlinear
-## temperature-dependent conductivity, radiation view factors, and coupled
-## multiphysics in a single solve (an EM loss field feeding a thermal run is
-## two `solve` calls and a caller in between, not one problem).
+## Not modelled: anisotropic or dispersive materials, temperature-dependent
+## conductivity, radiation view factors, coupled multiphysics (that's two
+## solves with a caller between).
 
 import std/[tables, sequtils]
 import ../netlist/types as nltypes
@@ -26,10 +17,9 @@ export nltypes.Net
 
 type
   FemError* = object of CatchableError
-    ## Raised on an inconsistent problem statement that a builder can catch
-    ## before a solve -- an unknown material name on a region, a boundary
-    ## condition naming a region that does not exist. `validate` reports the
-    ## softer cases without raising.
+    ## Raised on an inconsistent problem a builder can catch (unknown
+    ## material, condition naming a missing region). `validate` reports softer
+    ## cases.
 
   ProblemKind* = enum
     pkElectrostatic   ## Laplace/Poisson for potential; capacitance extraction
@@ -41,8 +31,8 @@ type
   Material* = object
     name*: string
     epsR*, muR*: float
-      ## Relative permittivity / permeability. Default 0 means "unset"; a
-      ## builder from a `Pcb` fills vacuum (1.0) where a stackup is silent.
+      ## Relative permittivity / permeability; 0 means unset (a `Pcb`
+      ## builder fills vacuum where the stackup is silent).
     sigma*: float
       ## Electrical conductivity, S/m.
     kThermal*: float
@@ -55,22 +45,20 @@ type
     attrs*: OrderedTable[string, string]
 
   Region* = object
-    ## One homogeneous solid to be meshed. `outline` is a simple closed
-    ## polygon in the board frame (X right, Y up, metres, matching
-    ## `verax/pcb`'s canonical frame) extruded between `zLow` and `zHigh`.
+    ## One homogeneous solid: a simple closed polygon in the board frame
+    ## (X right, Y up, metres) extruded between `zLow` and `zHigh`.
     name*: string
     material*: string
       ## Key into `FemProblem.materials`.
     net*: Net
-      ## The electrical net this region carries, or `nil`. Forward reference
-      ## only -- `fem` never mutates a netlist.
+      ## The net this region carries, or `nil` (forward reference only).
     layer*: string
       ## Source layer name, for reporting and for grouping regions.
     zLow*, zHigh*: float
       ## Metres. `zHigh > zLow`.
     outline*: seq[tuple[x, y: float]]
-      ## Metres, board frame. Empty is legal for a region defined only by an
-      ## analytic primitive a backend understands via `attrs`.
+      ## Metres, board frame. Empty is legal for a primitive a backend reads
+      ## from `attrs`.
     attrs*: OrderedTable[string, string]
 
   BcKind* = enum
@@ -90,8 +78,8 @@ type
     coefficientA*, coefficientB*: float
       ## Robin/convection/radiation coefficients; unused otherwise.
     regions*: seq[string]
-      ## Region names whose exposed faces this condition applies to. Empty
-      ## means the outer boundary of the whole domain.
+      ## Regions whose exposed faces this applies to; empty means the whole
+      ## domain's outer boundary.
 
   Excitation* = object
     ## A driven port (EM) or a heat source (thermal).
@@ -121,15 +109,14 @@ proc newFemProblem*(name: string, kind: ProblemKind): FemProblem =
   FemProblem(name: name, kind: kind, ambient: 293.15)
 
 proc addMaterial*(p: var FemProblem, m: Material) =
-  ## Register a material by name. Raises `FemError` on a duplicate name with
-  ## different properties; a byte-identical re-add is ignored.
+  ## Register a material. A duplicate name with different properties raises;
+  ## an identical re-add is ignored.
   if p.materials.hasKey(m.name) and p.materials[m.name] != m:
     raise newException(FemError, "material '" & m.name & "' redefined")
   p.materials[m.name] = m
 
 proc addRegion*(p: var FemProblem, r: Region) =
-  ## Append a region. Raises `FemError` if its material name is not
-  ## registered or its z-extent is degenerate.
+  ## Append a region; raises on an unregistered material or degenerate z.
   if r.material.len > 0 and not p.materials.hasKey(r.material):
     raise newException(FemError,
       "region '" & r.name & "' uses unregistered material '" & r.material & "'")
@@ -145,14 +132,10 @@ proc isElectromagnetic*(k: ProblemKind): bool {.inline.} =
   k in {pkElectrostatic, pkMagnetostatic, pkFullWave}
 
 proc validate*(p: FemProblem): seq[string] =
-  ## Report problems that are worth flagging but not worth refusing to
-  ## solve: a full-wave problem with no frequencies, a thermal problem with
-  ## no source, a boundary condition naming an unknown region, a region
-  ## whose material leaves the relevant constant at zero.
-  ##
-  ## Returns warnings rather than raising, following
-  ## `verax/spice/xspice/build.checkAbi` -- it cannot see everything, so a
-  ## silent pass must not be read as proof the problem is well posed.
+  ## Warnings, not refusals: full-wave with no frequencies, thermal with no
+  ## source, a condition naming an unknown region, a material leaving the
+  ## relevant constant at zero. A silent pass isn't proof of a well-posed
+  ## problem.
   var regionNames: Table[string, bool]
   for r in p.regions: regionNames[r.name] = true
 

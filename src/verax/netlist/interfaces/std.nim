@@ -20,15 +20,13 @@ proc i2cInterface*(): InterfaceDef =
 proc spiInterface*(nCs = 1): InterfaceDef =
   result.name = "spi"
   result.signals = @[SignalDef(name:"sclk", width:1), SignalDef(name:"mosi", width:1),
-    # A selected peripheral drives MISO; every other peripheral releases it.
-    # `ptInOut` plus `shared` states that tri-state topology to ERC.
+    # The selected peripheral drives MISO; the others release it (`shared`
+    # tells ERC it's tri-state).
     SignalDef(name:"miso", width:1, shared:true), SignalDef(name:"cs", width:nCs)]
   result.modports["controller"] = modport("controller", [("sclk",ptOutput),("mosi",ptOutput),("miso",ptInput),("cs",ptOutput)], true)
   result.modports["peripheral"] = modport("peripheral", [("sclk",ptInput),("mosi",ptInput),("miso",ptInOut),("cs",ptInput)])
-  # `cs` is commonly wide (`spiInterface(3)`'s three-member chip-select bus
-  # on `designs/spi_memories.nim`), and `contract/design.addImpliedRoles`
-  # fans a wide role part out into one `spi` instance per member rather than
-  # refusing, so this reaches every chip select rather than only the first.
+  # `cs` is often wide; `addImpliedRoles` fans it into one `spi` instance per
+  # member.
   result.implies = @[RoleClaim(role: "spi")]
 
 proc uartInterface*(): InterfaceDef =
@@ -38,17 +36,9 @@ proc uartInterface*(): InterfaceDef =
   result.modports["dce"] = modport("dce", [("txd",ptInput),("rxd",ptOutput)])
 
 proc diffPairInterface*(): InterfaceDef =
-  ## A bare differential pair: two signals, no claimed numbers. `implies` the
-  ## `diff_pair` role with no params, so instantiating one claims only
-  ## `diff_pair_symmetry` -- the one thing `contract/evaluators/diff` can
-  ## check without a board. Signals are named `p`/`n` so `diff_pair`'s parts
-  ## bind by the ordinary same-name matching in `addRoleFromInterface`, with
-  ## no need for `RoleClaim.binds`.
-  # Neither modport is flagged `controller`: unlike a bus, a differential
-  # pair has no invariant that a "driver" must be wired anywhere in a given
-  # design -- a sheet describing only the receiver end (an ADC input pair, a
-  # connector-side sheet) is not missing anything, so nothing here should
-  # warn that it is.
+  ## A bare differential pair (`p`/`n`), implying `diff_pair` with no params
+  ## (so only `diff_pair_symmetry` is claimed); parts bind by name.
+  # No `controller` modport: a receiver-only sheet isn't missing a driver.
   result.name = "diff_pair"
   result.signals = @[SignalDef(name: "p", width: 1), SignalDef(name: "n", width: 1)]
   result.modports["driver"] = modport("driver", [("p", ptOutput), ("n", ptOutput)])
@@ -56,11 +46,8 @@ proc diffPairInterface*(): InterfaceDef =
   result.implies = @[RoleClaim(role: "diff_pair")]
 
 proc usb2Interface*(): InterfaceDef =
-  ## USB 2.0's D+/D-, carrying the specification's own number: 90 ohm
-  ## differential impedance +/- 15%, USB 2.0 sec. 7.1.1.3. Deliberately
-  ## states no `skew_intra_max` -- the specification's 100 ps figure is a
-  ## *cable* budget, not a board one, and inventing a board-level number on
-  ## the author's behalf is not this catalogue's call to make.
+  ## USB 2.0 D+/D-: 90 ohm differential +/- 15% (USB 2.0 sec. 7.1.1.3). No
+  ## `skew_intra_max`: the spec's 100 ps is a cable budget, not a board one.
   result.name = "usb2"
   result.signals = @[SignalDef(name: "p", width: 1), SignalDef(name: "n", width: 1)]
   result.modports["host"] = modport("host", [("p", ptInOut), ("n", ptInOut)])
@@ -69,15 +56,9 @@ proc usb2Interface*(): InterfaceDef =
     params: {"z_diff": "90", "z_diff_tol": "0.15"}.toOrderedTable)]
 
 proc jtagInterface*(): InterfaceDef =
-  ## The four-wire JTAG test-access port -- `tck`/`tms`/`tdi`/`tdo` -- plus
-  ## the optional hardware TAP reset `ntrst`. ARM's SWJ-DP shares this same
-  ## physical port with SWD (`tms` doubles as `swdio`, `tck` as `swclk`), so
-  ## one interface covers either rather than a second whose signals would
-  ## just be renamed copies. **No `implies`**: unlike `i2cInterface`, nothing
-  ## in `contract/evaluators` can check a scan chain yet, and `implies`-ing a
-  ## role that checks nothing would be worse than no role at all -- the same
-  ## restraint `gainStageExpand`'s doc comment states for an uninvented gain
-  ## default.
+  ## Four-wire JTAG (`tck`/`tms`/`tdi`/`tdo`) plus optional `ntrst`; also
+  ## covers SWD on the same port (`tms` = `swdio`, `tck` = `swclk`). **No
+  ## `implies`**: nothing can check a scan chain yet.
   result.name = "jtag"
   result.signals = @[SignalDef(name: "tck", width: 1), SignalDef(name: "tms", width: 1),
                      SignalDef(name: "tdi", width: 1), SignalDef(name: "tdo", width: 1),

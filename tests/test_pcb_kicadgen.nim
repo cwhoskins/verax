@@ -1,8 +1,5 @@
-## The strong check on `formats/kicadgen.nim`: assemble a board, write it,
-## **read it back with `kicad.readPcb`**, and assert the two `Pcb`s agree.
-## Generate -> parse -> compare is the only check that proves the emitter
-## and the reader agree about the same file -- either one alone can be
-## "plausible looking" and still wrong.
+## Assemble a board, write it, read it back with `kicad.readPcb`, and
+## compare: the only check that the emitter and reader agree.
 
 import std/[os, sets, tables, tempfiles, unittest]
 

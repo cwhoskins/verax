@@ -4,47 +4,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-- **Run all tests**: `nimble test` — **and read the output, never the exit code.** `nimble` returns 0 whether the suite passed or not, verified both ways; the check that means something is `nimble test 2>&1 | grep -cE "FAILED|Error:"` returning 0. The `test` task in `verax.nimble` is written out by hand rather than left to nimble's built-in one, which *printed* a compile error and then exited 0 anyway — so a green run meant only that nimble itself had run, and three real failures across two files sat hidden behind it. The hand-written task at least aborts at the first failing file and prints it. It compiles and runs every `tests/*.nim` file via `tests/config.nims`, which adds `src` to the path.
-- **Run a single test file**: `nim c -r --path:./src tests/test_netlist_core.nim` (same for any other file under `tests/`).
-- **Skipped, not failed**, when the toolchain is absent: the `verax/spice/ngspice` backend tests in `tests/test_spice_ngspice.nim` skip when `ngspice` isn't on `PATH`; `tests/test_xspice_build.nim` and `tests/test_xspice_digital.nim` skip unless `$NGSPICE_SRC` points at a *configured* ngspice source tree.
-- **Type-check a module** without running anything: `nim check --path:./src src/verax/netlist.nim`
-- **Build the binary**: `nimble build`, producing `./bin/verax`.
-- **Check a design**: `./bin/verax check designs/foo.nim`. `nimble verify` checks every design under `designs/` and every file under `templates/`; `nimble guide` prints the authoring guide. See `designs/CLAUDE.md` for the designs themselves, the exit codes and how to inspect what was actually simulated. **Template health is `nimble verify`'s job, not `nimble test`'s** — `nimble test` used to compile and `--offline`-check every template too, but that cost ~42s per run for coverage `verify` already gives.
-- **Compile a BOM**: `./bin/verax bom designs/foo.nim --bom-catalog=parts.json [-o bom.csv] [--bom-format=text|csv|json] [--bom-lock=prior.json]` resolves every part against a `verax.catalog/1` catalogue (`$VERAX_BOM_CATALOG` if no flag) and runs no checks; the JSON output is also the next run's `--bom-lock`. See `src/verax/bom/CLAUDE.md`.
-- **Discovery** (works in a repo that is not this one, reads the live registries, writes nothing): `verax roles`, `verax role <name>`, `verax quantities`, `verax annotations`, `verax guide`, `verax env`, `verax new <blank|rail|i2c> <path>`.
-- **Generate a board**: `verax layout designs/foo.nim -o foo.kicad_pcb [--layout-layers=N] [--layout-size=WxH]` assembles a blank `Pcb` from the design's netlist — layers, a synthesized FR4 stack-up, a rectangular outline, and one placement per component with its real footprint, resolved via `verax/pcb/footprint`'s provider registry (`verax/pcb/formats/kicadmod` reads `.kicad_mod` against `$VERAX_FOOTPRINT_PATH`/`/usr/share/kicad/footprints`) — then writes it with `verax/pcb/formats/kicad.writePcb`'s synthesis branch. A component states its land pattern with `spec: footprint = "Lib:Name"`; see `src/verax/pcb/CLAUDE.md`. Parts sit in a grid outside the outline, awaiting real placement and routing — `nimble generate` is the `kicad-cli`-backed acceptance gate for this path, paralleling `nimble kicadcheck` for the edit path.
-- **Run an example script** (none are part of `nimble test`): `nim c -r --path:./src examples/divider.nim` (builds a netlist with `verax/netlist/dsl` and prints it as SPICE), `examples/pdn_sweep.nim` (decoupling impedance vs frequency), `examples/opamp_bode.nim` (closed-loop response and loop gain of an amplifier stage), `examples/design_contract.nim` (roles, annotations and requirements), `examples/xspice_gain.nim` / `examples/xspice_dff.nim` / `examples/xspice_integrator.nim` (XSPICE code models — memoryless, event-driven and analog-state respectively; need `$NGSPICE_SRC`).
+- **Run all tests**: `nimble test` — **read the output, never the exit code.** `nimble` exits 0 whether or not the suite passed; the real check is `nimble test 2>&1 | grep -cE "FAILED|Error:"` returning 0. The hand-written `test` task in `verax.nimble` aborts at the first failing file and names it. Tests compile via `tests/config.nims`, which adds `src` to the path.
+- **Run a single test file**: `nim c -r --path:./src tests/test_netlist_core.nim`.
+- **Skipped, not failed**, when the toolchain is absent: `tests/test_spice_ngspice.nim` needs `ngspice` on `PATH`; `tests/test_xspice_build.nim` and `tests/test_xspice_digital.nim` need `$NGSPICE_SRC` pointing at a *configured* ngspice source tree.
+- **Type-check a module**: `nim check --path:./src src/verax/netlist.nim`
+- **Build the binary**: `nimble build` → `./bin/verax`.
+- **Check a design**: `./bin/verax check designs/foo.nim`. `nimble verify` checks every design under `designs/` and every file under `templates/` — template health is `verify`'s job, not `test`'s. `nimble guide` prints the authoring guide. See `designs/CLAUDE.md`.
+- **Compile a BOM**: `./bin/verax bom designs/foo.nim --bom-catalog=parts.json [-o bom.csv] [--bom-format=text|csv|json] [--bom-lock=prior.json]` (`$VERAX_BOM_CATALOG` if no flag). Runs no checks; the JSON output is also the next run's `--bom-lock`.
+- **Discovery** (reads live registries, writes nothing): `verax roles`, `verax role <name>`, `verax quantities`, `verax annotations`, `verax guide`, `verax env`, `verax new <blank|rail|i2c> <path>`.
+- **Generate a board**: `verax layout designs/foo.nim -o foo.kicad_pcb [--layout-layers=N] [--layout-size=WxH]` — a blank `Pcb` with real footprints (from `spec: footprint = "Lib:Name"`, resolved against `$VERAX_FOOTPRINT_PATH`/`/usr/share/kicad/footprints`), parts gridded outside the outline, unrouted. `nimble generate` is its `kicad-cli` acceptance gate; `nimble kicadcheck` is the edit path's.
+- **Examples** (not part of `nimble test`): `nim c -r --path:./src examples/<name>.nim` — `divider`, `pdn_sweep`, `opamp_bode`, `design_contract`, and `xspice_gain`/`xspice_dff`/`xspice_integrator` (need `$NGSPICE_SRC`).
 
 ## Architecture
 
 `verax` is a proprietary-licensed Nim library for describing a circuit, stating what it must do, and checking that by simulation.
 
-Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, `netlist` <- `schematic`, `netlist`/`parts` <- `bom`, `pcb` <- `fem`, `netlist`/`pcb` <- `ibis`, and nothing depends backwards.
+Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, `netlist` <- `schematic`, `netlist`/`parts` <- `bom`, `pcb` <- `fem`, `netlist`/`pcb` <- `ibis`. **Nothing depends backwards** — when a type is needed by two siblings it moves down, and when a module needs two siblings it moves up.
 
 | Submodule | What it is |
 | --- | --- |
-| `src/verax/netlist/` | The format-agnostic in-memory netlist: types, graph, the annotation vocabulary, the authoring DSL, and file-format readers/writers under `formats/`. |
-| `src/verax/schematic/` | A heuristic "does the topology look right" visualizer: a renderer-neutral scene, deterministic placement/routing, and self-contained SVG plus a public JSON API. Depends only on `netlist`. |
-| `src/verax/spice/` | Runs simulations through an external SPICE backend (ngspice) and owns the simulation-only netlist transforms — isolation, flattening, device models. `spice/xspice/` authors XSPICE code models. |
-| `src/verax/analysis/` | Answers questions *about* a netlist, from pure graph walks up to full simulation (PDN, start-up, transient, op-amp, DC sweep, derating). |
-| `src/verax/contract/` | Design *intent*: roles, assertions and the evaluator registry. Depends only on `netlist`, so a design stays inspectable with no simulator in the build. |
-| `src/verax/pcb/` | The *physical* board — layers, stack-up, copper, holes, placements, outline. Where DRC/DFM/SI/PI work lands. |
-| `src/verax/parts/` | Which real part a computed value is: requests, policies and preferred-value series. |
-| `src/verax/bom/` | Which *orderable* part each component is: collection and classification (`collect` -> one `BomItem` per physical part), a catalogue source registry with an offline JSON catalogue, the resolver (`resolve` -> a `BomResult` of chosen parts rolled up into lines), and text/CSV/JSON reports whose JSON doubles as the lockfile; network sources are still to come (`docs/bom_compiler_plan.md`). Takes a `Netlist`, never a `Pcb`. |
-| `src/verax/ibis/` | Interface to IBIS: reads a vendor's `.ibs` buffer model (I/V curves, edge rates, package RLC) into a typed model. No-op past parsing so far. Depends on `netlist` and `pcb`. |
-| `src/verax/fem/` | Interface to an external finite-element field solver (electromagnetic + thermal). Skeleton — problem/mesh/backend types only, no backend (MFEM intended). Depends on `pcb`. |
+| `netlist/` | Format-agnostic in-memory netlist: types, graph, annotation vocabulary, authoring DSL, `formats/`. |
+| `schematic/` | Heuristic topology visualizer: scene, deterministic placement/routing, SVG + JSON. |
+| `spice/` | Runs ngspice; owns simulation-only transforms (isolate, flatten, device models). `spice/xspice/` authors XSPICE code models. |
+| `analysis/` | Questions about a netlist, from graph walks to full simulation. |
+| `contract/` | Design intent: roles, assertions, evaluator registry. Depends only on `netlist`, so a design stays inspectable with no simulator. |
+| `pcb/` | The physical board — layers, stack-up, copper, holes, placements, outline; KiCad read/write. |
+| `parts/` | Which real part a computed value is: requests, policies, preferred-value series. |
+| `bom/` | Which *orderable* part each component is: collect, resolve against catalogues, report/lock. Takes a `Netlist`, never a `Pcb`. |
+| `ibis/` | IBIS `.ibs` reader. Parsing only. |
+| `fem/` | Field-solver interface skeleton (no backend yet). |
 
-Three modules sit outside any submodule because the dependency order gives them nowhere else to live: `units.nim` and `eng.nim` *below* everything, `verify.nim` (the runner and the readiness report) *above* everything. `cli.nim` is the `verax` binary. `src/verax.nim` is the package module and is deliberately **not** a re-export hub — submodules are imported by their own path (`import verax/netlist`).
+`units.nim`/`eng.nim` sit below everything, `verify.nim` above everything, `cli.nim` is the binary. `src/verax.nim` is deliberately **not** a re-export hub — import submodules by path (`import verax/netlist`). `namedBin["verax/cli"] = "verax"` builds the binary from `cli.nim` so `import verax` doesn't drag in the simulator.
 
-The library has no dependencies beyond the Nim standard library (`requires "nim >= 2.2.10"`), and that stays true because the MCP server is a **separate package** under `mcp/` — "opt-in per import" is the rule everywhere else here, but a nimble dependency can only be made opt-in per *package*. Package metadata lives in `verax.nimble`, where `namedBin["verax/cli"] = "verax"` builds the binary from `src/verax/cli.nim` rather than `src/verax.nim`, so `import verax` in an unrelated program does not drag in the simulator, `osproc` and the whole analysis tree.
+No dependencies beyond the Nim stdlib (`nim >= 2.2.10`). The MCP server is a **separate package** under `mcp/` because a nimble dependency can only be opt-in per package.
 
 ## Where the detail lives
 
-Read the `CLAUDE.md` in the directory you are working in — each holds the design decisions, invariants and traps for that submodule, and they are where new detail belongs.
-
-- `src/verax/CLAUDE.md` — the package-root modules: `units.nim`, `eng.nim`, `verify.nim`, `cli.nim`
-- `src/verax/netlist/CLAUDE.md`, `src/verax/spice/CLAUDE.md`, `src/verax/spice/xspice/CLAUDE.md`, `src/verax/analysis/CLAUDE.md`, `src/verax/contract/CLAUDE.md`, `src/verax/pcb/CLAUDE.md`, `src/verax/parts/CLAUDE.md`, `src/verax/bom/CLAUDE.md`, `src/verax/ibis/CLAUDE.md`, `src/verax/fem/CLAUDE.md`
-- `designs/CLAUDE.md` — the worked designs, exit codes, and how to see the deck that actually ran
-- `docs/architecture.md` — how the submodules relate, and what happens between `verax check board.nim` and the report
-- `docs/authoring.md` — writing a design (also `nimble guide`)
-- `docs/findings.md` — what is still open; `docs/RESOLVED_FINDINGS.md` — everything already fixed, with what it was and what the fix was
+Read the `CLAUDE.md` in the directory you are working in. Also: `docs/architecture.md` (how the submodules relate), `docs/authoring.md` (writing a design), `docs/findings.md` (what is open), `docs/RESOLVED_FINDINGS.md` (what was fixed and how).

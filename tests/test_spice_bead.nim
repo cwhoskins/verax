@@ -24,11 +24,8 @@ proc valueOf(nl: Netlist, d: string): float =
   discard parseSpiceMagnitude(nl.components[d].attrs["value"], result)
 
 suite "a ferrite bead is not an inductor":
-  # An inductor's impedance climbs without limit; a bead's peaks where the
-  # core goes lossy and falls again, and that peak is the whole reason a bead
-  # is chosen instead of an inductor. It also has a real DC resistance, which
-  # on a supply rail is a steady IR drop and a floor the filter cannot get
-  # below.
+  # A bead's impedance peaks where the core goes lossy and falls again, and
+  # it has a real DC resistance.
 
   test "it expands to the standard three-element model":
     let nl = bead()
@@ -38,9 +35,8 @@ suite "a ferrite bead is not an inductor":
       check nl.components.hasKey(d)
 
   test "the element values come from the datasheet numbers, not a fit":
-    # R = z_peak - dcr, L = R/(w0*Q), C = Q/(w0*R). At f_peak the reactances
-    # cancel and the impedance *is* R -- so the peak lands where the
-    # datasheet says by construction.
+    # R = z_peak - dcr, L = R/(w0*Q), C = Q/(w0*R): at f_peak the reactances
+    # cancel and Z = R.
     let nl = bead("600", {"dcr": "0.1"})
     discard expandFerriteBeads(nl)
     let w0 = 2.0 * PI * 100.0e6
@@ -54,7 +50,7 @@ suite "a ferrite bead is not an inductor":
     discard expandFerriteBeads(low)
     let high = bead("600", {"f_peak": "100e6"})
     discard expandFerriteBeads(high)
-    # Ten times lower resonance means ten times the inductance.
+    # Ten times lower resonance: ten times the inductance.
     check abs(valueOf(low, "LFB1_L") / valueOf(high, "LFB1_L") - 10.0) < 1e-6
 
     let big = bead("1000")
@@ -81,8 +77,7 @@ suite "a ferrite bead is not an inductor":
       check "datasheets quote" notin $n
 
   test "a bead that states nothing usable is left alone and says so":
-    # `value` may be a whole source spec rather than a magnitude, so it is
-    # never assumed to be a number.
+    # `value` may be a source spec, never assumed numeric.
     let nl = bead("TBD")
     let notes = expandFerriteBeads(nl)
     check nl.components.hasKey("FB1")
@@ -99,9 +94,8 @@ suite "a ferrite bead is not an inductor":
     check nl.components.len == after
 
   test "no F device survives to the deck":
-    # `ferrite_bead` is in conductiveKinds, so `isPassive` accepts it and the
-    # per-pin stand-in skips it -- but SPICE has no bead device, and ngspice
-    # reads a leading `F` as a current-controlled current source.
+    # `isPassive` accepts beads, but SPICE has no bead device and reads `F`
+    # as a CCCS.
     let nl = bead()
     discard expandPinModels(nl)          # the pass every analysis calls
     let s = newStringStream()

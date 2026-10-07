@@ -1,22 +1,13 @@
-## Built-in roles for point-to-point interconnect.
-##
-## `diff_pair` is the only one so far. A differential pair needs no new
-## declaration mechanism -- it is an ordinary two-signal `InterfaceDef` (see
-## `netlist/interfaces/std.diffPairInterface`/`usb2Interface`) whose signals
-## are named `p`/`n`, which is what lets `contract/design.addRoleFromInterface`
-## bind this role's parts by the existing same-name matching. This module is
-## only the claims: what it means to *be* a pair, once two nets are bound.
+## Built-in roles for point-to-point interconnect: `diff_pair`. A pair is an
+## ordinary two-signal `InterfaceDef` with signals `p`/`n`, so parts bind by
+## name; this module holds only the claims.
 
 import ../../netlist/types
 import ../../netlist/annotations
 import ./core
 
 proc diffPairApply*(inst: RoleInstance, nl: Netlist) =
-  ## Writes nothing -- there is no annotation a non-checking consumer would
-  ## read off a pair. It exists to validate at attach time, the same moment
-  ## `addRole` already catches an unknown part or a duplicate instance name,
-  ## rather than deferring to `expand` and surfacing only when the design is
-  ## evaluated.
+  ## Writes nothing; validates at attach time rather than at evaluation.
   let p = inst.subject("p")
   let n = inst.subject("n")
   if p.kind == skNet and n.kind == skNet and p.name == n.name:

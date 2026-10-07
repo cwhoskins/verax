@@ -2,13 +2,9 @@ import std/[complex, math, os, streams, strutils, unittest]
 
 import verax/touchstone
 
-# Three hand-written fixtures encoding the *same* underlying 2-port
-# S-parameters (S11 = 0.1+0.2j, S21 = 0.9-0.05j, S12 = 0.05+0.01j,
-# S22 = -0.2+0.1j at 1 GHz), one per data format Touchstone allows, so
-# reading all three and converting to Complex64 must agree. Values were
-# computed once in a throwaway script (mag/angle/dB from the RI numbers
-# above) rather than re-derived by hand, to keep the fixture and the
-# expectation from drifting apart the way a hand-rounded one would.
+# Three fixtures encoding the same 2-port S-parameters at 1 GHz, one per
+# data format, which must agree as Complex64. Values were computed by script
+# from the RI numbers, not rounded by hand.
 
 const riFixture = """
 ! 2-port, real/imaginary, hand-written fixture

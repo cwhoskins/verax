@@ -1,32 +1,17 @@
-## Netlist -> blank `Pcb`: layers, a synthesized stack-up, a rectangular
-## outline, and every physical part placed in a deterministic grid with its
-## real footprint -- what KiCad calls "update PCB from schematic" and what a
-## checked design is missing to become a board file at all
-## (`pcb/CLAUDE.md`'s four gaps).
+## Netlist -> blank `Pcb`: standard layers, a synthesized stack-up, a
+## rectangular outline, and every physical part placed on a deterministic
+## grid with its real footprint ("update PCB from schematic").
 ##
-## **The hierarchy is not flattened.** `spice/flatten.nim` could do this job
-## -- it imports nothing from `spice` -- but its own doc comment draws the
-## line this module inherits: flattening destroys the hierarchy the designer
-## wrote, which is a *simulation-only* concession, and `pcb/` must not gain
-## an edge to `spice` to borrow it regardless. So this module walks the
-## netlist itself and spells a leaf inside instance `X1` with the same
-## `hierName("X1", "U1")` = `"X1.U1"` `spice/flatten` uses for deck
-## designators -- unique by construction, and for a flat design (most of
-## `designs/`) indistinguishable from the component's own designator.
+## **The hierarchy is not flattened** (`pcb/` must not depend on `spice`):
+## this walks instances itself and names a leaf `hierName("X1", "U1")`, as
+## `spice/flatten` would.
 ##
-## **Every synthesized number is an `Assumption`, never a silent default.**
-## A layer stack, a stack-up and a board outline are all real facts about a
-## physical board that no netlist states, so inventing one without saying so
-## would let a derived PDN or SI number rest on a board nobody actually
-## specified while reading as if it had been. This is the same discipline
-## `spice/models` and `pcb/tline.characterize` already follow for an invented
-## input.
+## **Every synthesized figure is an `Assumption`**: a board nobody specified
+## must not pass silently into derived PDN/SI numbers.
 ##
-## **Resolution order for a part's footprint**: the component's own
-## `footprint` annotation, then (for a multi-channel package)
-## `PackageDef.footprint`, then unresolved -- reported as `footprint_unresolved`
-## rather than skipped, because a placement with no land pattern is not a
-## smaller board, it is a board missing a part.
+## **Footprint resolution**: the component's `footprint`, then (for a
+## multi-channel package) `PackageDef.footprint`, else
+## `footprint_unresolved` -- reported, never skipped.
 
 import std/[algorithm, strutils, tables]
 
@@ -34,17 +19,13 @@ import ./units
 import ./geometry
 import ./types
 import ./graph
-# The only writer today -- see `writeBoard`'s own doc comment for why this
-# module, alone among the non-`formats/` pieces of `pcb/`, imports a format
-# module directly rather than leaving that opt-in to the caller.
+# The only writer; see `writeBoard`.
 import ./footprint
 import ./formats/kicad as kicadFormat
 import ../netlist/types as nltypes
 import ../netlist/graph as nlgraph
 import ../netlist/packages
-# Brings in the `footprint(c: Component): AnnValue[string]` accessor this
-# module reads, and `Assumption`/`assumption` for the stack-up's own
-# invented figures.
+# The `footprint` accessor and `Assumption`.
 import ../netlist/annotations
 import ../netlist/issue
 
@@ -53,19 +34,15 @@ export issue
 type
   AssembleOptions* = object
     copperLayers*: int
-      ## 2, 4, 6 ... clamped up to 2 if given less: a board with one copper
-      ## layer is not a board this library can route anything on.
+      ## 2, 4, 6 ...; less than 2 is clamped to 2.
     boardSize*: tuple[w, h: Nm]
     origin*: Point
     gridPitch*: Nm
-      ## `0` (the default) derives spacing per placement from its
-      ## footprint's own courtyard extent, falling back to `bodyBox`, then a
-      ## fixed pitch -- see `gridSpacing`.
+      ## `0` derives spacing per placement (courtyard, then body box, then a
+      ## fixed pitch; see `gridSpacing`).
     placeOutside*: bool
-      ## Default `true`: the grid sits to the right of the outline rather
-      ## than inside it, so a synthesized board is never handed back with
-      ## parts already overlapping the edge they still need routing room
-      ## inside of.
+      ## Default `true`: the grid sits right of the outline, so parts don't
+      ## start overlapping the board edge.
 
 const
   DefaultBoardWidth = mm(100.0)
@@ -74,8 +51,7 @@ const
   CopperWeight = um(35.0)
   FallbackPitch = mm(5.0)
   GridGap = mm(1.0)
-    ## Clearance between adjacent placements' courtyards/body boxes in the
-    ## grid, on top of each one's own half-extent.
+    ## Clearance between adjacent placements, on top of each half-extent.
 
 proc defaultAssembleOptions*(): AssembleOptions =
   AssembleOptions(copperLayers: 2, boardSize: (DefaultBoardWidth, DefaultBoardHeight),
@@ -84,11 +60,8 @@ proc defaultAssembleOptions*(): AssembleOptions =
 # ---------------------------------------------------------------- layers
 
 proc addStandardLayers(pcb: Pcb, copperLayers: int) =
-  ## Top to bottom, since `Pcb.layers` insertion order *is* physical stack
-  ## order (`pcb/CLAUDE.md`): `F.Cu`, `In1.Cu` .. `In(n-2).Cu`, `B.Cu`, then
-  ## the non-copper layer families grouped by kind (`F.Paste`/`B.Paste`,
-  ## `F.Mask`/`B.Mask`, ...), then `Edge.Cuts` last -- the board outline is
-  ## not part of the copper/non-copper stack at all.
+  ## Top to bottom (insertion order is stack order): `F.Cu`, inner layers,
+  ## `B.Cu`, non-copper layers grouped by kind, then `Edge.Cuts`.
   discard addLayer(pcb, newPcbLayer("F.Cu", lfSignal, lsTop))
   for i in 1 .. copperLayers - 2:
     discard addLayer(pcb, newPcbLayer("In" & $i & ".Cu", lfSignal, lsInner))
@@ -103,16 +76,10 @@ proc addStandardLayers(pcb: Pcb, copperLayers: int) =
 # ---------------------------------------------------------------- stackup
 
 proc buildStackup(pcb: Pcb, copperLayerCount: int): seq[Assumption] =
-  ## A plain FR4 profile: `DefaultStackTotal` (1.6 mm) overall, 35 um copper
-  ## on every copper layer, the remaining dielectric budget split evenly
-  ## across the gaps between them, `epsilonR = 4.5`, `lossTangent = 0.02` --
-  ## the same figures `spice/models`' package defaults and
-  ## `pcb/tline.characterize`'s `roughness`/`rho` defaults use the identical
-  ## "record it, don't just use it" discipline for. No board file, catalogue
-  ## or datasheet backs any of these five numbers; a caller comparing a
-  ## derived impedance or PDN figure against a *real* board's own stack-up
-  ## should override every `StackEntry` this leaves behind before trusting
-  ## the comparison.
+  ## A plain FR4 profile: 1.6 mm total, 35 um copper per layer, dielectric
+  ## split evenly, `epsilonR = 4.5`, `lossTangent = 0.02`. All invented and
+  ## recorded; override the `StackEntry`s before comparing against a real
+  ## board.
   let cu = copperLayers(pcb)
   let gaps = max(1, cu.len - 1)
   let copperTotal = CopperWeight * cu.len
@@ -151,22 +118,17 @@ proc buildOutline(pcb: Pcb, opts: AssembleOptions) =
 type
   PhysicalPart = object
     designator: string
-      ## Board designator: `hierName(path)` for an ordinary leaf, the shared
-      ## `package.ref` value for a multi-channel package (flat by
-      ## construction -- see `pcb/graph.bindComponent`'s existing exception).
+      ## Board designator: `hierName(path)`, or the shared `package.ref` for a
+      ## multi-channel package.
     members: seq[Component]
-      ## Exactly one, except for a multi-channel package's sections.
+      ## One component, except a multi-channel package's sections.
     packaged: bool
     defName: string
 
 proc collectLeaves(nl: Netlist, prefix: string,
                    res: var seq[tuple[c: Component, path: string]]) =
-  ## Every non-hierarchical component under `nl`, walking `subNetlist`
-  ## instances rather than flattening them -- the private `walkComponents`
-  ## shape `netlist/packages.nim`/`netlist/pinmux.nim` each already keep
-  ## their own copy of, for the same reason a third one belongs here rather
-  ## than in either: none of the three may depend on another for one
-  ## six-line iterator.
+  ## Every leaf component under `nl`, walking instances rather than
+  ## flattening (a private copy of the walk, to avoid a dependency).
   for _, c in nl.components:
     let p = nlgraph.hierName(prefix, c.designator)
     if c.subNetlist != nil:
@@ -192,10 +154,8 @@ proc buildPhysicalParts(nl: Netlist): seq[PhysicalPart] =
       result.add PhysicalPart(designator: path, members: @[c], packaged: false)
 
 proc footprintSpecFor(pp: PhysicalPart): string =
-  ## Resolution order: the component's own `footprint` annotation (any
-  ## member, for a packaged part -- they name the same physical land
-  ## pattern), then the shared package definition's footprint, matching the
-  ## order this module's own doc comment states.
+  ## The component's own `footprint` (any member of a package), then the
+  ## package definition's.
   for m in pp.members:
     let f = footprint(m)
     if f.has: return f.value
@@ -206,14 +166,9 @@ proc footprintSpecFor(pp: PhysicalPart): string =
 # ---------------------------------------------------------------- footprint -> Pcb
 
 proc resolvePadLayers(pcb: Pcb, tokens: seq[string]): seq[PcbLayer] =
-  ## `FootprintPad.layers` is raw, un-expanded KiCad layer tokens (see
-  ## `pcb/footprint.nim`'s doc comment on why) -- this is the board-side half
-  ## of the same wildcard grammar `formats/kicadgeom.expandPadLayers`
-  ## expands against a `SexpDoc`. Not a call to that proc: it needs a live
-  ## board's parsed pad node to walk, and here there is a plain
-  ## `seq[string]` and no `SexpDoc` at all -- a different input shape for
-  ## the identical four-case grammar (`*.Cu`, `*.<suffix>`, a bare name, and
-  ## de-duplication), not a second copy of the same proc.
+  ## Expands raw KiCad pad layer tokens (`*.Cu`, `*.<suffix>`, bare names,
+  ## deduped) against the board -- the same grammar as
+  ## `kicadgeom.expandPadLayers`, but over a plain `seq[string]`.
   var seen: seq[string]
   for tok in tokens:
     if tok == "*.Cu":
@@ -261,10 +216,7 @@ proc placeFootprint(pcb: Pcb, p: Placement, fp: Footprint,
   for (layerName, shape) in fp.graphics:
     let l = pcb.layer(layerName)
     if l != nil: addShape(l, apply(t, shape))
-  # Pin <-> pad correspondence, both directions -- the check
-  # `docs/findings.md` §540 asked for and nothing before this stage could
-  # run, since it needs a real footprint's pad list beside the netlist's pin
-  # list, and no reader produced one.
+  # Pin <-> pad correspondence, both directions.
   if p.component != nil:
     for pinName, _ in p.component.pins:
       if not p.lands.hasKey(pinName):
@@ -284,8 +236,7 @@ proc placeFootprint(pcb: Pcb, p: Placement, fp: Footprint,
 # ---------------------------------------------------------------- grid placement
 
 proc footprintExtent(fp: Footprint): tuple[w, h: Nm] =
-  ## Courtyard first, then body box, then a fixed pitch -- the fallback
-  ## ladder `pcb/CLAUDE.md`'s grid-spacing bullet states.
+  ## Courtyard first, then body box, then a fixed pitch.
   if fp.courtyard.outer.curves.len > 0:
     let b = box(fp.courtyard)
     if not b.isEmpty: return (width(b), height(b))
@@ -308,9 +259,8 @@ proc assemble*(nl: Netlist, opts = defaultAssembleOptions()):
 
   let parts = buildPhysicalParts(nl)
 
-  # Resolve + place first (position `nm(0)` -- fixed up by the grid pass
-  # below), so a caller inspecting `issues` alone never needs the grid to
-  # have run.
+  # Resolve and place first (at origin; the grid pass moves them), so
+  # `issues` doesn't depend on the grid.
   var placed: seq[tuple[p: Placement, extent: tuple[w, h: Nm]]]
   for pp in parts:
     let spec = footprintSpecFor(pp)
@@ -353,9 +303,8 @@ proc assemble*(nl: Netlist, opts = defaultAssembleOptions()):
   var cursorY = opts.origin.y
   var rowH = nm(0)
   let rowLimit = if opts.placeOutside: nm(0) else: opts.origin.x + boardW
-    ## `0` (falsy as a limit -- never reached) when placing outside: the grid
-    ## then grows in one column-free direction only, since there is no
-    ## outline edge on that side to wrap against.
+    ## `0` when placing outside: the grid grows one way with no edge to
+    ## wrap against.
   for (place, extent) in placed:
     let pitchW = if opts.gridPitch > nm(0): opts.gridPitch else: extent.w + GridGap
     let pitchH = if opts.gridPitch > nm(0): opts.gridPitch else: extent.h + GridGap
@@ -371,15 +320,9 @@ proc assemble*(nl: Netlist, opts = defaultAssembleOptions()):
   (pcb, issues, assumptions)
 
 proc writeBoard*(nl: Netlist, path: string, opts = defaultAssembleOptions()): seq[Issue] =
-  ## `assemble` a board and write it to `path`. The only writer today is
-  ## KiCad's (`formats/kicad.writePcb`'s synthesis branch, `pcb.source ==
-  ## nil`), so this module imports it directly rather than exposing a second
-  ## dispatch layer with one entry -- see `pcb/CLAUDE.md` for why that is a
-  ## narrower exception to "formats stay opt-in per import" than it looks:
-  ## `import verax/pcb` still does not expose `readPcb`/`writePcb`/`KicadDoc`
-  ## (this module never `export`s them), only compiles them in, which a
-  ## caller wanting to write a board at all cannot avoid regardless of which
-  ## module does the importing.
+  ## `assemble` a board and write it to `path`. Imports the KiCad writer
+  ## directly (the only writer); `import verax/pcb` still doesn't export
+  ## `readPcb`/`writePcb`/`KicadDoc`.
   let (pcb, issues, _) = assemble(nl, opts)
   result = issues
   kicadFormat.writePcb(pcb, path)

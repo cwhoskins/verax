@@ -2,11 +2,7 @@ import std/[complex, math, unittest]
 
 import verax/touchstone/types
 
-# Every expectation here is a closed form, matching
-# tests/test_analysis_measure.nim's convention of exact rather than
-# simulated expected values -- there is no simulator in this submodule to
-# check these against, only arithmetic, so the arithmetic has to be right on
-# its own.
+# Every expectation is closed form; there's no simulator to check against.
 
 test "a perfect match: Gamma = 0 gives VSWR 1 and infinite return loss":
   check vswrOf(0.0) == 1.0
@@ -24,18 +20,15 @@ test "gammaOf(z0, z0) is exactly zero -- a matched load reflects nothing":
   check abs(g) == 0.0
 
 test "gammaOf an open or a short against a real z0 has unit magnitude":
-  # An open (z -> infinity) is the limit gammaOf cannot evaluate directly,
-  # so use a very large real z instead; a short (z = 0) is exact.
+  # An open can't be evaluated directly, so use a very large z; a short is
+  # exact.
   let short = gammaOf(complex(0.0, 0.0), complex(50.0, 0.0))
   check abs(abs(short) - 1.0) < 1e-12
   let nearOpen = gammaOf(complex(1e9, 0.0), complex(50.0, 0.0))
   check abs(abs(nearOpen) - 1.0) < 1e-6
 
-# --- the network from the plan's Context section, verified against real
-# ngspice 46 rather than assumed: a 25 ohm series element between 50 ohm
-# ports measured S11 = -13.979 dB and S21 = -1.938 dB. Both numbers are
-# recovered here from the closed-form Gamma and transmission coefficient of
-# that exact network, with no simulator involved. -------------------------
+# --- a 25 ohm series element between 50 ohm ports: ngspice measured S11 =
+# -13.979 dB and S21 = -1.938 dB, recovered here in closed form. ----------
 
 const
   z0 = 50.0
@@ -48,9 +41,7 @@ test "the 25 ohm series network's Gamma matches the closed form":
   check abs(s21MagSeries - 0.8) < 1e-12
 
 test "returnLossDb recovers the measured -13.979 dB reading, sign included":
-  # ngspice reported S11 = -13.979 dB directly (a raw S11 reading, negative
-  # for a lossy match); returnLossDb flips that sign by convention (a bigger
-  # number is a better match), so it recovers +13.979 dB here.
+  # returnLossDb flips S11's sign by convention, so +13.979 dB.
   check abs(returnLossDb(gammaSeries) - 13.979) < 1e-3
   check abs(voltageRatioToDb(gammaSeries) - (-13.979)) < 1e-3
 
@@ -69,11 +60,8 @@ test "0 dBm is exactly 1 mW and 30 dBm is exactly 1 W":
 # --- the two dB conversions must never collapse into one -----------------
 
 test "powerRatioToDb and voltageRatioToDb disagree by exactly a factor of 2":
-  # Pinned as its own test, named the way it is, so this distinction cannot
-  # quietly be collapsed back into one `dbToLinear`-style proc later: an
-  # S-parameter is a voltage-wave ratio (20*log10) and a gain/Friis/cascade
-  # figure is a power ratio (10*log10) -- conflating them is a silent
-  # factor-of-2 error in dB.
+  # An S-parameter is a voltage-wave ratio (20*log10), a gain/Friis figure a
+  # power ratio (10*log10); conflating them is a silent factor of 2.
   let ratio = 4.0
   check abs(voltageRatioToDb(ratio) - 2.0 * powerRatioToDb(ratio)) < 1e-12
 

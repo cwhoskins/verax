@@ -1,42 +1,20 @@
-## Do two channels of one design actually match?
+## Do two channels of one design match? Imbalance is audible long before
+## absolute deviation, and two independent gain claims can each pass while
+## the channels sit 3 dB apart.
 ##
-## A stereo board is one circuit built twice, and the ear hears a channel
-## imbalance long before it hears absolute deviation from the target curve --
-## a phono stage 0.5 dB off the RIAA curve sounds like a tone control, one
-## whose channels differ by 0.5 dB sounds like the stereo image has moved.
-## Two independent gain claims cannot catch that: both channels can sit 3 dB
-## apart and still each land inside its own band.
+## Composes `opamp.analyzeOpAmpResponse` per channel (its `DC 0 AC 1` drive
+## makes the output in dB the gain).
 ##
-## This is the first analysis whose subjects are *two* stages rather than one
-## net, and it earns its own module for the reason `psrr.nim` does rather than
-## growing `opamp.nim`: it composes rather than duplicates. It calls
-## `opamp.analyzeOpAmpResponse` once per channel and reads the closed-loop
-## gain curve back off each -- the drive that proc puts on the input is
-## `DC 0 AC 1`, so `raw.db("v(" & out & ")")` *is* the gain in dB and
-## `raw.freq()` is the axis.
+## * **Band worst and single frequency are separate names**
+##   (`gain_delta_max_db` vs `gain_delta_at_f`).
+## * **Every figure is a magnitude**; edge-frequency figures are `max/min`
+##   (>= 1), so channel order doesn't matter.
+## * **Both sweeps must share one frequency axis** -- checked, reported as
+##   an `Issue` if not.
+## * **Assumptions and issues are merged and deduplicated.**
 ##
-## ## Four decisions, each against a specific way of being wrong
-##
-## * **A band worst and a single frequency are separate names**
-##   (`gain_delta_max_db` vs `gain_delta_at_f`), exactly as `psrr_min_db` and
-##   `psrr_at_f` are. A claim about a whole band must never be answerable with
-##   a number from one point.
-## * **Every figure is a magnitude.** Which channel is "A" is an authoring
-##   order and no claim may turn on it -- the same rule `analyzeCurrent`
-##   follows for a branch current's sign. The edge-frequency figures are
-##   reported as `max/min`, so a ratio is `>= 1` whichever channel is faster.
-## * **Both sweeps must share one frequency axis** or the point-by-point delta
-##   is between two different grids. An identical `OpAmpSpec` produces an
-##   identical `.ac dec` card, but that is *checked* elementwise and reported
-##   as an `Issue` rather than assumed.
-## * **Each channel's assumptions and issues are merged and deduplicated.**
-##   Both channels substitute the same op-amp macromodel and would otherwise
-##   report every invented value twice.
-##
-## If either channel's sweep returns no curve -- `checkFeedback` or
-## `checkInjectionPoint` declined, or ngspice failed -- its issues come
-## through and every measurement is `NaN`, which `verdict` renders as *not
-## evaluated* rather than as a failure.
+## If either channel yields no curve, its issues come through and every
+## measurement is `NaN` (not evaluated).
 
 import std/math
 import ../../netlist/types
@@ -55,21 +33,15 @@ const
 type
   ChannelMatchSpec* = object
     opamp*: OpAmpSpec
-      ## The sweep spec used for **both** channels. It has to be one object:
-      ## two channels swept with two different `.ac` cards produce two
-      ## frequency grids and the delta between them is meaningless.
+      ## The sweep spec for **both** channels, so they share one grid.
     gainAtFreq*: float
-      ## Hz; when `> 0` the result also reports `gain_delta_at_f`, the
-      ## `|ΔdB|` at exactly that frequency. `0` disables it, the same way
-      ## `OpAmpSpec.gainAtFreq` gates `gain_at_f`.
+      ## Hz; when `> 0`, also report `gain_delta_at_f` (`|dB delta|` there).
 
 proc defaultChannelMatchSpec*(): ChannelMatchSpec =
   ChannelMatchSpec(opamp: defaultOpAmpSpec(), gainAtFreq: 0.0)
 
 proc mergeDedup(dst: var seq[Assumption], src: seq[Assumption]) =
-  ## Both channels are the same subcircuit, so the same macromodel
-  ## substitution and the same package-typical parasitics come back on each.
-  ## Pooled without this the report says "assumed a 1 MHz GBW" twice.
+  ## Merge both channels' assumptions/issues without duplicates.
   for a in src:
     var seen = false
     for b in dst:
@@ -90,9 +62,7 @@ proc mergeDedupIssues(dst: var seq[Issue], src: seq[Issue]) =
     if not seen: dst.add i
 
 proc ratio(a, b: float): float =
-  ## `max/min`, so the answer does not depend on which channel was named
-  ## first. `NaN` propagates -- a channel with no measurable edge has no
-  ## ratio to state.
+  ## `max/min`, independent of channel order; `NaN` propagates.
   if a.isNaN or b.isNaN: return NaN
   let lo = min(abs(a), abs(b))
   let hi = max(abs(a), abs(b))
@@ -122,9 +92,8 @@ proc analyzeChannelMatch*(nl: Netlist,
   mergeDedupIssues(result.issues, repA.issues)
   mergeDedupIssues(result.issues, repB.issues)
 
-  # A declined feedback or injection check leaves the report with issues and
-  # no curve. Say which channel, and emit every measurement as `NaN` so the
-  # verdict reads as "could not check" rather than "the channels differ by 0".
+  # A declined check leaves issues and no curve: name the channel and emit
+  # every measurement as `NaN`.
   proc noCurve(rep: AnalysisReport): bool =
     not rep.hasMeasurement("gain_max_db")
 
@@ -150,10 +119,8 @@ proc analyzeChannelMatch*(nl: Netlist,
   let gA = repA.raw.db("v(" & outA & ")")
   let gB = repB.raw.db("v(" & outB & ")")
 
-  # Identical specs give an identical sweep card, but the point-by-point delta
-  # is only meaningful if the axes actually line up -- so check rather than
-  # trust. A mismatch is an `Issue` and every band figure is `NaN`; a single
-  # frequency read with `valueAt` on each curve is still safe and is kept.
+  # Check the axes actually line up. On mismatch, an `Issue` and `NaN` band
+  # figures; single-frequency reads stay valid.
   var axisOk = fA.len == fB.len
   if axisOk:
     for i in 0 ..< fA.len:
@@ -175,8 +142,7 @@ proc analyzeChannelMatch*(nl: Netlist,
     result.add "f_gain_delta_max", NaN, "Hz"
 
   if spec.gainAtFreq > 0.0:
-    # Read each curve at the stated frequency independently, so this survives
-    # an axis mismatch that the band figure cannot.
+    # Read each curve independently, so this survives an axis mismatch.
     let a = valueAt(fA, gA, spec.gainAtFreq, logX = true)
     let b = valueAt(fB, gB, spec.gainAtFreq, logX = true)
     let d = (if a.isNaN or b.isNaN: NaN else: abs(a - b))

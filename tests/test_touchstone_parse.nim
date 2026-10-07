@@ -16,9 +16,7 @@ test "the option line's tokens are order-independent":
   check a.z0 == 50.0
 
 test "an omitted token takes the spec's documented default":
-  # GHz is the file format's own default frequency unit; S/MA/R 50 are the
-  # spec's stated defaults for the rest -- a short option line like `# S RI`
-  # is ordinary, not a warning-worthy omission.
+  # GHz and S/MA/R 50 are the spec defaults, so `# S RI` is ordinary.
   let opt = parseOptionLine("# S RI")
   check opt.freqUnit == fuGHz
   check opt.z0 == 50.0
@@ -34,8 +32,7 @@ test "a line not starting with '#' is not an option line":
     discard parseOptionLine("GHZ S RI R 50")
 
 test "an unrecognised option-line token raises, unlike IBIS's degrade-and-keep":
-  # Every option-line token fixes how every following row is read -- there
-  # is no safe "keep it and move on" the way an unmodelled IBIS keyword has.
+  # Every option token governs how the rows are read; none can be skipped.
   expect(TouchstoneError):
     discard parseOptionLine("# THZ S RI R 50")
 
@@ -65,9 +62,8 @@ test "parseTouchstoneNumber accepts plain decimal and scientific literals":
   check v == 1e-3
 
 test "parseTouchstoneNumber refuses anything with trailing junk":
-  # Unlike IBIS and SPICE, a Touchstone data row carries no per-token metric
-  # prefix at all -- frequency scaling is stated once, on the option line --
-  # so there is nothing plausible left over to interpret; refuse outright.
+  # Touchstone rows carry no metric prefixes (scaling is on the option
+  # line), so refuse outright.
   var v: float
   check not parseTouchstoneNumber("1.5k", v)
   check not parseTouchstoneNumber("1.5MHz", v)

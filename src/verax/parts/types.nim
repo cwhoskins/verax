@@ -1,37 +1,14 @@
-## Requesting a part by what it has to *do*, and resolving it to what to buy.
+## Requesting a part by what it must *do*, and resolving it to what to buy.
 ##
-## ## The asymmetry this exists for
+## A parameterized module (a filter builder) knows it needs 22.5 nF and what
+## the part is *for* -- a timing cap must be C0G (Class 2 loses capacitance
+## under bias and moves the corner); a decoupling cap should be Class 2 --
+## but not the rail voltage, temperature range or space budget. The board
+## knows those but not each part's function. So the module states a
+## `Request` and the board's `PartPolicy` turns it into a `Choice`.
 ##
-## A parameterized module -- `designs/lib/filters.sallenKeyLP(fc, r, q)` --
-## computes that it needs 22.5 nF. It cannot compute what part that is, and
-## the reason is not laziness: the choice depends on the rail voltage, the
-## temperature range, the space budget and the cost target, none of which the
-## module can see. But the board cannot make the choice either, because it
-## cannot see which of the module's capacitors is timing-critical and which is
-## a bypass -- and that distinction is *decisive*, not cosmetic. A timing
-## capacitor must be Class 1 (C0G/NP0), because a Class 2 dielectric loses
-## capacitance under DC bias and would move the filter's corner by tens of
-## percent; a decoupling capacitor should be Class 2, because that is where
-## the capacitance density is.
-##
-## So: **the module knows the part's function, the board knows the part's
-## environment, and neither can choose the part alone.** The module states a
-## `Request`; the board supplies a `PartPolicy` that turns it into a `Choice`.
-##
-## The alternatives were both tried on paper and both fail. Per-component
-## builder parameters (`c1Package`, `c1Dielectric`, `c1VoltageRating`, ...)
-## multiply out with every part in the module *and* still leave the board
-## guessing at function. A pass that annotates the netlist afterwards loses
-## the compile-time checking a `spec:` block gives and has to address parts by
-## generated name.
-##
-## ## Why proc-valued
-##
-## `PartPolicy` holds procs on a data object rather than being a compile-time
-## construct, for the same reason `RoleDef` does: a policy built at runtime --
-## from a preferred-parts database, say, or from a project's derating rules --
-## must register and behave identically to a built-in one. Nothing here is
-## privileged.
+## `PartPolicy` is proc-valued so runtime-built policies (a parts database,
+## project derating rules) behave identically to built-ins.
 
 import std/strutils
 
@@ -59,9 +36,8 @@ type
     value*: Farads
     use*: CapUse
     working*: Volts
-      ## The DC voltage the module expects across it. Zero means "the module
-      ## does not know", which is honest and is what a signal-path coupling
-      ## capacitor in an unbiased stage actually is.
+      ## The DC voltage the module expects across it; zero means unknown
+      ## (e.g. a coupling cap in an unbiased stage).
 
   ResRequest* = object
     value*: Ohms
@@ -75,7 +51,7 @@ type
 
   Choice* = object
     ## What the board decided. Every field lands on the component as a
-    ## registered annotation, so nothing here is private to this module.
+    ## registered annotation.
     package*: string
     dielectric*: string
     voltageRating*: Volts
@@ -87,37 +63,23 @@ type
     esl*: Henries
     partNumber*: string
     use*: string
-      ## What the part is *for* -- `partUseName(r.use)` of whichever request
-      ## produced this `Choice` (`"timing"`, `"decoupling"`, ...), matching
-      ## `netlist/annotations`' `part_use` key so `applyChoice` can write it
-      ## straight through. Added so `Choice` stops erasing the one fact that
-      ## decided everything else in it: before this field existed, a `Choice`
-      ## carried a capacitor's dielectric and tolerance but not *why* that
-      ## dielectric was picked, so a BOM compiler reading a finished netlist
-      ## could not tell a timing capacitor from a bypass one -- precisely the
-      ## distinction that makes a Class 2 dielectric in a filter move the
-      ## corner by tens of percent (`docs/bom_compiler_plan.md`, fact 4).
+      ## What the part is *for* (`partUseName`), matching the `part_use`
+      ## annotation, so a finished netlist still records why a dielectric
+      ## was chosen.
     notes*: seq[string]
-      ## Anything the policy wants said out loud -- carried into the design's
-      ## assumptions rather than swallowed.
+      ## Anything the policy wants said, carried into the design's
+      ## assumptions.
 
   PartPolicy* = object
-    ## Proc-valued so a runtime-built policy is indistinguishable from a
-    ## built-in one. A nil member means "this policy has nothing to say about
-    ## that kind of part", and the caller leaves the component unannotated
-    ## rather than inventing something.
+    ## Proc-valued. A nil member means the policy says nothing about that
+    ## kind of part, and the component is left unannotated.
     capacitor*: proc (r: CapRequest): Choice {.nimcall.}
     resistor*: proc (r: ResRequest): Choice {.nimcall.}
     inductor*: proc (r: IndRequest): Choice {.nimcall.}
 
 proc partUseName*(u: CapUse): string =
-  ## `CapUse`/`ResUse`/`IndUse` spelled without their enum prefix, matching
-  ## `netlist/annotations`' `part_use` key's `allowed` list exactly --
-  ## `$CapUse` would print `"cuTiming"`, which is a Nim identifier and not a
-  ## value that key accepts. One proc per enum rather than one generic
-  ## `$`-style overload, because the three enums are otherwise unrelated
-  ## types and a shared name here is only correct because the three
-  ## `case` bodies happen to agree on style, not because they share a type.
+  ## The enum value without its prefix, matching `part_use`'s `allowed`
+  ## list (`$CapUse` would give `"cuTiming"`).
   case u
   of cuTiming: "timing"
   of cuCoupling: "coupling"
@@ -131,18 +93,15 @@ proc partUseName*(u: ResUse): string =
   of ruPower: "power"
 
 proc partUseName*(u: IndUse): string =
-  ## `iuPower` maps to the same `"power"` string `ResUse.ruPower` does --
-  ## deliberate, not a collision: `part_use`'s allowed list is the *union* of
-  ## what the three enums mean, spelled once, and "power" reads the same
-  ## whether the part carries current as a resistor or as an inductor.
+  ## `iuPower` maps to `"power"` like `ruPower`, deliberately: `part_use`'s
+  ## list is the union of the three enums.
   case u
   of iuFilter: "filter"
   of iuPower: "power"
 
 proc isClass1*(dielectric: string): bool =
-  ## Class 1 ceramics (C0G, NP0) are paraelectric: their capacitance does not
-  ## depend on applied voltage. Every other ceramic class does, which is the
-  ## whole reason `dielectric` is a registered key rather than a BoM note.
+  ## Class 1 ceramics (C0G, NP0) don't lose capacitance under voltage; every
+  ## other class does.
   let d = dielectric.toUpperAscii
   d == "C0G" or d == "NP0"
 

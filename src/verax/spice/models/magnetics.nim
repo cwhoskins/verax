@@ -1,19 +1,9 @@
-## Coupled inductors: a transformer or a common-mode choke as two windings
-## and a SPICE `K` card.
+## Coupled inductors: a transformer or common-mode choke as two windings and
+## a SPICE `K` card -- an ideal coupled pair with magnetising inductance per
+## winding and a coupling coefficient (leakage is implicit in `k < 1`).
 ##
-## SPICE has no transformer device. What it has is `Lp`, `Ls` and
-## `K Lp Ls <k>`, and that triple is the whole model here -- an *ideal*
-## coupled pair with a magnetising inductance per winding and a coupling
-## coefficient. Leakage inductance is not a separate element: it is implicit
-## in `k < 1`, since the leakage is `Lp*(1-k^2)` referred to the primary.
-##
-## **What this deliberately does not model:** core loss, saturation (the core
-## has infinite `B_sat` here), interwinding capacitance, and frequency-
-## dependent permeability. A flyback modelled this way tells you the turns
-## ratio holds and the barrier is a barrier; it does not tell you the snubber
-## dissipation or the leakage spike.
-##
-## Mutates the `Netlist` it is given; run it on a simulation clone.
+## Not modelled: core loss, saturation, interwinding capacitance,
+## frequency-dependent permeability. Mutates its netlist; use a clone.
 
 import std/[math, strutils, tables]
 import ../../netlist/types
@@ -36,21 +26,14 @@ const coupledKinds = ["transformer", "common_mode_choke", "coupled_inductor"]
 
 proc expandCoupledInductors*(nl: Netlist,
                              d = defaultCoupledInductorModel()): seq[Assumption] =
-  ## Rewrites every `transformer` / `common_mode_choke` / `coupled_inductor`
-  ## into two windings (each an `inductor` in series with a `resistor` for its
-  ## DC resistance) plus a `mutual_inductance` component carrying the `K`
-  ## card's coupling coefficient.
+  ## Rewrites every `transformer`/`common_mode_choke`/`coupled_inductor` into
+  ## two windings (inductor + DCR resistor) plus a `mutual_inductance`
+  ## carrying `K`. Terminals match `common.priDotNames` etc. (`PRI+`/`PRI-`,
+  ## `SEC+`/`SEC-`, dotted end first).
   ##
-  ## Winding terminals are matched by name through `common.priDotNames` and
-  ## friends: `PRI+`/`PRI-` and `SEC+`/`SEC-`, dotted (same-polarity) end
-  ## first.
-  ##
-  ## The secondary inductance comes from `lsec` if stated, else from `lpri`
-  ## and `turns` (`Ls = Lp * turns^2`), else 1:1 with the primary (right for
-  ## a common-mode choke, and flagged for anything else). A part that states
-  ## none of the three is **left alone** with a note: there is no defensible
-  ## default magnetising inductance, and inventing one gives a barrier that
-  ## silently passes whatever was made up.
+  ## `Ls` comes from `lsec`, else `lpri * turns^2`, else 1:1 (right for a
+  ## choke, flagged otherwise). With none of the three the part is **left
+  ## alone** with a note: no default magnetising inductance is defensible.
   var parts: seq[Component]
   for _, c in nl.components:
     if c.kind in coupledKinds and c.subNetlist == nil: parts.add c
@@ -145,10 +128,8 @@ proc expandCoupledInductors*(nl: Netlist,
     discard add2("resistor", "R" & desig & "_SEC",
                  spiceValue(max(dcrS, 1.0e-6)), midS, sB)
 
-    # The `K` card. A `mutual_inductance` component has no pins -- it names
-    # two inductors and a coefficient -- and `formats/spice.formatDeviceLine`
-    # renders it from `spice.couples`, resolving each name at write time so a
-    # later rename of a winding cannot leave the card dangling.
+    # The `K` card has no pins; `formats/spice` renders it from
+    # `spice.couples`, resolving names at write time.
     let kc = addComponent(nl, newComponent("K" & desig,
                                            kind = "mutual_inductance"))
     kc.attrs["spice.couples"] = lPri.designator & "," & lSec.designator

@@ -1,6 +1,5 @@
-## `pcb/variant.nim`: the layout-variant data model and registry. No
-## algorithm to test -- `selectVariant`/`instantiateVariant` are named
-## refusals, and the tests below pin exactly that.
+## `pcb/variant.nim`: the layout-variant data model and registry.
+## `selectVariant`/`instantiateVariant` are named refusals.
 
 import std/[strutils, unittest]
 

@@ -1,18 +1,8 @@
-## Bill-of-materials compilation from an imported board.
-##
-## This *compiles* what the board file already carries; it does not resolve
-## parts against a catalogue -- parametric part matching against a supplier
-## database is a separate concern and a separate submodule.
-##
-## Both formats do carry per-part data on the board itself, so a BoM does not
-## depend on having a schematic or a netlist to hand. KiCad footprints hold
-## `(property "Reference"/"Value"/"Datasheet"/"Description" ...)` plus
-## whatever user fields the schematic propagated, and `dnp` /
-## `exclude_from_bom` inside `(attr ...)`. ODB++ holds per-component `PRP`
-## records *and* an explicit `BOM DATA` block (`CPN`/`IPN`/`DSC`/`VND`/`MPN`/
-## `VPL_*`). A reader drops all of it into `Placement.attrs`; this module
-## promotes the well-known keys to typed fields and rolls placements up into
-## lines.
+## BoM compilation from an imported board's own data (no catalogue
+## resolution -- that's `verax/bom`). KiCad footprints carry properties and
+## `dnp`/`exclude_from_bom`; ODB++ carries `PRP` records and a `BOM DATA`
+## block. Readers put it all in `Placement.attrs`; this promotes known keys
+## and rolls placements into lines.
 
 import std/[strutils, tables]
 import ./types
@@ -45,9 +35,8 @@ const
   ManufacturerKeys* = ["Manufacturer", "VPL_VND", "VND", "manufacturer"]
   PartNumberKeys* = ["IPN", "PART_NUMBER", "CPN", "Part Number", "partNumber"]
   DescriptionKeys* = ["Description", "DSC", "desc1", "Part Description"]
-    ## Candidate attribute names, in priority order. KiCad's mixed-case
-    ## property names and ODB++'s upper-case record names both appear, so the
-    ## lookup tries each in turn rather than assuming one convention.
+    ## Candidate attribute names in priority order (KiCad and ODB++ spellings
+    ## both appear).
 
 proc firstAttr*(p: Placement, keys: openArray[string]): string =
   ## The first non-empty value among `keys` in `p.attrs`.
@@ -57,8 +46,7 @@ proc firstAttr*(p: Placement, keys: openArray[string]): string =
   ""
 
 proc packageDefOf*(p: Placement): PackageDef =
-  ## The `PackageDef` a sectioned placement stands for, or `nil`. Read off
-  ## any section -- they all share it.
+  ## The `PackageDef` a sectioned placement stands for, or `nil`.
   for _, sc in p.sections:
     let dn = packageDefName(sc)
     if dn.has and isPackageRegistered(dn.value):
@@ -80,8 +68,7 @@ proc partNumberOf*(p: Placement): string =
     if def != nil: result = def.partNumber
 
 proc footprintOf*(p: Placement): string =
-  ## `p.footprint` as read from the board, falling back to the package
-  ## definition's footprint for a synthesized sectioned placement.
+  ## `p.footprint`, else the package definition's.
   result = p.footprint
   if result.len == 0:
     let def = packageDefOf(p)
@@ -92,10 +79,8 @@ proc manufacturerOf*(p: Placement): string = firstAttr(p, ManufacturerKeys)
 proc descriptionOf*(p: Placement): string = firstAttr(p, DescriptionKeys)
 
 proc defaultKey*(p: Placement): string =
-  ## Groups by manufacturer part number where one is known, then by internal
-  ## part number, and finally by the value/footprint pair that is all a
-  ## generic passive usually offers. Do-not-populate parts never merge with
-  ## populated ones.
+  ## Group by MPN if known, then internal part number, then value/footprint.
+  ## DNP never merges with populated.
   let dnp = if p.doNotPopulate: "|DNP" else: ""
   let mpn = mpnOf(p)
   if mpn.len > 0: return "mpn:" & mpn & dnp
@@ -104,12 +89,8 @@ proc defaultKey*(p: Placement): string =
   "vf:" & valueOf(p) & "|" & footprintOf(p) & dnp
 
 proc buildBom*(pcb: Pcb, groupBy: proc (p: Placement): string {.closure.} = nil): Bom =
-  ## Rolls every placed component up into `BomLine`s.
-  ##
-  ## Placements flagged `excludeFromBom` are dropped. Placements flagged
-  ## `doNotPopulate` are **kept**, on their own lines -- a DNP part is a real
-  ## line item on a real BoM, and silently dropping it hides an assembly
-  ## decision.
+  ## Rolls placements into `BomLine`s. `excludeFromBom` parts are dropped;
+  ## `doNotPopulate` parts are **kept** on their own lines.
   result = Bom()
   var byKey: OrderedTable[string, BomLine]
   for _, p in pcb.placements:

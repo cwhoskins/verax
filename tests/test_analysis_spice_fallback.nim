@@ -7,14 +7,11 @@ import verax/analysis/analyses/spice_fallback
 let haveNgspice = findExe("ngspice").len > 0
 
 proc diodeGatedNetlist(): Netlist =
-  ## V1 (DC 5V) -> R1 -> diode anode `a`; diode cathode `b` is otherwise
-  ## unloaded and tagged `ptInput`, so a static walk can't classify D1
-  ## (an unrecognized "diode" kind) and reports `b` as ambiguous.
+  ## V1 -> R1 -> diode anode `a`; cathode `b` is unloaded and `ptInput`, so a
+  ## static walk can't classify D1 and reports `b` ambiguous.
   result = newNetlist("diode_gated")
   let vcc = addNet(result, newNet("vcc", ntPower))
-  # Stated, because V1 drives it to 5 V and an unstated rail is its own
-  # finding now (`rail_voltage_unknown`) -- leaving it out would put a
-  # second, unrelated issue in every bundle below.
+  # Stated, or `rail_voltage_unknown` would join every bundle below.
   vcc.attrs["voltage"] = "5.0"
   let gnd = addNet(result, newNet("0", ntGround))
   let a = addNet(result, newNet("a"))

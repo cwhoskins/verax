@@ -1,33 +1,16 @@
-## Cutting a simulatable fragment out of a full design netlist.
+## Cutting a simulatable fragment out of a design. `spice/extract` turns a
+## designator list into a standalone netlist with boundary ports; this adds:
 ##
-## `verax/spice/extract` already answers "given this exact list of
-## designators, give me a standalone netlist with the boundary nets promoted
-## to ports". That is the mechanical half. Two things are missing before the
-## result can actually be simulated, and this module supplies both:
+## 1. **Choosing the list**: grown from seeds through parts fully described
+##    by their value, stopping at anything needing a model or at a rail.
+## 2. **Terminating the cut**: ground becomes node `"0"`, other rails get an
+##    ideal source at nominal, open signal ports get a leak to ground.
 ##
-## 1. **Choosing the list.** In practice you know one or two components you
-##    care about -- a regulator, an op-amp, a rail -- not the twenty passives
-##    around them. So the selection is *grown* outward from those seeds
-##    through parts whose behaviour is fully described by their value, and
-##    stopped at anything that would need a model (another IC, a transistor)
-##    or at a power rail.
-## 2. **Terminating what was cut.** A fragment with open ports, no node `"0"`
-##    and no excitation is not a circuit; ngspice will report a singular
-##    matrix or simply refuse. So the promoted boundary is *closed*: the
-##    ground rail becomes node `"0"`, every other rail gets an ideal source
-##    at its nominal voltage, and open signal ports get a leak path to ground.
+## **The boundary is the result.** A rail is never traversed *through* (it
+## would absorb every bypass cap), nor is an unmodellable part (recorded in
+## `dropped`). `maxHops` is a backstop.
 ##
-## **Where the boundary is drawn is the whole result.** Grow too far and you
-## are simulating the board; stop too early and you have deleted the load
-## that made the answer interesting. Two rules do the work: a rail is never
-## traversed *through* (every decoupling capacitor on a board hangs off the
-## same VDD, so one hop through it absorbs everything), and an unmodellable
-## component is never traversed through either (it is recorded in `dropped`,
-## so the caller can see exactly what was thrown away). `maxHops` is a
-## backstop, not the primary mechanism.
-##
-## Nothing here mutates the netlist it is given: `extractSubcircuit` clones
-## first, and every mutation lands on that clone.
+## Never mutates its input.
 
 import std/[sets, strutils, tables]
 import ../netlist/types
@@ -42,30 +25,24 @@ type
     name*: string
       ## Name for the resulting `Netlist` (becomes the deck title).
     maxHops*: int
-      ## How many nets away from a seed the growth may reach. A backstop
-      ## against a pathological topology; the rail and active-device rules
-      ## are what normally stop it.
+      ## How many nets from a seed growth may reach -- a backstop; the rail
+      ## and active-device rules normally stop it.
     stopKinds*: seq[string]
-      ## Component kinds that always cut, even though they would otherwise
-      ## be absorbed -- e.g. `@["fuse"]` to keep a fuse out of a fragment.
+      ## Kinds that always cut even if absorbable (e.g. `@["fuse"]`).
     railVoltages*: OrderedTable[string, float]
-      ## Net name -> nominal volts. Takes precedence over
-      ## `Net.attrs["voltage"]`.
+      ## Net name -> nominal volts; overrides `Net.attrs["voltage"]`.
     groundNet*: string
-      ## Which net becomes SPICE node `"0"`. Empty means "find it": an
-      ## existing `"0"`, else the first net that `kinds.isGround` accepts.
+      ## Which net becomes node `"0"`. Empty: an existing `"0"`, else the
+      ## first `kinds.isGround` net.
     requireKnownRails*: bool
-      ## When true (the default), a rail with no known voltage raises rather
-      ## than being quietly left floating or guessed at.
+      ## When true (default), a rail with no known voltage raises.
     excludeRails*: seq[string]
-      ## Rails that must **not** be driven by an ideal source. An ideal
-      ## voltage source is a dead short at AC, so terminating the rail whose
-      ## impedance you are measuring would report Z = 0 at every frequency --
-      ## the measurement would destroy itself. Such a rail is left open (and
-      ## given the leak path below, so it still has a DC reference).
+      ## Rails **not** to drive with an ideal source: one is a dead short at
+      ## AC, so terminating the rail being measured reports Z = 0. Left open,
+      ## with the leak path.
     openPortLeak*: float
-      ## Ohms to ground added at each open signal port, or `0` to add none.
-      ## See `terminate` for why this exists.
+      ## Ohms to ground at each open signal port, or `0` for none (see
+      ## `terminate`).
 
   Isolated* = object
     netlist*: Netlist
@@ -74,23 +51,19 @@ type
     absorbed*: seq[string]
       ## Components pulled in by the growth, in the order they were reached.
     dropped*: seq[string]
-      ## Components that touched the fragment but were cut at the boundary.
-      ## Worth showing a user: it is the list of things whose behaviour the
-      ## simulation is *not* accounting for.
+      ## Components touching the fragment that were cut: what the
+      ## simulation does *not* account for.
     railNets*: seq[string]
       ## Nets terminated with an ideal source.
     openPorts*: seq[string]
-      ## Nets left open for the caller to stimulate, load or measure --
-      ## promoted signal ports plus any `excludeRails` entry.
+      ## Nets left open for the caller: signal ports plus `excludeRails`.
     assumptions*: seq[Assumption]
 
 proc defaultIsolationSpec*(name = "isolated"): IsolationSpec =
   IsolationSpec(name: name, maxHops: 4, requireKnownRails: true, openPortLeak: 1.0e9)
 
 proc nominalVoltage(spec: IsolationSpec, net: Net): tuple[v: float, known: bool] =
-  ## An explicit override wins; otherwise the net's own `voltage` annotation,
-  ## read through `netlist/annotations` so the parse rules and the error
-  ## message are the same ones every other consumer gets.
+  ## An explicit override wins, else the net's `voltage` annotation.
   if spec.railVoltages.hasKey(net.name):
     return (spec.railVoltages[net.name], true)
   let ann = annotations.railVoltage(net)
@@ -136,10 +109,8 @@ proc growSelection(nl: Netlist, seedDesignators: openArray[string], seedNets: op
   while qi < queue.len:
     let (net, hop) = queue[qi]
     inc qi
-    # A rail is a boundary, not a highway. Every bypass capacitor on the
-    # board shares VDD, so traversing through it would absorb the design.
-    # A rail named as an explicit seed is the exception: that is where the
-    # caller asked to start, not somewhere the walk wandered into.
+    # A rail is a boundary, not a highway (every bypass cap shares VDD) --
+    # unless the caller seeded it.
     if isRail(net) and net.name notin seedNetNames: continue
 
     for p in net.pins:
@@ -159,11 +130,9 @@ proc growSelection(nl: Netlist, seedDesignators: openArray[string], seedNets: op
         if other.net != nil and other.net != net:
           enqueue(other.net, hop + 1)
 
-  # A `mutual_inductance` (SPICE `K` card) has no pins, so the walk above
-  # never reaches it. Pull one in whenever both inductors it couples are
-  # already selected -- otherwise a common-mode choke or a transformer
-  # isolates into two independent windings and the fragment is a different
-  # circuit, with nothing said about it.
+  # A `K` coupling has no pins, so the walk never reaches it; pull it in
+  # when both inductors are selected, or a transformer splits into two
+  # independent windings.
   for _, comp in nl.components:
     if comp.kind notin couplingKinds or comp.designator in selected: continue
     let couples = comp.attrs.getOrDefault("spice.couples", "")
@@ -210,7 +179,7 @@ proc terminate(frag: Netlist, spec: IsolationSpec, res: var Isolated) =
   gnd.kind = ntGround
 
   # --- every other rail gets an ideal source ---------------------------
-  # Collected before mutating, since adding sources adds nets and components.
+  # Collected first: adding sources adds nets and components.
   var rails: seq[Net]
   for _, n in frag.nets:
     if n == gnd: continue
@@ -252,26 +221,18 @@ proc terminate(frag: Netlist, spec: IsolationSpec, res: var Isolated) =
       "are not modelled)")
 
   # --- open signal ports ------------------------------------------------
-  # A promoted port with nothing on the far side is a floating node, and a
-  # floating node is how an isolated fragment turns into "singular matrix"
-  # rather than a result. A leak resistor to ground gives every such node a
-  # DC reference without materially loading it -- at 1 Gohm it is far below
-  # any impedance these analyses resolve -- and the caller usually replaces
-  # it with a real stimulus or load anyway.
+  # A floating node gives a singular matrix. A 1 Gohm leak provides a DC
+  # reference without loading anything these analyses resolve.
   var openPorts: seq[tuple[name: string, net: Net]]
   var openSeen = initHashSet[string]()
-  # An undriven rail needs the leak path just as much as an open signal port
-  # does -- more so, since a rail reaches ground only through capacitors and
-  # so has no DC path at all without it.
+  # An undriven rail needs the leak too (it reaches ground only through
+  # capacitors).
   for rail in unterminated:
     if rail.name notin openSeen:
       openSeen.incl rail.name
       openPorts.add (name: rail.name, net: rail)
-  # Anything the caller excluded is by definition something they intend to
-  # drive or measure themselves, so it is open until they do. It gets the
-  # leak whether or not it is a rail and whether or not it became a port: a
-  # net at a high-impedance input (an op-amp's own `+` pin, say) has no DC
-  # path to ground at all, and ngspice answers that with a singular matrix.
+  # Excluded nets get the leak whether or not they're rails or ports: a net
+  # at a high-impedance input has no DC path otherwise.
   for netName in spec.excludeRails:
     if frag.nets.hasKey(netName) and netName notin openSeen:
       openSeen.incl netName
@@ -302,13 +263,9 @@ proc terminate(frag: Netlist, spec: IsolationSpec, res: var Isolated) =
 
 proc isolateFrom*(nl: Netlist, seedDesignators, seedNetNames: openArray[string],
                   spec: IsolationSpec, globalNets: var OrderedTable[string, Net]): Isolated =
-  ## The general form: seed from components, from nets, or from both. `nl` is
-  ## never modified.
-  ##
-  ## Seeding from both at once is what a start-up analysis needs -- the
-  ## regulator is the component of interest, but its output rail must also be
-  ## expanded to pick up the capacitor bank whose charging *is* the inrush,
-  ## and a rail is never expanded unless it was named a seed.
+  ## The general form: seed from components, nets, or both. `nl` is never
+  ## modified. Both at once suits start-up: the regulator plus its output
+  ## rail (rails are expanded only when seeded).
   var seedNets: seq[Net]
   for name in seedNetNames:
     if not nl.nets.hasKey(name):
@@ -325,16 +282,12 @@ proc isolateFrom*(nl: Netlist, seedDesignators, seedNetNames: openArray[string],
 
 proc isolate*(nl: Netlist, seedDesignators: openArray[string], spec: IsolationSpec,
               globalNets: var OrderedTable[string, Net]): Isolated =
-  ## Grows a selection outward from `seedDesignators`, extracts it, and
-  ## terminates the boundary.
+  ## Grows from `seedDesignators`, extracts, and terminates.
   isolateFrom(nl, seedDesignators, [], spec, globalNets)
 
 proc isolateNets*(nl: Netlist, seedNetNames: openArray[string], spec: IsolationSpec,
                   globalNets: var OrderedTable[string, Net]): Isolated =
-  ## Seeds from nets rather than components: "everything hanging off this
-  ## rail", which is how a decoupling network is actually specified. A rail
-  ## given here is expanded even though the growth otherwise refuses to
-  ## traverse through rails, and the unmodellable components hanging off it
-  ## are still recorded in `dropped` -- for a PDN sweep that list is the ICs
-  ## whose actual current draw the simulation is not representing.
+  ## Seeds from nets: "everything hanging off this rail". The rail is
+  ## expanded despite the rail rule; unmodellable parts on it go to
+  ## `dropped` (for a PDN sweep, the ICs whose draw isn't modelled).
   isolateFrom(nl, [], seedNetNames, spec, globalNets)

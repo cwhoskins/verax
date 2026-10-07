@@ -1,33 +1,13 @@
-## Opt-in SPICE-backed resolution of the `"ambiguous_dc_path"` issues that
-## `verax/analysis/io_check.checkDCPaths` reports when a static graph walk
-## can't classify a component's DC conductivity (diodes, transistors, ICs,
-## opaque subcircuits, or any unrecognized `Component.kind`).
+## Opt-in SPICE resolution of `io_check`'s `"ambiguous_dc_path"` issues
+## (diodes, transistors, ICs, unknown kinds): run one `.op` and read
+## `v(<net>)`, never ngspice's log text.
 ##
-## This never parses ngspice's log text for something like "no dc path to
-## ground" -- that's exactly the kind of empirically-unreliable/version-
-## fragile signal `verax/spice/ngspice`'s own doc comments already warn
-## against relying on. Instead it reuses the same tested idiom
-## `tests/test_spice_ngspice.nim` already exercises: run one `.op` and read
-## back `result["v(<netname>)"]`.
+## A finite voltage is necessary, not sufficient, evidence of a real DC path
+## (gmin and leakage aids can define a node). It needs real sources and a
+## ground; a bare fragment is expected to be inconclusive.
 ##
-## What this can and cannot prove: a finite `.op` voltage on the ambiguous
-## net is necessary but not sufficient evidence of a genuine, designed DC
-## path -- ngspice's internal per-node gmin/per-junction leakage convergence
-## aids can produce a defined voltage even for a node with no real
-## low-impedance path. This is not a symbolic path-prover, and it needs the
-## netlist it's given to already contain real excitation (sources) and a
-## ground reference -- running it against a bare extracted fragment with no
-## injected source is expected to be inconclusive (a `SpiceSimError`), not
-## proof of "no path".
-##
-## Like `verax/spice/transform` and `verax/spice/probes`, this operates on
-## a clone, flattened and then sim-replaced -- the real design netlist
-## passed in is never mutated or simulated directly. Flatten runs *before*
-## `applySimReplacements` rather than the combined `materializeSimNetlist`,
-## so a nested XSPICE component's `A`-line ports are rendered from
-## post-flatten net names rather than frozen at child-template-local ones
-## flatten is about to rename out from under them (see `spice/flatten`'s
-## module doc).
+## Runs on a clone, flattened then sim-replaced (so nested XSPICE ports use
+## post-flatten names).
 
 import std/tables
 import ../../netlist/types
@@ -45,12 +25,10 @@ const
   KindDCPathInconclusive* = "dc_path_inconclusive"
 
 proc resolveAmbiguousDCPaths*(nl: Netlist, issues: seq[Issue]): seq[Issue] =
-  ## Replaces each `"ambiguous_dc_path"` entry in `issues` 1:1 with either a
-  ## `sevInfo` `"dc_path_resolved_by_spice"` (a finite `.op` voltage was
-  ## found for the issue's net) or a `"dc_path_inconclusive"` (the run
-  ## failed, or the net's vector wasn't present in the result); every other
-  ## issue passes through unchanged. Never runs ngspice at all if `issues`
-  ## contains no ambiguous entries.
+  ## Replaces each `"ambiguous_dc_path"` 1:1 with `sevInfo`
+  ## `"dc_path_resolved_by_spice"` (finite `.op` voltage) or
+  ## `"dc_path_inconclusive"`; other issues pass through. Doesn't run
+  ## ngspice when nothing is ambiguous.
   var hasAmbiguous = false
   for iss in issues:
     if iss.kind == "ambiguous_dc_path":

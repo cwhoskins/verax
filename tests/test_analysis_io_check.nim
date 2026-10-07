@@ -6,9 +6,7 @@ import verax/analysis
 test "clean netlist: output driving input directly, proper power/ground tags -> no issues":
   let nl = netlist("clean"):
     net y, kind = ntSignal
-    # Stated, because a clean netlist states it: an unnamed rail voltage is
-    # its own finding (`rail_voltage_unknown`) now that leaving one out
-    # changes the topology of anything isolated around it.
+    # Stated: an unnamed rail voltage is its own finding.
     net vdd, kind = ntPower, voltage = "3.3"
     net gnd, kind = ntGround, name = "0"
 
@@ -166,13 +164,9 @@ test "dc-path walk crosses a hierarchical instance boundary via hierNet":
 # --- a declared traverse: spec on an N-pin switch ----------------------
 
 proc rfSwitchSheet(declared: bool): Netlist =
-  ## An ADG904-shaped switch: `RFC` driven directly, RF1..RF4 each landing on
-  ## their own net, `EN` tied straight to ground so it is never itself the
-  ## subject of a finding here. Six connected pins -- more than the 2-pin
-  ## default has anything to say about -- so undeclared, `dcReachable` can
-  ## only call `SW1` ambiguous; declared, `RFC <-> RF1..RF4` is the only path
-  ## from any `RFn` back to the driven net, so crossing it is the only way
-  ## `U2`'s input on `rf1` is ever reached.
+  ## An ADG904-shaped switch: `RFC` driven, RF1..RF4 on their own nets, `EN`
+  ## grounded. Undeclared, `dcReachable` calls the 6-pin `SW1` ambiguous;
+  ## declared, `RFC <-> RFn` is the only path to `U2`'s input on `rf1`.
   result = netlist("rf_switch_sheet"):
     net rfc, kind = ntSignal
     net rf1, kind = ntSignal
@@ -211,9 +205,8 @@ test "a declared traverse: spec makes dcReachable cross the switch: no findings"
 # --- a power rail nobody gave a voltage --------------------------------
 
 proc biasRail(withVoltage: bool): Netlist =
-  ## A divider-derived half-rail with a signal path returning to it -- the
-  ## shape of every single-supply stage's bias node, and the one no
-  ## `power_rail` role fits.
+  ## A divider-derived half-rail with a signal path returning to it -- a
+  ## single-supply bias node, which no `power_rail` role fits.
   result = newNetlist("b")
   let gnd = addNet(result, newNet("0", ntGround))
   let v9 = addNet(result, newNet("v9", ntPower))
@@ -229,10 +222,8 @@ proc biasRail(withVoltage: bool): Netlist =
     discard connect(c, "2", p2, ptPassive)
 
 test "a power rail with no stated voltage is a structural finding":
-  # Not an assumption. A rail without a voltage is cut loose as a floating
-  # node when a fragment is isolated around it, which changes the topology
-  # rather than substituting a value -- and reported as one assumption among
-  # fifteen it reads exactly like a package-typical ESR.
+  # Not an assumption: a voltage-less rail floats when isolated, changing
+  # topology rather than substituting a value.
   let issues = checkRailVoltages(biasRail(withVoltage = false))
   check issues.len == 1
   check issues[0].kind == "rail_voltage_unknown"
@@ -240,9 +231,8 @@ test "a power rail with no stated voltage is a structural finding":
   check issues[0].net.name == "vref"
 
 test "it names what would lose its connection, and skips the bypass caps":
-  # The actionable half: a rail carrying only power pins and bypass
-  # capacitors loses little by floating, one with a signal path returning to
-  # it loses the path.
+  # A rail with only power pins and bypass caps loses little by floating;
+  # one with a signal path loses the path.
   let issues = checkRailVoltages(biasRail(withVoltage = false))
   check "R9" in issues[0].message
   check "R6" in issues[0].message
@@ -258,8 +248,8 @@ test "ground is never flagged, however it is spelled":
   check checkRailVoltages(nl).len == 0
 
 test "a warning here does not by itself fail a run":
-  # A rail nothing simulates is harmless, and a design may legitimately not
-  # know a voltage yet. It is visible, not fatal -- `--strict` promotes it.
+  # A design may not know a voltage yet: visible, not fatal (`--strict`
+  # promotes it).
   let issues = checkRailVoltages(biasRail(withVoltage = false))
   for i in issues: check i.severity != sevError
 

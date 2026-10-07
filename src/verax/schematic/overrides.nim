@@ -1,46 +1,29 @@
-## Layout overrides: per-component authored hints (`netlist/layouthints`)
-## that must hold as a **guarantee**, not merely steer the heuristic.
+## Layout overrides: authored hints (`netlist/layouthints`) that must hold
+## as **guarantees**. A new hint is one more field on `LayoutOverridePlan`
+## and one more line in `layoutOverridePlan`. Mirror enforcement is
+## `state.chooseMirrors`; side enforcement is `enforceLayoutSides` (in
+## `state.nim`, which has the pool helpers).
 ##
-## `sideLeft`/`sideRight` and `mirrorOn`/`mirrorOff` exist today; the plan
-## shape and the pool-level resolution rule below are meant to be the
-## landing point for a future hint (a pin placement, an absolute position)
-## -- one more field on `LayoutOverridePlan`, one more line in
-## `layoutOverridePlan`. `mirror`'s own enforcement is `state.chooseMirrors`
-## honouring a stated override absolutely rather than searching, the same
-## "guarantee, not steer" contract `enforceLayoutSides` gives `side`.
-##
-## Spliced in right after `./composites/tee` and before `./constrained`:
-## `layoutOverrideReport` needs `compositePlan`/`symbolFor`/`bundlePlan`, all
-## defined by that point, and `constrained.nim`'s topology pass needs
-## `LayoutOverridePlan`/`poolSide` defined *before* it. The enforcement pass
-## itself (`enforceLayoutSides`) lives in `state.nim`, not here -- it needs
-## `LayoutState`'s own `placementPool`/`poolMembers`/`poolOffsets`/
-## `poolOrigin`/`separationRects` helpers, none of which exist until `state.nim`
-## is spliced in, well after this file.
+## Spliced after `./composites/tee` and before `./constrained`, which needs
+## `LayoutOverridePlan`/`poolSide`.
 
 type
   LayoutOverridePlan = object
     side: seq[LayoutSide]
-      ## Parallel to `state.comps` (raw component index). `sideAuto` for
-      ## every component nobody annotated.
+      ## Parallel to `state.comps`; `sideAuto` when unannotated.
     any: bool
-      ## False when no component states a side -- the zero-value guarantee
-      ## every consumer of this plan is gated on, so an un-annotated sheet
-      ## takes exactly its pre-feature path.
+      ## False when no component states a side; every consumer is gated on
+      ## it.
     mirror: seq[LayoutMirror]
-      ## Parallel to `state.comps`. `mirrorAuto` for every component nobody
-      ## annotated -- `state.chooseMirrors` is the only consumer.
+      ## Parallel to `state.comps`; `mirrorAuto` when unannotated. Read only
+      ## by `state.chooseMirrors`.
     anyMirror: bool
-      ## False when no component states a mirror -- `chooseMirrors`'s own
-      ## zero-value guarantee, independent of `any` since a sheet may state
-      ## one hint family and not the other.
+      ## False when no component states a mirror (independent of `any`).
     power: seq[LayoutPower]
-      ## Parallel to `state.comps`. `powerAuto` for every component nobody
-      ## annotated -- `power.poolPower` is the only consumer.
+      ## Parallel to `state.comps`; `powerAuto` when unannotated. Read only by
+      ## `power.poolPower`.
     anyPower: bool
-      ## False when no component states a power override -- `poolPower`'s
-      ## own zero-value guarantee, independent of `any`/`anyMirror` since a
-      ## sheet may state any one hint family and not the others.
+      ## False when no component states a power override.
 
 proc layoutOverridePlan(comps: seq[Component]): LayoutOverridePlan =
   result.side = newSeq[LayoutSide](comps.len)
@@ -58,13 +41,9 @@ proc layoutOverridePlan(comps: seq[Component]): LayoutOverridePlan =
     if p != powerAuto: result.anyPower = true
 
 proc poolSide(plan: CompositePlan, ov: LayoutOverridePlan, item: int): LayoutSide =
-  ## The side a placement-pool unit is forced to. `item` is an arena index
-  ## (`CompositePlan.items`, what `rawMembers` expects and what
-  ## `placementPool`/`CompositePlan.topLevel` entries already are) -- not a
-  ## position in `topLevel`. A composite is one placement unit, so its side is
-  ## the first non-`sideAuto` member in canonical member order; two members
-  ## disagreeing is this same deterministic first-wins, silently -- see
-  ## `layoutOverrideReport` for making that visible.
+  ## The side a placement-pool unit (arena index) is forced to: the first
+  ## non-`sideAuto` member in canonical order. Disagreements resolve
+  ## first-wins silently; `layoutOverrideReport` shows them.
   if not ov.any: return sideAuto
   for i in rawMembers(plan, item):
     if ov.side[i] != sideAuto: return ov.side[i]
@@ -74,10 +53,8 @@ proc reportPoolOverride[T](result: var seq[string], comps: seq[Component],
                           plan: CompositePlan, values: seq[T], auto: T,
                           render: proc (v: T): string {.noSideEffect.}) =
   ## Shared by the `side` and `power` sections of `layoutOverrideReport`:
-  ## both hints resolve per placement unit with the identical deterministic
-  ## first-wins rule (`poolSide`/`poolPower`), so both are reported the
-  ## identical way -- the pool-level winner alone, plus every disagreeing
-  ## member named against it.
+  ## both resolve first-wins per unit, reported as the winner plus each
+  ## disagreeing member.
   for idx in plan.topLevel:
     let members = rawMembers(plan, idx)
     if members.len == 1:
@@ -102,26 +79,14 @@ proc reportPoolOverride[T](result: var seq[string], comps: seq[Component],
           render(values[winner]) & ")"
 
 proc layoutOverrideReport*(nl: Netlist): seq[string] =
-  ## Every stated `layout.side`, as `"U1=left"` -- and, for a composite whose
-  ## members disagree, `"C5=right(conflict: composite uses R5=left)"` naming
-  ## the pool-level winner -- so the first-wins outcome `poolSide` picks
-  ## silently at layout time is visible without rendering a scene. Every
-  ## stated `layout.mirror` follows, as `"U1=mirror"`/`"U1=no-mirror"` --
-  ## unconditional per component, since `chooseMirrors` (unlike `poolSide`)
-  ## never resolves a composite's disagreeing members, it simply does not
-  ## apply a mirror to any component belonging to a multi-member placement
-  ## unit. Every stated `layout.power` follows last, as `"C1=power"`/
-  ## `"C1=no-power"` -- resolved the identical pool-level first-wins way as
-  ## `side` (`poolPower` mirrors `poolSide` exactly), since a power override
-  ## is also a per-*unit* guarantee, not a per-component one. Empty for a
-  ## netlist with no `layout.side`/`layout.mirror`/`layout.power` attr at
-  ## all.
+  ## Every stated hint, for tests: `"U1=left"` (with
+  ## `"C5=right(conflict: composite uses R5=left)"` for disagreeing composite
+  ## members), then `"U1=mirror"`/`"U1=no-mirror"` per component (multi-member
+  ## units are simply never mirrored), then `"C1=power"`/`"C1=no-power"`
+  ## (resolved per unit like `side`). Empty with no hints.
   ##
-  ## Rebuilds the composite arena directly from `nl`, the same
-  ## `bundlePlan`/`compositePlan`/`symbolFor` sequence `prepare` runs --
-  ## except for repeated-subsheet/component arrays (`arrays.nim`), which this
-  ## does not replicate: a conflict hidden inside a collapsed array's
-  ## non-representative members is not reported here.
+  ## Rebuilds the composite arena as `prepare` does, but not arrays: a
+  ## conflict hidden in a collapsed array's members isn't reported.
   var comps: seq[Component]
   for _, c in nl.components: comps.add c
   let ov = layoutOverridePlan(comps)

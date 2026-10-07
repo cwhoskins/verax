@@ -7,8 +7,8 @@ import verax/spice/isolate
 import verax/spice/models
 
 proc board(): Netlist =
-  ## An op-amp with an input divider and feedback, its own decoupling cap on
-  ## VDD, and a downstream ADC three passives away.
+  ## An op-amp with an input divider, feedback, a decoupling cap on VDD, and
+  ## an ADC three passives away.
   netlist("board"):
     net vdd, kind = ntPower, voltage = "3.3"
     net gnd, kind = ntGround, name = "0"
@@ -63,10 +63,8 @@ test "growth absorbs passives, stops at active devices, and never crosses a rail
     check d in iso.absorbed
   check iso.dropped == @["U2"]
 
-  # C1/C2 hang between two rails, so the walk never reaches them. That is
-  # the rail rule working: a decoupling cap is irrelevant to the op-amp's
-  # response once VDD is an ideal source, and traversing VDD would have
-  # pulled in the whole board.
+  # C1/C2 sit between rails, so the walk never reaches them: with VDD ideal
+  # they're irrelevant, and crossing VDD would pull in the whole board.
   check "C1" notin iso.absorbed
   check "C2" notin iso.absorbed
   check "U2" notin iso.absorbed
@@ -79,21 +77,21 @@ test "the boundary is terminated into something a simulator will accept":
   check frag.nets.hasKey("0")
   check frag.nets["0"].kind == ntGround
 
-  # VDD became an ideal 3.3 V source, taken from Net.attrs["voltage"].
+  # VDD becomes an ideal 3.3 V source from Net.attrs["voltage"].
   check iso.railNets == @["vdd"]
   check "V_vdd" in frag.names
   check frag.components["V_vdd"].kind == "voltage_source"
   check frag.components["V_vdd"].attrs["value"].startsWith("DC 3.3")
 
-  # `mid` was cut mid-chain, so it is open and gets a DC reference.
+  # `mid` was cut mid-chain: open, with a DC reference.
   check "far" in iso.openPorts
   check "R_LEAK_far" in frag.names
 
-  # Every assumption the fragment rests on is stated.
+  # Every assumption is stated.
   check iso.assumptions.len == 2
   check ($iso.assumptions[0]).contains("ideal")
   check ($iso.assumptions[1]).contains("DC reference")
-  # Structured, not prose: the rail voltage is a real number with provenance.
+  # Structured: the rail voltage is a number with provenance.
   check iso.assumptions[0].key == "voltage"
   check abs(iso.assumptions[0].value - 3.3) < 1e-12
   check iso.assumptions[0].source == annDerived
@@ -113,8 +111,8 @@ test "maxHops bounds the growth":
   var spec = defaultIsolationSpec()
   spec.maxHops = 0
   let iso = isolate(board(), ["U1"], spec, globals)
-  # R3 sits on a hop-0 net so it is still absorbed, but its far side (`mid`)
-  # is never enqueued, so R4 is not.
+  # R3 is on a hop-0 net so it's absorbed; its far side isn't enqueued, so
+  # R4 isn't.
   check "R3" in iso.absorbed
   check "R4" notin iso.absorbed
 
@@ -158,8 +156,7 @@ test "isolateNets from a rail collects the decoupling network and drops the ICs"
 
   check "C1" in iso.absorbed
   check "C2" in iso.absorbed
-  # The op-amp and the ADC hang off VDD but cannot be modelled, so they are
-  # reported as cut rather than silently ignored.
+  # The op-amp and ADC can't be modelled, so they're reported as cut.
   check "U1" in iso.dropped
   check "U2" in iso.dropped
   # Nothing downstream of the rail leaked in.
@@ -221,9 +218,8 @@ test "two distinct grounds are a design decision, not a transform":
 import verax/contract
 
 test "annotations and role membership survive isolation, rename included":
-  # The decisive case for storing this on the entity rather than in a
-  # side-car keyed by name: `terminate` renames the ground net to "0", so a
-  # name-keyed store would lose exactly the net whose annotations matter most.
+  # Stored on the entity, not keyed by name, because `terminate` renames
+  # ground to "0".
   let nl = netlist("agnd_board"):
     net agnd, kind = ntGround
     net vdd, kind = ntPower
@@ -242,7 +238,7 @@ test "annotations and role membership survive isolation, rename included":
   discard d.addRole("power_rail", "vdd_rail",
                     {"rail": Subject(kind: skNet, name: "vdd")}, {"voltage": "3.3"})
   setAnnotation(nl.components["C1"], "esr", 20.mohm)
-  # Tag the ground net too, so the rename is genuinely exercised.
+  # Tag the ground net so the rename is exercised.
   nl.nets["agnd"].attrs["role.gnd_ref"] = "rail"
 
   var globals: OrderedTable[string, Net]
@@ -257,8 +253,7 @@ test "annotations and role membership survive isolation, rename included":
   # ...and the annotation came with it.
   check rolesOf(frag.nets["0"]) == @[(instance: "gnd_ref", part: "rail")]
 
-  # The rail's role tag and its voltage both crossed the boundary, and the
-  # voltage is what let `terminate` drive the rail without being told.
+  # The rail's role tag and voltage crossed; the voltage drove it.
   check rolesOf(frag.nets["vdd"]) == @[(instance: "vdd_rail", part: "rail")]
   check iso.railNets == @["vdd"]
   check frag.components["V_vdd"].attrs["value"].startsWith("DC 3.3")

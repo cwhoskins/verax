@@ -1,11 +1,6 @@
-## Semantic round-trip and reader-invariant tests for
-## `verax/pcb/formats/kicad`. Deliberately a *different* proof than
-## `tests/test_pcb_sexp.nim`'s byte comparison, which never looks at the
-## typed model at all -- a reader that mapped nothing would still pass that
-## one. Here, `readPcb` -> `writePcb` -> `readPcb` again is compared through
-## `summarize`, the `render(x): string` helper idiom `test_netlist_spice.nim`
-## already uses for the same reason: a failure diffs as readable text
-## instead of an opaque model comparison.
+## Semantic round-trip tests for `verax/pcb/formats/kicad`: `readPcb` ->
+## `writePcb` -> `readPcb`, compared as text via `summarize`. (The sexp
+## byte comparison never looks at the typed model.)
 
 import std/[os, sequtils, strutils, tables, unittest]
 
@@ -15,9 +10,7 @@ import verax/pcb/formats/kicad
 const FixturePath = "tests/fixtures/trim.kicad_pcb"
 
 proc summarize(p: Pcb): string =
-  ## Everything `test_pcb_kicad_edit.nim` and this file need to compare,
-  ## rendered as text rather than as a struct comparison -- see this file's
-  ## own doc comment for why.
+  ## What the KiCad tests compare, rendered as text so failures diff.
   var lines: seq[string]
   lines.add("layers: " & toSeq(p.layers.keys).join(","))
   for _, l in p.layers:
@@ -67,13 +60,9 @@ test "readPcb -> writePcb -> readPcb agrees on the trimmed fixture":
   check summarize(pcb) == roundtripSummary(pcb)
 
 test "a structurally unbalanced board is refused by name and line":
-  # The finding-2 shape, distilled: a missing `(` (here, before
-  # `filter_ratio`) closes the root one paren early, and the real content
-  # that follows -- exactly as `(footprint ...)` follows line 627 in
-  # RoyalBlue54L-Feather.kicad_pcb -- becomes a second top-level form.
-  # A single occurrence with nothing following it would just leave one
-  # stray trailing `)`, absorbed harmlessly (see `test_pcb_sexp.nim`); it is
-  # the trailing content that turns this into a refusal.
+  # A missing `(` closes the root early, and the content after it becomes a
+  # second top-level form, which is refused. (With nothing following, the
+  # stray `)` would be absorbed harmlessly.)
   let bad = "(kicad_pcb\n\t(version 20241229)\n\t(general\n\t\t(curved_edges no)filter_ratio 0.9)\n\t)\n)\n(net_tie_pad_groups)\n"
   let tmp = getTempDir() / "verax_pcb_kicad_bad.kicad_pcb"
   writeFile(tmp, bad)
@@ -160,7 +149,7 @@ test "a board outline is stitched from Edge.Cuts owned by footprints as well as 
   defer: removeFile(tmp)
   let pcb = readPcb(tmp)
   let pts = flatten(pcb.outline.boundary.outer)
-  # A closed 10x10 square, stitched from two board-level and two
+  # A closed 10x10 square stitched from two board-level and two
   # footprint-owned Edge.Cuts segments.
   check pts.len >= 4
   let bb = box(pcb.outline.boundary)
@@ -236,13 +225,9 @@ test "a KiCad 10 board with no net declarations still resolves nets by name":
   check pcb.copperOn("VCC").len == 1
 
 test "trace extraction runs end to end from a real file":
-  # `trim.kicad_pcb` carries a real stackup (`epsilon_r 4.5`, `loss_tangent
-  # 0.02` on its core dielectric) and real copper -- two `(segment)`s on net
-  # `/CLK-D1` and one `(via)` on `GND` (`pcb/CLAUDE.md`'s worked example for
-  # this fixture). This is a smoke test, not a numeric one: the point is
-  # that a real board's geometry and stackup reach `extractRoutes` without
-  # raising, and that the pieces the fixture is known to carry show up as
-  # the right node kinds.
+  # `trim.kicad_pcb` has a real stackup and copper (two segments on
+  # `/CLK-D1`, one via on `GND`). A smoke test: a real board reaches
+  # `extractRoutes` without raising, with the right node kinds.
   let pcb = readPcb(FixturePath)
   check pcb.stackup != nil
   var core: StackEntry = nil

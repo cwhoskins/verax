@@ -1,23 +1,17 @@
-## The op-amp bundles -- `spice.opamp_response`, `spice.large_signal` and
-## `spice.loop_gain`, all via `.ac`/`.tran`.
-##
-## One file because the three share the whole of their setup: `opampSetup`
-## recovers the amplifier/input/output topology, `opampKey` and `opampDoc`
-## key and describe the run, and `runOpAmpKind` is the closed-loop / loop-gain
-## body both `.ac` adapters route through.
+## The op-amp evaluators -- `spice.opamp_response`, `spice.large_signal`,
+## `spice.loop_gain` -- sharing `opampSetup` (topology), `opampKey`/
+## `opampDoc`, and `runOpAmpKind` (both `.ac` adapters).
 
 import ./common
 import ../analyses/opamp
 
 const
-  # Which analysis emits which name is verified against the `result.add`
-  # calls in `opamp.nim`, not guessed: `f_unity` comes off the closed-loop
-  # sweep, while `crossover_hz` is the loop gain's own 0 dB crossing.
+  # Verified against `opamp.nim`'s `result.add` calls: `f_unity` comes from
+  # the closed-loop sweep, `crossover_hz` from the loop gain.
   responseQuantities = ["bw_3db", "gain_dc_db", "gain_bw_product",
                         "peaking_db", "f_unity",
-                        # Referenced to the response's maximum rather than to
-                        # DC, which is the only way to describe an AC-coupled
-                        # stage. See the note in `opamp.analyzeOpAmpResponse`.
+                        # Referenced to the response maximum (for AC-coupled
+                        # stages).
                         "gain_max_db", "f_gain_max", "f_lo_3db", "f_hi_3db",
                         "gain_at_f"]
   largeSignalQuantities = ["thd_pct", "output_swing", "clip_high",
@@ -33,9 +27,7 @@ proc measurementOnly(spec: var OpAmpSpec) =
 
 proc opampKey(ctx: EvalContext, a: Assertion): string =
   let d = ctx.design
-  # `at_f` joins the key for the same reason `f_from`/`f_to` do on the PDN
-  # side: it changes the analysis's setup, so two claims at two frequencies
-  # are two runs rather than one run reported twice.
+  # `at_f` changes the setup, so it joins the key.
   bindingName(d, a, "opamp") & "|" & bindingName(d, a, "input") & "|" &
   subjectNet(d, a) & "|" & $conditionFloat(a, "at_f", 0.0)
 
@@ -93,9 +85,7 @@ proc runOpAmpKind(ctx: EvalContext, batch: seq[Assertion], name: string,
 
 proc largeSignalKey(ctx: EvalContext, a: Assertion): string =
   let d = ctx.design
-  # The drive level is part of the *setup*, not a limit: the whole point of
-  # a large-signal run is that the answer depends on it, so two claims at
-  # two amplitudes are two runs.
+  # The drive level is setup, not a limit: two amplitudes are two runs.
   opampKey(ctx, a) & "|" & $conditionFloat(a, "drive_v", 0.0) &
                    "|" & $conditionFloat(a, "drive_f", 0.0)
 

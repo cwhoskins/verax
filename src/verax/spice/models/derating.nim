@@ -1,9 +1,6 @@
 ## DC-bias derating of Class 2 ceramics: the capacitance a part actually has
-## under the voltage across it, which is not the capacitance on its label.
-##
-## Used by `spice/models/capacitor` before it expands the parasitics, because
-## a Class 2 ceramic on a rail is not the part its label says it is and every
-## impedance computed from the label is wrong by that factor.
+## under its DC voltage, not its label. Applied by `spice/models/capacitor`
+## before expanding parasitics.
 
 import std/[math, strutils, tables]
 import ../../netlist/types
@@ -18,32 +15,24 @@ type
   DeratingDefaults* = object
     ## How much capacitance a Class 2 ceramic loses to DC bias.
     byDielectric*: OrderedTable[string, seq[(float, float)]]
-      ## Dielectric -> (V/Vrated, fraction of nominal capacitance remaining),
-      ## interpolated linearly and clamped at both ends.
+      ## Dielectric -> (V/Vrated, fraction of nominal remaining), linearly
+      ## interpolated and clamped.
     assumeDielectric*: string
       ## What an un-annotated *ceramic* is taken to be.
     assumeRatingFactor*: float
-      ## When no `voltage_rating` is stated, assume the part was rated at this
-      ## multiple of the voltage actually across it.
+      ## With no `voltage_rating`, assume this multiple of the voltage across
+      ## the part.
     enabled*: bool
 
 proc defaultDerating*(): DeratingDefaults =
-  ## Typical Class 2 behaviour, and **not** vendor data for any part.
+  ## Typical Class 2 behaviour, **not** vendor data. On by default because
+  ## the effect is large (a bank at two thirds of rating can show several
+  ## times the rail impedance its labels suggest).
   ##
-  ## State the size of the error before the numbers: an X5R bank at about two
-  ## thirds of its rating measured 1.23 ohm of worst in-band rail impedance
-  ## where the same parts at their nominal values said 173 mohm. Seven times.
-  ## That is larger than every other correction in this module put together,
-  ## which is why this is on by default.
-  ##
-  ## The honest caveat, which matters when reading any number that came
-  ## through here: **real DC-bias loss depends far more on case size and
-  ## capacitance density than on the dielectric letter**. A 10 uF 0402 X5R can
-  ## be down to a fifth of its label at rated voltage while a 100 nF 1206 X7R
-  ## barely moves, and both are "Class 2". These curves are a typical middle,
-  ## so a design where the rail impedance is the product should state measured
-  ## capacitance rather than lean on them. Class 1 is exact, not typical:
-  ## C0G/NP0 is paraelectric and does not depend on applied voltage at all.
+  ## Caveat: **real loss depends far more on case size and density than on
+  ## the dielectric letter** (a 10 uF 0402 X5R can lose 80%; a 100 nF 1206
+  ## X7R barely moves). State measured capacitance when rail impedance
+  ## matters. Class 1 (C0G/NP0) is exact: no voltage dependence.
   result.assumeDielectric = "X7R"
   result.assumeRatingFactor = 2.0
   result.enabled = true
@@ -68,24 +57,11 @@ proc deratingFraction*(curve: seq[(float, float)], ratio: float): float =
 
 proc dcAcrossCapacitor(cap: Component,
                        bias: OrderedTable[string, float]): float =
-  ## The DC voltage a capacitor sits at.
-  ##
-  ## `bias` is a solved operating point, node name -> volts, and it is tried
-  ## first because it *knows*: it covers a capacitor on any node, not just one
-  ## with a stated rail on one plate. That blind spot was not academic -- a
-  ## 10 uF rated 6.3 V on a 12 V divider's midpoint sits at 95% of its rating
-  ## and came through completely underated, because `mid` carried no `voltage`
-  ## annotation and nothing else could see it.
-  ##
-  ## There is no circularity in consulting it: at DC a capacitor is an open
-  ## circuit, so the operating point does not depend on capacitance and the
-  ## chain is a straight line rather than a fixed point. Verified -- `v(mid)`
-  ## on that divider is bit-identical with 100 pF and with 1000 uF.
-  ##
-  ## Without a bias, the fallback is the one case that is unambiguous from the
-  ## netlist alone: one plate on the reference, the other on a rail whose
-  ## nominal voltage is stated. Everything else returns 0, meaning *not known
-  ## here*, and no derating is applied.
+  ## The DC voltage across a capacitor. A solved operating point (`bias`,
+  ## node -> volts) is tried first, covering any node; it's not circular,
+  ## since at DC a capacitor is open. Without one, only the unambiguous case:
+  ## one plate on the reference, the other on a rail with a stated voltage.
+  ## Otherwise 0 (unknown; no derating).
   let pins = orderedPins(cap)
   if pins.len != 2: return 0.0
 
@@ -120,9 +96,8 @@ proc derateCapacitor*(cap: Component, d: DeratingDefaults,
   let working = dcAcrossCapacitor(cap, bias)
   if working <= 0.0: return     # no DC across it, or not knowable here
 
-  # Dielectric: stated, else inferred. A part whose package names a
-  # non-ceramic family does not bias-derate at all and must not be guessed
-  # into a ceramic.
+  # Stated dielectric, else inferred. A non-ceramic package must not be
+  # guessed into a ceramic.
   let stated = annotations.annotation(cap, "dielectric")
   var dielectric = stated.value
   if not stated.has:

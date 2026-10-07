@@ -1,21 +1,13 @@
 ## SPICE deck reader/writer.
 ##
-## Raw SPICE encodes component pins *positionally* per device-type letter
-## (e.g. `R1 net1 net2 1k`), not via named/typed pins — SPICE has no native
-## concept of pin "type" (power/ground/input/output). Pin names/types here
-## come from a small built-in template per known device-type letter, or (for
-## `X`/`U` subcircuit instances) from the matching `.SUBCKT` port list.
-## Unrecognized device letters fall back to generic `pin1..pinN` pins.
-## This means pin `kind`/name fidelity through a SPICE round-trip is
-## best-effort only — that's an inherent limitation of the format, not a bug.
+## SPICE pins are positional per device letter and untyped, so pin names and
+## kinds come from a built-in template per letter, or from the `.SUBCKT` port
+## list for `X`/`U` instances; unknown letters get `pin1..pinN`. Pin fidelity
+## through a round trip is best-effort by nature.
 ##
-## `.SUBCKT`/`.ENDS` blocks become hierarchical sub-netlists (see
-## `verax/netlist/graph.instantiate`); node `"0"` (and any `.GLOBAL` names)
-## are shared as a single `Net` object across the whole hierarchy, matching
-## real SPICE ground/global semantics. `.MODEL` cards are stored verbatim in
-## `Netlist.models` (passthrough, not structurally parsed). Other simulation
-## directives (`.OPTIONS`, `.TRAN`, `.PARAM`, ...) are topology-irrelevant
-## and are skipped silently.
+## `.SUBCKT` blocks become sub-netlists; node `"0"` and `.GLOBAL` names are
+## one shared `Net` across the hierarchy. `.MODEL` cards are stored verbatim.
+## Other directives are skipped.
 
 import std/[streams, strutils, tables, os]
 import ../types
@@ -45,57 +37,35 @@ let prefixByDeviceKind = block:
   var t: Table[string, char]
   for prefix, kind in deviceKindByPrefix:
     t[kind] = prefix
-  # Deliberately *not* a pure inverse of deviceKindByPrefix. An XSPICE code
-  # model instance is an `A` device, so anything synthesizing one needs the
-  # letter -- but `'A'` must never appear in deviceKindByPrefix itself, since
-  # an A line is not positional and routing one through the positional reader
-  # invents nets literally named `%v(in)`.
+  # Not a pure inverse of `deviceKindByPrefix`: `'A'` must never be read
+  # positionally (an A line would invent nets named `%v(in)`).
   t["code_model"] = 'A'
-  # Same writer-only treatment for the linear controlled sources. `E`/`G`
-  # lines *are* positional, so unlike `A` they read back correctly through
-  # the generic `pin1..pinN` fallback -- they are kept out of
-  # `deviceKindByPrefix` only because nothing yet needs to recover the named
-  # `IN+`/`IN-` roles from a deck, and inventing a mapping that no reader
-  # test covers would be a claim this module cannot back up.
+  # Linear controlled sources, write-side only: `E`/`G` read back through the
+  # generic fallback, and nothing needs their named roles from a deck.
   t["vcvs"] = 'E'
   t["vccs"] = 'G'
-  # The current-controlled pair, and they are here for a narrower reason than
-  # `E`/`G`. An `F`/`H` line is **not** simply positional over nets: its third
-  # token names the *voltage source* whose current controls it, so writing one
-  # through the normal device-line path would emit a value where ngspice
-  # expects a source name. Nothing synthesizes either kind today, so that is
-  # latent. What is not latent is the letter: without an entry here a `cccs`
-  # designated `CCCS1` reaches the deck unchanged and ngspice reads the
-  # leading `C` as a **capacitor**, silently. With one it is an `F` line with
-  # the wrong arguments, which fails loudly. A loud failure about a device
-  # that exists beats a silent 2 F capacitor.
+  # `F`/`H` name a controlling *voltage source*, so the normal device-line
+  # path would emit the wrong arguments -- but without the letter, a `cccs`
+  # named `CCCS1` would silently become a capacitor. A loud failure beats
+  # that.
   t["cccs"] = 'F'
   t["ccvs"] = 'H'
-  # The switch pair and the mutual-inductance card, all write-side only and
-  # all synthesized by `spice/models` -- never authored, never read back. An
-  # `S` line is plainly positional over four nodes, so it goes through the
-  # normal `pinTemplates` path below. A `W` line's third token names a
-  # *voltage source* (`Wname n+ n- VNAM MODEL`), so it is here for the letter
-  # and nothing more -- same reason `F`/`H` are. A `K` line carries **no
-  # nodes at all**, only two inductor names, and is handled by a special case
-  # in `formatDeviceLine` like `xspice.ports`.
+  # Switches and mutual inductance, write-side only (synthesized by
+  # `spice/models`). `S` is positional; `W` names a voltage source (letter
+  # only, like `F`/`H`); `K` has no nodes and is special-cased in
+  # `formatDeviceLine`.
   t["vswitch"] = 'S'
   t["iswitch"] = 'W'
   t["mutual_inductance"] = 'K'
-  # Behavioural source, also write-side only. `spice/models` uses one to
-  # bound an op-amp macromodel to its supply rails: a VCVS is ideal and
-  # cannot saturate, and clamping its *output* with diodes achieves nothing
-  # because an ideal source holds its node regardless. A `B` device carries
-  # the limit in its own expression instead.
+  # Behavioural source, write-side only: bounds an op-amp macromodel to its
+  # rails (diodes can't clamp an ideal source's output).
   t["bsource"] = 'B'
   t
 
 proc spiceValue*(x: float): string =
-  ## Formats a float as a SPICE device value. Always scientific notation with
-  ## an explicit exponent: SPICE reads a trailing letter as a unit multiplier
-  ## (`1m` is milli, `1MEG` is mega), so any format that could end in one is a
-  ## silent-misread hazard on a synthesized device line. Anything synthesizing
-  ## components to be simulated (see `verax/spice`) should format through here.
+  ## Formats a float as a SPICE device value, always with an explicit
+  ## exponent: a trailing letter would be read as a multiplier (`1m`,
+  ## `1MEG`). Use it for every synthesized device value.
   formatFloat(x, ffScientific, 9)
 
 const spiceSuffixes = [
@@ -107,29 +77,15 @@ const spiceSuffixes = [
 ]
 
 proc parseSpiceMagnitude*(text: string, value: var float): bool =
-  ## Reads a device value the way SPICE reads it, returning `false` for
-  ## anything that is not an unambiguous magnitude.
+  ## Reads a device value as SPICE does (suffixes are multipliers, unlike
+  ## `annotations.parseAnnFloat`), returning `false` for anything that isn't
+  ## an unambiguous magnitude. Refuses:
   ##
-  ## The partial inverse of `spiceValue`, and the counterpart to
-  ## `annotations.parseAnnFloat`: that one *rejects* magnitude suffixes
-  ## because an annotation is in SI base units, whereas here a trailing letter
-  ## genuinely is a multiplier, because this is what goes into a deck.
-  ##
-  ## Deliberately refuses two things rather than guessing at them:
-  ##
-  ## * **Anything that is not just a magnitude.** `attrs["value"]` may carry a
-  ##   whole source specification (`"DC 0 AC 1"`), which is why the annotation
-  ##   registry documents that field as never parsed as a number. Only a
-  ##   caller that knows the component kind makes a value a bare magnitude
-  ##   (a resistor's, a capacitor's) should ask.
-  ## * **RKM notation, where a digit follows the multiplier** -- `"2k2"`,
-  ##   `"4u7"`. An EDA tool means 2200 and 4.7u by those; ngspice reads the
-  ##   multiplier and *discards the trailing digits*, giving 2000 and 4u
-  ##   (verified against ngspice, not assumed). Since `value` is passed
-  ##   through to the deck verbatim, the simulator's reading is the one that
-  ##   gets simulated, and any static check that quietly used the other would
-  ##   disagree with the simulation about the same part by 10%. Two plausible
-  ##   readings that differ is exactly the case to hand back rather than pick.
+  ## * **Anything but a magnitude** -- `value` may be a source spec
+  ##   (`"DC 0 AC 1"`); only callers that know the kind should ask.
+  ## * **RKM notation** (`"2k2"`, `"4u7"`): ngspice reads the multiplier and
+  ##   drops the trailing digits (2000, 4u), so a static check using the EDA
+  ##   reading would disagree with the simulation.
   value = NaN
   let s = text.strip().toLowerAscii()
   if s.len == 0: return false
@@ -144,7 +100,7 @@ proc parseSpiceMagnitude*(text: string, value: var float): bool =
   if i == digitsStart: return false
 
   if i < s.len and s[i] == 'e':
-    # An explicit exponent -- what `spiceValue` itself emits.
+    # An explicit exponent, as `spiceValue` emits.
     var j = i + 1
     if j < s.len and s[j] in {'+', '-'}: inc j
     let expStart = j
@@ -165,53 +121,33 @@ proc parseSpiceMagnitude*(text: string, value: var float): bool =
   for (suffix, scale) in spiceSuffixes:
     if rest.startsWith(suffix):
       let tail = rest[suffix.len .. ^1]
-      # A digit here is RKM: the author and the simulator disagree. Refuse.
+      # RKM: author and simulator disagree. Refuse.
       if tail.len > 0 and tail[0] in Digits: return false
       value = mantissa * scale
       return true
 
-  # A trailing unit with no multiplier (`"1ohm"`, `"10f"` is farads only by
-  # context and is read as femto above). SPICE ignores it.
+  # A trailing unit with no multiplier (`"1ohm"`); SPICE ignores it.
   if rest[0] in Letters:
     value = mantissa
     return true
   false
 
 proc designatorPrefix*(kind: string): char =
-  ## The SPICE reference-designator prefix letter for a known device `kind`
-  ## (e.g. `"voltage_source"` -> `'V'`). Raises `NetlistFormatError` if
-  ## `kind` isn't one of the built-in device kinds this module recognizes --
-  ## SPICE infers device type from this letter, not from any `kind` field,
-  ## so getting it right matters for anything synthesizing new components
-  ## meant to be simulated (see `verax/spice`).
+  ## The SPICE designator letter for a known device `kind` (`"voltage_source"`
+  ## -> `'V'`). Raises `NetlistFormatError` for an unknown kind.
   if not prefixByDeviceKind.hasKey(kind):
     raise newException(NetlistFormatError, "no SPICE designator prefix for kind: " & kind)
   prefixByDeviceKind[kind]
 
 proc deckDesignator*(comp: Component): string =
-  ## The reference designator as it has to be spelled in a deck.
+  ## The designator as spelled in a deck. SPICE infers device type from the
+  ## first letter alone, and common EDA designators collide (`FB`, `BT`, `J`,
+  ## `SW`, `TP`, `Y`), so an inductor named `C12` would silently simulate as
+  ## a capacitor. The letter from `kind` is **prepended, not substituted**
+  ## (`FB1` -> `LFB1`), so `FB1` and `L1` stay distinct.
   ##
-  ## SPICE infers a device's *type* from the first letter of its designator
-  ## and from nothing else, so a part whose designator disagrees with its
-  ## declared `kind` is silently simulated as a different device. That is not
-  ## an exotic case: `FB` (ferrite bead), `BT` (battery), `J` (connector),
-  ## `SW` (switch), `TP` (test point) and `Y` (crystal) are all ordinary EDA
-  ## designators and all collide with a SPICE device letter. A ferrite called
-  ## `FB1` is read as a current-controlled current source, which at least
-  ## fails loudly; an inductor a librarian filed as `C12` is read as a
-  ## *capacitor*, which parses, simulates, and is wrong by the difference
-  ## between an inductor and a capacitor with nothing reported anywhere.
-  ##
-  ## So the letter comes from `kind`, which is what the design actually
-  ## stated. It is **prepended, not substituted** -- `FB1` becomes `LFB1`,
-  ## never `L1` -- because the original designators are unique as a set and a
-  ## truncated one need not be: substituting would silently merge `FB1` and
-  ## `L1` into one device on a board that has both.
-  ##
-  ## A `kind` this module has no letter for is left alone, since there is
-  ## nothing to correct it against; such a part is either substituted before
-  ## it reaches a deck (see `verax/spice/models`) or written as a subcircuit
-  ## instance by `deckInstanceDesignator`.
+  ## A `kind` with no letter is left alone (it is substituted before reaching
+  ## a deck, or written as an instance by `deckInstanceDesignator`).
   let desig = comp.designator.multiReplace(("\t", "_"), (" ", "_"))
   if not prefixByDeviceKind.hasKey(comp.kind): return desig
   let want = prefixByDeviceKind[comp.kind]
@@ -219,11 +155,8 @@ proc deckDesignator*(comp: Component): string =
   want & desig
 
 proc deckInstanceDesignator*(comp: Component): string =
-  ## The same correction for a hierarchical instance, which is an `X` device.
-  ##
-  ## The reader accepts `U` as well, because other tools emit it, but ngspice
-  ## reads `U` as a uniformly-distributed RC line -- so a deck this module
-  ## *writes* always says `X`.
+  ## The same correction for a hierarchical instance: always `X` (the reader
+  ## accepts `U`, but ngspice reads `U` as a distributed RC line).
   let desig = comp.designator.multiReplace(("\t", "_"), (" ", "_"))
   if desig.len > 0 and desig[0].toUpperAscii == 'X': return desig
   "X" & desig
@@ -237,17 +170,13 @@ let pinTemplates = {
   "mosfet": @[("D", ptPassive), ("G", ptPassive), ("S", ptPassive), ("B", ptPassive)],
   "voltage_source": @[("+", ptPassive), ("-", ptPassive)],
   "current_source": @[("+", ptPassive), ("-", ptPassive)],
-  # Linear controlled sources: `Exxx n+ n- nc+ nc- gain`. Write-side only --
-  # see the note in `prefixByDeviceKind`. The pin *order* here is what makes
-  # the emitted line positionally correct, which is the whole point of having
-  # a template rather than relying on `Component.pins` insertion order.
+  # `Exxx n+ n- nc+ nc- gain`, write-side only. The template's pin order is
+  # what makes the line positionally correct.
   "vcvs": @[("OUT+", ptOutput), ("OUT-", ptPassive), ("IN+", ptInput), ("IN-", ptInput)],
   "vccs": @[("OUT+", ptOutput), ("OUT-", ptPassive), ("IN+", ptInput), ("IN-", ptInput)],
-  # `Sname n+ n- nc+ nc- MODEL`: the through nodes then the control pair, and
-  # `MODEL` rides in `attrs["value"]` the same way a diode's model name does.
+  # `Sname n+ n- nc+ nc- MODEL`; `MODEL` rides in `attrs["value"]`.
   "vswitch": @[("1", ptPassive), ("2", ptPassive), ("C+", ptInput), ("C-", ptInput)],
-  # `Bxxx n+ n- V=<expr>`: two nodes, and the expression names its inputs
-  # itself rather than taking them positionally.
+  # `Bxxx n+ n- V=<expr>`: the expression names its own inputs.
   "bsource": @[("OUT+", ptOutput), ("OUT-", ptPassive)],
 }.toTable
 
@@ -256,10 +185,8 @@ proc parseDeviceLine(ctx: ParseCtx, nl: Netlist, toks: seq[string])
 proc resolveSubckt(ctx: ParseCtx, name: string): Netlist
 
 proc netFor(ctx: ParseCtx, nl: Netlist, name: string): Net =
-  ## Resolves `name` to a `Net` in the current scope `nl`, transparently
-  ## sharing the object from `ctx.globalNets` when `name` is a global/ground
-  ## net (this is what keeps e.g. node "0" a single identical object across
-  ## every hierarchy level).
+  ## Resolves `name` in scope `nl`, sharing the object from `ctx.globalNets`
+  ## for a global net (one node "0" across every level).
   if nl.nets.hasKey(name):
     return nl.nets[name]
   if ctx.globalNets.hasKey(name):
@@ -415,13 +342,9 @@ proc readNetlistFile*(path: string): Netlist =
 
 proc formatDeviceLine(comp: Component): string =
   if comp.attrs.hasKey("spice.couples"):
-    # A SPICE `K` card: `Kname Lname1 Lname2 kvalue`. It has no nodes -- it
-    # names two inductors and a coupling coefficient -- so it cannot go
-    # through the positional node path at all. `spice.couples` holds the two
-    # inductors' *graph* designators; they are resolved to their deck
-    # spelling here rather than baked in, because `deckDesignator` prepends
-    # the device letter and a baked name would rot the moment a winding was
-    # renamed.
+    # `K` card: `Kname Lname1 Lname2 kvalue`, no nodes. `spice.couples` holds
+    # graph designators, resolved to deck spelling here so a rename can't
+    # leave a stale name.
     result = deckDesignator(comp)
     for d in comp.attrs["spice.couples"].split(','):
       let other = if comp.netlist != nil: comp.netlist.components.getOrDefault(d.strip())
@@ -432,12 +355,9 @@ proc formatDeviceLine(comp: Component): string =
     return result
 
   if comp.attrs.hasKey("xspice.ports"):
-    # An XSPICE `A` device. Its port list is not positional -- a differential
-    # port takes two nodes, a vector port is bracketed, an unconnected one is
-    # the literal `null` -- so `verax/spice/xspice/instance` renders it and
-    # stores the text here, the same verbatim-passthrough approach this module
-    # already takes for `.MODEL` cards. The pins still carry real connectivity
-    # for graph walks; this attribute only controls how the line is spelled.
+    # An XSPICE `A` device: its port list isn't positional (differential,
+    # vector, `null`), so `xspice/instance` renders it into `xspice.ports`.
+    # The pins still carry connectivity for graph walks.
     result = deckDesignator(comp) & " " & comp.attrs["xspice.ports"]
     if comp.attrs.hasKey("value"):
       result &= " " & comp.attrs["value"]
@@ -462,10 +382,8 @@ proc formatInstanceLine(child: Netlist): string =
   for portName, _ in child.ports:
     let pin = comp.pins[portName]
     nodes.add(if pin.net != nil: pin.net.name else: "")
-  # `child.name`, not `comp.partNumber`: this must name the `.SUBCKT` block
-  # `writeSubcktBlock` actually wrote (`templ.name`), and a design is free to
-  # state its own `partNumber` on an instance without that touching which
-  # block the `X` card references.
+  # `child.name`, not `partNumber`: it must name the `.SUBCKT` block written,
+  # and a design may set its own `partNumber`.
   result = deckInstanceDesignator(comp) & " " & nodes.join(" ") & " " & child.name
 
 proc collectTemplates(nl: Netlist, seen: var OrderedTable[string, Netlist]) =
@@ -476,22 +394,11 @@ proc collectTemplates(nl: Netlist, seen: var OrderedTable[string, Netlist]) =
     collectTemplates(child, seen)
 
 proc checkDeckDesignators(nl: Netlist) =
-  ## Every component at one level of a deck must spell a distinct designator.
-  ##
-  ## Graph uniqueness does not imply deck uniqueness, and the gap is
-  ## `deckDesignator`, which **prepends** the device letter from `kind`
-  ## rather than substituting it. Prepending is what keeps `FB1` and `L1`
-  ## from both collapsing onto `L1`, and it is deliberately not injective:
-  ## a resistor designated `XA.R1` and a resistor designated `RXA.R1` are
-  ## two distinct components in the graph and one line in the deck.
-  ##
-  ## That was unreachable while every designator was hand-written and short.
-  ## `spice/flatten` makes generated, dotted designators ordinary, so it is
-  ## reachable now -- and the failure is silent: ngspice sees one designator
-  ## defined twice and the fragment simulated is not the circuit. Raising is
-  ## the whole point; there is no safe way to guess which one was meant.
-  ##
-  ## Per level, not per deck: SPICE scopes designators inside a `.SUBCKT`.
+  ## Every component at one deck level must spell a distinct designator.
+  ## Prepending the letter isn't injective (`XA.R1` and `RXA.R1` both become
+  ## `RXA.R1`), and flattening makes dotted designators common. ngspice would
+  ## silently use one definition, so this raises. Per level: `.SUBCKT`
+  ## scopes designators.
   var seen: OrderedTable[string, string]
   for designator, comp in nl.components:
     let deck =
@@ -520,17 +427,10 @@ proc writeSubcktBlock(s: Stream, templ: Netlist) =
   s.writeLine(".ENDS " & templ.name)
 
 proc writeSubcktDefinition*(nl: Netlist, s: Stream) =
-  ## Writes `nl` as a standalone `.SUBCKT` block, ports and all.
-  ##
-  ## `writeNetlist` deliberately does not do this: a top-level SPICE deck has
-  ## no port concept, so it drops `Netlist.ports` on the floor -- correct for
-  ## a board, and silently wrong for a template somebody built to be reused.
-  ## `spice/boundary.asSubcircuit` produces exactly such a template, and this
-  ## is how it leaves the process.
-  ##
-  ## Nested templates are emitted first, since a `.SUBCKT` may instantiate
-  ## another; `.MODEL` cards go *inside* the block, where SPICE scopes them to
-  ## it.
+  ## Writes `nl` as a standalone `.SUBCKT` block with ports (`writeNetlist`
+  ## drops ports -- right for a board, wrong for a reusable template such as
+  ## `spice/boundary.asSubcircuit` output). Nested templates come first;
+  ## `.MODEL` cards go inside the block.
   checkDeckDesignators(nl)
   var templates: OrderedTable[string, Netlist]
   collectTemplates(nl, templates)
@@ -559,10 +459,8 @@ proc writeSubcktFile*(nl: Netlist, path: string) =
   writeSubcktDefinition(nl, s)
 
 proc writeNetlist*(nl: Netlist, s: Stream, cards: seq[string] = @[]) =
-  ## `cards` are raw control/analysis card lines (e.g. `@[".op"]`), written
-  ## after the `.MODEL` lines and before `.END`. Empty by default, so this
-  ## writes pure topology exactly as before -- validating a generated deck
-  ## by actually simulating it (see `verax/spice`) is what `cards` is for.
+  ## `cards` are raw control/analysis lines (e.g. `@[".op"]`), written after
+  ## the `.MODEL` lines and before `.END`. Empty writes pure topology.
   checkDeckDesignators(nl)
   s.writeLine(nl.name)
 

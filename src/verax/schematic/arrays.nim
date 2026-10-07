@@ -1,185 +1,90 @@
 ## Repeated-part grouping: a read-only index built once per layout, after
 ## the bundle plan and before any symbol is sized.
 ##
-## Two passes share this module and its plumbing. The first
-## (`buildSubsheetArrays`) groups **subsheet** instances -- when one
-## subcircuit is instantiated three or more times, drawing each instance as
-## its own fallback box gives the reader no help seeing that they are one
-## sheet built N times. The second (`buildComponentArrays`) does the same for
-## repeated **raw components**: eight identical 50-ohm terminations on eight
-## RF channels draw as eight symbols and their fan of wires today, with
-## nothing telling the reader they are one circuit repeated eight times. Per
-## the user's decision, component grouping is **per component, not per
-## motif**: an 8x(R+C) filter bank draws as one `R x8` and one `C x8`, never
-## one merged "filter x8" glyph -- the two are different parts and a reader
-## must still be able to ask "which resistor is this" independently of "which
-## capacitor is this".
+## `buildSubsheetArrays` groups a subcircuit instantiated three or more
+## times; `buildComponentArrays` groups repeated raw components. Component
+## grouping is **per component, not per motif**: an 8x(R+C) bank draws as
+## one `R x8` and one `C x8`, so each part stays individually identifiable.
+## Both build `PartArray`s through `classifyGroup` (sub-grouping, port
+## classes, chain pairing, display/tag allocation); they differ only in
+## candidacy and the all-common decline.
 ##
-## Both passes build `PartArray`s the identical way (`classifyGroup`): the
-## sub-grouping split, the four port classes, chain pairing, display/tag
-## allocation. What differs is candidacy (a subsheet instance vs. a raw
-## component sharing kind/value/pins) and one extra decline for a component
-## group (`the all-common decline`, below).
+## **The collapse floor is three members**, with two exceptions at two (both
+## in `addSignatureArrays`): a parallel bank whose shared nets are a
+## rail/ground pair, and a group with an `apDistributed` port whose varying
+## nets belong to one declared bus or interface (`mergedByBundle` -- e.g. a
+## diff pair's per-leg termination). Two same-valued parts wired any other
+## way (a divider's `R1`/`R2`) must not merge.
 ##
-## **The collapse floor is three members, with two deliberately narrow
-## exceptions at two**: a raw-component group every one of whose ports
-## genuinely shares both nets across every member -- a true parallel bank --
-## *and* those shared nets are a rail/ground pair collapses at two (the
-## bypass-bank floor, in `addSignatureArrays`); so does a group with an
-## `apDistributed` port whose varying nets are members of one *declared*
-## bus or interface (`ArrayPort.mergedByBundle`) -- the declared-pair floor,
-## same place -- which is what lets a differential pair's per-leg series
-## termination or ESD clamp (`R1`/`R2`, `D1`/`D2` on one `diff_pair`
-## interface instance) draw as one `x2` box instead of two unrelated
-## symbols. Two same-signature parts wired any other way (in series, or in
-## parallel on an ordinary signal net with no declared bus/interface behind
-## it) keep the three-member floor: two same-valued resistors that merely
-## happen to sit in unrelated roles of one circuit (a divider's `R1`/`R2`)
-## must not silently merge into one box just because their `value` matches --
-## only a
-## group that is unambiguously *one repeated thing wired the same way*
-## qualifies below three.
+## The plan is a pure function of the netlist and bundle plan and never
+## mutates; `recoverRouting` never rebuilds it. An empty `ArrayPlan` is the
+## byte-identity guarantee: every downstream path is guarded on it.
 ##
-## The plan is a pure function of the netlist and the bundle plan. It reads
-## `Component.subNetlist` identity, `Component.kind`/`value`/`partNumber`/`description`/
-## `name`, pin structure, and the instance pins' parent nets (`Pin.net`); it
-## never mutates. `recoverRouting`'s candidate part moves never rebuild it. A
-## zero-value `ArrayPlan` (no subsheet has >= 3 instances, and no raw
-## component either) is the whole byte-identity guarantee: every downstream
-## code path is guarded on a non-empty plan.
+## Precedence with `bundles.nim`: **the bundle wins at the pin, the array
+## wins at the box.** An array declines only when a member carries a
+## `brCollapsed` bundle (its far endpoint would vanish); over a
+## `brNetLabel`/`brScalar` bundle the array collapses and the port is marked
+## `bundled`, drawn by the bundle plan.
 ##
-## Precedence with `bundles.nim`: **the bundle wins at the pin, the array wins
-## at the box.** An array declines to collapse only when a member carries a
-## `brCollapsed` bundle (whose far endpoint would vanish); a `brNetLabel` /
-## `brScalar` bundle degrades cleanly over hidden members, so the array still
-## collapses and that port is marked `bundled` -- classified for the report but
-## drawn entirely by the bundle plan.
-##
-## **The identity key for a component candidate** is
+## **Component identity key**:
 ## `kind \x1f value \x1f partNumber \x1f description \x1f name \x1f <pin names> \x1f <pin kinds>`.
-## `value` is in the key deliberately: the collapsed symbol shows one value, so
-## a 10k and a 2k bank must never merge. Other attrs (`package`, `dielectric`,
-## `voltage_rating`, ...) are **not** in the key -- they do not change the
-## drawing, and keying on them would fragment a group for no visual gain; the
-## explorer's member list already expands them. **A component with *neither* a
-## stated value nor a part number excludes it from candidacy outright**,
-## checked before the key is even built: the collapsed symbol shows one
-## value, and a blank one asserts nothing about the N real parts it stands
-## for. Every worked example states one or the other (`xbar_rf`'s termination
-## resistors state `value`; its SMA connectors and ADG904 switches carry no
-## `value` at all but state `partNumber` or `description` -- a part identified by what it *is*
-## rather than what it measures is just as real an identity); a bare topology
-## fixture that states neither is not modelling a real part, and without this
-## guard three same-kind, same-pin-shape parts wired for an unrelated purpose
-## collapse into a phantom array the moment they share two empty strings --
-## which is exactly what several of this repository's pre-existing
-## placement/routing stress fixtures (many identical resistors in a chain or
-## star, none of them stating a value or a part number because none of them
-## are testing this feature) turned out to do.
+## `value` is in it because the collapsed symbol shows one value; other attrs
+## (`package`, `dielectric`, ...) are not, since they don't change the
+## drawing. **A component with neither `value` nor `partNumber` is never a
+## candidate** -- a blank value asserts nothing about the parts it stands for,
+## and unvalued topology fixtures would otherwise collapse into phantom arrays.
 ##
-## **The all-common decline** keeps a component group whose ports are all
-## `apCommon` out of this feature *unless* the shared nets are all rail/
-## ground -- a candidate group must have at least one port classified
-## `apDistributed`, or every port must be `apCommon` **and** `railCommon`
-## (`ArrayPort.railCommon`), or it is dropped. The second clause is
-## deliberately narrow: it is exactly a bypass bank -- two or more identical
-## decoupling/bulk capacitors sharing one rail/ground pair -- and nothing
-## else, so `xbar_rf`'s eight `CBY*` caps on `(v3v3rf, gnd)` now collapse to
-## one badged symbol the same way a repeated resistor bank does. A component
-## group with no distributed port and *not* a pure rail/ground bank (an
-## all-common group sharing an ordinary signal net, however that would
-## arise) still declines: `composites/passive.parallelStackKind` already
-## draws that shape, and stealing it would hide the count behind an `xN`
-## badge instead of the composite's own visible members. (A port classified
-## `apDistributed` can never itself be a rail -- the classifier routes a
-## rail-differing port to `apIrregular` first -- so the first clause reads
-## simply as "not every port is common", no separate rail carve-out needed.)
+## **The all-common decline**: a component group must have an
+## `apDistributed` port, or be all `apCommon` with every shared net a
+## rail/ground (`railCommon` -- a bypass bank). Any other all-common group is
+## left to `composites/passive.parallelStackKind`, which shows its members.
 ##
-## **Chain pairing is skipped for a non-box representative.** The
-## recirculation arc is a fixed staple drawn on the *box interior*
-## (`routing.nim:705-748`); a resistor symbol has no interior to draw one on.
-## A series ladder of raw components therefore degrades to *distributed*, the
-## honest drawing -- gated on the same box predicate `symbolFor` uses, since
-## `symbols.nim` is spliced before this file.
+## **Chain pairing is skipped for a non-box representative**: the
+## recirculation arc is drawn on the box interior, which a resistor symbol
+## lacks, so a series ladder of raw components degrades to distributed.
 ##
-## **A net distributed at both ends** (`groupOf`/`suppressed`, below) is the
-## one genuinely new failure mode per-component grouping introduces. The
-## subsheet-only pass never had a distributed net with two array endpoints;
-## `8x(R+C)` gives `in_i -[R_i]- mid_i -[C_i]- gnd`, and every `mid_i` sits on
-## the R array's port 2 **and** the C array's port 1. Writing `suppressed`
-## per-array (as the subsheet-only pass safely could, since a net was never
-## claimed twice) is wrong here: the two arrays enumerate their members in
-## independent orders (`nl.components` insertion order need not align R with
-## C), so the two per-array writes can suppress overlapping-but-different
-## subsets of the eight `mid_i` nets -- in the worst case suppressing every
-## one, so the bus never routes, and the totality assertion does not catch it
-## because every net is still accounted for (just unroutable). The fix:
-## `finalizeArrayPlan` derives `suppressed` from the *final* `groupOf` (after
-## every array that could claim a net has registered), bucketing nets by their
-## `(array, port)` value and suppressing every member except the one that
-## comes first in `nl.nets` order -- well-defined regardless of which array
-## ends up owning the group.
+## **A net distributed at both ends** (`R_i`'s port 2 and `C_i`'s port 1
+## both on `mid_i`): two arrays may enumerate members in different orders, so
+## per-array `suppressed` writes could suppress every member and the bus
+## never routes. `finalizeArrayPlan` therefore derives `suppressed` from the
+## final `groupOf`, keeping the first member in `nl.nets` order.
 ##
-## **A distributed port's members are declared members of one bus or
-## interface, not merely N distinct nets.** `subGroupsOf`'s split key
-## (`splitKeyOf`) reads `iface.instance` then `bus.name` off each bound net,
-## falling back to the net's own name only when neither is present --
-## because a port bound to N *distinct* nets never repeats a raw value, so
-## identity-only counting cannot see the split a declared bus makes obvious:
-## `xbar_rf`'s eight `rf_switch` instances bind `RFC` to `rin[0..3]` on four
-## of them and `rout[0..3]` on the other four, sharing no net at all, yet the
-## input/output boundary is exactly the two `x4` groups a reader expects, not
-## one nonsensical `x8`. The same family name is also what a *bundled*
-## distributed pin draws once collapsed (`ArrayPort.bundleFamily`,
-## `arrayPinFor`, `arrayBundleLabelFor` in `routing.nim`): the representative
-## alone binds one specific member (`rin_0`), but the collapsed box stands for
-## every hidden member's binding on that bus, so its identity is the bus
-## itself ("rin"), not the one index the representative happened to keep.
+## **A distributed port's members must belong to one declared bus or
+## interface**, not merely be N distinct nets: `splitKeyOf` reads
+## `iface.instance`, then `bus.name`, then the net name, so switches bound to
+## `rin[0..3]` and `rout[0..3]` split into two `x4` groups. The same family
+## name is what a bundled distributed pin draws once collapsed
+## (`ArrayPort.bundleFamily`): the box stands for the bus ("rin"), not the
+## representative's own member ("rin_0").
 
 type
   ArrayOrigin = enum
     aoSubsheet     ## a subcircuit instantiated three or more times
-    aoComponent    ## a raw (non-hierarchical) component repeated two or
-                   ## more times, sharing kind/value/partNumber/name/pins
+    aoComponent    ## a raw component repeated, sharing the identity key
 
   ArrayPortClass = enum
     apCommon       ## every member binds the identical `Net` object
     apDistributed  ## N distinct non-nil `Net` objects, one per member
-    apChained      ## paired with another port: out(i) == in(i+1), a linear
-                   ## and complete chain through every member
+    apChained      ## paired: out(i) == in(i+1), complete through every member
     apIrregular    ## anything else: repeats, gaps, a nil binding
 
   ArrayPort = object
-    name: string               ## the instance pin name == child port key,
-                               ## identical on every member by construction
+    name: string               ## instance pin name == child port key
     cls: ArrayPortClass
     dir: PortDirection         ## folded member direction (chained: in/out)
     nets: seq[string]          ## member order; "" for an unbound member
-    bundled: bool              ## this port's nets are members of some
-                               ## bus/interface bundle (reporting fact only --
-                               ## see `mergedByBundle` for who actually draws)
-    mergedByBundle: bool       ## apDistributed only: the bundle already
-                               ## merges a pin at this representative for this
-                               ## port -- a `brCollapsed` bundle, a
-                               ## `brNetLabel` `LabelGroup` with >= 2 owned
-                               ## members here (`bundles.byPin`), **or** a
-                               ## bundle that merges a pin *anywhere at all*
-                               ## (`ArrayBuildCtx.mixedMergeBundle`: `xbar_rf`'s
-                               ## `a` bus merges `A0`+`A1` on every switch but
-                               ## not on its lone-member pulldowns, so no
-                               ## coherent single tag is left for a bus tree to
-                               ## reuse -- every carrier defers). A `bundled`
-                               ## port that is not merged *anywhere on its
-                               ## bundle* (one member per carrier throughout,
-                               ## e.g. `xbar_rf`'s `rin`/`rout`/`en`) is drawn
-                               ## and routed by the array instead, reusing the
-                               ## bundle's own occupancy tag so both sides
-                               ## (and any other array sharing the same bus)
-                               ## agree on one wire.
+    bundled: bool              ## nets belong to a bus/interface bundle
+                               ## (reporting only; see `mergedByBundle`)
+    mergedByBundle: bool       ## apDistributed only: the bundle draws this
+                               ## port -- it merges a pin here (`brCollapsed`,
+                               ## or a `LabelGroup` with >= 2 members), or
+                               ## merges one anywhere (`mixedMergeBundle`).
+                               ## A `bundled` port merged nowhere on its bundle
+                               ## is routed by the array, reusing the bundle's
+                               ## occupancy tag so every side agrees on one wire.
     display: string            ## scene/occupancy tag; "" for apCommon. For a
-                               ## `bundled`, non-`mergedByBundle` port this is
-                               ## the *bundle's own* `Bundle.display`, not a
-                               ## freshly allocated one -- see `mergedByBundle`
+                               ## bundled, non-merged port, the bundle's own
+                               ## `Bundle.display`
     tag: string                ## drawn text: "" / "cs[1:3]" / "3*9"
     open: bool                 ## apIrregular: some member's net is nil
     distinctNets: int          ## apIrregular: distinct non-nil net count
@@ -187,96 +92,59 @@ type
     isOut: bool                ## apChained: this half is the OUT side
     head, tail: string         ## apChained: the two escaping nets
     links: seq[string]         ## apChained OUT half: N-1 link nets, chain order
-    chainKey: string           ## apChained OUT half: the member walk order,
-                               ## so parallel chains (a strapped SPI bus) share
-                               ## one drawn arc
-    chainLead: int             ## apChained OUT half: the port index whose arc
-                               ## this chain draws under (== self for the
-                               ## lead); -1 otherwise
-    railCommon: bool           ## apCommon only: the shared net is ground/rail,
-                               ## so `pmBusBar` is suppressed here -- a pin
-                               ## that already draws a ground/supply glyph
-                               ## says "shared rail" on its own, and on a
-                               ## two-terminal symbol the tick and the glyph
-                               ## bars would collide (see `arrayPinFor`)
-    bundleFamily: string       ## apDistributed + bundled only: the plain
-                               ## bus/interface-instance name behind this
-                               ## port (`splitKeyOf` of the first bound
-                               ## member's net) -- "rin", not "rin_0". "" when
-                               ## `not bundled`. `arrayPinFor` reads this for
-                               ## a `mergedByBundle` port instead of falling
-                               ## through to the representative's own raw
-                               ## net: once a whole array collapses to one
-                               ## box, that box stands for every member's
-                               ## binding on this bus, and one member's
-                               ## specific index is no longer the box's
-                               ## identity, the bus itself is.
+    chainKey: string           ## apChained OUT half: member walk order, so
+                               ## parallel chains share one drawn arc
+    chainLead: int             ## apChained OUT half: port whose arc this chain
+                               ## draws under (== self for the lead); -1 otherwise
+    railCommon: bool           ## apCommon only: shared net is ground/rail, so
+                               ## `pmBusBar` is suppressed (the glyph already
+                               ## says "shared rail"; tick and bars would collide)
+    bundleFamily: string       ## apDistributed + bundled only: the bus/interface
+                               ## name behind this port (`splitKeyOf`) -- "rin",
+                               ## not "rin_0". `arrayPinFor` labels a merged port
+                               ## with it, since the box stands for every member.
 
   PartArray = object
-    key: string                ## "<subNetlist.name|kind>\x1f<...>\x1f<sub>",
-                               ## the first `\x1f`-field is `arrayReport`'s
-                               ## `source` (a subckt name or a component kind)
+    key: string                ## "<subNetlist.name|kind>\x1f<...>\x1f<sub>"; the
+                               ## first field is `arrayReport`'s `source`
     origin: ArrayOrigin
     members: seq[string]       ## designators, graph insertion order
     rep: string                ## members[0] -- the one drawn box/symbol
     label: string              ## "X1..X8"
-    ports: seq[ArrayPort]      ## one per subsheet port / component pin, pin
-                               ## declaration order
+    ports: seq[ArrayPort]      ## one per port/pin, declaration order
 
   ArrayPlan = object
     arrays: seq[PartArray]
     byRep: Table[string, int]              ## representative designator -> array
     hidden: HashSet[string]                ## the N-1 designators prepare drops
     portOfPin: Table[string, tuple[a, p: int]]  ## pinKey(rep, pin) -> port
-    suppressed: HashSet[string]            ## nets that must not route at all
-                                           ## (chain links; distributed members
-                                           ## after the first)
+    suppressed: HashSet[string]            ## nets that never route (chain links;
+                                           ## distributed members after the first)
     groupOf: Table[string, tuple[a, p: int]]  ## distributed member net -> port
     extraPins: Table[string, seq[tuple[desig, pin: string, outward: bool]]]
                                            ## chain head/tail re-homed onto the
-                                           ## representative; `outward` is true
-                                           ## only for the tail entry -- the
-                                           ## array's real external output,
-                                           ## physically on the hidden last
-                                           ## member -- so a consumer that
-                                           ## cares about signal direction
-                                           ## (`constrained.nim`'s semantic
-                                           ## layering) does not have to ask a
-                                           ## positional instance pin, which is
-                                           ## always `ptUnknown`
+                                           ## representative; `outward` marks the
+                                           ## tail (the array's real output), since
+                                           ## a positional instance pin is always
+                                           ## `ptUnknown`
     arrayNets: HashSet[string]             ## what finish skips in the net-name
                                            ## pass (drawn group members + tags)
 
 proc isOpenBind(x: Net): bool {.inline.} =
-  ## An instance pin that binds nothing, or an explicit no-connect
-  ## (`instantiateByPortOpen`'s `nc_<inst>_<port>` net) -- both read as "this
-  ## member leaves the port open" for array classification.
+  ## An unbound pin or an explicit no-connect (`nc_<inst>_<port>`): the
+  ## member leaves the port open.
   x == nil or x.attrs.getOrDefault("iface.nc") == "1"
 
 proc netNameOf(x: Net): string {.inline.} =
   (if x != nil and not isOpenBind(x): x.name else: "")
 
 proc splitKeyOf(x: Net): string {.inline.} =
-  ## The value `subGroupsOf` counts when hunting for a splitting port. Two
-  ## members binding the *same* net share it trivially (raw identity, the
-  ## historical behaviour); two members whose nets are *distinct* declared
-  ## members of the same bus or interface instance must ALSO be found to
-  ## share it, since that is precisely the "different halves of one family"
-  ## signal a reader sees at a glance and raw identity is blind to: eight
-  ## `rf_switch` instances whose `RFC` pin binds `rin[0..3]` on four of them
-  ## and `rout[0..3]` on the other four never share a single net (`counts.len
-  ## == n` fails the old "some value repeats" test outright), yet the split
-  ## is exactly the input/output boundary the schematic must draw as two
-  ## `x4` groups, not one `x8`.
-  ## `iface.instance` is checked before `bus.name`, matching
-  ## `bundles.nim`'s own "iface.instance wins, else bus.name" precedence:
-  ## `bus.name` alone is the bare *signal* name (e.g. "cs"), identical across
-  ## every instance of a declared interface, so keying on it first would fold
-  ## every instance's same-named signal into one family and undo exactly the
-  ## split `spi_memories`' three controllers need. Falls back to the net's
-  ## own name -- today's behaviour -- when neither attr is present, so two
-  ## genuinely unrelated distinct nets still fail the "repeated value" test
-  ## exactly as before.
+  ## The value `subGroupsOf` partitions on: `iface.instance`, else `bus.name`,
+  ## else the net name. Distinct members of one bus must count as the same
+  ## family, or a port bound to `rin[0..3]` on some members and `rout[0..3]`
+  ## on others never splits. `iface.instance` comes first (as in
+  ## `bundles.nim`) because `bus.name` alone is the bare signal name, shared
+  ## across every instance of an interface.
   if x == nil: ""
   else:
     let inst = x.attrs.getOrDefault("iface.instance", "")
@@ -288,22 +156,13 @@ proc splitKeyOf(x: Net): string {.inline.} =
 type
   ArrayBuildCtx = object
     usedDisplays: HashSet[string]
-      ## Every display tag already spoken for -- by a bundle, or by an
-      ## earlier-registered array of *either* origin. Shared across both
-      ## passes so `buildComponentArrays` never allocates a display the
-      ## subsheet pass already gave out (and vice versa were the order ever
-      ## reversed).
+      ## Display tags already taken by a bundle or an earlier array of either
+      ## origin, so the two passes never allocate the same one.
     mixedMergeBundle: HashSet[int]
-      ## Index (into `BundlePlan.bundles`) of every `brNetLabel` bundle with
-      ## at least one merged `LabelGroup` -- `xbar_rf`'s `a` bus, where every
-      ## switch merges its own `A0`+`A1` but every pulldown resistor owns
-      ## just one member. `ap.mergedByBundle` (`classifyGroup`) treats every
-      ## port on such a bundle as bundle-owned, even one whose OWN
-      ## representative merges nothing (the pulldowns' `"1"` port): a bundle
-      ## drawn as a mix of merged tags and real wires between different
-      ## carriers of the *same* members has no coherent single occupancy tag
-      ## left for a bus tree to reuse, so the array must defer to it
-      ## wholesale rather than only at the carriers that happen to merge.
+      ## `brNetLabel` bundles with at least one merged `LabelGroup`. Every
+      ## port on such a bundle is bundle-owned (`mergedByBundle`), even where
+      ## its own representative merges nothing: a bundle drawn partly as
+      ## merged tags has no single tag left for a bus tree to reuse.
 
 proc initArrayBuildCtx(nl: Netlist, bundles: BundlePlan,
                        base = ArrayPlan()): ArrayBuildCtx =
@@ -320,18 +179,10 @@ proc initArrayBuildCtx(nl: Netlist, bundles: BundlePlan,
 
 proc survivesCollapsedBundles(bundles: BundlePlan, alreadyHidden: HashSet[string],
                               candidateHidden: seq[string]): bool =
-  ## A `brCollapsed` bundle is a bus tree between its endpoint entities;
-  ## hiding members down to fewer than two surviving entities deletes its far
-  ## end, so that is the only decline this checks -- shared verbatim by both
-  ## passes. Unlike the old blanket "any member of this whole candidate
-  ## touches *some* collapsed bundle" rule, this is evaluated per sub-group
-  ## (`g` from `subGroupsOf`, via its own `candidateHidden` -- the members
-  ## that sub-group would hide) against every `brCollapsed` bundle, so a
-  ## bundle that keeps two or more of its own entities placeable after this
-  ## group's members disappear does not veto it. `xbar_rf`'s two `rf_switch
-  ## x4` groups each hide three of the eight switches carrying the (now
-  ## collapsible) `m` bus -- five, then two, switches remain on it, so both
-  ## groups still collapse.
+  ## Declines only if hiding sub-group `g`'s members leaves some
+  ## `brCollapsed` bundle with fewer than two placeable entities (its far end
+  ## would vanish). Evaluated per sub-group, so a bundle that keeps two
+  ## entities does not veto it.
   var hidden = alreadyHidden
   for d in candidateHidden: hidden.incl d
   for b in bundles.bundles:
@@ -347,11 +198,8 @@ proc survivesCollapsedBundles(bundles: BundlePlan, alreadyHidden: HashSet[string
   true
 
 proc uniqueDisplay(ctx: var ArrayBuildCtx, nl: Netlist, natural: string): string =
-  # `used` is threaded explicitly rather than closed over: a nested proc may
-  # not capture a `var` *parameter* of its enclosing proc (only a local var),
-  # since that parameter is a hidden pointer with no lifetime guarantee past
-  # the call -- Nim rejects it outright ("cannot be captured as it would
-  # violate memory safety").
+  # `used` is passed explicitly: a nested proc may not capture a `var`
+  # parameter of its enclosing proc.
   proc free(s: string, used: HashSet[string]): bool =
     not nl.nets.hasKey(s) and s notin used
   var cand = natural
@@ -376,10 +224,8 @@ proc foldDir(objs: seq[Net]): PortDirection =
   else: pdBidir
 
 proc nameDir(portName: string): PortDirection =
-  ## The author's most explicit direction cue: a `_out`/`out` or `_in`/`in`
-  ## suffix on the port name. Used as the chain-pairing tiebreaker when the
-  ## child pin kinds do not distinguish the two halves -- a pass-through
-  ## strap (`sclk_in`/`sclk_out` on one internal net) is exactly that case.
+  ## `_out`/`out` or `_in`/`in` port-name suffix: the chain-pairing
+  ## tiebreaker when child pin kinds don't distinguish the halves.
   let s = portName.toLowerAscii()
   if s.endsWith("_out") or s == "out" or s.endsWith("outp") or s.endsWith("_o"):
     pdOutput
@@ -388,9 +234,8 @@ proc nameDir(portName: string): PortDirection =
   else: pdUnspecified
 
 proc hierDir(c: Component, portName: string): PortDirection =
-  ## The subsheet port's *authored* direction: fold the pin kinds inside the
-  ## child on the matching port net. Positional instances leave the instance
-  ## pin `ptUnknown`, so this is the only reliable signal for chain pairing.
+  ## The subsheet port's authored direction, folded from the child's pin
+  ## kinds on the port net (positional instance pins are `ptUnknown`).
   if portName notin c.pins or c.pins[portName].hierNet == nil:
     return pdUnspecified
   var sawIn, sawOut, sawIo = false
@@ -407,21 +252,11 @@ proc hierDir(c: Component, portName: string): PortDirection =
 
 proc subGroupsOf(n: int, portNames: seq[string], binding: seq[seq[Net]]):
     seq[seq[int]] =
-  ## Splits `0 ..< n` member indices by every *splitting* port -- one whose
-  ## nets partition the members into 2+ groups each of size >= 2, with no
-  ## member left open -- before classification, so `spi_memories`'s nine
-  ## memories draw as three `x3` boxes instead of one nonsensical `x9`, and
-  ## `xbar_rf`'s eight `rf_switch` instances draw as an input `x4` and an
-  ## output `x4` rather than one `x8`. A singleton group (a member differing
-  ## from everyone) is left alone: it is the irregular signal, not a
-  ## sub-array boundary.
-  ##
-  ## The partition key is `splitKeyOf`, not raw net identity: a port bound to
-  ## N *distinct* nets (every member on its own wire) never repeats a value,
-  ## so raw-identity counting is blind to a split that exists only through
-  ## declared bus/interface membership (`rin[0..3]` vs `rout[0..3]`) -- see
-  ## `splitKeyOf`'s comment. A port with no such attrs on either side counts
-  ## by net name exactly as before.
+  ## Splits member indices by every *splitting* port -- one whose
+  ## `splitKeyOf` values partition the members into 2+ groups of size >= 2
+  ## with none open -- before classification, so nine memories on three
+  ## buses draw as three `x3` boxes. A singleton differing from everyone is
+  ## the irregular signal, not a sub-array boundary.
   var subOf = newSeq[int](n)
   var nsub = 1
   for pi in 0 ..< portNames.len:
@@ -458,14 +293,10 @@ proc classifyGroup(ctx: var ArrayBuildCtx, nl: Netlist, sig: string, gi: int,
                    binding: seq[seq[Net]], bundles: BundlePlan,
                    rep0: Component, origin: ArrayOrigin,
                    allowChain: bool): PartArray =
-  ## Builds one `PartArray` for the sub-group `g` (indices into `members`):
-  ## per-port classification, chain pairing (skipped when `allowChain` is
-  ## false), and display/tag allocation. Shared verbatim by both passes --
-  ## the only difference between a subsheet array and a component array is
-  ## candidacy (what counts as a "member") and `allowChain`, decided by the
-  ## caller. Registration into the plan (`registerArray`) is a separate step,
-  ## also shared, so a caller can veto a built group (the all-common decline)
-  ## before it is ever wired in.
+  ## Builds one `PartArray` for sub-group `g`: per-port classification,
+  ## chain pairing (if `allowChain`), display/tag allocation. Shared by both
+  ## passes; registration (`registerArray`) is separate so a caller can veto
+  ## a group first.
   var sub = PartArray(key: sig & "\x1f" & $gi, origin: origin)
   for mi in g: sub.members.add members[mi]
   sub.rep = sub.members[0]
@@ -488,25 +319,13 @@ proc classifyGroup(ctx: var ArrayBuildCtx, nl: Netlist, sig: string, gi: int,
     for x in objs:
       if bundles.ofNet.hasKey(x.name):
         ap.bundled = true
-        # First bound member sets the family and every later one is left
-        # alone: `subGroupsOf` already split this array apart on any port
-        # whose family value disagreed enough to partition evenly, so within
-        # one final sub-group every member's family is expected to agree --
-        # the first is as good a witness as any.
+        # `subGroupsOf` already split on disagreeing families, so the first
+        # bound member is a valid witness.
         if ap.bundleFamily.len == 0: ap.bundleFamily = splitKeyOf(x)
-    # The bundle merges a pin here iff it already claims THIS representative
-    # pin (`bundles.byPin`) -- true for a `brCollapsed` bundle (every member
-    # pin registered) or a `brNetLabel` `LabelGroup` merging >= 2 owned
-    # members on this carrier (e.g. `xbar_rf`'s `a` bus: `A0`+`A1` both land
-    # on one switch) -- **or** iff the bundle merges a pin *anywhere at all*
-    # (`ctx.mixedMergeBundle`): a bundle that merges on one carrier (a
-    # switch's `A0`+`A1`) but not on another sharing the very same members
-    # (a pulldown's lone `"1"`) has no single occupancy tag left that a bus
-    # tree could reuse coherently, so every carrier defers to the bundle
-    # wholesale rather than only the ones that individually merge. A
-    # `bundled` port that owns only one member per carrier, on a bundle that
-    # never merges anywhere (`rin`/`rout`/`en`), is drawn/routed by the array
-    # instead.
+    # Bundle-owned if the bundle claims this representative pin
+    # (`bundles.byPin`) or merges a pin anywhere (`mixedMergeBundle` -- a bus
+    # merged on one carrier but not another has no single tag left to reuse).
+    # A `bundled` port merged nowhere is drawn and routed by the array.
     ap.mergedByBundle = bundles.byPin.hasKey(pinKey(repC, pn)) or
       (ap.nets.len > 0 and bundles.byNet.hasKey(ap.nets[0]) and
        bundles.byNet[ap.nets[0]] in ctx.mixedMergeBundle)
@@ -537,10 +356,7 @@ proc classifyGroup(ctx: var ArrayBuildCtx, nl: Netlist, sig: string, gi: int,
     sub.ports.add ap
 
   # Chain pairing over non-bundled distributed candidates, first success
-  # wins -- skipped entirely for a non-box representative (`allowChain`
-  # false): the recirculation arc is drawn on the box interior, which a
-  # two-terminal symbol has none of, so a would-be chain is left classified
-  # `apDistributed`, the honest drawing for a repeated raw component.
+  # wins. Skipped for a non-box representative (no interior for the arc).
   proc tryChain(a, b: int): bool =
     let na = sub.ports[a].nets   # OUT nets, sub-group order
     let nb = sub.ports[b].nets   # IN nets
@@ -607,10 +423,8 @@ proc classifyGroup(ctx: var ArrayBuildCtx, nl: Netlist, sig: string, gi: int,
         if sub.ports[b].dir == pdOutput: continue   # b is the IN candidate
         if tryChain(a, b): break
 
-  # Parallel chains (a pass-through-strapped SPI bus: sclk, cs and data all
-  # walking the same members in the same order) draw as ONE arc, so the box
-  # does not sprout three near-identical loops. The first OUT half of each
-  # `chainKey` group leads; the rest point at it.
+  # Parallel chains (a strapped SPI bus) draw as one arc: the first OUT half
+  # of each `chainKey` group leads, the rest point at it.
   var chainLead = initTable[string, int]()
   for pi in 0 ..< sub.ports.len:
     if sub.ports[pi].cls != apChained or not sub.ports[pi].isOut: continue
@@ -624,32 +438,17 @@ proc classifyGroup(ctx: var ArrayBuildCtx, nl: Netlist, sig: string, gi: int,
     of apDistributed:
       if sub.ports[pi].mergedByBundle: continue
       if sub.ports[pi].bundled:
-        # Not merged anywhere -- the array draws and routes this port itself,
-        # but reusing the bundle's OWN occupancy tag (never a fresh one) is
-        # what lets this array's route, the port pennant already folded by
-        # `bundles.byPort`, and -- when the same bus is distributed across
-        # more than one array (`xbar_rf`'s `rin`: a `connector x4` on one end,
-        # an `rf_switch x4` on the other) -- the OTHER array's own route all
-        # agree on one wire under one name, with no cross-array coordination
-        # needed: whichever array's `plan.groupOf` write is registered last
-        # is the one `arrayRouteFor` honours, and every competing array's own
-        # `display` is identical anyway.
+        # Not merged anywhere: the array routes this port, reusing the
+        # bundle's own occupancy tag so its route, the bundle's port pennant,
+        # and any other array distributing the same bus agree on one wire.
         let bi = bundles.byNet.getOrDefault(sub.ports[pi].nets[0], -1)
         if bi >= 0: sub.ports[pi].display = bundles.bundles[bi].display
       if sub.ports[pi].display.len == 0:
         sub.ports[pi].display = uniqueDisplay(ctx, nl, sub.ports[pi].name)
-      # A `bundled` port's drawn tag is the one visible label this pin ever
-      # gets -- the true net-name pass skips every net in `arrayNets`
-      # (`finish.nim`), so a bare pin name here is not merely cosmetically
-      # redundant with `display`, it is the ONLY text a reader sees. Two
-      # bundles that happen to share a pin name on their originating
-      # component (`xbar_rf`'s `rin`/`rout`: both SMA connectors call their
-      # pin "RF") would otherwise draw the identical tag "RF[1:4]" on both
-      # boxes despite being electrically distinct buses. Use the bundle's own
-      # resolved `display` (already disambiguated against `nl.nets`, see
-      # above) instead of the coincidental pin name whenever one is bound;
-      # an unbundled distributed port (no declared bus/interface) keeps the
-      # historical pin-name tag, e.g. `chainSheet`'s "tap[1:4]".
+      # This tag is the only label the pin gets (`finish.nim` skips
+      # `arrayNets`), so a bundled port uses the bundle's disambiguated
+      # `display` -- two buses whose source pins are both named "RF" must not
+      # both read "RF[1:4]". An unbundled port keeps the pin-name tag.
       let tagName = if sub.ports[pi].bundled: sub.ports[pi].display
                     else: sub.ports[pi].name
       sub.ports[pi].tag = tagName & "[1:" & $g.len & "]"
@@ -670,18 +469,11 @@ proc classifyGroup(ctx: var ArrayBuildCtx, nl: Netlist, sig: string, gi: int,
   sub
 
 proc registerArray(nl: Netlist, plan: var ArrayPlan, sub: PartArray) =
-  ## Wires a built `PartArray` into the plan: `byRep`/`hidden`/`portOfPin`,
-  ## `groupOf`/`arrayNets` for a distributed port, `suppressed`/`extraPins`
-  ## for a chained one. Shared by both passes, called only for a group the
-  ## caller has already decided belongs (the all-common decline runs before
-  ## this, in the caller).
-  ##
-  ## Deliberately does **not** suppress a distributed port's members here --
-  ## that decision needs the *final* `groupOf` (see `finalizeArrayPlan`), so
-  ## writing it per-array is exactly the both-ends-distributed bug this
-  ## module's doc comment describes. Chain-link suppression has no such
-  ## hazard (a link net is wholly internal to one subsheet array, which is
-  ## the only origin that ever builds a chain) and is written immediately.
+  ## Wires a built `PartArray` into the plan (`byRep`/`hidden`/`portOfPin`,
+  ## `groupOf`/`arrayNets`, chain `suppressed`/`extraPins`). Shared by both
+  ## passes. Distributed members are **not** suppressed here -- that needs
+  ## the final `groupOf` (`finalizeArrayPlan`). Chain links are internal to
+  ## one array, so they are suppressed immediately.
   let arrIdx = plan.arrays.len
   plan.byRep[sub.rep] = arrIdx
   for mi in 1 ..< sub.members.len: plan.hidden.incl sub.members[mi]
@@ -714,13 +506,11 @@ proc addSignatureArrays(ctx: var ArrayBuildCtx, nl: Netlist,
                         members: seq[string], portNames: seq[string],
                         binding: seq[seq[Net]], rep0: Component,
                         origin: ArrayOrigin, allowChain: bool) =
-  ## Sub-groups one candidate signature's members, classifies each sub-group
-  ## of >= 3 (or, for a component group whose members genuinely share *both*
-  ## nets -- a true parallel bank, see the bypass-bank floor below -- >= 2),
-  ## and registers every one that survives the collapsed-bundle decline
-  ## (`survivesCollapsedBundles`) and, for a component group only, the
-  ## all-common decline (a subsheet array has no such veto, since a repeated
-  ## subcircuit is a design decision, not an inferred visual motif).
+  ## Sub-groups one signature's members, classifies each sub-group of >= 3
+  ## (>= 2 under the floors below) and registers those that survive
+  ## `survivesCollapsedBundles` and, for component groups only, the
+  ## all-common decline (a repeated subcircuit is a design decision, not an
+  ## inferred motif).
   for gi, g in subGroupsOf(members.len, portNames, binding):
     if g.len < 2: continue
     var hidden: seq[string]
@@ -737,57 +527,23 @@ proc addSignatureArrays(ctx: var ArrayBuildCtx, nl: Netlist,
           anyDistributed = true
           if ap.mergedByBundle: anyMergedDistributed = true
         if ap.cls != apCommon or not ap.railCommon: allCommonRail = false
-      # The bypass-bank floor: a group every one of whose ports is `apCommon`
-      # *and* `railCommon` genuinely shares both nets across every member --
-      # a decoupling/bulk-cap bank on one rail/ground pair, and nothing else
-      # can be, since two members merely wired the *same way* to *different*
-      # nets (an ordinary divider's same-valued resistors, wired in series
-      # rather than in parallel) read as `apDistributed`/`apIrregular`
-      # instead. That is exactly the bundling this feature is now asked to
-      # draw, so it alone is allowed at two members. The all-common decline
-      # (below) still applies to any other all-common group -- a component
-      # with no distributed port that is *not* a pure bypass bank.
-      #
-      # The declared-pair floor: a group with an `apDistributed` port that is
-      # `mergedByBundle` -- its varying nets are members of one *declared*
-      # bus or interface, not merely N distinct nets an identity match
-      # happened to line up -- is also allowed at two. A differential pair's
-      # series termination or ESD clamp (`R1`/`R2`, `D1`/`D2` in
-      # `designs/usb_hs_link.nim`) is the case this exists for: each leg's
-      # far pin is a member of the same declared `diff_pair` interface
-      # instance, which is exactly the evidence the bypass-bank floor uses
-      # for a rail/ground pair, just carried by `iface`/`bus` instead of by
-      # ground/rail identity -- so it is the identical "unambiguously one
-      # repeated thing wired the same way" case, not the coincidence this
-      # module otherwise guards against. A port whose varying nets are
-      # *not* declared members of anything (`R1`/`R2`'s choke-side pins in
-      # that same design) earns no such trust on its own and still draws
-      # honestly as a distributed `[1:N]` tag on the collapsed box -- it is
-      # the presence of *one* declared-and-merged port that vouches for the
-      # pairing, not every port needing its own proof. The general case (an
-      # `apDistributed` port with no declared backing, `xbar_rf`'s
-      # eight-channel filter bank) keeps its historical three-member floor:
-      # a coincidence of two same-valued parts wired into unrelated roles
-      # (two resistors of a divider) must not silently merge into one box
-      # just because nothing declares them related.
+      # Two-member floors. Bypass bank: every port `apCommon` and
+      # `railCommon` -- members genuinely share a rail/ground pair. Declared
+      # pair: an `apDistributed` port that is `mergedByBundle`, i.e. its nets
+      # belong to one declared bus/interface (a diff pair's per-leg
+      # termination); one such port vouches for the pairing. Anything else
+      # keeps the three-member floor so two coincidentally equal parts don't
+      # merge.
       if allCommonRail or (g.len == 2 and anyMergedDistributed): discard
       elif g.len < 3 or not anyDistributed: continue
     elif g.len < 3: continue
     registerArray(nl, plan, sub)
 
 proc finalizeArrayPlan(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan) =
-  ## Two jobs, both requiring every array that will ever claim a net to have
-  ## already registered: derive `suppressed` for every distributed group from
-  ## the *final* `groupOf` (the both-ends-distributed fix, see this module's
-  ## doc comment), then run the totality assertion over the complete plan.
-  ## Called exactly **once**, by a caller that runs `buildSubsheetArrays`
-  ## and/or `buildComponentArrays` first (`arrayReport`, `state.prepare` --
-  ## either builder alone, standalone, is a valid plan to finalize) -- never
-  ## twice on the same `ArrayPlan` value, since a
-  ## stale suppression decision from an earlier finalize could survive
-  ## alongside a fresh one for the same net once a later pass reassigns that
-  ## net's `groupOf` entry to a different array (`suppressed` only ever
-  ## grows: nothing un-suppresses a net the first finalize wrongly kept in).
+  ## Derives `suppressed` for every distributed group from the final
+  ## `groupOf`, then asserts totality. Call exactly **once**, after every
+  ## builder has run: `suppressed` only grows, so a second finalize could
+  ## keep a stale decision once `groupOf` is reassigned.
   var bucketFirst = initTable[tuple[a, p: int], string]()
   for name, _ in nl.nets:
     if plan.groupOf.hasKey(name):
@@ -796,11 +552,9 @@ proc finalizeArrayPlan(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan) =
   for name, key in plan.groupOf:
     if bucketFirst[key] != name: plan.suppressed.incl name
 
-  # Totality: every distinct net named by a hidden member's pin must be
-  # accounted for -- suppressed, drawn by a group, still on the
-  # representative's own pin (common / irregular / chain head-tail), or on
-  # an irregular port. A net every pin of which is on a hidden member and
-  # is in none of these would vanish with no marker.
+  # Totality: every net on a hidden member's pin must be suppressed, drawn
+  # by a group, on the representative's pin, or on an irregular port --
+  # otherwise it vanishes with no marker.
   var repNets = initHashSet[string]()
   var irregularNets = initHashSet[string]()
   for a in plan.arrays:
@@ -825,13 +579,9 @@ proc finalizeArrayPlan(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan) =
           a.members[mi] & " is in no port class"
 
 proc buildSubsheetArrays(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan) =
-  ## Repeated-**subsheet** groups: one pass over `nl.components` in insertion
-  ## order, adding to `plan` in place. A no-op the moment no subsheet has
-  ## three or more instances. Deliberately does not derive `suppressed` or
-  ## run the totality assertion -- `finalizeArrayPlan` is the caller's job,
-  ## run once after every enabled pass (this one, `buildComponentArrays`, or
-  ## both) has registered its arrays; see this module's doc comment for why
-  ## finalizing per-pass is the both-ends-distributed bug.
+  ## Repeated-**subsheet** groups, added to `plan` in place (no-op if no
+  ## subsheet has three instances). The caller runs `finalizeArrayPlan`
+  ## once after all builders.
   var ctx = initArrayBuildCtx(nl, bundles, plan)
 
   # Signature grouping. `graph.instantiate` creates one pin per child port in
@@ -879,12 +629,8 @@ proc buildSubsheetArrays(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan) 
                          binding, rep0, aoSubsheet, allowChain = true)
 
 proc buildComponentArrays(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan) =
-  ## Repeated **raw component** groups, added to `plan` in place: eight
-  ## identical terminations, an eight-channel filter bank's resistor rank or
-  ## capacitor rank, and so on. Must run against the same *unfinalized* `plan`
-  ## `buildSubsheetArrays` left (or a zero-value one, standalone) -- see
-  ## `buildSubsheetArrays`'s doc comment on why finalizing runs once, by the
-  ## caller, after both builders.
+  ## Repeated **raw component** groups, added to the same unfinalized `plan`
+  ## (or a zero-value one). The caller finalizes.
   var ctx = initArrayBuildCtx(nl, bundles, plan)
 
   var sigOrder: seq[string]
@@ -893,23 +639,9 @@ proc buildComponentArrays(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan)
     if c.subNetlist != nil: continue          # the subsheet pass owns those
     if isPackaged(c): continue                # a section already has "U10A"
     let value = c.attrs.getOrDefault("value", "")
-    # A component with *neither* a stated value, a part number nor a
-    # description is excluded
-    # from candidacy entirely, not merely one whose value fails to match: the
-    # collapsed symbol shows one value, and a blank one asserts nothing about
-    # the N real parts it stands for -- worse than not collapsing. Every part
-    # that draws as a symbol with a printed value (a resistor, a capacitor)
-    # states one; a part identified instead by what it *is* (`xbar_rf`'s
-    # `kind = "connector", description = "SMA-50"` SMA edges and
-    # `kind = "rf_switch", partNumber = "ADG904"` switches carry no `value`
-    # at all) states a part number or a description instead, which is just
-    # as much a real identity as a value is. A bare topology fixture that states neither
-    # (this schematic test file's own
-    # `starNet`/`resistorChain`/`parallelPairChain`/`portedSubckt`, none of
-    # which are testing this feature) is not modelling a real part, and
-    # without this guard dozens of same-kind, same-pin-shape resistors wired
-    # for an unrelated placement/routing property would silently collapse
-    # into a phantom array the moment three of them shared two empty strings.
+    # A part with no `value`, `partNumber` or `description` is never a
+    # candidate: a blank label asserts nothing about the parts it stands for,
+    # and unvalued topology fixtures would collapse into phantom arrays.
     let desc = c.attrs.getOrDefault("description", "")
     if value.len == 0 and c.partNumber.len == 0 and desc.len == 0: continue
     var keys, kinds: seq[string]
@@ -940,9 +672,8 @@ proc buildComponentArrays(nl: Netlist, bundles: BundlePlan, plan: var ArrayPlan)
         for mi, d in members:
           binding[pi][mi] = nl.components[d].pins[pn].net
 
-      # A resistor/capacitor/diode/... symbol has no box interior for a
-      # recirculation arc; a hierarchical or unrecognised kind draws as a box
-      # and keeps the chain treatment `symbolFor` already gives a subsheet.
+      # A two-terminal symbol has no interior for a recirculation arc; a box
+      # keeps the chain treatment.
       let allowChain = symbolFor(rep0).isBox
       addSignatureArrays(ctx, nl, plan, bundles, sig, members, portNames,
                          binding, rep0, aoComponent, allowChain)
@@ -957,18 +688,13 @@ proc arrayLabelFor(plan: ArrayPlan, c: Component): string {.inline.} =
 
 proc arrayLanesFor(plan: ArrayPlan, c: Component):
     tuple[names: seq[string], side: seq[int]] =
-  ## Reserved for a future need. The chain arc anchors directly on the box
-  ## edge beside its own IN/OUT pins now -- a dashed annotation, exempt from
-  ## the routed-wire separation invariants -- so no lane is drawn and the box
-  ## keeps its historical size.
+  ## Reserved. The chain arc anchors on the box edge beside its pins, so no
+  ## lane is drawn.
   discard
 
 proc arrayTitleWidth(plan: ArrayPlan, c: Component): float {.inline.} =
-  ## The width `boxSlots` must reserve at the box top for "X1..X8" at the left
-  ## and the "xN" badge at the right. 0.0 for every other part -- the one
-  ## default that keeps the historical sizing bit-for-bit. Unread for a
-  ## non-box representative (`boxSlots` is never called for one), harmless to
-  ## still compute.
+  ## Width `boxSlots` reserves at the box top for "X1..X8" and the "xN"
+  ## badge; 0.0 for every other part, so sizing is otherwise unchanged.
   if not plan.byRep.hasKey(c.designator): return 0.0
   let a = plan.arrays[plan.byRep[c.designator]]
   float(a.label.len + 4 + ($a.members.len).len) * 7.2 + 24.0
@@ -976,12 +702,10 @@ proc arrayTitleWidth(plan: ArrayPlan, c: Component): float {.inline.} =
 proc arrayPinFor(plan: ArrayPlan, c: Component, pinName: string):
     tuple[found: bool, mark: PinMark, tag, net: string,
           members: seq[BundleMember]] =
-  ## Scene decoration for one representative pin. `net` is the name the drawn
-  ## pin carries: the head/tail net for the two halves of a chain, the group
-  ## `display` for a distributed pin, the bus/interface family name for a
-  ## *bundled* distributed pin (below), "" (unchanged) otherwise. `members`
-  ## is one entry per array member, `name` the member *designator* and `net`
-  ## its binding on this port.
+  ## Scene decoration for one representative pin. `net` is the drawn name:
+  ## head/tail for a chain, the group `display` for a distributed pin, the
+  ## bus family for a bundled one, "" otherwise. `members` has one entry per
+  ## member (designator, binding on this port).
   if not plan.portOfPin.hasKey(pinKey(c, pinName)): return
   let (ai, pi) = plan.portOfPin[pinKey(c, pinName)]
   let a = plan.arrays[ai]
@@ -991,28 +715,18 @@ proc arrayPinFor(plan: ArrayPlan, c: Component, pinName: string):
     result.members.add BundleMember(name: d, net: ap.nets[k])
   case ap.cls
   of apCommon:
-    # A ground/rail common pin already draws its own glyph -- the tick would
-    # sit right on top of it, and on a two-terminal symbol (not just a box)
-    # the two would collide outright.
+    # A ground/rail pin already draws a glyph the tick would collide with.
     if not ap.bundled and not ap.railCommon: result.mark = pmBusBar
   of apDistributed:
     if not ap.mergedByBundle:
-      # Not merged anywhere: the array draws and routes this port itself
-      # (`display`/`tag` were computed accordingly in `classifyGroup` --
-      # `display` is the bundle's own tag when `bundled`, so this agrees with
-      # whatever the bundle's port pennant and any other array sharing the
-      # same bus already draw).
+      # Not merged anywhere: the array routes this port (`display` is the
+      # bundle's own tag, so it agrees with the bundle's pennant).
       result.mark = pmBusSlash
       result.tag = ap.tag
       result.net = ap.display
     else:
-      # "Bundle wins at the pin" (arrays declines its own mark/tag here) still
-      # leaves the drawn pin's `net` field to fill in -- and the caller's
-      # fallback (the representative's own raw binding, e.g. "rin_0") is
-      # exactly one array member's specific index. Once the array collapses,
-      # this one box stands for every member's binding on the bus, not just
-      # the representative's own, so the bus/interface family name ("rin")
-      # is what the box's identity actually is.
+      # The bundle draws the mark, but the pin's `net` is the bus family
+      # ("rin"), not the representative's own member ("rin_0").
       result.net = ap.bundleFamily
   of apChained:
     result.net = (if ap.isOut: ap.tail else: ap.head)
@@ -1026,34 +740,17 @@ proc arrayPinFor(plan: ArrayPlan, c: Component, pinName: string):
         (if nOpen > 0: " open" else: "")
 
 proc arrayBundleLabelFor(plan: ArrayPlan, c: Component, pinName: string): string =
-  ## The array-aware net-label text for a bundled distributed array
-  ## representative's pin; "" everywhere else, so the caller's ordinary
-  ## per-net text (a hidden member's own tag, or any pin `arrayPinFor` never
-  ## claims) is used unchanged.
-  ##
-  ## `bundles.nim`'s net-label pass tags each carrier with its own bound net
-  ## ("rin_0" for the specific component sitting on that one wire) unless two
-  ## or more bundle members land on the *same* component, which is the only
-  ## case it merges into one compact tag. A representative that used to be
-  ## one lone component (unmerged, correctly "rin_0") now stands for every
-  ## hidden member's own binding once the array collapses it -- the bundle
-  ## pass has no way to know that, since it never sees a collapsed scene, so
-  ## it keeps drawing the representative's single specific index. This
-  ## substitutes the bus/interface family name at exactly that one spot.
+  ## Net-label text for a bundled distributed representative's pin: the bus
+  ## family name, since the box stands for every member. The bundle pass
+  ## never sees the collapsed scene and would draw "rin_0". "" elsewhere.
   if not plan.portOfPin.hasKey(pinKey(c, pinName)): return ""
   let (ai, pi) = plan.portOfPin[pinKey(c, pinName)]
   let ap = plan.arrays[ai].ports[pi]
   if ap.cls == apDistributed and ap.mergedByBundle: ap.bundleFamily else: ""
 
 proc arrayOwnsDistributedPin(plan: ArrayPlan, c: Component, pinName: string): bool =
-  ## True when a collapsed array's own bus now carries this exact
-  ## representative pin's port -- `routing.nim`'s net-label pass must not
-  ## also draw a bare tag (or a portConn marker) for it: the array draws a
-  ## real wire instead, under the bundle's own occupancy tag
-  ## (`ArrayPort.display`, see `classifyGroup`), so the bundle's net-label
-  ## pass steps aside for exactly the ports it does. `mergedByBundle` is the
-  ## opposite case -- bundle wins at the pin -- and stays with the ordinary
-  ## net-label drawing.
+  ## True when the array routes this pin's port as a real wire under the
+  ## bundle's occupancy tag, so the net-label pass must not also tag it.
   if not plan.portOfPin.hasKey(pinKey(c, pinName)): return false
   let (ai, pi) = plan.portOfPin[pinKey(c, pinName)]
   let ap = plan.arrays[ai].ports[pi]
@@ -1062,18 +759,10 @@ proc arrayOwnsDistributedPin(plan: ArrayPlan, c: Component, pinName: string): bo
 proc arrayRouteFor(plan: ArrayPlan, netName: string):
     tuple[skip: bool, group: bool, tag: string, members: seq[string],
           first: bool] =
-  ## The routing decision for one `nl.nets` entry. `skip` for a suppressed net
-  ## (a chain link, a distributed member after the first). `group` marks a
-  ## distributed member net that routes as the one drawn bus.
-  ##
-  ## `first` is `true` whenever this branch is reached at all: the `skip`
-  ## check above already returned for every *other* member of the same group
-  ## (`finalizeArrayPlan` suppresses every member but one), so by the time a
-  ## net passes both tests it is, by construction, the sole survivor -- no
-  ## comparison against the port's own member-order `nets[0]` is needed, and
-  ## none is made, because that index need not agree with `suppressed`'s
-  ## `nl.nets`-order pick when two arrays enumerate the same physical members
-  ## in different orders (the both-ends-distributed case).
+  ## The routing decision for one `nl.nets` entry: `skip` a suppressed net;
+  ## `group` for the one surviving distributed member, which routes as the
+  ## bus. `first` is always true here -- `finalizeArrayPlan` suppressed every
+  ## other member, and its pick need not match the port's `nets[0]`.
   if netName in plan.suppressed:
     return (skip: true, group: false, tag: "", members: @[], first: false)
   if plan.groupOf.hasKey(netName):
@@ -1090,23 +779,11 @@ proc arrayRouteFor(plan: ArrayPlan, netName: string):
 proc arrayReport*(nl: Netlist): seq[tuple[source, label, rep: string,
                                     count: int, members, ports: seq[string],
                                     origin: string]] =
-  ## Every collapsed array -- subsheet or component -- so "does `sclk_out`
-  ## chain?" or "does the termination bank collapse?" is a one-line unit test
-  ## instead of an inference from geometry. A subsheet, or a raw component
-  ## group with no port that genuinely shares both nets across every member,
-  ## needs three or more instances; a raw component group that does share
-  ## both nets on every port -- and those nets are a rail/ground pair, a
-  ## bypass bank -- needs only two (see the bypass-bank floor in
-  ## `addSignatureArrays`), and so does a raw component group with a
-  ## distributed port whose varying nets are members of one declared bus or
-  ## interface (the declared-pair floor, same place). Fewer than that, for
-  ## any of the three shapes, yields an empty report. Builds the bundle plan itself, so the report is exactly
-  ## what `prepare` computes with both `lsArrays` and `lsPartArrays` on (the
-  ## default). `source` is the subckt name for a subsheet array or the
-  ## component `kind` for a component array -- both are the first `\x1f`
-  ## field of `PartArray.key` by construction, so no separate storage is
-  ## needed to tell them apart; `origin` says which ("subsheet" /
-  ## "component").
+  ## Every collapsed array, subsheet or component, for unit tests. Builds the
+  ## bundle plan itself, so it matches `prepare` with `lsArrays` and
+  ## `lsPartArrays` on. `source` is the subckt name or component `kind` (the
+  ## first `\x1f` field of `PartArray.key`); `origin` is "subsheet" or
+  ## "component".
   ##
   ## Each `ports` entry renders as `"<port>=<class>[<detail>]"`:
   ##   "vdd=common"                  "vdd=common(bundled)"

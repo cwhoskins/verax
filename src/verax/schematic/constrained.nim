@@ -1,46 +1,25 @@
-## Opt-in constrained layered placement for ordinary schematic sheets.
-##
-## This is deliberately bounded rather than a general graph-drawing solver: it
-## derives a stable directed skeleton from output pins, follows two-terminal
-## signal paths to their input endpoints, assigns monotonically increasing
-## stage blocks, and orders each block from the deterministic seed. The existing
-## separator remains the authority for non-overlap.
-##
-## The composite arena this file pools over -- `CompositeKind`, `PlaceableItem`,
-## `CompositePlan`, the `compositeKinds` registry, and the registered motifs --
-## lives under `./composites/` (`composite.nim` for the kind-agnostic
-## scaffolding, `passive.nim` for the parallel-stack motif), included just
-## before this file.
+## Opt-in constrained layered placement. Deliberately bounded: derive a
+## directed skeleton from output pins, follow two-terminal signal paths to
+## input endpoints, assign increasing stage blocks, order each block from the
+## deterministic seed. The separator remains the authority for non-overlap.
+## The composite arena lives under `./composites/`, included just before.
 
 const
   constrainedMaxParts = 64
-  # A raw sheet is admitted once its composite-collapsed *pool* clears
-  # `constrainedMaxParts`, so the pool gate alone no longer bounds the raw
-  # part count at all -- pooling looking favorable on paper must not admit an
-  # unboundedly large raw sheet into an O(pool * arcs) topology relaxation
-  # whose per-arc discovery (`pathsFrom`, the output-pin scan) is still
-  # raw-sized, nor into `recoverRouting`'s per-candidate O(raw pins * raw
-  # comps) `constrainedRouteScore`. 4x is slack above the pre-2.5 all-raw
-  # ceiling (`constrainedMaxParts` itself, when every part was its own pool
-  # item): four two-member parallel pairs collapse to one pool item, so a
-  # sheet that is *all* parallel pairs can go up to 4x its former raw limit
-  # and still be a 1x pool problem.
+  # The pool gate alone doesn't bound raw part count, but arc discovery and
+  # `constrainedRouteScore` are still raw-sized. 4x lets a sheet of all
+  # two-member parallel pairs through.
   constrainedMaxRawParts = 4 * constrainedMaxParts
   constrainedLayerPitch = 200.0
-  # A semantic column can hold a fallback box as well as a two-terminal
-  # symbol; leave enough vertical room that legalization need not spill it
-  # into a neighbouring column.
+  # Room for a fallback box, so legalization doesn't spill into a
+  # neighbouring column.
   constrainedRowPitch = 240.0
-  # A logical layer may use this many adjacent semantic stages. This keeps a
-  # passive-heavy layer from becoming an unbounded vertical list while keeping
-  # the topology hint deliberately local.
+  # Stages a logical layer may span, keeping passive-heavy layers bounded.
   constrainedMaxStages = 3
-  # `lsCompositeOrient` turns a *signal-path* composite off its canonical
-  # frame only when doing so shortens its external wirelength by more than
-  # this. The estimate is a pre-separation one, and a turn reshapes the unit
-  # for the separator to pack around; a marginal win is not worth the churn
-  # (it displaced ts808_drive's C2 far enough from `vamp` to break the route).
-  # A pure rail-to-rail unit is exempt -- its `powerRank` win is unambiguous.
+  # `lsCompositeOrient` turns a signal-path composite off its canonical frame
+  # only when it shortens external wirelength by more than this: the
+  # estimate is pre-separation and a marginal turn can break a route. Pure
+  # rail-to-rail units are exempt.
   compositeFrameHysteresis = 2.0 * grid
 
 type
@@ -53,17 +32,14 @@ type
     sameColumn: seq[tuple[src, part: int]]
 
 proc constrainedEligible(comps: seq[Component], plan: CompositePlan): bool =
-  ## Pool count, not raw count, is what bounds the topology relaxation and the
-  ## per-candidate route score after pool-indexing `constrainedTargets`. The
-  ## raw ceiling is the guard the loosened pool gate needs: pooling looking
-  ## favorable on paper must not admit an unboundedly large raw sheet into an
-  ## O(pool * arcs) relaxation whose per-arc work is still raw-sized.
+  ## Pool count bounds the relaxation and route score; the raw ceiling
+  ## guards the still raw-sized per-arc work.
   comps.len > 0 and plan.topLevel.len <= constrainedMaxParts and
     comps.len <= constrainedMaxRawParts
 
 proc inputPort(nl: Netlist, net: Net): bool =
-  ## Keep port semantics exactly aligned with routing, including its
-  ## all-passive/no-driver fallback.
+  ## Port semantics exactly as routing sees them, including the no-driver
+  ## fallback.
   for _, portNet in nl.ports:
     if portNet == net:
       return portDirection(net) == pdInput
@@ -71,26 +47,13 @@ proc inputPort(nl: Netlist, net: Net): bool =
 
 proc pathsFrom(nl: Netlist, start: Net, skip: int,
                idxOf: Table[string, int], plan: CompositePlan): seq[TraversedPath] =
-  ## Follow a signal net through eligible two-terminal devices. A traversal
-  ## step is `(pool item, exit net)`, not just `(pool item)`: a composite is
-  ## one *placement unit* but its members are still distinct edges in the
-  ## signal graph, and a step key that stopped at the pool item let a walk
-  ## enter a composite and never leave -- a pi's grounded shunt would consume
-  ## the pool position and its series member could never be traversed, so no
-  ## arc ordering the composite against the rest of the sheet was ever
-  ## discovered (`RIAA_CHANNEL`'s `RL`--`CIN`--`RB` pi landing right of the
-  ## op-amp it feeds).
-  ##
-  ## `visitedHere` keyed on `(poolOf[i], exit net)` still collapses the 2^N
-  ## blow-up the pooling was for: both members of a recognized parallel pair
-  ## share *both* their nets, so from either net they yield the identical
-  ## `(pool, exit)` step and dedup to one -- while a pi's shunt
-  ## (`exit == ground`) and its series part (`exit == signal`), and a tee's
-  ## two series legs, stay distinct. `seen`/`skip` are raw component indices:
-  ## one raw part per path bounds path length by `comps.len` exactly, and it
-  ## is not what was collapsing paths. `TraversedPath` carries raw indices --
-  ## `constrainedTopology` maps every arc through `plan.poolOf` once, for
-  ## every arc kind at once.
+  ## Follow a signal net through eligible two-terminal devices. A step is
+  ## `(pool item, exit net)`: keyed on the pool item alone, a walk could
+  ## enter a composite (e.g. a pi's shunt) and never traverse its series
+  ## member. Parallel-pair members share both nets, so they still dedup to
+  ## one step; a pi's shunt and series part stay distinct. `seen`/`skip` are
+  ## raw indices; arcs are mapped through `plan.poolOf` by
+  ## `constrainedTopology`.
   var found: seq[TraversedPath]
   proc walk(net: Net, path: seq[int], seen: HashSet[int]) =
     if net == nil or not onThisSheet(nl, net) or isGround(net) or isRail(net):
@@ -103,8 +66,7 @@ proc pathsFrom(nl: Netlist, start: Net, skip: int,
         ends.add idxOf[c.designator]
     if ends.len > 0:
       found.add TraversedPath(parts: path, inputs: ends)
-      # An input is a semantic endpoint. Continuing through its component
-      # would turn an ordinary forward receiver into a spurious self-return.
+      # An input is an endpoint; continuing would fake a self-return.
       return
     var visitedHere: HashSet[tuple[pool: int; exit: string]]
     for pin in net.pins:
@@ -112,13 +74,8 @@ proc pathsFrom(nl: Netlist, start: Net, skip: int,
       if not isTraversable(c, nl) or not idxOf.hasKey(c.designator): continue
       let i = idxOf[c.designator]
       if i == skip or i in seen: continue
-      # A flat two-terminal part has exactly one exit here, exactly as
-      # before; a declared multi-throw switch (`isTraversable`'s widened
-      # half) can have several, one per pin its own `traverse:` spec names
-      # as conducting from the pin the walk arrived on -- so the single
-      # `Net` this loop used to compute directly is now every entry of
-      # `traversalExits`, each keyed into `visitedHere` on its own `exit`
-      # name exactly as the old single exit was.
+      # One exit for a two-terminal part; several for a declared multi-throw
+      # switch (one per pin its `traverse:` spec says conducts).
       for other in traversalExits(c, nl, net):
         let step = (pool: plan.poolOf[i], exit: other.name)
         if step in visitedHere: continue
@@ -134,24 +91,15 @@ proc pathsFrom(nl: Netlist, start: Net, skip: int,
 proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
                          plan: CompositePlan, arrays: ArrayPlan,
                          ov = LayoutOverridePlan()): ConstrainedTopology =
-  ## Longest-path relaxation on semantic output arcs, run over the
-  ## composite-collapsed *pool* -- `layers` and `sameColumn` are indexed by
-  ## pool position (0 ..< `plan.topLevel.len`), not raw component index, so a
-  ## composite shares one layer by construction instead of the post-hoc `max`
-  ## `constrainedTargets` used before pooling existed. Insertion order breaks
-  ## ordinary reverse arcs. A path returning to its own source stays in the
-  ## source layer and may use an adjacent stage; a path returning to an earlier
-  ## component is feedback, whose passive path remains to the right of the
-  ## output that drives it.
+  ## Longest-path relaxation on semantic output arcs over the composite pool
+  ## (`layers`/`sameColumn` are pool-indexed, so a composite shares one
+  ## layer). Insertion order breaks reverse arcs. A path back to its own
+  ## source stays in the source layer; one back to an earlier component is
+  ## feedback, kept right of the output that drives it.
   ##
-  ## Arc *discovery* below still walks raw indices -- `pathsFrom` and the
-  ## direct output-pin scan need real pins and real nets -- and only the
-  ## discovered arcs are mapped through `plan.poolOf` afterward, once, for
-  ## every arc kind (ordinary, feedback, same-column) alike. Contracting a DAG
-  ## can reintroduce a cycle (two raw arcs between different members of the
-  ## same two composites can point opposite ways once both ends collapse to
-  ## one pool position each), so the pool-level `src < dst` check is the same
-  ## deterministic cycle break one level up, not a restatement of the raw one.
+  ## Arcs are discovered on raw indices, then mapped through `poolOf`.
+  ## Contraction can create a cycle, so `src < dst` is re-checked at pool
+  ## level.
   let poolLen = plan.topLevel.len
   result.layers = newSeq[int](poolLen)
   var rawArcs: seq[tuple[src, dst: int]]
@@ -169,9 +117,8 @@ proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
     for _, pin in c.pins:
       if pin.kind != ptOutput or pin.net == nil or isGround(pin.net) or isRail(pin.net):
         continue
-      # Preserve the direct output-pin skeleton as well as the longer
-      # two-terminal semantic paths below. A final unannotated sink still
-      # belongs after the output that drives its net.
+      # Keep direct output-pin arcs too: a final sink belongs after the
+      # output driving its net.
       for mate in pin.net.pins:
         if mate.component == nil or mate.component.netlist != c.netlist or
            mate.component.designator == c.designator or
@@ -185,25 +132,13 @@ proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
           elif i < dst:
             addPathArcs(i, path.parts, dst)
           else:
-            # This is the insertion-order-broken feedback direction. Do not
-            # pull it left toward the receiving input: feedback passives read
-            # as an output-side path.
+            # Feedback direction: don't pull it left toward the input.
             for part in path.parts: feedback.add (i, part)
 
-  # A collapsed array hides every non-representative member (`arrays.hidden`),
-  # so a chain's true tail -- an output pin that physically belongs to the
-  # *hidden* last member -- is invisible to the scan above, which only walks
-  # `comps`' own real pins. `arrays.extraPins` re-homes that external net onto
-  # the representative's own same-named pin (every member shares the same
-  # port names by construction), exactly as `routing.nim` reads it to draw
-  # the box's pin there. Direction cannot be read off that pin's `kind`: a
-  # positional `instance` never sets one, so every chained port's instance
-  # pin is `ptUnknown` -- `outward` (computed once, from the port's name
-  # suffix / hierarchy direction, the same signal `arrays.nim`'s chain-pairing
-  # itself trusts) is what tells the tail entry (the array's real external
-  # output) apart from the head entry, which is deliberately skipped: it
-  # re-homes onto a pin the representative already owns directly (it *is*
-  # the first member), so the main scans above already see that arc.
+  # A chain's tail output sits on a hidden array member, invisible to the
+  # scan above; `arrays.extraPins` re-homes it onto the representative.
+  # Instance pins are `ptUnknown`, so `outward` identifies the tail; the head
+  # entry is skipped (the representative already owns it).
   let nl = comps[0].netlist
   for netName, homes in arrays.extraPins:
     if not nl.nets.hasKey(netName): continue
@@ -226,9 +161,7 @@ proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
           else:
             for part in path.parts: feedback.add (i, part)
 
-  # An input interface is a virtual layer-zero source. `portDirection` is the
-  # shared implementation used by routing, so explicit pin direction and its
-  # no-driver fallback have exactly the same meaning here.
+  # An input interface is a virtual layer-zero source, per `portDirection`.
   for _, net in comps[0].netlist.ports:
     if not inputPort(comps[0].netlist, net): continue
     for path in pathsFrom(comps[0].netlist, net, -1, idxOf, plan):
@@ -240,9 +173,7 @@ proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
             previous = path.parts[at]
           if previous < dst: rawArcs.add (previous, dst)
 
-  # Map every arc through `poolOf`; a HashSet used for membership only (never
-  # iterated, per this submodule's determinism rule) dedups arcs that two
-  # different raw pairs contracted onto, keeping first-seen order in `arcs`.
+  # Map arcs through `poolOf`, deduping via a membership-only HashSet.
   var arcs: seq[tuple[src, dst: int]]
   var arcSeen: HashSet[tuple[src, dst: int]]
   for a in rawArcs:
@@ -253,8 +184,7 @@ proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
     arcSeen.incl (src, dst)
     arcs.add (src, dst)
 
-  # The insertion-order cycle break makes these arcs a DAG, so poolLen-1
-  # longest-path passes are a strict bound.
+  # The arcs form a DAG, so poolLen-1 passes suffice.
   for _ in 1 ..< poolLen:
     var next = result.layers
     for a in arcs:
@@ -275,14 +205,9 @@ proc constrainedTopology(comps: seq[Component], idxOf: Table[string, int],
     result.layers[part] = result.layers[src]
     result.sameColumn.add (src, part)
 
-  # `layout.side` (`netlist/layouthints`) is only a *seed hint* here --
-  # `enforceLayoutSides` (`state.nim`) is the hard guarantee, run once
-  # centres are settled. This just pulls a left-overridden unit's layer to 0
-  # and a right-overridden one past every other unit's layer, applied after
-  # both post-passes above since either can move a layer value, then densely
-  # renumbers so `constrainedTargets`' `0 ..< poolLen` loop (which silently
-  # drops anything at a layer `>= poolLen`) still visits every unit. A
-  # no-override sheet takes `ov.any == false` and skips this entirely.
+  # `layout.side` is only a seed hint here (`enforceLayoutSides` is the
+  # guarantee): pull left units to layer 0 and right units past all others,
+  # then renumber densely so the `0 ..< poolLen` loop visits every unit.
   if ov.any:
     var leftUnits, rightUnits: seq[int]
     for pos in 0 ..< poolLen:
@@ -315,34 +240,15 @@ proc constrainedTargets(comps: seq[Component], pos: seq[Point],
                         idxOf: Table[string, int],
                         plan: CompositePlan, arrays: ArrayPlan,
                         ov = LayoutOverridePlan()): seq[Point] =
-  ## Stable, bounded stage placement over the composite-collapsed pool. A pool
-  ## item -- a raw singleton or a whole recognized composite -- is one
-  ## placement unit; units fill at most three adjacent stages before adding
-  ## another row. The incoming seed resolves all ties, preserving
-  ## deterministic ordering.
-  ##
-  ## A composite is placed as one packed body: its origin goes at the stage
-  ## slot and each member sits at `origin + rawOffsets(plan, idx)[at]` --
-  ## the same canonical raw-body-touching offsets `restoreCompositeOffsets`
-  ## re-rigidifies around afterward. Before pooling this stacked members
-  ## `constrainedParallelPitch` (120) apart here and let the later
-  ## re-rigidify pass collapse that to the real 80-unit body-touching gap
-  ## around the mean of the *implied* origins -- two correct but different
-  ## numbers computed in sequence. Placing the canonical offsets directly
-  ## is the same final geometry by one step instead of two, and it is why a
-  ## composite-bearing sheet's semantic seed (and therefore the force
-  ## placement it feeds) moves under this change even though every downstream
-  ## invariant (`restoreCompositeOffsets`'s own idempotent offsets, the shared
-  ## column, the routing rules) is unaffected: a different starting point for
-  ## the same iterative force solve settles at a different, still-valid,
-  ## equilibrium. A composite-free sheet has every offset at `Point()`, so
-  ## this reduces to the pre-pooling stacking exactly, one unit apart -- the
-  ## identity case that is provably unchanged.
+  ## Stable, bounded stage placement over the pool: each pool item is one
+  ## unit, at most three adjacent stages per row, ties resolved by the seed.
+  ## A composite's members are placed at `origin + rawOffsets(...)`, its
+  ## canonical rigid offsets. A composite-free sheet has zero offsets.
   if not constrainedEligible(comps, plan): return pos
   var topology = constrainedTopology(comps, idxOf, plan, arrays, ov)
   let poolLen = plan.topLevel.len
-  # A local return is allowed one semantic stage either side of its source;
-  # reserve a second stage even for the minimal source-plus-feedback case.
+  # A local return may use one stage either side of its source; reserve a
+  # second stage even for the minimal case.
   var localReturn = newSeq[bool](poolLen)
   var returnSource = newSeq[int](poolLen)
   for g in 0 ..< returnSource.len: returnSource[g] = -1
@@ -368,8 +274,7 @@ proc constrainedTargets(comps: seq[Component], pos: seq[Point],
       if result == 0: result = cmp(membersA[0], membersB[0]))
     var stages = min(constrainedMaxStages, (units.len + 2) div 3)
     if localReturn[layer]: stages = max(stages, min(2, constrainedMaxStages))
-    # For the minimal local loop, put the return beside its source. The
-    # deterministic seed chooses which side, so this is not output-side-only.
+    # Minimal local loop: return beside its source; the seed picks the side.
     if units.len >= 2 and units.len <= stages:
       for returnGroup, sourceGroup in returnSource:
         if sourceGroup < 0 or topology.layers[returnGroup] != layer: continue
@@ -400,10 +305,8 @@ proc constrainedTargets(comps: seq[Component], pos: seq[Point],
         minY = min(minY, result[i].y)
         maxY = max(maxY, result[i].y)
     xStage += stages
-  # Centre the sheet about the origin, retaining exact grid coordinates.
-  # `minY` matters once member offsets are signed (a composite's members sit
-  # on both sides of its origin); for an all-singleton sheet every offset is
-  # zero, so `minY` is exactly 0 and this is the historical `maxY / 2` shift.
+  # Centre the sheet about the origin on exact grid coordinates (`minY`
+  # handles signed composite offsets).
   let xShift = float(xStage - 1) * constrainedLayerPitch / 2.0
   let yShift = (minY + maxY) / 2.0
   for p in mitems(result):
@@ -420,9 +323,8 @@ proc constrainedAnchors(comps: seq[Component], seed: seq[Point],
                         idxOf: Table[string, int],
                         plan: CompositePlan, arrays: ArrayPlan,
                         ov = LayoutOverridePlan()): seq[Point] =
-  ## Semantic columns are deliberately *soft* anchors.  The constrained policy
-  ## must retain the topology hint without overwriting the force solution (and
-  ## without turning a feedback sheet into a rigid template).
+  ## Semantic columns are soft anchors: they guide the force solution without
+  ## overwriting it.
   if constrainedEligible(comps, plan):
     constrainedTargets(comps, seed, idxOf, plan, arrays, ov)
   else:
@@ -430,15 +332,14 @@ proc constrainedAnchors(comps: seq[Component], seed: seq[Point],
 
 proc constrainedRefine(comps: seq[Component], pos: var seq[Point],
                        idxOf: Table[string, int]) =
-  ## Kept as the stage hook for archive compatibility.  Refinement is now done
-  ## by the bounded soft-anchor force and group search, never by a hard snap.
+  ## Kept as a stage hook for archive compatibility; refinement is done by
+  ## the soft-anchor force and group search.
   discard
 
 proc portTarget(nl: Netlist, comps: seq[Component], net: Net, pos: seq[Point], syms: seq[SymbolDef]):
     tuple[has: bool, p: Point] =
-  ## A declared interface participates before ports are materialised.  This is
-  ## candidate geometry, not a post-route cosmetic pull: it breaks the otherwise
-  ## symmetric all-passive sheet at the same point as ordinary pin attraction.
+  ## A declared interface participates before ports are materialised, as
+  ## candidate geometry: it breaks the symmetry of an all-passive sheet.
   var declared = false
   for _, portNet in nl.ports:
     if portNet == net: declared = true; break
@@ -467,10 +368,8 @@ proc portTarget(nl: Netlist, comps: seq[Component], net: Net, pos: seq[Point], s
 proc constrainedRouteScore(nl: Netlist, comps: seq[Component],
                            syms: seq[SymbolDef], pos: seq[Point], rots: seq[float],
                            anchors: seq[Point]): tuple[hits, bends: int, length, drift: float] =
-  ## Cheap obstacle-aware rectilinear estimate used only to rank the bounded
-  ## candidate orientations.  It intentionally does not replace the router:
-  ## obstacle hits, bends and length are a stable preview; routing remains the
-  ## authority for the final path.
+  ## Cheap obstacle-aware rectilinear estimate, only for ranking candidate
+  ## orientations; the router remains the authority.
   let pw = pinWorldPositions(comps, syms, pos, rots)
   for i, c in comps:
     for pinName, pin in c.pins:
@@ -489,9 +388,7 @@ proc constrainedRouteScore(nl: Netlist, comps: seq[Component],
       target = target * (1.0 / float(count))
       result.length += manhattan(mine, target)
       if mine.x != target.x and mine.y != target.y: inc result.bends
-      # Both deterministic L choices are inspected; a hit means neither clean
-      # candidate is available.  This is enough to reject a facing-across
-      # parallel layout when its direct exits run through a neighbour.
+      # Both L shapes are checked; a hit on both means no clean candidate.
       var clearHV = true
       var clearVH = true
       for j in 0 ..< comps.len:
@@ -511,16 +408,10 @@ proc constrainedRecomputeRotations(nl: Netlist, comps: seq[Component],
                                    syms: seq[SymbolDef], pos: seq[Point], rots: seq[float],
                                    anchors: seq[Point],
                                    plan: CompositePlan): seq[float] =
-  ## Deterministic group-aware four-way search.  Its ordering is deliberately
-  ## lexicographic: existing power direction, estimated routing quality, then
-  ## semantic/seed drift.  Parallel members are evaluated as one candidate.
-  ##
-  ## Visits `plan.topLevel` -- the exact interleave of singletons and
-  ## composites `parallelRecognize` produced when `plan` was built -- rather
-  ## than recomputing groups here: a singleton's rotation search reads
-  ## `pinWorldPositions` off the *partially updated* `result` of every group
-  ## already visited, so the order is observable, not cosmetic, and a second
-  ## registered kind's own recognition must land in that same one sequence.
+  ## Deterministic group-aware four-way search, ranked by power direction,
+  ## estimated routing quality, then drift. Visits `plan.topLevel` in order;
+  ## that order is observable because each search reads the partially
+  ## updated `result`.
   result = rots
   for idx in plan.topLevel:
     let it = plan.items[idx]
@@ -532,9 +423,8 @@ proc constrainedRecomputeRotations(nl: Netlist, comps: seq[Component],
     let members = rawMembers(plan, idx)
     var candidates =
       compositeKinds[it.kind].rotationCandidates(nl, comps, syms, pos, result, members)
-    # The hook authors angles in the canonical frame; compose this unit's
-    # committed quarter-turn onto every member before ranking. `unitRot` is 0
-    # for a pinned kind, so those candidates are untouched.
+    # Compose the unit's committed quarter-turn onto every member's angle
+    # (`unitRot` is 0 for pinned kinds).
     if it.unitRot != 0.0:
       for c in mitems(candidates):
         for i in members: c[i] = addRot(c[i], it.unitRot)
@@ -564,11 +454,9 @@ proc constrainedRecomputeRotations(nl: Netlist, comps: seq[Component],
 
 proc compositeUnitOrigin(plan: CompositePlan, idx: int, pos: seq[Point],
                          canon: seq[Point], members: seq[int]): Point =
-  ## The grid-snapped point an already-rigid composite's members sit around --
-  ## the mean of each member's implied origin, exactly `restoreCompositeOffsets`'
-  ## own computation but read out here so a trial frame can be scored without
-  ## committing it. `canon` is `canonicalOffsets(plan, idx)`; the members are
-  ## currently at `origin + rotatedSlot(canon[at], plan.items[idx].unitRot)`.
+  ## The grid-snapped origin a rigid composite's members sit around (as in
+  ## `restoreCompositeOffsets`), so a trial frame can be scored without
+  ## committing it.
   let rot = plan.items[idx].unitRot
   for at, m in members: result += pos[m] - rotatedSlot(canon[at], rot)
   result = result * (1.0 / float(members.len))
@@ -576,12 +464,9 @@ proc compositeUnitOrigin(plan: CompositePlan, idx: int, pos: seq[Point],
   result.y = round(result.y / grid) * grid
 
 proc unitExternallyPurePower(comps: seq[Component], members: seq[int]): bool =
-  ## Every net that links this unit to the rest of the sheet is a rail or
-  ## ground -- so it is a thing sitting *between power planes* (a rail-to-rail
-  ## divider, a decoupling bank) and `powerRank` should lead its frame choice.
-  ## If any external net is an ordinary signal, that connection leads instead,
-  ## via wirelength: forcing "ground down" on a part in the signal path just
-  ## drags its signal pin away from what it feeds.
+  ## Every external net is a rail or ground (a rail-to-rail divider, a
+  ## decoupling bank), so `powerRank` should lead its frame choice. Any
+  ## signal net leads via wirelength instead.
   var inUnit: HashSet[string]
   for m in members: inUnit.incl comps[m].designator
   let nl = comps[members[0]].netlist
@@ -598,25 +483,13 @@ proc unitExternallyPurePower(comps: seq[Component], members: seq[int]): bool =
 proc chooseCompositeOrientation(nl: Netlist, comps: seq[Component],
                                 syms: seq[SymbolDef], pos: var seq[Point],
                                 rots: seq[float], plan: var CompositePlan) =
-  ## `lsCompositeOrient`: pick each orientable composite's rigid quarter-turn
-  ## before separation legalizes it. Scored like `bestRotation` scores a
-  ## singleton: for a unit whose every external net is a rail or ground
-  ## (`unitExternallyPurePower` -- a rail-to-rail divider, a decoupling bank)
-  ## the lexicographic `powerRank` leads, then `rotationScore`, then the
-  ## smaller angle, so it stands up to its planes ground-down for free. For a
-  ## unit with any external signal net, `rotationScore` (wirelength) alone
-  ## leads with the smaller angle breaking ties -- so it turns only when a real
-  ## signal connection is shortened by it, never merely to point one ground
-  ## leg down. The trial pin-world turns the *whole* unit, so a rigid rotation
-  ## leaves every internal pin-pin distance unchanged and only the members'
-  ## distance to their *external* net-mates moves the score; a self-contained
-  ## unit (a dangling-ended chain) ties on every frame and keeps angle 0.
-  ## Snapshot-read / fresh-write across composites, like `forcePlace`'s
-  ## in-loop sweep, so the result never depends on visit order. Skipped on a
-  ## sheet the semantic layering itself declined (`constrainedEligible`): it
-  ## fell back to the ungrouped golden spiral, where a per-composite frame
-  ## refinement is both moot and the point at which the O(pool * routeScore)
-  ## cost stops being bounded.
+  ## `lsCompositeOrient`: pick each orientable composite's quarter-turn
+  ## before separation. A pure-power unit ranks by `powerRank`, then
+  ## `rotationScore`, then smaller angle; a unit with an external signal net
+  ## ranks by `rotationScore` alone, so it turns only to shorten a real
+  ## connection. Rigid turns leave internal distances unchanged, so a
+  ## self-contained unit keeps angle 0. Snapshot-read, so visit order doesn't
+  ## matter. Skipped when `constrainedEligible` declined the sheet.
   if not constrainedEligible(comps, plan): return
   var hasOrientable = false
   for idx in plan.topLevel:
@@ -641,8 +514,8 @@ proc chooseCompositeOrientation(nl: Netlist, comps: seq[Component],
     var score0 = Inf                    # the canonical frame's own score
     var first = true
     for theta in rotationChoices:
-      # Best of the hook's canonical candidates (a parallel stack offers the
-      # 0/180 flip) at this frame.
+      # Best canonical candidate (a parallel stack offers 0/180) at this
+      # frame.
       var thRank: array[4, int]
       var thScore = Inf
       var thFirst = true
@@ -667,8 +540,7 @@ proc chooseCompositeOrientation(nl: Netlist, comps: seq[Component],
       if first or rankLess(thRank, bestRank) or
          (rankEqual(thRank, bestRank) and thScore < bestScore - 1e-9):
         first = false; bestRank = thRank; bestScore = thScore; bestTheta = theta
-    # A signal-path unit keeps its canonical frame unless a turn is a clear
-    # wirelength win; a pure rail-to-rail unit turns on its `powerRank` result.
+    # Signal-path units turn only for a clear wirelength win.
     if not usePower and bestTheta != 0.0 and bestScore > score0 - compositeFrameHysteresis:
       bestTheta = 0.0
     chosen[idx] = bestTheta
@@ -678,9 +550,7 @@ proc chooseCompositeOrientation(nl: Netlist, comps: seq[Component],
     if plan.items[idx].raw < 0 and chosen[idx] != plan.items[idx].unitRot:
       plan.items[idx].unitRot = chosen[idx]
       changed = true
-  # Only re-rigidify when a frame actually moved: `restoreCompositeOffsets`
-  # recentres on the grid, and running it for no reason can nudge an
-  # already-legal unit off the spot the seed put it.
+  # Re-rigidify only if a frame moved; it recentres on the grid.
   if changed: restoreCompositeOffsets(plan, pos)
 
 proc frameRouteScore(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
@@ -688,12 +558,8 @@ proc frameRouteScore(nl: Netlist, comps: seq[Component], syms: seq[SymbolDef],
                      plan: CompositePlan, idx: int, members: seq[int],
                      canon: seq[Point], origin: Point,
                      theta: float): tuple[hits, bends: int, length, drift: float] =
-  ## Score composite `idx` sitting in frame `theta`: turn only its members
-  ## (positions and angles -- the `powerRank`-best canonical candidate composed
-  ## with `theta`) and hand the sheet to `constrainedRouteScore`, everything
-  ## else left as it is. This is the same granularity `bestRotation` scores a
-  ## singleton at; the full multi-part re-assignment is left to the
-  ## `constrainedRecomputeRotations` call that follows the frame choice.
+  ## Score composite `idx` in frame `theta`: turn only its members and hand
+  ## the sheet to `constrainedRouteScore`.
   var trialPos = pos
   var trialRots = rots
   let cands = compositeKinds[plan.items[idx].kind].rotationCandidates(
@@ -719,15 +585,10 @@ proc revisitCompositeFrames(nl: Netlist, comps: seq[Component],
                             rots: seq[float], anchors: seq[Point],
                             plan: var CompositePlan) =
   ## The definitive-pass counterpart of `chooseCompositeOrientation`: with
-  ## centres settled, retry all four frames for each orientable composite,
-  ## now scored by `constrainedRouteScore` (hits -> bends -> length; drift is
-  ## left out of the switch so pure anchor drift never churns a frame). A
-  ## frame is rejected outright when a turned member's raw body would overlap
-  ## a foreign part's raw body -- the same test `recoverRouting` uses -- so on
-  ## a dense sheet the incumbent frame stands and only where there is room can
-  ## the route score improve it. Sequential / partial-update in `topLevel`
-  ## order, matching `constrainedRecomputeRotations`. Skipped (like
-  ## `chooseCompositeOrientation`) on a sheet `constrainedEligible` declined.
+  ## centres settled, retry all four frames per composite, scored by
+  ## `constrainedRouteScore` (hits, bends, length; no drift). A frame whose
+  ## turned member would overlap a foreign raw body is rejected. Sequential
+  ## in `topLevel` order; skipped when `constrainedEligible` declined.
   if not constrainedEligible(comps, plan): return
   var hasOrientable = false
   for idx in plan.topLevel:
@@ -766,17 +627,15 @@ proc revisitCompositeFrames(nl: Netlist, comps: seq[Component],
       if overlap: continue
       let sc = frameRouteScore(nl, comps, syms, pos, rots, anchors, plan,
                                idx, members, canon, origin, theta)
-      # Fewer obstacle hits or bends is a real routing win and taken as-is;
-      # a shorter estimate alone must clear the hysteresis, so a marginal
-      # length gain never churns a settled frame.
+      # Fewer hits or bends wins outright; a shorter length alone must clear
+      # the hysteresis.
       var better = false
       if sc.hits != bestScore.hits: better = sc.hits < bestScore.hits
       elif sc.bends != bestScore.bends: better = sc.bends < bestScore.bends
       else: better = sc.length < bestScore.length - compositeFrameHysteresis
       if better: bestScore = sc; bestTheta = theta
 
-    # Only disturb the settled geometry when the frame actually changed --
-    # re-laying at the recentred origin otherwise nudges a legal unit.
+    # Only disturb geometry when the frame changed.
     if bestTheta != current:
       plan.items[idx].unitRot = bestTheta
       for at, m in members: pos[m] = origin + rotatedSlot(canon[at], bestTheta)

@@ -1,8 +1,6 @@
-## `regulatorModel`: a regulator with no model of its own becomes an ideal
-## source at the output voltage *the part* states, plus whatever its input
-## pin loads the upstream rail with.
-##
-## Mutates the `Netlist` it is given; run it on a simulation clone.
+## `regulatorModel`: an unmodelled regulator becomes an ideal source at the
+## output voltage *the part* states, plus its input pin's load. Mutates its
+## netlist; use a clone.
 
 import std/[strutils, tables]
 import ../../netlist/types
@@ -14,20 +12,10 @@ import ./common
 import ./behavioral
 
 proc regulatorModel*(nl: Netlist, c: Component, gnd: Net): BehavioralResult =
-  ## A regulator becomes an ideal source at the output voltage *the part*
-  ## states, plus whatever its input pin loads the upstream rail with.
-  ##
-  ## The output voltage is read from the **component**, never from the net.
-  ## That distinction is what keeps a `dc_voltage` claim worth making: the
-  ## rail's nominal is what you require and the part's output is what you
-  ## chose, so comparing them catches a 5 V regulator on a 3.3 V rail. Read
-  ## it off the net instead and the check measures its own assumption back
-  ## and passes every time -- the same trap `runDcVoltage` avoids by
-  ## refusing to isolate.
-  ##
-  ## Unstated, it declines to model rather than guessing. There is no
-  ## defensible default for what a regulator outputs, and the failure mode
-  ## of guessing is a rail that silently reads whatever we made up.
+  ## The output voltage is read from the **component**, never the net, so a
+  ## `dc_voltage` claim compares the rail's requirement with the part's
+  ## choice (a 5 V regulator on a 3.3 V rail is caught). Unstated, it
+  ## declines to model rather than guess.
   let outPin = pinNamed(c, outNames)
   if outPin == nil or outPin.net == nil:
     var names: seq[string]

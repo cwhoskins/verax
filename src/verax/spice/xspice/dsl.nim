@@ -16,48 +16,29 @@
 ##       partial(outp, inp) = param(gain)
 ## ```
 ##
-## **Why this is more than sugar.** ngspice's own workflow splits a code model
-## across `ifspec.ifs` and `cfunc.mod`, two hand-maintained files with no
-## cross-check; `cmpp` rewrites `PARAM(gain)` into
-## `mif_private->param[i]->element[0].rvalue` using `i` = the row's position in
-## the `.ifs` tables. Here one declaration produces both, so an accessor can be
-## resolved against the ports and parameters that will actually be emitted --
-## a misspelled port name is a Nim compile error pointing at the offending
-## line, not a yacc error or a wrong-index read at runtime.
+## **More than sugar**: ngspice splits a model across `ifspec.ifs` and
+## `cfunc.mod` with no cross-check. One declaration here produces both, so
+## accessors resolve against the real ports and parameters and a misspelled
+## port is a Nim compile error. (Unlike `netlist/dsl`, there's no open
+## `attrs` fallback: unknown names fail.)
 ##
-## This is a deliberate divergence from `verax/netlist/dsl.nim`, whose
-## documented stance is that an unrecognised `key = value` silently becomes an
-## `attrs` entry. There is no open-ended bag here: a mistyped port name has no
-## valid meaning, so it fails.
+## **Two expansion modes**: normally the `{.exportc, cdecl.}` entry point;
+## under `-d:xspiceGenIfs` a `main` that writes `ifspec.ifs`, with no FFI
+## (works without ngspice headers). `xspice/build.nim` compiles both.
 ##
-## **Two expansion modes.** Normally the macro emits the `{.exportc, cdecl.}`
-## entry point that ngspice calls. Under `-d:xspiceGenIfs` it instead emits a
-## `main` that writes `ifspec.ifs` into a directory named on the command line,
-## and imports none of the FFI -- so `.ifs` generation works on a machine with
-## no ngspice headers. `xspice/build.nim` compiles the same source twice, once
-## in each mode.
-##
-## Names reserved inside an `eval:` body: `analysis`, `callType`, `time`,
-## `tstep`, `tstop`, `temperature`, `radFreq`, `init`, `newTimepoint`, and the
-## accessor calls listed below. Shadowing one with a local is not supported.
+## Reserved in `eval:`: `analysis`, `callType`, `time`, `tstep`, `tstop`,
+## `temperature`, `radFreq`, `init`, `newTimepoint`, and the accessors.
+## Don't shadow them.
 
 import std/[macros, strutils]
 
 const xspiceNoFfi* = defined(xspiceGenIfs) or defined(xspiceSpecOnly)
-  ## Whether to emit the `{.exportc.}` entry point ngspice calls.
-  ##
-  ## Two situations want the declaration without the implementation, and
-  ## neither can compile the implementation at all: the interface-generating
-  ## pass of `buildCodeModel`, and **any program that merely instantiates the
-  ## model** -- a design file, above all. The entry point is FFI against
-  ## ngspice's MIF headers, which live only in a configured ngspice *source
-  ## tree*, so importing a model to read its `ModelSpec` would otherwise make
-  ## every design on the machine depend on that tree. The spec const is
-  ## emitted either way, which is all an instantiating caller needs: port
-  ## order, parameter names and the `.MODEL` card.
-  ##
-  ## `-d:xspiceSpecOnly` is what `verax check` passes; `-d:xspiceGenIfs`
-  ## additionally emits the `ifspec.ifs` writer.
+  ## Whether to emit the `{.exportc.}` entry point. Skipped for the
+  ## `.ifs`-generating pass and for any program that only instantiates the
+  ## model (a design file), since the entry point needs ngspice's MIF headers
+  ## from a configured source tree. The spec const is always emitted.
+  ## `verax check` passes `-d:xspiceSpecOnly`; `-d:xspiceGenIfs` also emits
+  ## the `.ifs` writer.
 
 when defined(xspiceGenIfs):
   import std/cmdline  # only the interface-writer branch needs paramCount/paramStr
@@ -90,8 +71,8 @@ proc parsePortDir(n: NimNode): PortDir =
     badNode(n, "unknown direction '" & n.repr & "'; expected xdIn, xdOut or xdInout")
 
 proc parseDataType(n: NimNode): DataType =
-  ## Accepts either the Nim-ish spelling (`float`, `int`, `bool`, `string`,
-  ## `complex`) or the enum name (`xtReal`, ...).
+  ## Accepts `float`/`int`/`bool`/`string`/`complex` or the enum name
+  ## (`xtReal`, ...).
   case identStr(n).toLowerAscii
   of "float", "real", "xtreal": xtReal
   of "int", "integer", "xtint": xtInt
@@ -187,8 +168,8 @@ proc handleParam(stmt: NimNode): ParamSpec =
         "'; expected default, limits, description, vector, vectorBounds " &
         "or nullAllowed")
   if result.default.len > 0 and not sawNullAllowed:
-    # Giving a default says the parameter is optional; cmpp rejects the
-    # combination of a Default_Value with Null_Allowed: no outright.
+    # A default makes it optional; cmpp rejects a default with
+    # `Null_Allowed: no`.
     result.nullAllowed = true
 
 proc handleStateVar(stmt: NimNode): StateVarSpec =
@@ -216,8 +197,7 @@ when not xspiceNoFfi:
         "'; declared ports: " & names.join(", ") & " (in " & ctx & ")")
 
   proc requireDir(spec: ModelSpec, i: int, want: PortDir, n: NimNode, ctx: string) =
-    ## Mirrors cmpp's `check_dir`: the declared direction must match, or be
-    ## `inout`, which satisfies both.
+    ## Mirrors cmpp's `check_dir`: the direction must match, or be `inout`.
     let d = spec.ports[i].dir
     if d != want and d != xdInout:
       badNode(n, "port '" & spec.ports[i].name & "' is " & d.ifsName &
@@ -354,7 +334,7 @@ when not xspiceNoFfi:
       of "newTimepoint": return newCall(bindSym"mifNewTimepoint", mp)
       else: return n
 
-    # `obj.time` must not have its field name rewritten.
+    # Don't rewrite field names in `obj.time`.
     if n.kind == nnkDotExpr:
       return newTree(nnkDotExpr, rewrite(spec, mp, n[0]), n[1])
 
@@ -365,8 +345,8 @@ when not xspiceNoFfi:
 # --- the macro ---------------------------------------------------------------
 
 macro codeModel*(name: untyped, body: untyped): untyped =
-  ## Declare an XSPICE code model. See the module doc comment for the shape of
-  ## the block and the list of accessors available inside `eval:`.
+  ## Declare an XSPICE code model; see the module doc for the block shape
+  ## and `eval:` accessors.
   let modelName =
     if name.kind == nnkStrLit: name.strVal
     else: identStr(name)
@@ -401,22 +381,19 @@ macro codeModel*(name: untyped, body: untyped): untyped =
   let specIdent = ident(modelName & "Spec")
   let ifsIdent = ident(modelName & "Ifs")
 
-  # The spec and its rendered .ifs are always available, in both modes: the
-  # build driver needs the text, and `xspice/instance.nim` needs the spec to
-  # validate an A-device instantiation against the real port list.
+  # The spec and `.ifs` text are emitted in every mode: the build driver
+  # and `xspice/instance.nim` need them.
   result.add newTree(nnkConstSection,
     newTree(nnkConstDef, postfix(specIdent, "*"), newEmptyNode(), newLit(spec)))
   result.add newTree(nnkConstSection,
     newTree(nnkConstDef, postfix(ifsIdent, "*"), newEmptyNode(), newLit(renderIfs(spec))))
 
   when xspiceNoFfi and not defined(xspiceGenIfs):
-    # Spec only: the consts above are the whole module. Nothing further.
+    # Spec only: nothing further.
     discard
   elif defined(xspiceGenIfs):
-    # Interface-only build: emit no FFI at all, so this compiles on a machine
-    # with no ngspice headers.
-    # Built with bindSym rather than `quote do`, because the emitted code lands
-    # in the *user's* module, which has no reason to import std/cmdline.
+    # Interface-only build: no FFI. Uses bindSym (not `quote do`) because the
+    # code lands in the user's module, which needn't import std/cmdline.
     let mainBody = newStmtList(
       newTree(nnkIfStmt,
         newTree(nnkElifBranch,

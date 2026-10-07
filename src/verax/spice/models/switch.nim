@@ -1,25 +1,15 @@
-## Switches: a two-terminal analog/load switch as a SPICE `S` element, and a
-## multi-throw analog mux / RF switch as a decoded bank of them.
+## Switches built on SPICE's voltage-controlled `S` element
+## (`.MODEL m SW(Ron= Roff= Vt= Vh=)`):
 ##
-## SPICE has a voltage-controlled switch (`Sname n+ n- nc+ nc- MODEL`,
-## `.MODEL m SW(Ron= Roff= Vt= Vh=)`) and nothing higher-level. Everything
-## here builds on that primitive:
+## * `expandSwitches`: a `switch`/`relay`/`load_switch` -> one `S` element
+##   and a `.MODEL SW` card.
+## * `muxModel` (behavioural registry): an `analog_switch`/`rf_switch`/`mux`
+##   -> per throw, a decoder `B` source and a through `S` element, plus (when
+##   absorptive) an `S` element and 50 ohm terminating the open throw.
 ##
-## * `expandSwitches` turns a plain `switch` / `relay` / `load_switch` into
-##   one `S` element and a `.MODEL SW` card.
-## * `muxModel` (a behavioural-registry model) turns an `analog_switch` /
-##   `rf_switch` / `mux` into, per throw, a decoder `B` source and a through
-##   `S` element -- plus, when the part is absorptive, a second `S` element
-##   and a 50 ohm resistor that terminate the throw when it is open. This is
-##   what makes "EN low, every port sits in 50 ohm" a real measurement
-##   rather than a comment.
-##
-## **What this does not model:** charge injection, on-resistance flatness vs
-## signal level, off-isolation vs frequency (`Roff` is flat), break-before-
-## make timing, and the control-logic supply current. `Vt`/`Vh` come from a
-## logic threshold, not a real input stage.
-##
-## Mutates the `Netlist` it is given; run it on a simulation clone.
+## Not modelled: charge injection, Ron flatness, frequency-dependent
+## isolation (`Roff` is flat), break-before-make, control supply current.
+## `Vt`/`Vh` come from a logic threshold. Mutates its netlist; use a clone.
 
 import std/[algorithm, math, strutils, tables]
 import ../../netlist/types
@@ -48,23 +38,17 @@ proc swCard(ron, roff, vt, vh: float): string =
     " Vt=" & spiceValue(vt) & " Vh=" & spiceValue(vh) & ")"
 
 proc controlRailFor(ctrlNet: Net, d: SwitchModel): float =
-  ## The control logic swing, for the switch threshold. The control net
-  ## rarely carries a `voltage` of its own, so this is usually the default --
-  ## which is why `vt` is worth stating on a part whose control family is not
-  ## 3.3 V logic.
+  ## The control logic swing for the threshold. Control nets rarely state a
+  ## voltage, so state `vt` for non-3.3 V logic.
   let r = railVoltage(ctrlNet)
   if r.has and r.value > 0.0: r.value else: d.controlRail
 
 proc expandSwitches*(nl: Netlist, d = defaultSwitchModel()): seq[Assumption] =
-  ## Rewrites every two-terminal `switch` / `relay` / `load_switch` that
-  ## carries no `.MODEL` of its own into a `vswitch` `S` element plus a
-  ## `.MODEL <desig>_SW SW(...)` card.
-  ##
-  ## The through terminals are matched by `common.switchThrowInNames` /
-  ## `switchThrowOutNames`, the control by `switchCtrlNames` (referenced to
-  ## `switchCtrlRetNames` or, failing that, ground). A part missing any of
-  ## those is left alone with a note -- it still has a device letter, so the
-  ## deck writer will not misattribute it, but ngspice will reject the line.
+  ## Rewrites every two-terminal `switch`/`relay`/`load_switch` without its
+  ## own `.MODEL` into a `vswitch` plus a `.MODEL <desig>_SW SW(...)` card.
+  ## Pins are matched by `common.switch*Names` (control referenced to
+  ## `switchCtrlRetNames` or ground). A part missing one is left alone with
+  ## a note (ngspice will reject its line).
   var parts: seq[Component]
   for _, c in nl.components:
     if c.kind in switchKinds and c.subNetlist == nil and not hasDeviceModel(c):
@@ -133,26 +117,20 @@ proc expandSwitches*(nl: Netlist, d = defaultSwitchModel()): seq[Assumption] =
 # --- the multi-throw mux -------------------------------------------------
 
 proc logistic(netName: string, vt, vs: float, wantHigh: bool): string =
-  ## A smooth 0..1 gate on `v(netName)` crossing `vt`. Smooth rather than
-  ## `v(net) > vt` because a hard step has a zero derivative on both sides
-  ## and an infinite one at the corner -- which is how a `.tran` earns
-  ## "timestep too small" and how an `.ac` linearises a live path to no
-  ## gain. Same reasoning as `opampModel`'s min/max clamp.
+  ## A smooth 0..1 gate on `v(netName)` crossing `vt`: a hard step breaks
+  ## `.tran` ("timestep too small") and `.ac` (zero derivative).
   let arg = "(v(" & netName & ")-" & spiceValue(vt) & ")/" & spiceValue(vs)
   if wantHigh: "(1/(1+exp(-" & arg & ")))"
   else:        "(1/(1+exp(" & arg & ")))"
 
 proc muxModel*(nl: Netlist, c: Component, gnd: Net): BehavioralResult =
-  ## An analog mux / RF switch: a common terminal fanned to N throws, the
-  ## live throw chosen by decoding the select pins, the whole part gated by
-  ## an enable. Absorptive when `switch.off_termination` is stated -- each
-  ## open throw then sits in that resistance to ground.
+  ## An analog mux / RF switch: a common terminal fanned to N throws,
+  ## selected by decoding the select pins, gated by enable. Absorptive when
+  ## `switch.off_termination` is stated.
   ##
-  ## Reads, all off the component:
-  ## * `switch.select_pins` -- comma list, MSB first (e.g. `"A1,A0"`).
-  ## * `switch.enable_active_low` -- `"true"` inverts the enable sense.
-  ## * `switch.off_termination` -- ohms; absent means non-absorptive.
-  ## * `ron` / `roff` -- through and leakage resistance.
+  ## Reads `switch.select_pins` (MSB first, `"A1,A0"`),
+  ## `switch.enable_active_low`, `switch.off_termination` (ohms), `ron`,
+  ## `roff`.
   let comPin = pinNamed(c, ["rfc", "com", "d", "in", "s", "a"])
   if comPin == nil or comPin.net == nil:
     return (false, @[note(c.designator & " (" & c.kind & ") has no common " &
@@ -182,9 +160,7 @@ proc muxModel*(nl: Netlist, c: Component, gnd: Net): BehavioralResult =
   let enPin = pinNamed(c, ["en", "enable", "ce"])
   let activeLow = c.attrs.getOrDefault("switch.enable_active_low", "") == "true"
 
-  # Snapshot every net *name* now: `removeComponent` below calls `disconnect`
-  # on each pin, which nulls `Pin.net` -- the `Net` objects survive (they are
-  # still wired to other parts) but the pin no longer points at them.
+  # Snapshot net names now: `removeComponent` nulls `Pin.net`.
   let enNetName = if enPin != nil and enPin.net != nil: enPin.net.name else: ""
   let vddPin = pinNamed(c, ["vdd", "vcc", "vs+", "v+"])
   let vddNet = if vddPin != nil: vddPin.net else: nil
@@ -224,8 +200,7 @@ proc muxModel*(nl: Netlist, c: Component, gnd: Net): BehavioralResult =
   setModel(nl, modelName, swCard(ron, roff, 0.5, 0.0))
   removeComponent(nl, c.designator)
 
-  # Keep the supply pin loading the rail, so a PDN sweep past this part does
-  # not improve just because the part stopped being there.
+  # Keep the supply pin loading the rail, so a PDN sweep isn't flattered.
   if vddNet != nil and vddNet != gnd:
     let zv = if vddZin.has and vddZin.value > 0.0: vddZin.value else: 1.0e5
     let rv = addComponent(nl, newComponent("R" & c.designator & "_VDD",
@@ -270,11 +245,9 @@ proc muxModel*(nl: Netlist, c: Component, gnd: Net): BehavioralResult =
     st.attrs["value"] = modelName
 
     if hasTerm:
-      # inverted control, and a switch + resistor terminating the throw when
-      # it is open. `RFC` itself is terminated only when the enable is off,
-      # which the `sel == 0` throw's inverted decoder already expresses when
-      # every other throw is also open -- close enough for a DC/​low-freq
-      # absorptive model.
+      # Inverted control plus switch + resistor terminating the open throw.
+      # `RFC` is terminated only when enable is off (approximately, via the
+      # throws' decoders) -- adequate for a DC/low-frequency absorptive model.
       let nCtrl = addNet(nl, newNet(c.designator & "_N" & $throw.idx))
       let bn = addComponent(nl, newComponent("B" & c.designator & "_N" & $throw.idx,
                                              kind = "bsource"))

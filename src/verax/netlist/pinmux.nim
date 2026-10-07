@@ -1,44 +1,23 @@
-## What each pin of a part is *allowed* to be.
+## What each pin of a part is *allowed* to be: `PA5` on an STM32H563 can be
+## `SPI1_SCK`, `TIM2_CH1`, `ADC1_IN5` or GPIO, never `SPI3_SCK`. Routing a
+## signal to a pin that can't mux it is a board respin; this lets `verax
+## check` catch it.
 ##
-## An MCU pin is not a blank terminal. `PA5` on an STM32H563 can be `SPI1_SCK`
-## or `SPI2_SCK` or `TIM2_CH1` or `ADC1_IN5` or a plain GPIO -- and it can never
-## be `SPI3_SCK`. Nothing in the netlist said so, so a design that wired
-## `{"sclk": "SPI1_SCK"}` was believed whatever string the author typed. Routing
-## a clock to a pin the silicon cannot mux it onto is a board respin; this is
-## the statement that lets `verax check` catch it before the gerbers ship.
+## **Stored as namespaced `attrs`**, so assignments survive clone, flatten
+## and isolation. **Tables are a registry of pure data with no built-ins**
+## (like `PackageDef`); designs supply the catalogue from datasheets.
 ##
-## **It stores its data in namespaced `attrs` and adds nothing to `types.nim`**,
-## the choice `packages.nim` and `environment.nim` make and for the same reason:
-## `graph.clone` copies `attrs` verbatim at every hierarchy level, so a pin's
-## assigned function survives `clone`/`instantiate`/`flatten`/`isolate` with no
-## new code, whereas a registry of direct `Pin` references would need remapping
-## written and tested across every one of those transforms.
+## Decisions:
 ##
-## **The table is a definition registry keyed by name, with no built-ins.**
-## Same shape as `PackageDef`: a runtime `OrderedTable` of pure data (a pinmux
-## computes nothing, so it holds no procs and could later be read from a file),
-## and `designs/lib/` owns the catalogue because every real capability table is a
-## specific part number transcribed from a specific datasheet.
+## 1. *Explicit declaration, not inference*: a `port` states
+##    `peripheral = "SPI1"`, so a bad pin can be named and two ports can't
+##    silently both claim SPI1.
+## 2. *A `nil` table checks nothing* -- parts without a pinmux are
+##    unaffected.
+## 3. *`functions =` on a wide signal*: SPI1 has one hardware NSS; extra CS
+##    lines are GPIO (`functions = {"cs_1": "GPIO"}`).
 ##
-## **Three decisions worth stating rather than discovering.**
-##
-## 1. *Explicit declaration, not inference.* A `port` states
-##    `peripheral = "SPI1"`. Intersecting the candidate peripheral sets of every
-##    pin in a port would often work, but an empty intersection cannot name
-##    which pin is the offender, and it silently accepts two independent ports
-##    that both resolve to SPI1. A direct table lookup does both.
-## 2. *A `nil` table means "check nothing", never "nothing is allowed".* A part
-##    with no registered pinmux -- which is every part in every existing design
-##    -- is completely unaffected.
-## 3. *`functions =` on a wide signal exists because a hardware NSS is one pin.*
-##    An MCU's SPI1 has a single hardware chip select; a second or third CS line
-##    is a software GPIO, genuinely not an SPI1 function, and must not be checked
-##    as one. `functions = {"cs_1": "GPIO"}` on the `port` says which members are
-##    which.
-##
-## A SPICE round trip loses all of this, as it loses `package.*` -- `attrs`
-## never reach a deck. A consumer that needs the capability data keeps the Nim
-## source.
+## A SPICE round trip loses all of this.
 
 import std/[strutils, tables]
 
@@ -52,24 +31,23 @@ export issue
 
 type
   PinCapability* = object
-    ## One thing a pin can be. `peripheral` is "" for a function that is not
-    ## tied to a numbered peripheral instance (`GPIO`, and by convention a bare
-    ## analog function).
+    ## One thing a pin can be. `peripheral` is "" for a function not tied to
+    ## a peripheral instance (`GPIO`, bare analog).
     peripheral*: string       ## "SPI1"
     signal*: string           ## "sclk", "in3", "GPIO"
 
   PeripheralDef* = object
     name*: string             ## "SPI1"
-    iface*: string            ## InterfaceDef name it presents ("spi"); "" when
-                              ## the peripheral is not an interface (a bare ADC)
+    iface*: string            ## InterfaceDef name ("spi"); "" when not an
+                              ## interface (a bare ADC)
 
   PartPinmux* = ref object
     name*: string                                  ## registry key, "STM32H563"
     partNumbers*: seq[string]                      ## part numbers it covers
     doc*: string
     complete*: bool
-      ## When true, a pin the design uses that this table does not list is an
-      ## error rather than a warning: the table claims to be the whole pinout.
+      ## When true, a used pin missing from the table is an error, not a
+      ## warning: the table claims the whole pinout.
     peripherals*: OrderedTable[string, PeripheralDef]
     pins*: OrderedTable[string, seq[PinCapability]]
     attrs*: OrderedTable[string, string]
@@ -81,9 +59,8 @@ const
   keyPinmuxSignal* = "pinmux.signal"          ## the signal it carries
 
 proc parseFunction*(s: string): PinCapability =
-  ## `"SPI1.sclk"` -> `(peripheral: "SPI1", signal: "sclk")`; a string with no
-  ## `.` is a peripheral-less function (`"GPIO"`). Split on the **last** dot, so
-  ## a signal name may itself contain one.
+  ## `"SPI1.sclk"` -> `(peripheral: "SPI1", signal: "sclk")`; no `.` means a
+  ## peripheral-less function (`"GPIO"`). Splits on the **last** dot.
   let idx = s.rfind('.')
   if idx < 0: PinCapability(peripheral: "", signal: s)
   else: PinCapability(peripheral: s[0 ..< idx], signal: s[idx + 1 .. ^1])
@@ -97,10 +74,8 @@ proc newPartPinmux*(name: string,
                     pins: openArray[tuple[pin, function: string]],
                     partNumbers: openArray[string] = [],
                     doc = "", complete = false): PartPinmux =
-  ## Build a table from a datasheet transcription: one `(name, iface)` per
-  ## peripheral instance, one `(pin, "PERIPH.sig")` per capability. Repeated
-  ## `pin` entries accumulate, so a pin with five alternate functions is five
-  ## lines.
+  ## Build a table from a datasheet: one `(name, iface)` per peripheral,
+  ## one `(pin, "PERIPH.sig")` per capability; repeated pins accumulate.
   result = PartPinmux(name: name, doc: doc, complete: complete,
                       partNumbers: @partNumbers)
   for (pName, iface) in peripherals:
@@ -148,9 +123,9 @@ proc knownPinmuxes*(): seq[string] =
   for k in pinmuxRegistry.keys: result.add k
 
 proc registerPartPinmux*(def: PartPinmux) =
-  ## Raises on an empty or duplicate name, a duplicate or already-claimed part
-  ## number, a capability naming an undeclared peripheral, or a capability
-  ## listed twice on one pin.
+  ## Raises on an empty or duplicate name, a duplicate or claimed part
+  ## number, a capability naming an undeclared peripheral, or a duplicate
+  ## capability on one pin.
   if def == nil or def.name.len == 0:
     raise newException(NetlistError, "pinmux definition must have a name")
   if pinmuxRegistry.hasKey(def.name):
@@ -171,8 +146,8 @@ proc pinmuxDef*(name: string): PartPinmux =
   pinmuxRegistry[name]
 
 proc pinmuxFor*(c: Component): PartPinmux =
-  ## The capability table that governs `c`: `pinmux.def` on the component if it
-  ## names one, else the table that claims `c.partNumber`, else `nil`.
+  ## The table governing `c`: its `pinmux.def`, else the table claiming
+  ## `c.partNumber`, else `nil`.
   if c == nil: return nil
   if c.attrs.hasKey(keyPinmuxDef):
     let n = c.attrs[keyPinmuxDef]
@@ -185,8 +160,8 @@ proc pinmuxFor*(c: Component): PartPinmux =
 # --- authoring helpers ---------------------------------------------------
 
 proc setPinFunction*(p: Pin, function: string) =
-  ## Record that pin `p` is being used as `function` (`"ADC1.in3"`, `"GPIO"`).
-  ## The runtime side of the DSL's `pin "PA3", net, function = "..."`.
+  ## Record pin `p`'s function (`"ADC1.in3"`, `"GPIO"`); the runtime side of
+  ## `pin "PA3", net, function = "..."`.
   let cap = parseFunction(function)
   if cap.peripheral.len > 0: p.attrs[keyPinmuxPeripheral] = cap.peripheral
   p.attrs[keyPinmuxSignal] = cap.signal
@@ -210,13 +185,13 @@ proc offeredList(caps: seq[PinCapability]): string =
   if xs.len == 0: "nothing" else: xs.join(", ")
 
 proc validatePinmux*(nl: Netlist): seq[Issue] =
-  ## What the capability tables say is wrong with how the design uses its parts'
-  ## pins. An `Issue` per finding, never a raise; kinds are prefixed `pinmux_`.
+  ## Problems with how the design uses its parts' pins, as `pinmux_*`
+  ## `Issue`s.
   for c in walkComponents(root(nl)):
     let def = pinmuxFor(c)
     if def == nil: continue
 
-    # Per-component bookkeeping for the two "same thing claimed twice" checks.
+    # Bookkeeping for the two "claimed twice" checks.
     var ownersOf: OrderedTable[string, seq[string]]   ## peripheral -> iface instances
     var pinsFor: OrderedTable[string, seq[string]]    ## "SPI1.sclk" -> pin names
 

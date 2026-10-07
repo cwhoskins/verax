@@ -1,16 +1,11 @@
 ## `spice.channel_match` -- two amplifier channels compared, via `.ac`.
 ##
-## The first evaluator whose subjects are two role instances rather than one
-## net. Each subject is an `skClass` reference to a stage role (`gain_stage`,
-## `opamp_stage`, or a user-defined one), and `subjectRoleBinding` reads the
-## amplifier, input and output off each: the expander is pure and states the
-## claim over the two references, the evaluator recovers the topology.
+## Subjects are two `skClass` references to stage roles; `subjectRoleBinding`
+## reads amplifier, input and output off each.
 ##
-## **Known cost, not optimised away**: `riaa_preamp` runs four `.ac` sweeps
-## where two would do -- its two `gain_stage` steps and this one's two -- and
-## routing one step's curves into another is planner work (§52-shaped) that
-## §51's result cache is what would absorb. Recorded in `docs/findings.md`
-## under §51 as a concrete second customer.
+## Known cost: a design with two `gain_stage` claims plus this one runs four
+## `.ac` sweeps where two would do (sharing curves between steps would need
+## a result cache).
 
 import std/strutils
 import ./common
@@ -28,12 +23,9 @@ proc measurementOnly(spec: var OpAmpSpec) =
 
 proc channelMatchSetup(d: Design, a: Assertion):
     tuple[ampA, inA, outA, ampB, inB, outB, reason: string] =
-  ## Both channels' amplifier, input and output, read off the two role
-  ## instances the subjects name. The refusal deliberately does **not**
-  ## require either role to be `gain_stage`: `opamp_stage` binds the same
-  ## three parts and a user-defined stage may too, and requiring a name is
-  ## exactly the privileged mechanism `contract/CLAUDE.md` says a built-in
-  ## must not use.
+  ## Both channels' amplifier, input and output. Doesn't require a
+  ## particular role name (`opamp_stage` and user stages bind the same
+  ## parts).
   if a.subjects.len != 2:
     return ("", "", "", "", "", "",
       "a channel-match claim takes exactly two subjects, the two stages")
@@ -64,10 +56,8 @@ proc channelMatchSetup(d: Design, a: Assertion):
   (ampA, inA, outA, ampB, inB, outB, "")
 
 proc channelMatchKey(ctx: EvalContext, a: Assertion): string =
-  ## Both channels' topology plus the band and the stated frequency. A band
-  ## change is a different pair of sweeps, on the same reasoning as `opampKey`
-  ## -- two claims over two bands are two runs whose answers are not
-  ## comparable.
+  ## Both channels' topology, band and frequency; a different band is a
+  ## different pair of sweeps.
   let s = channelMatchSetup(ctx.design, a)
   s.ampA & "|" & s.inA & "|" & s.outA & "|" &
   s.ampB & "|" & s.inB & "|" & s.outB & "|" &
@@ -76,14 +66,10 @@ proc channelMatchKey(ctx: EvalContext, a: Assertion): string =
 
 proc channelMatchSpecOf(a: Assertion): ChannelMatchSpec =
   result = defaultChannelMatchSpec()
-  # Each channel's sweep runs in measurement-only mode like every other
-  # adapter here: the per-channel `analyzeOpAmpResponse` states peaking and
-  # bandwidth limits of its own, and leaving them live would report a claim
-  # this evaluator is not making as an issue on its result.
+  # Measurement-only, so the per-channel analysis's own limits don't
+  # surface as issues.
   measurementOnly(result.opamp)
-  # The comparison window is exactly what was swept, following `psrrSpecOf`:
-  # `f_from`/`f_to` come off the role's conditions and set the `.ac` card, so
-  # a claim "over 20 Hz .. 20 kHz" is compared over 20 Hz .. 20 kHz.
+  # Compare over exactly what was swept (`f_from`/`f_to` from conditions).
   let f0 = conditionFloat(a, "f_from", 0.0)
   let f1 = conditionFloat(a, "f_to", 0.0)
   if f0 > 0.0: result.opamp.fStart = f0

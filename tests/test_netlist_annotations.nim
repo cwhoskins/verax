@@ -20,7 +20,7 @@ test "the five live keys plus tolerance are registered, with units":
   check annDef("esr").unit == "ohm"
   check annDef("esl").unit == "H"
   check annDef("voltage").unit == "V"
-  # `value` is opaque on purpose: it can carry "DC 0 AC 1", not just a number.
+  # `value` is opaque: it can carry "DC 0 AC 1".
   check annDef("value").kind == akString
 
 test "scopes are declared and enforced":
@@ -34,7 +34,7 @@ test "bare means registered, dotted means owned":
   check isNamespaced("kicad.Value")
   check not isNamespaced("voltage")
   let nl = board()
-  # A namespaced key is never checked -- whoever owns the namespace owns it.
+  # Namespaced keys are never checked; the namespace owner owns them.
   setAnnotation(nl.components["C1"], "acme.whatever", "anything")
   check nl.components["C1"].attrs["acme.whatever"] == "anything"
   # A bare unregistered key is rejected at the setter.
@@ -42,13 +42,9 @@ test "bare means registered, dotted means owned":
     setAnnotation(nl.components["C1"], "esrr", "0.02")
 
 test "an akEnum value outside `allowed` is rejected at the setter, not just at readiness":
-  # `part_use` is this registry's first `akEnum` builtin. Before this check
-  # existed a typo'd value sat silently in `attrs` until the next full
-  # `validateAnnotations` run -- an `akFloat` typo never had that gap,
-  # because `parseAnnFloat` already raises immediately below. `part_use` is
-  # applied by `parts/annotate.applyChoice` far more often than a design is
-  # re-checked, so catching it here matters more than it would for a key
-  # only ever hand-typed once.
+  # `akEnum` values are checked at the setter, like `akFloat`; `part_use` is
+  # written by `parts/annotate.applyChoice` far more often than designs are
+  # re-validated.
   check annDef("part_use").kind == akEnum
   let nl = board()
   setAnnotation(nl.components["C1"], "part_use", "decoupling")
@@ -68,8 +64,8 @@ test "a unit literal and a bare SI number store identically":
 
 test "a SPICE magnitude suffix is rejected, not silently interpreted":
   let nl = board()
-  # "20m" is 20 milliohms in SPICE and 20 ohms if read naively: a factor of
-  # 1000 either way. Refuse it rather than pick.
+  # "20m" is 20 milliohms in SPICE and 20 ohms naively; refuse rather than
+  # pick.
   expect(NetlistError):
     setAnnotation(nl.components["C1"], "esr", "20m")
   expect(NetlistError):
@@ -116,7 +112,7 @@ test "an authored value costs no extra key; a non-authored one is marked":
   check not c.attrs.hasKey("ann.src.esr")
   setAnnotation(c, "esr", 30.mohm, source = annDefaulted)
   check c.attrs["ann.src.esr"] == "defaulted"
-  # Re-authoring clears the marker rather than leaving it stale.
+  # Re-authoring clears the marker.
   setAnnotation(c, "esr", 40.mohm)
   check not c.attrs.hasKey("ann.src.esr")
   check esr(c).source == annAuthored
@@ -135,7 +131,7 @@ test "annotations survive a clone, which is why they live in attrs":
 
 test "a misspelled bare key is reported -- the whole point of the registry":
   let nl = board()
-  # Bypass the setter the way a file reader or hand-written attrs would.
+  # Bypass the setter as a file reader would.
   nl.components["C1"].attrs["ESL"] = "1e-9"
   let issues = validateAnnotations(nl)
   check issues.len == 1
@@ -174,8 +170,7 @@ test "footprint is registered, component-scope, and distinct from package":
   let nl = board()
   setAnnotation(nl.components["C1"], "footprint", "Capacitor_SMD:C_0402_1005Metric")
   check footprint(nl.components["C1"]).value == "Capacitor_SMD:C_0402_1005Metric"
-  # `package` (a case size) and `footprint` (a land pattern) are stored
-  # under separate keys and neither shadows the other.
+  # `package` (case size) and `footprint` (land pattern) are separate keys.
   setAnnotation(nl.components["C1"], "package", "0402")
   check package(nl.components["C1"]).value == "0402"
   check footprint(nl.components["C1"]).value == "Capacitor_SMD:C_0402_1005Metric"
@@ -207,8 +202,6 @@ test "the provenance markers themselves are not reported as unknown keys":
   setAnnotation(nl.components["C1"], "esr", 20.mohm, source = annDefaulted)
   check validateAnnotations(nl).len == 0
 
-# --- extensibility -----------------------------------------------------
-
 # --- the RF vocabulary --------------------------------------------------
 
 test "gain_db is dB and rejects a dBm literal":
@@ -239,9 +232,7 @@ test "sparams is an opaque file path, like dielectric and value":
   check annotation(nl.components["C1"], "sparams").value == "parts/lna_gain.s2p"
 
 test "trace_width is a dimensionless-registered geometry key, metres by convention":
-  # No `Metres` type exists in verax/units yet (see the annotation's own doc
-  # comment); it is registered unit-less and a bare number is accepted the
-  # same way `dielectric`'s free text and `tolerance`'s bare fraction are.
+  # Registered unit-less (no `Metres` type); a bare number is accepted.
   check annDef("trace_width").unit == ""
   let nl = board()
   setAnnotation(nl.components["C1"], "trace_width", 0.2e-3)
@@ -265,10 +256,10 @@ test "dnp and bom_exclude are true/false keys":
   setAnnotation(c, "bom_exclude", "false")
   check bomExclude(c).has and not bomExclude(c).value
   check validateAnnotations(nl).len == 0
-  # Written through the setters, a non-boolean never lands.
+  # Through the setters a non-boolean never lands...
   expect NetlistError: setAnnotation(c, "dnp", "yes")
   expect NetlistError: setAnnotation(c, "tolerance", true)
-  # Written raw, the validator reports it.
+  # ...written raw, the validator reports it.
   setRawAnnotation(c, "dnp", "yes")
   var kinds: seq[string]
   for i in validateAnnotations(nl): kinds.add i.kind

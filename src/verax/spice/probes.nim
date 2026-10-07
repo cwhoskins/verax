@@ -1,18 +1,9 @@
 ## Simulation-only voltage and current probes.
 ##
-## Voltage probing needs no graph mutation at all: an ngspice `.control`/
-## `write` with no explicit vector list already dumps every node voltage
-## (and every voltage-source/inductor current) with zero netlist changes, so
-## `addVoltageProbe` is a pure label/lookup helper.
-##
-## Current probing at an arbitrary device pin does need mutation, because
-## ngspice only exposes branch current for voltage sources (and inductors) --
-## there's no way to ask for "current into pin P of an arbitrary
-## resistor/subckt" without inserting something that measures it.
-##
-## Like `verax/spice/transform`, `addCurrentProbe` mutates whatever
-## `Netlist` it's given -- call it on a simulation netlist (e.g. the result
-## of `materializeSimNetlist`), never on the real design netlist.
+## Voltage probes need no mutation: ngspice's `write` dumps every node
+## voltage (and source/inductor current), so `addVoltageProbe` is a label
+## helper. Current at an arbitrary pin needs an inserted 0 V source, so
+## `addCurrentProbe` mutates its netlist -- use a simulation clone.
 
 import std/tables
 import ../netlist/types
@@ -28,11 +19,10 @@ type
     label*: string
       ## ngspice vector expression, e.g. `"v(vout)"` or `"i(vprobe_u1_out)"`.
     net*: Net
-      ## Voltage probe: the net being measured. Current probe: the fresh
-      ## probe-local net inserted between the pin and its original net.
+      ## Voltage probe: the measured net. Current probe: the fresh net
+      ## inserted between the pin and its original net.
     source*: Component
-      ## Current probe only: the inserted 0V voltage source. `nil` for a
-      ## voltage probe.
+      ## Current probe only: the inserted 0 V source; `nil` otherwise.
 
 proc addVoltageProbe*(net: Net): Probe =
   Probe(kind: pkVoltage, label: "v(" & net.name & ")", net: net)
@@ -42,28 +32,17 @@ proc addVoltageProbe*(netPos, netNeg: Net): Probe =
   Probe(kind: pkVoltage, label: "v(" & netPos.name & "," & netNeg.name & ")", net: netPos)
 
 proc addCurrentProbe*(nl: Netlist, pin: Pin, designator = ""): Probe =
-  ## Splits `pin` off its net onto a fresh probe-local net and wires a 0V
-  ## voltage source between them (via `graph.nim`'s existing addNet/
-  ## disconnect/connect/addComponent only -- no new graph.nim primitive
-  ## needed). `+` is wired to `pin`'s original net, `-` to the new
-  ## probe-local net, so the probe's current sign matches the branch
-  ## current that used to flow into `pin`.
-  ##
-  ## `designator`, like `transform.replaceComponent`, must start with `'V'`
-  ## if supplied (SPICE infers device type from the designator's leading
-  ## letter), and is auto-derived as `"VPROBE_<component>_<pin>"` if empty.
+  ## Splits `pin` onto a fresh net and wires a 0 V source between them (`+`
+  ## on the original net), so the probe current has the sign of the current
+  ## that flowed into `pin`. `designator` must start with `'V'`; empty
+  ## derives `"VPROBE_<component>_<pin>"`.
   if not isConnected(pin):
     raise newException(NetlistError,
       "cannot add a current probe to an unconnected pin: " &
       pin.component.designator & "." & pin.name)
-  # An XSPICE `A` line is not written from the component's pins: the port
-  # text was rendered from the model's own `ModelSpec` at
-  # `xspice/instance.addCodeModelInstance` time and lives verbatim in
-  # `attrs["xspice.ports"]`. Re-netting a pin therefore moves it in the
-  # graph and **not** in the deck, so the probe source would end up in
-  # series with nothing while the code model went on driving the original
-  # net -- a probe reading zero on a branch that is carrying current, which
-  # is the one failure a measurement must never have.
+  # Refuse an XSPICE `A` device: its port text is frozen in
+  # `attrs["xspice.ports"]`, so re-netting a pin moves it in the graph but
+  # not the deck, and the probe would read zero on a live branch.
   if pin.component != nil and pin.component.attrs.hasKey("xspice.ports"):
     raise newException(NetlistError,
       "cannot add a current probe to " & pin.component.designator & "." &
@@ -96,21 +75,12 @@ proc addCurrentProbe*(nl: Netlist, pin: Pin, designator = ""): Probe =
 
 proc addImpedanceProbe*(nl: Netlist, net, refNet: Net, designator = "",
                         amps = 1.0): Probe =
-  ## Wires a constant-amplitude AC current source across `refNet` -> `net` so
-  ## an `.ac` sweep reads that node's driving-point impedance directly.
-  ##
-  ## With the default 1 A drive, `v(<net>)` **is** Z in ohms -- no division,
-  ## no second probe, no scaling on the way out. That is the whole reason the
-  ## amplitude defaults to 1 rather than something physically plausible: an
-  ## `.ac` analysis is linear, so the drive level cannot affect the answer,
-  ## and 1 A makes the answer readable without arithmetic.
-  ##
-  ## The source is `DC 0` so it contributes nothing to the operating point.
-  ## Note this measures impedance *as the fragment stands*: whatever else is
-  ## connected to `net` is part of the answer, which is why the rail under
-  ## test must not also be terminated with an ideal voltage source (see
-  ## `verax/spice/isolate.IsolationSpec.excludeRails` -- an ideal source is a
-  ## short at AC and would report Z = 0 everywhere).
+  ## Wires an AC current source `refNet` -> `net` so an `.ac` sweep reads
+  ## that node's driving-point impedance. At the default 1 A, `v(<net>)`
+  ## *is* Z in ohms (linear analysis, so the level doesn't matter). `DC 0`
+  ## leaves the operating point alone. Measures the fragment as it stands,
+  ## so the rail under test must not be terminated with an ideal source
+  ## (`IsolationSpec.excludeRails`).
   var desig = designator
   if desig.len == 0:
     desig = "IPROBE_" & net.name
@@ -120,8 +90,8 @@ proc addImpedanceProbe*(nl: Netlist, net, refNet: Net, designator = "",
     raise newException(NetlistError, "designator already in use: " & desig)
 
   let src = addComponent(nl, newComponent(desig, kind = "current_source"))
-  # SPICE current-source convention: current flows through the source from
-  # the first node to the second, i.e. it is *injected into* the second one.
+  # SPICE convention: current flows through the source from the first node
+  # to the second, i.e. into the second.
   discard connect(src, "+", refNet, ptPassive)
   discard connect(src, "-", net, ptPassive)
   src.attrs["value"] = "DC 0 AC " & spiceValue(amps)

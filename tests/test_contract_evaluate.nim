@@ -63,8 +63,8 @@ test "a bus with no pull-up at all fails the claim rather than skipping it":
   check "measured 0" in resultFor(rs, "i2c0.sda.pullup").reason
 
 test "the RC corner is measured, and a marginal bus is reported as failing":
-  # 2.2k against two pins of assumed capacitance puts the corner at ~3.6 MHz,
-  # below the ten-times-clock the 400 kHz role asks for.
+  # 2.2k against two assumed pin capacitances puts the corner at ~3.6 MHz,
+  # below the 10x clock a 400 kHz role asks for.
   let rs = evaluate(i2cBoard("2200"))
   let r = resultFor(rs, "i2c0.sda.rc_corner")
   check r.status == esFail
@@ -82,14 +82,12 @@ test "a verdict that rests on an invented number carries the assumption":
   check r.assumptions.len == 1
   check r.assumptions[0].key == "bus_capacitance"
   check r.assumptions[0].source == annDefaulted
-  # And it surfaces through the whole-run filter, which is the question
-  # "how much of this answer did we make up?"
+  # It also surfaces through the whole-run filter.
   check invented(rs).len >= 1
 
 test "an RKM value is refused rather than read as either of its two meanings":
-  # ngspice reads "2k2" as 2000, an EDA tool means 2200. Since `value` is
-  # passed to the deck verbatim, a static check that quietly picked 2200 would
-  # disagree with the simulation about the same part.
+  # ngspice reads "2k2" as 2000 and `value` reaches the deck verbatim, so the
+  # static check must agree.
   let r = resultFor(evaluate(i2cBoard("2k2")), "i2c0.sda.rc_corner")
   check r.status == esNotEvaluable
   check "2000" in r.reason and "2200" in r.reason
@@ -137,13 +135,9 @@ test "with no role on the net at all, the reason explains why topology cannot sa
 
 # --- the static evaluators see through hierarchy ------------------------
 #
-# Before `allPins` (see `contract/evaluators/static.nim`), `pullupsOn` and
-# `capacitorsOn` walked only `net.pins` -- fine for a flat design, wrong for
-# a bus declared at the top level whose pull-up sits one level down inside a
-# child subckt, wired out through a pass-through port. `Design.resolve`
-# correctly finds the *outer* net object; the resistor's pin lives on the
-# distinct *inner* one, linked only by `Pin.hierNet` at the boundary.
-# Measured before the fix: `pullup_count == 0` on every fixture below.
+# A bus declared at the top whose pull-up sits inside a child subckt: the
+# resistor's pin is on the inner net, linked by `Pin.hierNet`. `allPins`
+# must reach it.
 
 proc pullupBlock(): Netlist =
   ## A one-resistor pull-up subckt, port `SDA` the only way in or out.
@@ -157,8 +151,7 @@ proc pullupBlock(): Netlist =
       pin "2", SDA, kind = ptPassive
 
 proc pullupBlockOuter(): Netlist =
-  ## `pullupBlock` nested one further level down, behind a second
-  ## pass-through port -- the transitive-closure case.
+  ## `pullupBlock` one level further down, behind a second pass-through port.
   subckt("PULLUP_OUTER", [SDA]):
     net SDA, kind = ntSignal
     instance XI, pullupBlock(), [SDA]
@@ -173,13 +166,8 @@ test "a pull-up nested one level inside an instance is seen through its pass-thr
   check r.value == 1.0
 
 test "a bus fanned into two sibling instances, each with its own pull-up, counts both":
-  # The fan-out case is also where a second, independent bug surfaced:
-  # `pullupsOn`'s de-dup keyed on the bare designator string (`"R1"`),
-  # which is unique only *within* the netlist that assigned it. Two sibling
-  # instances' `R1`s are two distinct `Component` objects that collide in a
-  # `HashSet[string]` the moment `allPins` reaches into both scopes at once
-  # -- measured `pullup_count == 1` for two real pull-ups before switching
-  # the de-dup to component identity.
+  # Two instances' `R1`s are distinct components with the same designator;
+  # de-dup is by component identity, so both count.
   let d = design("fanout_pullup"):
     net sda, kind = ntSignal
     instance XA, pullupBlock(), [sda]
@@ -199,18 +187,11 @@ test "a pull-up reached two hierarchy levels deep is found by the transitive clo
   check r.value == 1.0
 
 test "rc_corner: the same bus authored flat or nested agrees to within the crossing's own assumed load":
-  # Not byte-identical, and that difference is itself worth pinning down
-  # rather than asserting away. `hierNetGroup` adds the instance's own
-  # boundary pin (`XA`'s `SDA` connector) to the group alongside the two
-  # real devices, so the nested topology's assumed bus capacitance is one
-  # `assumedPinCapacitance` (10 pF) heavier than the flat one's -- a
-  # structural artifact of authoring-time hierarchy that `spice/flatten`
-  # would remove (the instance component, and its connecting pin, dissolve
-  # entirely) but this evaluator never flattens. Measured: 723.286902 Hz
-  # flat against 723.214595 Hz nested, a relative difference of 9.997e-5 --
-  # the *strongest* regression pin the plan asked for is that a wrong pin
-  # count shifts this by a lot (before the fix, the nested case did not
-  # measure at all: `pullupsOn` found nothing to key a corner off).
+  # Not byte-identical: `hierNetGroup` includes the instance's boundary pin,
+  # so the nested bus capacitance is one `assumedPinCapacitance` heavier
+  # (`spice/flatten` would dissolve it; this evaluator never flattens). The
+  # corners differ by ~1e-4 relative; a wrong pin count would shift it far
+  # more.
   proc pullupCapFlat(): Design =
     design("flat_pullup_cap"):
       net vdd, kind = ntPower:
@@ -255,10 +236,8 @@ test "rc_corner: the same bus authored flat or nested agrees to within the cross
   check abs(flat.value - nested.value) / flat.value < 2.0e-4
 
 let controllerIfaceDef = block:
-  ## A minimal single-signal interface def, registered once at module scope,
-  ## for `runControllerCount`'s *interface-metadata* fallback path -- the
-  ## other of the two sources it reads, alongside role bindings, and the one
-  ## whose `allPins(live)` swap this module's fix also touches.
+  ## A single-signal interface def, for `runControllerCount`'s
+  ## interface-metadata path (the other source besides role bindings).
   var def: InterfaceDef
   def.name = "test_ctrl_iface"
   def.signals = @[SignalDef(name: "sda", width: 1)]
@@ -277,11 +256,8 @@ proc controllerBlock(): Netlist =
       pin "SDA", SDA, kind = ptInOut
 
 test "controller_count's interface fallback finds a controller reached through a pass-through port":
-  # `iface.def` lives on the *net* and is stamped only at the outer scope
-  # here (`addInterface` would stamp it the same way through the ordinary
-  # bus-authoring path); `iface.modport` lives on the *pin* that actually
-  # carries the controller modport, one hierarchy level down inside `XA`.
-  # Before the fix, `live.pins` never reached that pin at all.
+  # `iface.def` is on the outer net; `iface.modport` is on the pin one level
+  # down inside `XA`.
   let d = design("nested_controller"):
     net sda, kind = ntSignal
     instance XA, controllerBlock(), [sda]
@@ -295,8 +271,7 @@ test "controller_count's interface fallback finds a controller reached through a
 # --- the four statuses, each reached deliberately ------------------------
 
 proc runFixed(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
-  ## A user-defined evaluator, registered from a test file through the
-  ## ordinary path, exactly as `test_contract_roles.nim` does for roles.
+  ## A user-defined evaluator registered from a test file.
   for a in batch:
     if a.quantity == "test_nan":
       result.add verdict(a, NaN, "V", "test.fixed")
@@ -306,8 +281,7 @@ proc runFixed(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
       result.add verdict(a, 42.0, "V", "test.fixed")
 
 proc fixedKey(ctx: EvalContext, a: Assertion): string =
-  ## Everything this evaluator answers shares one setup, so one step should
-  ## carry every assertion routed to it.
+  ## Everything this evaluator answers shares one setup.
   "shared"
 
 registerEvaluator(Evaluator(
@@ -319,7 +293,7 @@ registerEvaluator(Evaluator(
   setupKey: fixedKey,
   run: runFixed))
 
-# --- a two-subject quantity, the §53 plumbing ------------------------
+# --- a two-subject quantity ---------------------------------------------
 
 proc runPair(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   for a in batch: result.add verdict(a, 1.0, "V", "test.pair")
@@ -398,8 +372,8 @@ test "pass and fail are distinguished, and a fail carries its witness":
   check "1" in f.reason       # what was expected
 
 test "a NaN measurement is not evaluated, rather than failed":
-  # "the quantity was never found in the range analysed" and "this design is
-  # wrong" are different claims, and only one of them is supported.
+  # "never found in the range" and "the design is wrong" are different
+  # claims.
   let r = resultFor(evaluate(statusBoard()), "NAN")
   check r.status == esNotEvaluated
   check r.value.isNaN
@@ -415,15 +389,13 @@ test "a quantity nothing produces is not evaluable, and says so":
   check "no evaluator produces" in r.reason
 
 test "an evaluator whose capability was not offered is not *evaluated*":
-  # The distinction that matters: nothing is wrong with the claim, and
-  # offering the capability would answer it.
+  # Nothing is wrong with the claim; offering the capability would answer it.
   let d = design("needs_sim"):
     net a, kind = ntSignal
     require test_value(a) == 42.0.V, id = "X"
   let rs = evaluate(d, {capSpiceOp})   # capStatic deliberately withheld
   check resultFor(rs, "X").status == esNotEvaluated
-  # Named by the label a designer reads (`static`, `.op`), not by the enum
-  # identifier -- the two must not drift, which is why `capLabel` is one proc.
+  # Named by the label a designer reads, via `capLabel`.
   check "the static capability" in resultFor(rs, "X").reason
 
 # --- relative and predicate expectations ------------------------------
@@ -543,14 +515,14 @@ test "relative and predicate claims are one result each, never one per request":
 
 test "assertions sharing a setup are grouped into a single step":
   let p = plan(statusBoard())
-  # Three quantities across two nets all key to "shared", so one run answers
-  # them; the two unroutable ones never reach a step at all.
+  # Three quantities on two nets key to "shared": one run. The two
+  # unroutable ones never reach a step.
   check p.steps.len == 1
   check p.steps[0].assertions.len == 4
   check p.rejected.len == 1
 
 test "distinct setups get distinct steps":
-  # The default key is the subject name, so the two nets do not share a run.
+  # The default key is the subject name, so two nets are two runs.
   let p = plan(i2cBoard("1000"))
   var pullupSteps = 0
   for s in p.steps:
@@ -560,9 +532,7 @@ test "distinct setups get distinct steps":
 test "a plan is printable before anything runs":
   let text = explainPlan(plan(statusBoard()))
   check "test.fixed" in text
-  # The rendered label, not the enum identifier: `capLabel` exists so one
-  # capability never appears under two names, and `$capStatic` is right in a
-  # stack trace and wrong in a line a designer reads.
+  # The rendered label, not the enum identifier.
   check "[static]" in text
   check "capStatic" notin text
   check "UNKNOWN" in text
@@ -599,10 +569,8 @@ proc probe(quantity, unit: string): Assertion =
             severity: sevError, rationale: "why")
 
 test "a NaN verdict carries the analysis's issues and assumptions":
-  # `reason` is written by `verdict` and cannot name a cause `verdict` does
-  # not know. The analysis that produced the NaN usually does know and says
-  # so in an Issue -- dropping it strands the diagnosis and leaves the
-  # reader with a generic sentence pointing at the wrong thing.
+  # The analysis's Issue carries the diagnosis `verdict` can't know; it must
+  # survive.
   let notes = @[note("stood in for something")]
   let issues = @[newIssue("test_why", sevWarning, "the loop never opened")]
   let r = verdict(probe("bw_3db", "Hz"), NaN, "Hz", "test.fixed", notes, issues)
@@ -630,22 +598,19 @@ test "a passing verdict still carries them, unchanged":
 # --- the pull-up floor, which rc_corner does not provide ---------------
 
 test "pullup_sink_current is what a target has to sink to pull the line low":
-  # (3.3 - 0.4) / 1200 = 2.417 mA. The 0.4 V is the specification's VOL,
-  # not a design choice, which is why it is not a parameter.
+  # (3.3 - 0.4) / 1200 = 2.417 mA. 0.4 V is the spec's VOL.
   let r = resultFor(evaluate(i2cBoard("1.2k")), "i2c0.sda.sink_current")
   check r.status == esPass
   check abs(r.value - 2.417e-3) / 2.417e-3 < 0.01
 
 test "a pull-up too strong for the bus to sink is caught":
-  # The bound rc_corner does not give. Both limits squeeze from opposite
-  # sides, and a design pushed off one by fixing the other had no way to
-  # find out.
+  # The bound rc_corner doesn't give; the two squeeze from opposite sides.
   let r = resultFor(evaluate(i2cBoard("680")), "i2c0.sda.sink_current")
   check r.status == esFail
   check abs(r.value - 4.265e-3) / 4.265e-3 < 0.01
 
 test "a weak pull-up passes the sink check and fails the RC one":
-  # Which is the point of having both.
+  # Hence both.
   let rs = evaluate(i2cBoard("10k"))
   check resultFor(rs, "i2c0.sda.sink_current").status == esPass
   check resultFor(rs, "i2c0.sda.rc_corner").status == esFail
@@ -692,8 +657,7 @@ test "an evaluator says in words what its run is":
   check describeStep(d, p.steps[0]) == "a made-up walk over 1 claim(s)"
 
 test "an evaluator that describes nothing falls back to its setup key":
-  # Honest rather than helpful: out here nothing knows what the key's fields
-  # mean, so a guess would be worse than saying the run is opaque.
+  # Nothing here knows what the key's fields mean, so the run is opaque.
   let d = design("undescribed"):
     net a, kind = ntSignal
     require test_value(a) == 42.0.V, id = "U"
@@ -701,8 +665,8 @@ test "an evaluator that describes nothing falls back to its setup key":
   check describeStep(d, p.steps[0]) == "setup shared"
 
 test "a description that raises does not take down the report":
-  # The same rule `previewRole` applies to a bad role expander: one broken
-  # third-party evaluator must not make the run unreadable.
+  # As with `previewRole`: one broken evaluator mustn't make the run
+  # unreadable.
   let d = design("bad"):
     net a, kind = ntSignal
     require test_bad_doc(a) == 42.0.V, id = "B"
@@ -716,8 +680,7 @@ test "running the plan keeps the batches the planner grouped":
   check batches.len == p.steps.len
   for i, b in batches:
     check b.len == p.steps[i].assertions.len
-  # And flattening it is exactly what `evaluate` returns, so nothing that
-  # reads a whole run has to know the grouping exists.
+  # Flattening it is exactly what `evaluate` returns.
   var flat: seq[AssertionResult]
   for b in batches: flat.add b
   for r in rejectionResults(p): flat.add r
@@ -733,11 +696,8 @@ proc runDup(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   for a in batch: result.add verdict(a, 1.0, "V", "test.dup")
 
 test "a second evaluator claiming an existing quantity raises":
-  # `quantityIndex` is a flat map, so the second registration would take over
-  # every claim on that quantity in every design with nothing said -- the same
-  # quantity name in the report either way, and a different analysis behind
-  # it. An override says so by keeping the name; a collision is an accident,
-  # and once it has happened the two are indistinguishable.
+  # A second registration would silently take over the quantity everywhere.
+  # An override keeps the name; a collision is refused.
   var msg = ""
   try:
     registerEvaluator(Evaluator(

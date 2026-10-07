@@ -1,39 +1,20 @@
-## One physical package, several channels on different sheets.
+## One physical package, several channels on different sheets. A dual op-amp
+## is one chip, footprint and BoM line, but N `Component`s (often in
+## different instances). This states *these sections are the same die*.
 ##
-## A dual op-amp is one chip, one footprint, one BoM line, one silkscreen
-## designator. The netlist models it as N `Component`s -- often in different
-## child netlists, when the channels are two instances of one `subckt` -- that
-## happen to share a `partNumber` and nothing else. This module adds the
-## missing statement: *these sections are the same die*.
+## **Stored as namespaced `attrs`**, so membership survives clone, flatten
+## and isolation (a root registry of references would need remapping).
 ##
-## **It stores its data in namespaced `attrs` and adds nothing to
-## `types.nim`**, for the reason `environment.nim` and `contract/design.nim`
-## do: `graph.clone` copies `attrs` verbatim at every level, so membership
-## survives `clone`/`instantiate`/`flatten`/`extractSubcircuit`/`isolate` with
-## no new code. A root registry of direct `Component`/`Pin` references would
-## need remapping written and tested across every one of those transforms, and
-## `extractInstance` (which clones a child alone) would strand it.
+## **A package needs a definition** (full pinout) so `pcb/graph.addLand`
+## can resolve pad "7" to section B's `OUT`. Definitions are plain data in a
+## runtime registry keyed by part number, with **no built-ins** -- designs
+## supply the catalogue.
 ##
-## **A package needs a definition** -- a full pinout -- because only that lets
-## `pcb/graph.addLand` resolve pad "7" on an NE5532 to section B's `OUT`, and
-## lets `bom.nim` fall back to a shared part number when `Placement.component`
-## is nil. Definitions are a runtime registry of plain data (no procs, unlike
-## `RoleDef` -- a package computes nothing), keyed by part number. **No
-## built-ins**: there is no generic multi-channel package the way there is a
-## generic `power_rail` role; every one is a specific part. This library owns
-## the mechanism, `designs/lib/` owns the catalogue.
+## **The shared-pin check is by identity, not name**: two channels' `VP`
+## nets are distinct clone objects, so `validatePackages` resolves global
+## pins to their outermost net and compares objects.
 ##
-## **The shared-pin check is by object identity, not by name.** In a stereo
-## board both channels' `V+` nets are distinct `Net` objects that share the
-## name `VP` (clones of one template net). A name comparison would pass a
-## genuinely miswired board -- the exact defect the check exists to catch. So
-## `validatePackages` resolves each global pin upward through `Pin.hierNet`/
-## ports to the outermost net and compares those by identity.
-##
-## **A SPICE round trip intentionally loses package metadata.** `attrs` never
-## reach a deck, so a reparsed netlist carries no `package.*` keys and no
-## synthetic device encodes package identity. A consumer that needs the
-## packaging keeps the Nim source.
+## **A SPICE round trip loses package metadata**; keep the Nim source.
 
 import std/[strutils, tables]
 
@@ -80,9 +61,9 @@ proc section*(def: PackageDef, name: string): PackageSection =
 proc newPackageDef*(name: string,
                     pins: openArray[tuple[id, section, logical: string]],
                     partNumber = "", footprint = "", doc = ""): PackageDef =
-  ## Build a definition from its full pinout: one `(id, section, logical)`
-  ## triple per package pin, `section = ""` for a global pin. Section order
-  ## and per-section pin order follow first appearance in `pins`.
+  ## Build a definition from its pinout: one `(id, section, logical)` per
+  ## pin, `section = ""` for global. Section and pin order follow first
+  ## appearance.
   result = PackageDef(name: name, partNumber: partNumber, footprint: footprint,
                       doc: doc)
   for (id, sec, logical) in pins:
@@ -104,9 +85,9 @@ proc newPackageDef*(name: string,
 var packageRegistry: OrderedTable[string, PackageDef]
 
 proc validateDef(def: PackageDef) =
-  ## Every section pin and every global pin must appear in `pins` exactly
-  ## once, and every entry in `pins` must name a section the def declares (or
-  ## be global). A datasheet transcription error is what this catches.
+  ## Every section and global pin appears in `pins` exactly once, and every
+  ## entry names a declared section (or is global) -- catches transcription
+  ## errors.
   if def.pins.len == 0:
     raise newException(NetlistError,
       "package '" & def.name & "' has no pin map")
@@ -212,9 +193,8 @@ proc packageMembers*(nl: Netlist, pkgRef: string): seq[Component] =
     if r.has and r.value == pkgRef: result.add c
 
 proc packages*(nl: Netlist): OrderedTable[string, seq[Component]] =
-  ## Every package group under `nl`, keyed by `package.ref`. Reconstructed by
-  ## walking `nl` and its `children` -- there is no design-global registry, so
-  ## `pcb` (which does not import `contract`) can read this too.
+  ## Every package group under `nl`, keyed by `package.ref`, by walking the
+  ## tree (no design-global registry, so `pcb` can read it).
   for c in walkComponents(nl):
     let r = packageRef(c)
     if r.has:
@@ -229,15 +209,15 @@ type
     designator*: string
 
 proc packageInstance*(defName, designator: string): PackageInstance =
-  ## A package instance, created before the design block so an unregistered
-  ## definition raises at the `let` rather than inside a macro expansion.
+  ## A package instance, created before the design block so an unknown
+  ## definition raises at the `let`.
   PackageInstance(def: packageDef(defName), designator: designator)
 
 proc assignSection*(pkg: PackageInstance, inst: Netlist,
                     sectionName, localDesignator: string) =
-  ## Resolve `localDesignator` in `inst` (an instance's own clone, or the
-  ## design netlist for the flat case) and write the three `package.*` keys.
-  ## Raises immediately on what it can see at the statement.
+  ## Resolve `localDesignator` in `inst` (an instance clone, or the flat
+  ## netlist) and write the three `package.*` keys. Raises on what it can
+  ## see.
   if pkg.def == nil:
     raise newException(NetlistError, "assignSection: package instance has no def")
   if not pkg.def.hasSection(sectionName):
@@ -284,15 +264,14 @@ proc assignSection*(pkg: PackageInstance, inst: Netlist,
   c.attrs[keyPackageDef] = pkg.def.name
 
 proc section*(pkg: PackageInstance, name, localDesignator: string): proc (nl: Netlist) =
-  ## A closure for `instance ..., with = u10.section("A", "U1")`. `handleInstance`
-  ## runs it against the instance's own clone.
+  ## A closure for `instance ..., with = u10.section("A", "U1")`, run on the
+  ## instance's clone.
   let captured = pkg
   result = proc (nl: Netlist) =
     assignSection(captured, nl, name, localDesignator)
 
 proc assign*(pkg: PackageInstance, nl: Netlist, name, localDesignator: string) =
-  ## The flat path: assign after the design block, for components with no
-  ## instance to hang a `with =` hook on.
+  ## The flat path: assign after the design block.
   assignSection(pkg, nl, name, localDesignator)
 
 proc assign*(pkg: PackageInstance, c: Component, name: string) =
@@ -306,10 +285,8 @@ proc assign*(pkg: PackageInstance, c: Component, name: string) =
 # --- the global-pin identity walk -------------------------------------
 
 proc outermostNet*(p: Pin): Net =
-  ## Resolve `p`'s net upward through subcircuit ports to the outermost net
-  ## it is joined to. Compared by object identity by the global-pin check --
-  ## two same-named clone nets on one rail are the same conductor only if
-  ## they resolve to the same object.
+  ## Resolve `p`'s net upward through ports to the outermost net; the global
+  ## pin check compares these by identity.
   if p == nil or p.net == nil: return nil
   var n = p.net
   while true:
@@ -330,8 +307,7 @@ proc outermostNet*(p: Pin): Net =
 # --- validation --------------------------------------------------------
 
 proc validatePackages*(nl: Netlist): seq[Issue] =
-  ## What is wrong with the package groups a netlist declares. An `Issue`,
-  ## not a raise, for anything a netlist can legitimately be *in*.
+  ## Problems with the declared package groups, as `Issue`s.
   let r = root(nl)
   let groups = packages(r)
   for pkgRef, members in groups:
@@ -384,8 +360,7 @@ proc validatePackages*(nl: Netlist): seq[Issue] =
           components = comps)
       let secDef = def.section(sName)
       for c in comps:
-        # pins the component carries that the def declares neither on this
-        # section nor as global
+        # pins the def declares neither on this section nor as global
         for pinName, _ in c.pins:
           if pinName notin secDef.pins and pinName notin def.globalPins:
             result.add newIssue("package_unknown_pin", sevError,

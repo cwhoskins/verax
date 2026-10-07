@@ -1,25 +1,16 @@
-## Raw FFI bindings for ngspice's Model Interface (MIF) -- the structs a code
+## Raw FFI bindings for ngspice's Model Interface (MIF): the structs a code
 ## model receives and the `cm_*` helpers it may call.
 ##
-## **Opt-in.** This module needs ngspice's headers on the C include path, so it
-## is deliberately not exported from `verax/spice/xspice`. Point it at a
-## source tree with `-d:ngspiceSrc=/path/to/ngspice-46`, or supply
-## `--passC:-I<tree>/src/include` yourself (which is what `xspice/build.nim`
-## does).
+## **Opt-in**: needs ngspice headers (`-d:ngspiceSrc=/path`, or
+## `--passC:-I<tree>/src/include` as `xspice/build.nim` passes), so not
+## exported from `verax/spice/xspice`.
 ##
-## **Every struct is `{.importc, header.}`, never hand-declared.** The C
-## compiler computes each field offset from the same header ngspice itself was
-## built with, and a field-name typo becomes a C compile error. Hand-writing
-## these layouts would mean reproducing `Mif_Port_Data_t`'s twenty fields
-## including two nested aggregates, where the first mismatch silently puts
-## every later field at the wrong offset and you get wrong voltages with no
-## diagnostic. Nim only ever declares the fields it actually reads; the rest
-## are resolved by name against the real struct.
+## **Every struct is `{.importc, header.}`, never hand-declared**: the C
+## compiler computes offsets from the real header, and a typo is a compile
+## error rather than silently wrong fields. Only fields read are declared.
 ##
-## A matching caveat applies to the *build* rather than the source: ngspice's
-## `SPICEdev` struct has `#ifdef CIDER` and `#ifdef KLU` members, so a `.cm`
-## whose headers disagree with the installed simulator's build flags will
-## segfault inside ngspice with no error message. See `xspice/build.nim`.
+## Build caveat: `SPICEdev`'s `CIDER`/`KLU` members must match the installed
+## simulator, or ngspice segfaults silently (see `xspice/build.nim`).
 
 const ngspiceSrc* {.strdefine.} = ""
 when ngspiceSrc.len > 0:
@@ -43,11 +34,9 @@ type
     strength*: cint
 
   MifValue* {.importc: "Mif_Value_t", header: shim, union, bycopy.} = object
-    ## ngspice's `put_type`/`put_conn_type` decide which member an accessor
-    ## reads: params by declared `Data_Type`, ports by `Default_Type` --
-    ## digital and user-defined nodes use `pvalue`, every analog port type
-    ## uses `rvalue`. There is deliberately no digital member here; the real
-    ## union has exactly these six.
+    ## Params read the member for their `Data_Type`, ports by `Default_Type`:
+    ## digital/user-defined use `pvalue`, every analog type `rvalue`. The real
+    ## union has exactly these six (no digital member).
     bvalue*: MifBoolean
     ivalue*: cint
     rvalue*: cdouble
@@ -94,8 +83,7 @@ type
     tstep*, tstop*: cdouble
 
   MifPrivate* {.importc: "Mif_Private_t", header: shim, bycopy.} = object
-    ## The single argument every code model receives. `cmpp` spells this
-    ## `ARGS`, expanding to `Mif_Private_t *mif_private`.
+    ## The single argument every code model receives (`cmpp`'s `ARGS`).
     circuit*: MifCircData
     num_conn*: cint
     conn*: ptr UncheckedArray[ptr MifConnData]
@@ -106,14 +94,11 @@ type
 
 # --- enum values -------------------------------------------------------------
 #
-# C enumerator values cannot be `importc`'d directly, and hard-coding them
-# works right up until ngspice reorders an enum, at which point it fails
-# silently. Laundering them through the C compiler as constants means a
-# removed enumerator is a compile error instead.
-
-# The shim is re-included here because a TYPESECTION emit is placed ahead of
-# the #include Nim generates for the importc'd types, so the enumerators would
-# otherwise be undeclared. The header's own guard makes the repeat free.
+# C enumerator values can't be `importc`'d; routing them through the C
+# compiler as constants makes a removed enumerator a compile error instead
+# of a silent mismatch.
+# The shim is re-included because a TYPESECTION emit precedes Nim's own
+# `#include`; its guard makes the repeat free.
 {.emit: """/*TYPESECTION*/
 #include "mifshim.h"
 static const int veraxMifDc          = MIF_DC;
@@ -150,8 +135,7 @@ let
 
 type
   Analysis* = enum
-    ## Nim-native mirror of `Mif_Analysis_t`, so a model body can write an
-    ## ordinary exhaustive `case`/`==` instead of comparing raw `cint`s.
+    ## Nim mirror of `Mif_Analysis_t`, for exhaustive `case`.
     maDc, maAc, maTran, maNoise
   CallType* = enum
     mcAnalog, mcEventDriven, mcStepPending
@@ -197,10 +181,9 @@ proc fromDigitalStrength*(s: DigitalStrength): cint =
 
 # --- cm_* helpers ------------------------------------------------------------
 #
-# These resolve at link time to the wrappers compiled in from ngspice's
-# `src/xspice/icm/dlmain.c`, which forward through a `coreitf` function-pointer
-# table that ngspice fills in at dlopen time. That is why a `.cm` does *not*
-# link against libngspice -- it looks like a missing dependency and is not.
+# These link to `dlmain.c`'s wrappers, which forward through the `coreitf`
+# table ngspice fills at dlopen -- which is why a `.cm` doesn't link
+# libngspice.
 
 proc cmMessageSend*(msg: cstring): cint {.importc: "cm_message_send", header: shim, discardable.}
 proc cmAnalogAlloc*(tag: cint, bytes: cint) {.importc: "cm_analog_alloc", header: shim.}

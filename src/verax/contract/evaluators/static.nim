@@ -1,19 +1,10 @@
-## Evaluators that answer from the graph alone -- no simulator, no toolchain.
+## Evaluators that answer from the graph alone -- no simulator. Registered
+## through the ordinary `registerEvaluator` path.
 ##
-## These are the producers for the quantities the built-in `i2c` role expands
-## to, which until now were claims nothing could check. They are registered
-## through the ordinary `registerEvaluator` path, with no privileged
-## mechanism, for the same reason the built-in roles are: a built-in that
-## cheats makes a user-written evaluator second-class.
-##
-## Two of the three are worth reading for what they *decline* to answer.
-## `controller_count` cannot be derived from topology at all -- every device
-## on an I2C bus has an inout data pin, and nothing in a netlist distinguishes
-## the controller from a target -- so with no role binding to read it returns
-## `esNotEvaluable` rather than a guess. `rc_corner` rests on an invented
-## per-pin capacitance and says so in an `Assumption`, because a netlist
-## carries neither trace nor pin capacitance and the answer is dominated by
-## both.
+## `controller_count` can't be derived from topology (every I2C device has
+## an inout data pin), so without a role binding it is `esNotEvaluable`.
+## `rc_corner` rests on an invented per-pin capacitance, reported as an
+## `Assumption`.
 
 import std/[math, sets, strutils, tables]
 import ../../netlist/types
@@ -29,35 +20,19 @@ export evaluate
 const
   assumedPinCapacitance* = 10.0e-12
     ## Farads per connected pin, for a bus whose capacitance nothing states.
-    ##
-    ## Bus capacitance is dominated by trace length and device pin
-    ## capacitance, neither of which exists in a netlist -- so this number is
-    ## invented every time and is reported as an assumption every time. 10 pF
-    ## per pin is a common working figure; the I2C specification instead caps
-    ## the *total* bus at 400 pF, which is a limit rather than a typical.
+    ## Always invented and reported as an assumption. (The I2C spec caps the
+    ## total at 400 pF, a limit rather than a typical.)
 
 proc allPins(net: Net): seq[Pin] =
-  ## `net.pins` widened to also see pins on any net that is the same
-  ## conductor through an instance boundary (`graph.hierNetGroup`).
-  ##
-  ## Why this exists and `dcConnected` below doesn't need it: `dcConnected`
-  ## already crosses hierarchy itself, one net at a time, as part of its own
-  ## BFS -- it asks "is there a path", so following `hierNet`/`instanceOf` as
-  ## it walks is the same amount of work either way. `pullupsOn`,
-  ## `capacitorsOn` and the bus-capacitance estimate in `runRcCorner` are not
-  ## walks; they inspect one net's pins directly, so without this a bus
-  ## declared at the top level with its pull-up nested one level down inside
-  ## a child subckt (wired out through a pass-through port) reported
-  ## `pullup_count == 0` -- `Design.resolve` correctly finds the outer `Net`
-  ## object, but the resistor's pin lives on the *inner* one, a distinct
-  ## object linked only by `Pin.hierNet` at the boundary. Measured before
-  ## this fix, on the nested fixture this module's tests now cover.
+  ## `net.pins` widened to pins on any net that is the same conductor
+  ## through an instance boundary (`graph.hierNetGroup`), so a pull-up nested
+  ## behind a pass-through port counts. `dcConnected` doesn't need it (it
+  ## crosses hierarchy as it walks).
   for n in hierNetGroup(net):
     for p in n.pins: result.add p
 
 proc railOf(p: Pin): Net =
-  ## The net on the far side of a two-terminal part from `p`, when it is a
-  ## rail.
+  ## The net across a two-terminal part from `p`, when it is a rail.
   let c = p.component
   for _, other in c.pins:
     if other == p: continue
@@ -65,20 +40,9 @@ proc railOf(p: Pin): Net =
   nil
 
 proc pullupsOn(net: Net): seq[Component] =
-  ## Every resistor with one end on `net` and the other on a rail. A pull-up
-  ## and a pull-down are the same shape here; which rail it terminates to is
-  ## a separate question from whether the line is passively driven at all.
-  ##
-  ## Dedup is by **component identity, not by bare designator string**. It
-  ## was the latter until a bus fanned out into two sibling instances made
-  ## the difference observable: `allPins` (above) correctly returns both
-  ## instances' `R1` -- two distinct `Component` objects, one per child
-  ## netlist -- but a designator is only unique *within* the netlist that
-  ## assigned it, not across the sibling scopes `allPins` now reaches into.
-  ## Measured: a `seen: HashSet[string]` here reported `pullup_count == 1`
-  ## for two real pull-ups on a fanned-out bus, because the second `R1`
-  ## collided with the first in the set and was silently dropped -- exactly
-  ## the fan-out case this module's tests now cover.
+  ## Every resistor with one end on `net` and the other on a rail (pull-up or
+  ## pull-down alike). Deduped by **component identity**, not designator:
+  ## sibling instances can each have an `R1`.
   var seen: seq[Component]
   for p in allPins(net):
     let c = p.component
@@ -89,7 +53,7 @@ proc pullupsOn(net: Net): seq[Component] =
       result.add c
 
 proc capacitorsOn(net: Net): seq[Component] =
-  ## As `pullupsOn`'s dedup: by component identity, for the same reason.
+  ## Deduped by component identity, as in `pullupsOn`.
   var seen: seq[Component]
   for p in allPins(net):
     let c = p.component
@@ -99,9 +63,8 @@ proc capacitorsOn(net: Net): seq[Component] =
     result.add c
 
 proc magnitudeOf(c: Component, value: var float): bool =
-  ## A resistor's or capacitor's value as a number. Only asked of parts whose
-  ## `value` is definitionally a bare magnitude -- see `parseSpiceMagnitude`
-  ## for why the general `attrs["value"]` is never parsed.
+  ## A resistor's or capacitor's value as a number (only parts whose `value`
+  ## is a bare magnitude; see `parseSpiceMagnitude`).
   if not c.attrs.hasKey("value"): return false
   parseSpiceMagnitude(c.attrs["value"], value)
 
@@ -121,26 +84,14 @@ proc runPullupCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResul
 # --- pullup_sink_current ------------------------------------------------
 
 const i2cVol = 0.4
-  ## The output-low voltage an I2C target must hold, per the specification.
-  ## Not a design choice, which is why it is a constant and not a parameter.
+  ## The I2C spec's output-low voltage; a constant, not a design choice.
 
 proc runPullupSinkCurrent(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
-  ## How much current whatever pulls the line low has to sink.
-  ##
-  ## The bound that `pullup_count` and `rc_corner` between them do not
-  ## provide. Both of those catch a pull-up that is too *weak* -- absent, or
-  ## slow against the bus capacitance -- and nothing caught one too strong.
-  ## The I2C specification requires a target to hold VOL at or below 0.4 V
-  ## while sinking 3 mA, so at 3.3 V the pull-up may not go below about
-  ## 1 kohm. That floor and the RC ceiling squeeze from opposite sides, and a
-  ## design pushed off one of them by fixing the other has no way to find
-  ## out: `designs/sensor_node.nim` runs 1.2k *because* 1.5k failed the RC
-  ## check, which put it within 20% of the other limit.
-  ##
-  ## Each pull-up is charged against the rail it actually terminates on,
-  ## rather than against one rail for the whole net -- a bus with pull-ups to
-  ## two different supplies is unusual and is not a reason to report a number
-  ## about neither.
+  ## How much current whatever pulls the line low must sink -- the
+  ## too-strong bound that `pullup_count` and `rc_corner` (too weak/slow)
+  ## don't cover. I2C requires VOL <= 0.4 V at 3 mA, so ~1 kohm minimum at
+  ## 3.3 V; the RC ceiling squeezes from the other side. Each pull-up is
+  ## charged against the rail it actually terminates on.
   let d = ctx.design
   const name = "static.pullup_sink_current"
   for a in batch:
@@ -246,18 +197,10 @@ proc runRcCorner(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] 
 # --- dc_path_exists ----------------------------------------------------
 
 proc dcConnected(a, b: Net): bool =
-  ## Is there a DC-conductive path from `a` to `b`? A breadth-first walk
-  ## across conductive pin pairs and hierarchy boundaries, the same
-  ## traversal `analysis/io_check.dcReachable` uses -- but stopped at a
-  ## *named target* rather than at any terminus. A pin pair `conductiveExits`
-  ## does not return (an undeclared ambiguous part -- a diode, an IC, a
-  ## **transformer** -- or a pair a declared spec does not name) is never
-  ## crossed, which is what makes this the isolation-barrier check: the two
-  ## windings of a `K`-coupled pair have no DC path between them. This is
-  ## also what makes `dc_path_exists(rfc, rf1)` true across a declared
-  ## ADG904 (`designs/xbar_rf.nim`): the switch's own `traverse:` spec
-  ## answers `conductiveExits`, in place of the whole-component
-  ## `classifyConductivity` this used to call.
+  ## Is there a DC-conductive path from `a` to `b`? BFS across conductive pin
+  ## pairs (`conductiveExits`) and hierarchy boundaries, stopping at `b`.
+  ## Ambiguous parts (diodes, ICs, transformers) are never crossed -- the
+  ## isolation-barrier check -- while a declared `traverse:` spec is honoured.
   if a == b: return true
   var visited: seq[Net] = @[a]
   var queue: seq[Net] = @[a]
@@ -288,9 +231,8 @@ proc dcConnected(a, b: Net): bool =
   false
 
 proc runDcPathExists(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
-  ## `dc_path_exists(a, b)` -- 1 when a DC-conductive path joins the two nets,
-  ## 0 when nothing but ambiguous parts (a transformer, a diode, an IC) sit
-  ## between them. The claim a coupled-inductor barrier makes checkable:
+  ## `dc_path_exists(a, b)`: 1 if a DC-conductive path joins the nets, 0 if
+  ## only ambiguous parts separate them. E.g. a coupled-inductor barrier:
   ## `require dc_path_exists(vpoe, poe5v) == 0`.
   let d = ctx.design
   const name = "static.dc_isolation"
@@ -323,9 +265,8 @@ proc runControllerCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionR
       continue
     let netName = netOpt.get.name
 
-    # Every role instance touching this net, and every component any of them
-    # bound as the controller. Two instances naming different controllers on
-    # one bus is the real finding here.
+    # Every role instance touching this net and the controller each bound;
+    # two different controllers on one bus is the finding.
     var controllers: HashSet[string]
     var touchingRole = false
     for _, inst in d.roles:
@@ -340,8 +281,8 @@ proc runControllerCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionR
         if part == "controller" and subj.kind == skComponent:
           controllers.incl subj.name
 
-    # Declared interface metadata is an equally authoritative source.  Keep
-    # the role path for legacy netlists and user-defined roles.
+    # Declared interface metadata is equally authoritative; the role path
+    # covers legacy netlists and user roles.
     let live = findNet(d.netlist, netName)
     if live != nil:
       let defName = live.attrs.getOrDefault("iface.def")
@@ -370,23 +311,14 @@ proc runControllerCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionR
 # --- miso_driver_count ---------------------------------------------------
 
 proc runMisoDriverCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
-  ## How many components drive MISO *and* sit on one chip select -- the
-  ## roadmap's "two peripherals sharing MISO must not also share CS" check,
-  ## made answerable per-instance by the `spi` role's chip-select fan-out: an
-  ## instance asks only about its own select, so catching two memories wired
-  ## to one CS with MISO tied together needs no cross-instance bookkeeping.
+  ## How many components drive MISO on one chip select. Per `spi` instance,
+  ## so two memories sharing CS and MISO is caught without cross-instance
+  ## bookkeeping. Two filters:
   ##
-  ## Two filters, both load-bearing and both worth a test of their own:
-  ##
-  ## * **leaf components only** (`c.subNetlist == nil`) -- a hierarchical
-  ##   instance and the part inside it sit on the same conductor, so without
-  ##   this every memory on `designs/spi_memories.nim` counts twice, once as
-  ##   itself and once as the `SPI_MEMORY` instance wrapping it.
-  ## * **the MISO pin must actually drive** (`ptOutput`/`ptInOut`) -- the
-  ##   controller has a pin on MISO *and* on every chip select on the bus, and
-  ##   its MISO pin is `ptInput` (stamped by `promotePortDirections` off the
-  ##   `controller` modport), so without this filter the controller would
-  ##   count as a driver on every instance.
+  ## * **leaf components only** -- an instance and the part inside it sit on
+  ##   the same conductor and would count twice;
+  ## * **the MISO pin must drive** (`ptOutput`/`ptInOut`) -- the controller's
+  ##   MISO pin is `ptInput`, else it would count on every instance.
   let d = ctx.design
   const name = "static.miso_driver_count"
   for a in batch:
@@ -463,8 +395,8 @@ proc misoDriverCountDoc(ctx: EvalContext, batch: seq[Assertion]): string =
 # --- registration -------------------------------------------------------
 
 proc registerStaticEvaluators*() =
-  ## Called at module init; exposed so an application that clears the registry
-  ## can put these back, matching `roles.registerBuiltinRoles`.
+  ## Called at module init; exposed so an application that clears the
+  ## registry can restore these.
   registerEvaluator(Evaluator(
     name: "static.pullup_count",
     produces: @["pullup_count"],
@@ -507,10 +439,8 @@ proc registerStaticEvaluators*() =
     needs: {capStatic},
     arity: 1 .. 1,
     subjectKinds: {skNet},
-    # Every device on an I2C bus has an inout data pin, so nothing in a
-    # netlist distinguishes the controller from a target. Only the role
-    # knows, which makes this unreachable by a bare `require` -- and worth
-    # saying so in `verax quantities` rather than at the point of failure.
+    # Only the role knows which device is the controller, so a bare
+    # `require` can't reach this.
     binds: @["controller"],
     setupDoc: controllerCountDoc,
     run: runControllerCount))

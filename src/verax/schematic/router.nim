@@ -1,9 +1,8 @@
 type
   RouteAxis = enum
     raHoriz, raVert
-    ## The axis of the edge a route arrived through. Only the axis matters for
-    ## charging a bend: a turn is any switch between the two axes, never a 180
-    ## degree reversal along the same axis.
+    ## The axis a route arrived through. A bend is any switch between axes,
+    ## never a 180-degree reversal.
 
   RouteResult = tuple[
     distLen: seq[float],
@@ -11,19 +10,16 @@ type
     prev: seq[int]]
 
   RouteOutcome = object
-    ## The result of routing one signal net. `ok` is false only for the one
-    ## recoverable failure -- no pin state reachable on the free grid -- which
-    ## the placement-routing feedback loop may move out of. Every
-    ## path-integrity failure inside `routeNet` is still an immediate
-    ## `doAssert`, because those are internal bugs, never placement problems.
+    ## Routing one signal net. `ok` is false only for the recoverable failure
+    ## (no reachable pin state) the feedback loop may fix; path-integrity
+    ## failures are `doAssert`s (internal bugs).
     ok: bool
     polys: seq[seq[Point]]
     failPin: int
 
-  ## One endpoint a signal net must connect: a placed part pin, or a port's
-  ## connection point with an explicit inward escape. `pinName` is empty for a
-  ## port point; `fallbackFor` uses it to record *which* pin a fallback
-  ## belongs to.
+  ## One endpoint to connect: a placed pin, or a port connection point with
+  ## an explicit inward escape. `pinName` is empty for a port; `fallbackFor`
+  ## uses it.
   RoutePin = tuple[
     pt: Point,
     partIdx: int,
@@ -31,19 +27,15 @@ type
     pinName: string]
 
 proc lexBefore(l1: float, b1: int, l2: float, b2: int): bool {.inline.} =
-  ## Strict lexicographic order on (Manhattan length, bend count): a route is
-  ## better only when it is shorter, or exactly as short with fewer bends.
+  ## Strict lexicographic (Manhattan length, bend count): shorter wins, or
+  ## equal length with fewer bends.
   l1 < l2 - 1e-9 or (abs(l1 - l2) <= 1e-9 and b1 < b2)
 
 type
   DijkstraEntry = tuple[len: float, bends: int, state: int]
-    ## One `dijkstraFromSources` heap entry. Ordered by exact `<` rather than
-    ## `lexBefore`'s epsilon: every `len` here is a sum of manhattan deltas
-    ## between grid-quantized points, so two routes that are truly the same
-    ## length land on the same float, and the epsilon in `lexBefore` (which
-    ## still gates every relaxation, unchanged) never needed to be restated
-    ## here. `state` as the final field breaks a genuine tie by the lowest
-    ## state id, matching `lexBefore`'s old scan exactly.
+    ## A heap entry, ordered by exact `<`: lengths are sums of grid-quantized
+    ## deltas, so equal routes land on equal floats. `state` breaks ties by
+    ## lowest id, matching `lexBefore`.
 
 proc `<`(a, b: DijkstraEntry): bool {.inline.} =
   a.len < b.len or (a.len == b.len and
@@ -52,33 +44,15 @@ proc `<`(a, b: DijkstraEntry): bool {.inline.} =
 proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
                          sources: seq[int], occ, seeds, glyphs: seq[OccSeg],
                          netName: string): RouteResult =
-  ## Multi-source bend-aware Dijkstra over the routing graph. The state is
-  ## `(node, incoming axis)`, so the cost of leaving a node depends on the
-  ## axis the route arrived through; the cost of a route is the lexicographic
-  ## pair (Manhattan length, bend count), so among all shortest routes the
-  ## fewest-bend one wins. Every source is seeded in *both* axis states at
-  ## zero cost, which makes the first graph edge free: a route may leave a
-  ## source in either axis without charging a bend. Edges that would violate
-  ## the net-aware occupancy rules are skipped (see `edgeAllowed`).
+  ## Multi-source bend-aware Dijkstra. State is `(node, incoming axis)`;
+  ## cost is lexicographic (length, bends). Sources are seeded in both axis
+  ## states at zero cost, so the first edge is free. Edges violating the
+  ## occupancy rules are skipped (`edgeAllowed`).
   ##
-  ## Determinism is restated on states. A state id is `2*node + axis`
-  ## (`raHoriz` first), so equal (length, bends) distances are settled by the
-  ## lowest node index, then the horizontal state; and a relaxation that is
-  ## not strictly better never replaces a predecessor, so the first
-  ## (lowest-id) predecessor wins.
-  ##
-  ## The frontier is a binary heap keyed on `(distLen, distBends, state)` --
-  ## exactly `lexBefore`'s ordering with the state id as the final
-  ## tie-breaker, so the heap pops states in the same order the previous
-  ## linear scan of all `sv` states would have chosen one at a time. A state
-  ## may be pushed more than once (once per relaxation that strictly
-  ## improves it, by `lexBefore`); the first pop of a state is always its
-  ## best-ever entry, because the heap could not have produced a better one
-  ## first, so a later pop of the same state is stale and `used` skips it --
-  ## the standard lazy-deletion reading of Dijkstra with a heap. This turns
-  ## the previous O(sv) "scan every state for the minimum" into O(log sv) per
-  ## pop, which is what made routing a large sheet's nets quadratic in the
-  ## free-grid size.
+  ## Deterministic: state id `2*node + axis` breaks ties, and a non-strict
+  ## relaxation never replaces a predecessor. The frontier is a binary heap
+  ## keyed `(distLen, distBends, state)` with lazy deletion (stale pops are
+  ## skipped via `used`).
   let v = nodes.len
   let sv = 2 * v
   result.distLen = newSeq[float](sv)
@@ -89,12 +63,8 @@ proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
     result.distLen[s] = Inf
     result.prev[s] = -1
 
-  # `occ` is the one of the three occupancy lists that grows with the net
-  # being routed (one segment per already-emitted branch, across every net
-  # already routed onto this sheet), so it is the one worth bucketing before
-  # the edge loop below calls into it up to `sv` times; `seeds`/`glyphs` stay
-  # sheet-sized regardless of which net this is and are scanned flat exactly
-  # as `edgeAllowed` always did (see `edgeAllowedFast`).
+  # Only `occ` grows per net, so only it is bucketed; `seeds`/`glyphs` are
+  # scanned flat (see `edgeAllowedFast`).
   let occIdx = buildOccIndex(occ)
 
   var frontier = initHeapQueue[DijkstraEntry]()
@@ -129,8 +99,8 @@ proc dijkstraFromSources(nodes: seq[Point], adj: seq[seq[int]],
         frontier.push (len: ndLen, bends: ndBends, state: t)
 
 proc pathToState(prev: seq[int], dstState: int): seq[int] =
-  ## The node-index path from a Dijkstra source state to `dstState`, source
-  ## first. `prev` maps a state id (`2*node + axis`) to its predecessor state.
+  ## The node path from a source state to `dstState`, source first. `prev`
+  ## maps state id (`2*node + axis`) to its predecessor.
   if dstState < 0 or dstState >= prev.len: return @[]
   result.add dstState div 2
   var cur = dstState
@@ -141,13 +111,9 @@ proc pathToState(prev: seq[int], dstState: int): seq[int] =
   result.reverse()
 
 proc escapeDir(part: SchematicPart, pt: Point): Point =
-  ## The outward unit direction of a pin: away from the part along the normal
-  ## of the body edge the pin sits on. Pins are placed on the boundary, so
-  ## this is the direction a wire leaves the pin without crossing the body.
-  ##
-  ## Keyed on the body half-extents rather than the dominant offset axis: a
-  ## left-edge pin near the top of a tall box still leaves to the left, not
-  ## upward.
+  ## A pin's outward unit direction: the normal of the body edge it sits on.
+  ## Keyed on body half-extents, so a left-edge pin near a tall box's top
+  ## still leaves left.
   let dx = pt.x - part.x
   let dy = pt.y - part.y
   let hw = part.bodyW / 2.0
@@ -159,10 +125,8 @@ proc escapeDir(part: SchematicPart, pt: Point): Point =
 
 proc fallbackStub(p: Point, dir: Point, span: float, occ: seq[OccSeg]):
     seq[Point] =
-  ## The dashed stub for a fallback pin: a short outward segment, shortened
-  ## against every already-emitted wire as if it were a foreign net. An empty
-  ## result means the pin has no room in its escape direction -- a zero-space
-  ## fallback with no wire, only the marker and label at the pin.
+  ## A fallback pin's dashed stub, shortened against emitted wires as a
+  ## foreign net. Empty means no room: marker and label only.
   let e = shortenedStubEnd(p, dir, span, fallbackNetName, occ)
   if sameCoord(e.x, p.x) and sameCoord(e.y, p.y): return @[]
   @[p, e]
@@ -170,11 +134,9 @@ proc fallbackStub(p: Point, dir: Point, span: float, occ: seq[OccSeg]):
 proc fallbackFor(pin: RoutePin, parts: seq[SchematicPart], netName: string,
                  occ: seq[OccSeg], kind = fbUnrouted,
                  bundle = ""): SchematicFallback =
-  ## The public record for one unrouteable pin (`fbUnrouted`) or one member
-  ## pin of a bundle carried by name (`fbNetLabel`, `bundle` = the bundle's
-  ## display identity). The stub direction is the pin's normal outward escape
-  ## (or a port point's inward escape), so the marker leaves the body the way
-  ## a real wire would have.
+  ## The record for one unroutable pin (`fbUnrouted`) or one member pin of a
+  ## bundle carried by name (`fbNetLabel`). The stub leaves the way a real
+  ## wire would.
   let dir =
     if pin.esc.x != 0.0 or pin.esc.y != 0.0: pin.esc
     else: escapeDir(parts[pin.partIdx], pin.pt)
@@ -185,16 +147,10 @@ proc fallbackFor(pin: RoutePin, parts: seq[SchematicPart], netName: string,
 
 proc fallbackEscapeDir*(parts: seq[SchematicPart], ports: seq[SchematicPort],
                         f: SchematicFallback): Point =
-  ## The outward escape direction a fallback's `ex`/`ey` records, recomputed
-  ## from the scene it belongs to. A part pin's fallback leaves along that
-  ## pin's body-edge outward normal (`escapeDir`); a port connection point's
-  ## fallback leaves along the port's inward escape (toward the sheet
-  ## centre), read from the port's rotation. Used by the JSON reader to fill
-  ## the `ex`/`ey` a legacy unversioned archive never stored.
-  ##
-  ## Returns `(0, 0)` when the scene cannot identify the owning pin or port:
-  ## the honest answer for a record whose owner is missing, never an invented
-  ## direction.
+  ## A fallback's `ex`/`ey`, recomputed from the scene: a part pin's
+  ## `escapeDir`, or a port point's inward escape from the port's rotation.
+  ## Used by the JSON reader for legacy archives. `(0, 0)` when the owner
+  ## can't be found.
   if f.part.len > 0:
     for p in parts:
       if p.designator != f.part: continue
@@ -202,9 +158,8 @@ proc fallbackEscapeDir*(parts: seq[SchematicPart], ports: seq[SchematicPort],
         if pin.name == f.pin:
           return escapeDir(p, Point(x: pin.x, y: pin.y))
     return Point(x: 0.0, y: 0.0)
-  # A port connection point: `f.x`/`f.y` is the point where the port's stub
-  # meets its body edge. `rotation` 0 puts the body to the right of that
-  # point (inward escape -x); 180 puts it to the left (inward escape +x).
+  # A port point: rotation 0 puts the body right (escape -x), 180 left
+  # (escape +x).
   for p in ports:
     if p.net != f.net: continue
     let hw = p.bodyW / 2.0
@@ -219,39 +174,23 @@ proc routeNet(pins: seq[RoutePin],
               free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
               occ: var seq[OccSeg], netName: string,
               seeds, glyphs: seq[OccSeg]): RouteOutcome =
-  ## Routes one signal net as an occupancy-aware tree. The first connected pin
-  ## is pin 0; every later pin is connected to the closest point already in
-  ## the tree by a shortest path -- lexicographically (Manhattan length, then
-  ## bends), so an equal-length route with fewer bends wins -- that keeps body
-  ## clearance, never runs along an occupied segment, and upholds the
-  ## stronger different-net rule: no collinear touch (even end-to-end) and at
-  ## least `wireMinSeparation` between parallel, projection-overlapping
-  ## segments. Each returned polyline is one `SchematicWire`: it starts at the
-  ## attachment point (a pin on the first connection, a tree node afterwards)
-  ## and ends at the pin it connects, so the union of the polylines covers the
-  ## tree exactly once and two wires of the net share at most a vertex.
+  ## Routes one signal net as an occupancy-aware tree: pin 0 first, then each
+  ## later pin joins the nearest tree point by the lexicographically best
+  ## path that keeps clearance and obeys the occupancy rules. Each polyline
+  ## is one `SchematicWire` from attachment point to pin, so wires of a net
+  ## share at most a vertex.
   ##
-  ## `seeds` are the fixed escape stubs of every signal pin and port
-  ## connection point, read-only. A route may touch a seed at an endpoint and
-  ## may cross it perpendicularly, but may not run along any positive-length
-  ## part of it -- the seed's open interior stays clear for the net that owns
-  ## it. They are never added to `occ`, which stays the emitted-wire set a
-  ## fallback stub sizes itself against -- a pin's own seed must not read as
-  ## a foreign wire there.
+  ## `seeds` (fixed escape stubs) may be touched or crossed but not run
+  ## along; they never enter `occ`.
   ##
-  ## A pin that cannot be reached on the free grid under those rules is the
-  ## one *recoverable* failure: the outcome is `ok = false` with `failPin` set
-  ## to the first unconnected pin, and the placement-routing feedback loop may
-  ## move parts and try again. Every path-integrity failure below is still an
-  ## immediate `doAssert` -- those are internal bugs, never a case to paper
-  ## over with an unchecked straight fallback that would cross bodies or other
-  ## nets.
+  ## An unreachable pin is the one recoverable failure (`ok = false`,
+  ## `failPin` set) for the feedback loop. Path-integrity failures are
+  ## `doAssert`s, never papered over with a straight fallback.
   var nodes: seq[Point]
   var pinNode: seq[int]
   for pin in pins:
-    # A pin with an explicit escape (a port's connection point in its edge
-    # column) uses it; a real part pin derives it from the body edge it sits
-    # on.
+    # A port point uses its explicit escape; a part pin derives it from its
+    # body edge.
     let d =
       if pin.esc.x != 0.0 or pin.esc.y != 0.0: pin.esc
       else: escapeDir(parts[pin.partIdx], pin.pt)
@@ -365,9 +304,8 @@ proc routeNet(pins: seq[RoutePin],
       let a = deduped[k]
       let b = deduped[k + 1]
       addOcc(occ, a, b, netName)
-      # Every graph node that this new wire runs through is now part of the
-      # net's tree, so a later wire may attach to any point along it (shared
-      # vertex) instead of being forced to run along the same segment.
+      # Every node this wire passes is now on the tree, so later wires may
+      # attach anywhere along it.
       for t in 0 ..< v:
         if not inTree[t] and pointOnSegment(nodes[t], a, b):
           inTree[t] = true
@@ -380,9 +318,8 @@ proc routeConstrainedNet(pins: seq[RoutePin], parts: seq[SchematicPart],
                          free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
                          occ: var seq[OccSeg], netName: string,
                          seeds, glyphs: seq[OccSeg]): RouteOutcome =
-  ## A trunk-and-tap attempt is atomic: its growing tree is useful only if all
-  ## taps reach it. On failure restore occupancy before the next net is tried,
-  ## so the caller can emit marker-only fallbacks for the complete net.
+  ## A trunk-and-tap attempt is atomic: on failure, occupancy is restored so
+  ## the caller can emit marker-only fallbacks for the whole net.
   let before = occ
   result = routeNet(pins, parts, obstacles, free, occ, netName, seeds, glyphs)
   if not result.ok: occ = before

@@ -1,22 +1,11 @@
-## `.kicad_mod` library footprint reader: turns a land-pattern library entry
-## into a `pcb/footprint.Footprint`, and registers itself as a
-## `FootprintSource` so `findFootprint` picks it up the moment this module is
-## imported -- opt-in per import, the rule everywhere else in this codebase.
+## `.kicad_mod` library footprint reader. Importing it registers a
+## `FootprintSource` (opt-in per import).
 ##
-## A `.kicad_mod` file *is* a single `(footprint ...)` node -- the same node
-## `formats/kicad.readFootprint` already parses out of a board, minus `(at)`
-## (a library part has no board position) and plus `(version)`/`(generator)`.
-## `formats/kicadgeom.nim` is where the node-shape knowledge both readers
-## need actually lives; this module only adds the two things a *library*
-## reader needs that a *board* reader does not: a search path, and reading a
-## pad's layer tokens **raw** rather than expanded (there is no target `Pcb`
-## yet to expand a wildcard against -- see `pcb/footprint.nim`'s doc comment).
-##
-## **Y-flip and angle-negate at the boundary**, exactly as `kicad.readPcb`
-## does (`readXy`/`readDeg` from `kicadgeom`, applied at every coordinate this
-## module reads). Getting this wrong silently mirrors every rotated pad and
-## every rotated footprint that uses this one -- the corpus regression
-## `kicad.nim`'s own doc comment on `readXy`/`readAt` exists to prevent.
+## A `.kicad_mod` is one `(footprint ...)` node (no `(at)`, plus
+## `(version)`/`(generator)`); shared node parsing is in `kicadgeom.nim`.
+## This adds a search path and reads pad layer tokens raw (no board to
+## expand against). **Y-flip and angle-negate at the boundary**, as
+## `kicad.readPcb` does, or rotated pads silently mirror.
 
 import std/[os, strutils]
 
@@ -31,11 +20,8 @@ import ../footprint
 # ---------------------------------------------------------------- search path
 
 proc footprintSearchDirs*(): seq[string] =
-  ## The directories `resolveFootprint` tries, in order, for a `"Lib:Name"`
-  ## spec -- exported so a caller building a `footprint_unresolved` message
-  ## (`pcb/assemble.nim`) can say exactly what was tried rather than "no
-  ## footprint provider resolved this", which names a symptom, not a place to
-  ## look next.
+  ## The directories tried, in order, for a `"Lib:Name"` spec -- exported so
+  ## `footprint_unresolved` can say where it looked.
   let vp = getEnv("VERAX_FOOTPRINT_PATH")
   if vp.len > 0:
     for p in vp.split(':'):
@@ -63,8 +49,7 @@ proc readModPad(d: SexpDoc, padNode: int32): FootprintPad =
     result.at = pt(readMm(d, arg(d, atChild, 0)), -readMm(d, arg(d, atChild, 1)))
     let rN = arg(d, atChild, 2)
     if rN >= 0: result.rot = -readDeg(d, rN)
-  # Layer tokens are kept raw -- see the module doc comment. Only the
-  # decoded string is wanted here, never an expansion against a `Pcb`.
+  # Layer tokens stay raw; never expanded here.
   let layersChild = d.child(padNode, "layers")
   if layersChild >= 0:
     for ln in d.kids(layersChild):
@@ -87,11 +72,8 @@ proc readModPad(d: SexpDoc, padNode: int32): FootprintPad =
 # ---------------------------------------------------------------- graphics
 
 proc readModGraphics(d: SexpDoc, node: int32): seq[tuple[layer: string, shape: Shape]] =
-  ## Silk/fab/courtyard only -- `fp_text` is skipped: nothing this module
-  ## produces (`Footprint.courtyard`/`bodyBox`) needs rendered text, and
-  ## `graphicCurves` (the shared helper) has no text-shape counterpart of its
-  ## own to call without duplicating `kicad.textShapeFromGraphic`, which nothing
-  ## here has a use for yet.
+  ## Silk/fab/courtyard only; `fp_text` is skipped (nothing here needs
+  ## text).
   for gNode in d.kids(node):
     if d.head(gNode) notin ["fp_line", "fp_rect", "fp_circle", "fp_arc", "fp_poly"]:
       continue
@@ -137,10 +119,8 @@ proc readFootprintNode(d: SexpDoc, node: int32): Footprint =
   result.source = raw(d, node)
 
 proc readFootprintFile*(path: string): Footprint =
-  ## Reads one `.kicad_mod` file. Refuses by name -- the same posture
-  ## `kicad.readPcb` takes -- when the file is not a single well-formed
-  ## `(footprint ...)` node, rather than partially reading a fragment and
-  ## returning a `Footprint` with some of its pads silently missing.
+  ## Reads one `.kicad_mod` file, refusing by name anything but a single
+  ## well-formed `(footprint ...)` node (no partial reads).
   let doc =
     try: parseSexpFile(path)
     except SexpError as e:
@@ -152,13 +132,10 @@ proc readFootprintFile*(path: string): Footprint =
   readFootprintNode(doc, doc.roots[0])
 
 proc resolveFootprint*(spec: string): Footprint =
-  ## `spec` containing `/` or ending `.kicad_mod` is a literal path (relative
-  ## to the current directory, or absolute); otherwise `"Lib:Name"` resolves
-  ## to `<dir>/Lib.pretty/Name.kicad_mod` over `footprintSearchDirs()`, first
-  ## match wins. Returns `nil` -- never raises -- when nothing on the search
-  ## path has the file: that is "not mine" in the `FootprintSource` sense
-  ## (see `pcb/footprint.nim`), not a malformed-input refusal, and
-  ## `readFootprintFile` is exactly where a real parse failure still raises.
+  ## A `spec` containing `/` or ending `.kicad_mod` is a literal path;
+  ## otherwise `"Lib:Name"` resolves to `<dir>/Lib.pretty/Name.kicad_mod` over
+  ## `footprintSearchDirs()`, first match wins. Returns `nil` when not found
+  ## ("not mine"); a real parse failure in `readFootprintFile` still raises.
   if spec.len == 0: return nil
   if '/' in spec or spec.endsWith(".kicad_mod"):
     if fileExists(spec):
@@ -173,12 +150,8 @@ proc resolveFootprint*(spec: string): Footprint =
     let candidate = dir / (lib & ".pretty") / (name & ".kicad_mod")
     if fileExists(candidate):
       result = readFootprintFile(candidate)
-      # `"Lib:Name"` as asked, not the bare name the standalone `.kicad_mod`
-      # file states for itself (`(footprint "R_0402_1005Metric" ...)`, no
-      # library prefix) -- a real board's own `(footprint "Resistor_SMD:R_..."
-      # ...)` head always carries the library nickname, and `kicadgen.nim`
-      # needs exactly that spelling to splice a placement that a system
-      # `fp-lib-table` (and `kicad-cli pcb drc`) will actually resolve.
+      # Keep `"Lib:Name"` as asked (the file names itself without the
+      # library): `kicadgen` needs that spelling for KiCad to resolve it.
       result.name = spec
       return
 

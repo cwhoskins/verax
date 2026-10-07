@@ -1,53 +1,17 @@
-## Sweeping a source at DC: what a node does as its supply or its load moves.
+## Sweeping a source at DC: what a node does as its supply or load moves --
+## line/load regulation, dropout, transfer curves.
 ##
-## ## The gap this fills
+## `analyzeLineSweep` sweeps a source **the design already contains** (a
+## regulator's supply, or a divider's input). `analyzeLoadSweep` sweeps a
+## constant-current sink **this module injects** -- a test load isn't a
+## board part, and a resistor's current would follow the node.
 ##
-## Every other simulation-backed analysis here answers a question at **one**
-## bias. `analysis/operating` solves a single `.op`; `analysis/derating` reads
-## that same solve back; `analysis/pdn` and `analysis/opamp` linearise about it.
-## So the whole family answers "what does this circuit do *there*", and a large
-## part of what a datasheet specifies is instead "what does it do as something
-## moves" -- line regulation, load regulation, dropout, a comparator's trip
-## point, an input offset, a plain transfer curve. Every one of those is a
-## source sweep, and there was no capability for one.
+## Deliberately not done:
 ##
-## ## The two shapes, and why they are two procs
-##
-## `analyzeLineSweep` sweeps a source **the design already contains**. That is
-## the input supply for a regulator, and it is the input *node* for anything
-## that is not a regulator at all -- a divider swept from 0 to its rail reports
-## its ratio as a measured slope over the whole range, rather than as one node
-## voltage at one bias that happens to come out right.
-##
-## `analyzeLoadSweep` sweeps a current **this module injects**, from the
-## measured node to the reference. There is deliberately no part in the design
-## for it: a test load is not something anybody solders, and putting one in the
-## netlist would put it on the BoM and in the layout. This is the same idiom
-## `spice/probes.addImpedanceProbe` uses for an `.ac` sweep -- the stimulus
-## belongs to the measurement, not to the board -- and it is what makes
-## `z_out_dc` askable of a network that has no load port.
-##
-## A constant-current sink rather than a resistor, for the reason
-## `spice/boundary` states at length: a resistor's current follows the node it
-## is hung on, so a "load sweep" against one sweeps the load *and* the drive
-## together and reports neither. A sink's current is what the sweep says it is.
-##
-## ## What is deliberately not done here
-##
-## **No capacitor parasitics.** At DC a capacitor is an open circuit, so its
-## ESR and ESL are in series with nothing and cannot move a number. Expanding
-## them would cost three components per capacitor for an identical answer.
-##
-## **No source impedance.** `spice/models.expandSourceImpedance` exists because
-## an ideal source is a dead short at AC; at DC its default 10 mohm is an
-## *invented* series resistance, and on a load sweep it would be added to the
-## very output resistance being measured. `analysis/operating` leaves sources
-## ideal for the same reason, and a design whose supply really does have output
-## resistance says so with a resistor.
-##
-## **No isolation.** A cut rail is terminated at its *nominal* voltage, which
-## on a regulation measurement is the answer -- the same trap `runDcVoltage`
-## avoids by simulating the design as authored. So does this.
+## **No capacitor parasitics** (open at DC; no effect). **No source
+## impedance**: the invented default would add to the output resistance being
+## measured. **No isolation**: a cut rail terminated at nominal would measure
+## its own assumption.
 
 import std/[math, strutils, tables]
 
@@ -65,42 +29,29 @@ export report
 const
   KindSimulationFailed* = "dc_sweep_simulation_failed"
   KindNoDropout* = "dc_sweep_no_dropout"
-    ## The output never fell out of regulation anywhere in the swept range.
-    ## Reported rather than answered: a dropout voltage that was not reached
-    ## is not a small dropout voltage, and the fix is to sweep lower.
+    ## The output never left regulation in the swept range: not a small
+    ## dropout -- sweep lower.
   KindDegenerateSweep* = "dc_sweep_degenerate"
 
 type
   DcSweepSpec* = object
     fromVal*, toVal*: float
-      ## The swept range, in the source's own unit -- volts for a voltage
-      ## source, amps for a current one.
+      ## The swept range, in the source's unit (volts or amps).
     step*: float
       ## `0` derives one from `points`.
     points*: int
-      ## How many points to derive a step from. `0` means 51, which is a
-      ## sensible curve and a cheap one: a `.dc` is N operating points, and
-      ## every quantity here is read off endpoints or off a threshold
-      ## crossing, so resolution buys precision on `dropout_v` and nothing
-      ## anywhere else.
+      ## Points to derive a step from; `0` means 51. Resolution only refines
+      ## `dropout_v`.
     nominal*: float
-      ## The output the percentage figures are referenced to. `0` takes it
-      ## from the end of the sweep where the circuit is least stressed --
-      ## high line for a line sweep, light load for a load sweep -- which is
-      ## what a datasheet quotes against. A sweep is therefore written from
-      ## the light end towards the hard one.
+      ## The output percentages reference; `0` takes the least-stressed end
+      ## (high line, light load), as datasheets do. Write sweeps from the light
+      ## end toward the hard one.
     inputNet*: string
-      ## Which node counts as the input when computing `dropout_v`. Empty
-      ## takes the sweep axis itself, which is right when the swept source
-      ## drives the part directly and wrong the moment there is a lead
-      ## resistance, a fuse or a filter between them -- the differential a
-      ## regulator actually has is measured at its own pin.
+      ## The input node for `dropout_v`; empty uses the sweep axis. Name the
+      ## regulator's own input pin net if there's a fuse or filter upstream.
     dropoutBand*: float
-      ## How far below `nominal` the output must fall to count as out of
-      ## regulation, as a fraction. `0` takes 2%, which is the figure
-      ## datasheets quote dropout at. Declared as an assumption on every run
-      ## that uses it, because it is a threshold nobody stated and the answer
-      ## moves with it.
+      ## How far below `nominal` counts as out of regulation; `0` takes 2%
+      ## (the datasheet figure). Recorded as an assumption.
     pinModels*: PinModelDefaults
     flattenHierarchy*: bool
     keepInstances*: seq[string]
@@ -115,10 +66,8 @@ const
   defaultPoints = 51
   defaultDropoutBand = 0.02
   loadSinkDesignator = "IDCLOADSWEEP"
-    ## The injected sink's designator. Long and unlovely on purpose: it has to
-    ## survive `checkDeckDesignators` beside whatever the design already
-    ## contains, and a part that exists only inside one analysis's work copy
-    ## should not look like one somebody placed.
+    ## The injected sink's designator: long so it can't collide with design
+    ## parts and doesn't look placed.
 
 # --- the shared machinery ------------------------------------------------
 
@@ -129,13 +78,9 @@ proc stepOf(spec: DcSweepSpec): float =
 
 proc prepare(nl: Netlist, spec: DcSweepSpec, rep: var AnalysisReport,
              namedParts: varargs[string]): Netlist =
-  ## The work copy every sweep here runs on: cloned, flattened, and *then*
-  ## sim-replaced for an operating point (a `.dc` *is* a series of them) --
-  ## flatten before replace, not the other way round, so a nested XSPICE
-  ## component's frozen `xspice.ports` string is rendered from post-flatten
-  ## net names rather than child-template-local ones that stop existing the
-  ## moment flatten renames everything else (see `spice/flatten`'s module
-  ## doc). Also with every part carrying no model stood in for.
+  ## The work copy: cloned, flattened, *then* sim-replaced for an operating
+  ## point (so nested XSPICE ports use post-flatten names), with unmodelled
+  ## parts stood in for.
   var cloneNets: OrderedTable[string, Net]
   result = clone(nl, cloneNets)
   discard flattenForSim(result, spec.flattenHierarchy, spec.keepInstances,
@@ -149,14 +94,8 @@ proc sweepCard(designator: string, spec: DcSweepSpec): string =
   spiceValue(spec.toVal) & " " & spiceValue(stepOf(spec))
 
 proc sweepAxis(raw: SimResult): seq[float] =
-  ## The swept variable's own values.
-  ##
-  ## ngspice names this vector after what is being swept -- `v(v-sweep)` for a
-  ## voltage source, `i(i-sweep)` for a current one -- and writes it as
-  ## variable 0. Matched by the `-sweep` marker rather than by either exact
-  ## name, and falling back to variable 0, so a swept temperature or
-  ## resistance reads here too without this module having to enumerate what
-  ## ngspice may one day sweep.
+  ## The swept variable's values: the vector with a `-sweep` marker
+  ## (`v(v-sweep)`, `i(i-sweep)`), else variable 0.
   for name, vec in raw.vectors:
     if "-sweep" in name and vec.kind == sdReal: return vec.values
   for name, vec in raw.vectors:
@@ -210,9 +149,8 @@ proc envelope(c: SweptCurve): tuple[lo, hi: float] =
     if y > result.hi: result.hi = y
 
 proc addEnvelope(rep: var AnalysisReport, c: SweptCurve) =
-  ## The raw window of the output over the sweep. Reported by both sweeps and
-  ## before anything derived from it, because it is the one set of numbers
-  ## that means the same thing whatever was swept.
+  ## The output's raw envelope over the sweep, reported first by both
+  ## sweeps.
   let (lo, hi) = envelope(c)
   rep.add "dc_out_min", lo, "V"
   rep.add "dc_out_max", hi, "V"
@@ -220,16 +158,9 @@ proc addEnvelope(rep: var AnalysisReport, c: SweptCurve) =
 
 proc referenceOf(spec: DcSweepSpec, c: SweptCurve, what, whichEnd: string,
                  v: float, rep: var AnalysisReport): float =
-  ## The output a percentage figure is quoted against.
-  ##
-  ## Stated wins. Otherwise it comes from the end of the sweep where the part
-  ## is *least* stressed, and which end that is differs by what is being
-  ## swept: line regulation is quoted against the output at high line, where
-  ## there is most headroom, and load regulation against the output at light
-  ## load. Taking the same end for both would reference a line figure to
-  ## whatever the circuit does with no supply, which on anything that starts
-  ## from zero is zero -- and a percentage of zero is not a small number, it
-  ## is no number at all.
+  ## The output percentages reference: stated, else the least-stressed end
+  ## (high line for a line sweep, light load for a load sweep). The same end
+  ## for both would reference a line figure to zero supply.
   if spec.nominal != 0.0: return spec.nominal
   rep.assumptions.add note(
     what & " is referenced to " & eng(v, "V") & ", the output at the " &
@@ -240,28 +171,16 @@ proc referenceOf(spec: DcSweepSpec, c: SweptCurve, what, whichEnd: string,
 
 proc analyzeLineSweep*(nl: Netlist, source, measureNet: string,
                        spec = defaultDcSweepSpec()): AnalysisReport =
-  ## Sweeps `source` and reports what `measureNet` does.
+  ## Sweeps `source` and reports `measureNet`: `dc_out_min`, `dc_out_max`,
+  ## `dc_out_delta` (V); `dc_transfer` (V/V); `line_reg_pct` (%),
+  ## `line_reg_pct_per_v` (%/V); `dropout_v` (V).
   ##
-  ## Measurements: `dc_out_min`, `dc_out_max`, `dc_out_delta` (V);
-  ## `dc_transfer` (V/V, the slope end to end); `line_reg_pct` (%) and
-  ## `line_reg_pct_per_v` (%/V); and `dropout_v` (V).
+  ## `dc_transfer` and `line_reg_pct` are one number asked two ways: a
+  ## divider wants the slope, a regulator a small percentage.
   ##
-  ## **`dc_transfer` and `line_reg_pct` are the same number asked two ways,**
-  ## and both are kept because the two circuits that want them are opposites.
-  ## A regulator's specification is that the output does *not* follow the
-  ## input, so it is quoted as a percentage of the output and wants to be
-  ## small. A divider's specification is that the output follows the input
-  ## exactly, by a stated ratio, so it is quoted as a slope and wants to be
-  ## right. One quantity would force one of those two to be phrased as the
-  ## other's failure.
-  ##
-  ## **`dropout_v` is `NaN` when the output never left regulation**, with an
-  ## issue saying so. That is not the same as a small dropout voltage: it
-  ## means the swept range never went low enough to find one, and a claim
-  ## resting on it must decline rather than pass. It is also what an ideal
-  ## regulator *model* reports, which is the honest answer -- an error
-  ## amplifier driving an ideal source holds its target from an input below
-  ## it, and no sweep will find a dropout the model does not have.
+  ## **`dropout_v` is `NaN` (with an issue) when regulation never broke**:
+  ## the range didn't go low enough. Ideal regulator models always report
+  ## this.
   result.name = "dc line sweep"
 
   let work = prepare(nl, spec, result, source)
@@ -295,11 +214,8 @@ proc analyzeLineSweep*(nl: Netlist, source, measureNet: string,
 
   # --- dropout ---------------------------------------------------------
   #
-  # Walked from the top of the sweep -- the most headroom -- downwards, so
-  # "the last point still in regulation" is well defined even for a curve
-  # that wanders. The differential is taken at the input *node* when one was
-  # named, because a regulator's dropout is the difference across the part
-  # and not the difference from whatever is upstream of its lead resistance.
+  # Walked down from the top of the sweep. The differential uses the named
+  # input node, if any (dropout is across the part).
   let band = if spec.dropoutBand > 0.0: spec.dropoutBand else: defaultDropoutBand
   var vin = c.x
   if spec.inputNet.len > 0:
@@ -342,20 +258,10 @@ proc analyzeLineSweep*(nl: Netlist, source, measureNet: string,
 
 proc analyzeLoadSweep*(nl: Netlist, measureNet: string,
                        spec = defaultDcSweepSpec()): AnalysisReport =
-  ## Injects a constant-current sink at `measureNet` and sweeps it.
-  ##
-  ## Measurements: `dc_out_min`, `dc_out_max`, `dc_out_delta` (V);
-  ## `load_reg_pct` (%); and `z_out_dc` (ohm), the DC output resistance seen
-  ## at that node.
-  ##
-  ## `z_out_dc` is the useful one, and it is useful well beyond a regulator:
-  ## it is the Thevenin resistance of whatever drives the node, which for a
-  ## divider is the two legs in parallel and is therefore a direct measurement
-  ## of a number the design equations computed and nothing in the netlist
-  ## states.
-  ##
-  ## The sweep should start at the load the rail is *specified* at -- usually
-  ## zero -- because the percentage figure is referenced to the output there.
+  ## Injects a constant-current sink at `measureNet` and sweeps it:
+  ## `dc_out_min`, `dc_out_max`, `dc_out_delta` (V); `load_reg_pct` (%);
+  ## `z_out_dc` (ohm) -- the Thevenin resistance driving the node (e.g. a
+  ## divider's legs in parallel). Start at the specified load, usually zero.
   result.name = "dc load sweep"
 
   let work = prepare(nl, spec, result)
@@ -373,9 +279,7 @@ proc analyzeLoadSweep*(nl: Netlist, measureNet: string,
       "the design already contains '" & loadSinkDesignator &
       "', which is the designator a load sweep injects its own sink under")
 
-  # `+` on the measured node and `-` on the reference: SPICE runs positive
-  # current from `+` through the source to `-`, so a positive sweep value
-  # pulls current *out* of the node, which is what a load does.
+  # `+` on the measured node: a positive value pulls current out of it.
   let sink = addComponent(work, newComponent(loadSinkDesignator,
                                              kind = "current_source"))
   discard connect(sink, "+", measured, ptPassive)
@@ -397,9 +301,7 @@ proc analyzeLoadSweep*(nl: Netlist, measureNet: string,
                         c.v[0], result)
   if abs(nom) > 0.0:
     result.add "load_reg_pct", 100.0 * (hi - lo) / abs(nom), "%"
-  # Signed division then absolute value, rather than the envelope's height
-  # over the range: a node whose voltage is not monotonic in load current has
-  # no single output resistance, and taking the endpoints is the definition
-  # that says so by coming out smaller than the envelope would.
+  # Endpoint slope, not envelope height: a non-monotonic node has no single
+  # output resistance.
   let di = c.x[^1] - c.x[0]
   result.add "z_out_dc", abs((c.v[^1] - c.v[0]) / di), "ohm"

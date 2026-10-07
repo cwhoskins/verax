@@ -1,26 +1,11 @@
-## Physical printed-circuit-board data model: layers, stack-up, copper,
-## holes, component placements and board outline, indexed for lookup by net
-## name and by location.
+## Physical PCB data model: layers, stack-up, copper, holes, placements,
+## outline, indexed by net name and location. A `Pcb` owns a `Netlist` and
+## points into it.
 ##
-## The electrical model is not duplicated here -- a `Pcb` owns a `Netlist`
-## from `verax/netlist` and points into it, so topology and geometry can be
-## walked together without either half depending on the other's schema.
-##
-## File I/O is opt-in per format, e.g. `import verax/pcb/formats/kicad`,
-## matching how `verax/netlist/formats/spice` and `verax/spice/ngspice` are
-## kept out of the default import surface. `assemble.nim` is the one
-## documented exception: `writeBoard` needs a concrete writer and there is
-## exactly one (`formats/kicad.writePcb`'s synthesis branch), so this hub's
-## compiled output now includes it -- but it is *not* re-exported here (no
-## `export kicadFormat`), so `readPcb`/`writePcb`/`KicadDoc` stay reachable
-## only via `import verax/pcb/formats/kicad`, same as before. "Formats stay
-## opt-in" is a guarantee about the *symbol surface* `import verax/pcb`
-## hands back, not about what gets compiled in on the way to `writeBoard`
-## existing at all -- see `pcb/CLAUDE.md` for the fuller reasoning and the
-## alternative this ruled out (`assemble.nim` with zero format dependency
-## and `writeBoard` living in `formats/kicad.nim` instead, which would have
-## kept the guarantee in its stronger form at the cost of the call site
-## `verify.nim` actually uses, `pcb/assemble.writeBoard`).
+## File I/O is opt-in per format (`import verax/pcb/formats/kicad`).
+## `assemble.writeBoard` compiles in the KiCad writer, but the hub doesn't
+## re-export it, so `readPcb`/`writePcb`/`KicadDoc` still need the explicit
+## import.
 
 import verax/pcb/units
 import verax/pcb/geometry

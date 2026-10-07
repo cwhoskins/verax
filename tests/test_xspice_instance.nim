@@ -41,7 +41,7 @@ test "pins are wired to the ports in declaration order":
   check toSeq(c.pins.keys) == @["inp", "outp"]
   check c.pins["inp"].net.name == "vin"
   check c.pins["outp"].net.name == "vout"
-  # The connectivity is real, so ordinary netlist walks still see it.
+  # Real connectivity, so netlist walks see it.
   check vin.pins.len == 1
   check vout.pins[0].component.designator == "a1"
 
@@ -59,8 +59,7 @@ test "an explicit model name lets two instances share one code model":
   check ".MODEL slow nimgain(gain=-1.5)" in deck
 
 test "a designator not starting with A is rejected":
-  # SPICE infers the device type from the designator letter, so this would
-  # silently become some other device.
+  # SPICE infers the device from the designator letter.
   let (nl, vin, vout) = fixture()
   expect(XspiceInstanceError):
     discard addCodeModelInstance(nl, "U1", gainSpec(), [vin, vout])
@@ -117,8 +116,8 @@ test "vector port pins are indexed, so graph walks still see real nets":
   check c.pins[0].component.designator == "a1"
 
 test "a differential port takes two nodes and splits into .p/.n pins":
-  # ngspice's parser demands an explicit second node for vd/id/gd/hd, and
-  # supplies ground as the negative node only for the single-ended types.
+  # ngspice needs an explicit second node for vd/id/gd/hd; ground is implied
+  # only for single-ended types.
   let (nl, a, b) = fixture()
   let o = addNet(nl, Net(name: "o"))
   let comp = addCodeModelInstance(nl, "a1", diffSpec(), [wire(a, b), wire(o)])
@@ -181,10 +180,8 @@ test "a vnam port is rejected because it names a source, not a net":
     discard addCodeModelInstance(nl, "a1", spec, [wire(a), wire(a)])
 
 suite "telling the simulator which code models a netlist needs":
-  # The netlist that reaches ngspice is never the one the design built: it is
-  # a fragment produced by clone -> flatten -> model substitution ->
-  # isolation, three layers below whoever knew which models were used. So the
-  # answer travels on the components themselves.
+  # The netlist reaching ngspice is a fragment several transforms removed
+  # from the design, so the cm path travels on the components.
 
   test "a cm path is recorded on the component and collected back":
     let nl = newNetlist("board")
@@ -205,8 +202,7 @@ suite "telling the simulator which code models a netlist needs":
     check collectCodeModels(nl) == @["/tmp/g.cm"]
 
   test "a model inside a subcircuit is found too":
-    # Before flattening this is the only way to see it; after flattening the
-    # component is at the top level and the same call still finds it.
+    # Found before and after flattening.
     let child = newNetlist("CH")
     let ci = addNet(child, newNet("i"))
     let co = addNet(child, newNet("o"))
@@ -229,12 +225,10 @@ suite "telling the simulator which code models a netlist needs":
     check collectCodeModels(nl).len == 0
 
 test "a string parameter is quoted on the .model card, whatever its value":
-  # ngspice's pre-parser reads an unquoted token that begins with a letter as
-  # a parameter reference: `uid=deadbeef` aborts the run with `Undefined
-  # parameter [deadbeef]`. A hex string that happens to begin with a digit
-  # parses as a number and runs, so the failure depends on the *value* rather
-  # than on the declaration -- which is why the quoting cannot be left to the
-  # caller. Found by `designs/lib/m24c64.nim`, whose `uid` is exactly that.
+  # ngspice reads an unquoted token starting with a letter as a parameter
+  # reference (`uid=deadbeef` aborts), while one starting with a digit
+  # parses. The failure depends on the value, so quoting can't be left to the
+  # caller.
   let spec = ModelSpec(
     name: "tagged", cFunction: "cm_tagged", description: "tagged",
     ports: @[PortSpec(name: "a", dir: xdIn, default: xpV, allowed: @[xpV])],

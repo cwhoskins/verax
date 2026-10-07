@@ -37,8 +37,7 @@ test "a NaN never satisfies anything -- 'not measured' is not a pass":
   check not atLeast(0.0).satisfies(NaN)
 
 test "when both tolerances are given the wider one wins":
-  # Each is an independent statement of what is acceptable, so meeting
-  # either should pass.
+  # Independent statements of acceptability: meeting either passes.
   let e = nominal(1.0, fracTol = 0.01, absTol = 0.5)
   check e.satisfies(1.4)
   check e.bounds.lo == 0.5
@@ -52,8 +51,7 @@ test "the built-ins are registered and describe their own parts":
   check roleDef("i2c").parts.len == 4
 
 test "a power_rail writes its voltage where existing consumers already look":
-  # This is the half of a role that is an *input* rather than a claim:
-  # spice/isolate reads Net.attrs["voltage"] and knows nothing about roles.
+  # A role input, not a claim: spice/isolate reads Net.attrs["voltage"].
   let d = board()
   discard d.addRole("power_rail", "vdd_rail", {"rail": net("vdd")},
                     {"voltage": "3.3"})
@@ -94,8 +92,7 @@ test "an i2c bus expands to pull-up, RC-corner, sink-current and controller clai
   check "pullup_count" in quantities
   check "rc_corner" in quantities
   check "controller_count" in quantities
-  # The sink current bounds the pull-up from *below*, which rc_corner does
-  # not: the two limits squeeze from opposite sides.
+  # The sink current bounds the pull-up from below; rc_corner from above.
   check "pullup_sink_current" in quantities
   check a.len == 7      # 2 lines x (pullup + corner + sink), plus controllers
 
@@ -213,7 +210,7 @@ test "a user-defined role uses exactly the same mechanism as a built-in":
   let a = d.expandAll()
   check a.len == 1
   check abs(a[0].expect.bounds.lo - 1.0e7) < 1.0
-  # Same validation, same membership tagging, same expansion path.
+  # Same validation, tagging and expansion path as built-ins.
   check rolesOf(d.netlist.nets["scl"]) == @[(instance: "bus0", part: "clk")]
   expect(NetlistError):
     discard d.addRole("my_weird_bus", "bus1", {"clk": net("scl")})
@@ -234,9 +231,7 @@ proc ampBoard(): Design =
   newDesign(nl)
 
 test "a gain_stage with no parameters claims nothing":
-  # Same rule as power_rail's targetZ: a gain specification comes from what
-  # the stage is for, and a default would manufacture a requirement the
-  # designer never made.
+  # A gain spec comes from the stage's purpose; a default would invent one.
   let d = ampBoard()
   discard d.addRole("gain_stage", "s", {"opamp": comp("U1"),
                                         "input": net("vin"),
@@ -272,15 +267,14 @@ test "stating atF moves the gain claim onto that frequency":
   for x in a:
     check x.quantity == "gain_at_f"
     check x.unit == "dB"
-    # The frequency has to reach the evaluator, which reads it back off the
-    # condition -- an assertion carries no other channel for it.
+    # The frequency reaches the evaluator through the condition.
     check x.condition["at_f"] == "1000.0"
   check a[0].expect.satisfies(22.0)
   check not a[0].expect.satisfies(18.0)
 
 test "a gain_stage makes no stability claim":
-  # peaking_db cannot tell an intentional band-pass shape from resonance,
-  # and a margin belongs to opamp_stage, which can be stated alongside.
+  # peaking_db can't tell a band-pass from resonance, and margins belong to
+  # opamp_stage.
   let d = ampBoard()
   discard d.addRole("gain_stage", "s", {"opamp": comp("U1"),
                                         "input": net("vin"),
@@ -371,7 +365,7 @@ test "a channel_match with no limits claims nothing":
 
 test "referencing a role that is not declared yet raises, naming the ordering":
   let d = stereoBoard()
-  # Neither stage declared -- `channel_match` cannot come first.
+  # Neither stage declared: `channel_match` can't come first.
   try:
     discard d.addRole("channel_match", "stereo",
       {"a": roleRef("left"), "b": roleRef("right")}, {"maxGainDelta": "0.5"})
@@ -390,9 +384,8 @@ test "binding a net to a skClass part is rejected":
 # --- declining a role's always-claims ----------------------------------
 
 test "a role instance can decline one of its always-claims":
-  # opamp_stage claims phase_margin_deg unconditionally, and there are
-  # topologies -- a Sallen-Key -- where analyzeLoopGain cannot open the loop
-  # and the claim can only ever come back unchecked.
+  # opamp_stage always claims phase_margin_deg, but some topologies (a
+  # Sallen-Key) can't open the loop.
   let d = ampBoard()
   discard d.addRole("opamp_stage", "s", {"opamp": comp("U1"),
                                          "input": net("vin"),
@@ -412,9 +405,8 @@ test "declining several claims at once":
   check d.expandAll().len == 0
 
 test "declining a claim the role does not make is an error":
-  # The same hazard as a misspelled annotation key: indistinguishable from
-  # an absent one, and it would leave the claim standing while reading as
-  # though it had been dropped.
+  # A misspelled decline would leave the claim standing while reading as
+  # dropped.
   let d = ampBoard()
   expect NetlistError:
     discard d.addRole("opamp_stage", "s", {"opamp": comp("U1"),
@@ -435,8 +427,7 @@ test "the error names what the role actually claims":
     check "peaking" in e.msg
 
 test "`without` is not treated as a role parameter":
-  # It is reserved on every role rather than declared by each one, so it must
-  # not reach parameter validation -- which would reject it as unknown.
+  # Reserved on every role, so it must bypass parameter validation.
   let d = ampBoard()
   let inst = d.addRole("opamp_stage", "s", {"opamp": comp("U1"),
                                             "input": net("vin"),
@@ -453,14 +444,14 @@ test "explain says what was declined -- dropping a claim is never silent":
                     {"without": "phase_margin"})
   let text = d.explain()
   check "declines phase_margin" in text
-  # And what it prints matches what it checks.
+  # What it prints matches what it checks.
   check "phase_margin_deg" notin text
 
 # --- large_signal: drive level is a condition, not a limit -------------
 
 test "a large_signal role stamps the drive into the assertion's condition":
-  # It is the only channel an assertion has for a setup parameter, and the
-  # evaluator's setup key reads it back so two drive levels stay two runs.
+  # The condition is an assertion's only channel for setup; two drive levels
+  # stay two runs.
   let d = ampBoard()
   discard d.addRole("large_signal", "od", {"opamp": comp("U1"),
                                            "input": net("vin"),
@@ -481,8 +472,8 @@ test "a large_signal role with no limits claims nothing":
   check d.expandAll().len == 0
 
 test "too little distortion can be the defect":
-  # On an overdrive a stage measuring clean has lost its clippers, so the
-  # claim goes both ways.
+  # On overdrive a clean stage has lost its clippers, so the claim goes both
+  # ways.
   let d = ampBoard()
   discard d.addRole("large_signal", "od", {"opamp": comp("U1"),
                                            "input": net("vin"),
@@ -499,10 +490,8 @@ test "too little distortion can be the defect":
 # --- settled_rail -----------------------------------------------------------
 
 test "a settled_rail role binds no driving part and claims nothing by default":
-  # Which is the point of it: `regulator` needs a part to stand up as a ramp
-  # and `opamp_stage` needs an amplifier, so neither reaches a charge pump, an
-  # oscillator or a converter measured cycle by cycle. This one names a net
-  # and a window.
+  # `regulator` and `opamp_stage` need a driving part; this names only a net
+  # and a window (charge pumps, oscillators, cycle-by-cycle converters).
   let d = board()
   discard d.addRole("settled_rail", "r", {"rail": net("vdd")},
                     {"tSettle": "0.0003", "tWindow": "0.00002"})
@@ -521,9 +510,8 @@ test "a settled_rail role stamps its window into the assertion's condition":
   check byQty.hasKey("settled_v")
   check byQty.hasKey("ripple_pp")
   for x in a:
-    # The window is what was *run*, not what is claimed, so it rides in
-    # `condition` and the evaluator's setup key reads it back -- two claims
-    # over two windows have to stay two runs.
+    # The window is setup, not a claim: it rides in `condition` so two
+    # windows stay two runs.
     check x.condition["t_settle"] == "0.0003"
     check x.condition["t_window"] == "0.00002"
   check byQty["settled_v"].expect.satisfies(4.962 * 1.019)
@@ -549,9 +537,8 @@ test "a ripple budget alone is a claim; a voltage alone is a different one":
 # --- oscillator -------------------------------------------------------------
 
 test "an oscillator role claims nothing by default and binds no driving part":
-  # The same rule `settled_rail` follows, and for a sharper reason: there is
-  # no default frequency for an oscillator, and defaulting one would state a
-  # claim the designer never made and then report it as theirs.
+  # There's no default oscillator frequency; defaulting one would invent a
+  # claim.
   let d = board()
   discard d.addRole("oscillator", "osc", {"output": net("sda")},
                     {"tSettle": "0.15", "tWindow": "0.02"})
@@ -573,8 +560,7 @@ test "an oscillator role stamps its window and its kick into the condition":
   check byId.hasKey("osc.swing_max")
   check byId.hasKey("osc.thd")
   for x in a:
-    # Where the circuit was started from and how hard is setup, not a claim:
-    # two claims started differently have to stay two runs.
+    # Start conditions are setup, not claims.
     check x.condition["t_settle"] == "0.15"
     check x.condition["t_window"] == "0.02"
     check x.condition["kick_v"] == "0.01"
@@ -592,12 +578,12 @@ test "the kick is optional -- a circuit that starts by itself binds none":
   let a = d.expandAll()
   check a.len == 1
   check a[0].quantity == "osc_freq"
-  # Defaulted rather than absent, so the evaluator's setup key is total.
+  # Defaulted, so the setup key is total.
   check a[0].condition["kick_v"] == "0.1"
 
 test "a regulator role stamps its run length onto every claim it makes":
-  # Four of the five assertions sit behind an `if`, so a condition applied at
-  # each `add` is how one of them ends up planned into a second run.
+  # Four of five assertions sit behind an `if`, so each `add` must apply the
+  # condition or one lands in a second run.
   let d = board()
   discard d.addRole("regulator", "reg",
                     {"regulator": comp("U1"), "output": net("vdd")},
@@ -611,18 +597,14 @@ test "a regulator role stamps its run length onto every claim it makes":
 
 # --- the load-step, rejection and output-current claims ------------------
 #
-# All three are `regulator`'s, and `linear_regulator` and
-# `switching_regulator` reach them by expanding it rather than by repeating
-# it. What the tests below pin is mostly that: what the base claims, that a
-# specialisation adds to it and subtracts nothing, and that every parameter
-# that changes a *run* reaches the assertion's condition -- because a
-# condition that does not get stamped is a claim quietly planned into a
-# second simulation, which is the one failure mode here that looks like
-# success.
+# All on `regulator`, which `linear_regulator` and `switching_regulator`
+# expand. Pinned: specialisations add and never subtract, and every
+# run-changing parameter reaches the condition (else the claim silently
+# lands in a second simulation).
 
 proc regBoard(): Design =
-  ## A part with a rating on it, a rail, a supply and something carrying the
-  ## output current -- the four things the specialised roles bind.
+  ## A rated part, a rail, a supply and an output-current carrier -- what the
+  ## specialised roles bind.
   let nl = newNetlist("reg")
   let vin = addNet(nl, newNet("vin", ntPower))
   let vdd = addNet(nl, newNet("vdd", ntPower))
@@ -652,9 +634,7 @@ proc byId(a: seq[Assertion], id: string): Assertion =
 proc ids(a: seq[Assertion]): seq[string] = a.mapIt(it.id)
 
 test "a regulator claims no load step, no rejection and no current by default":
-  # The whole point of putting these on the base role: every one of them is
-  # opt-in, so the three designs and one template that already instantiate
-  # `regulator` expand to exactly what they did before.
+  # All opt-in, so existing `regulator` instances expand unchanged.
   let d = regBoard()
   discard d.addRole("regulator", "r",
                     {"regulator": comp("U1"), "output": net("vdd")},
@@ -664,9 +644,8 @@ test "a regulator claims no load step, no rejection and no current by default":
     check x.quantity in ["final_v", "overshoot_pct"]
 
 test "each load-step claim is gated on its own limit, not on the step":
-  # `source_sweep`'s shape rather than an oversight. Gating the group on the
-  # magnitude also hid it from `verify.claimingRoles`, which expands each
-  # parameter alone and so never had a step and a limit at the same time.
+  # Gating the group on the magnitude would hide it from
+  # `verify.claimingRoles`, which expands each parameter alone.
   let d = regBoard()
   discard d.addRole("regulator", "r",
                     {"regulator": comp("U1"), "output": net("vdd")},
@@ -678,9 +657,8 @@ test "each load-step claim is gated on its own limit, not on the step":
   check a[0].quantity == "step_droop_v"
 
 test "a load-step limit with no step still expands -- the evaluator refuses it":
-  # The magnitude is setup and rides in the conditions, so a claim missing
-  # one reaches the evaluator and is refused there by name. Expanding to
-  # nothing instead would lose the claim silently.
+  # The magnitude rides in the conditions, so a claim missing it is refused
+  # by name at the evaluator rather than silently dropped.
   let d = regBoard()
   discard d.addRole("regulator", "r",
                     {"regulator": comp("U1"), "output": net("vdd")},
@@ -712,15 +690,13 @@ test "everything that changes the load-step run reaches the condition":
     check x.condition["step_recover"] == "0.00004"
     check x.condition["step_points"] == "2000.0"
     check x.condition["step_band"] == "0.001"
-  # One run, therefore, for all five: identical conditions are what the
-  # evaluator's setup key is built from.
+  # Identical conditions: one run for all five.
   check a.mapIt($it.condition).deduplicate().len == 1
 
 test "the two rejection limits select two different quantities":
-  # `minPsrrDb` is the tone through a `.tran`; `minPsrrBandDb` is the `.ac`
-  # sweep. Which one runs is decided by which limit is stated rather than by
-  # a mode string -- a string parameter is invisible to `claimingRoles`,
-  # which expands with a numeric placeholder.
+  # `minPsrrDb` is a tone through `.tran`; `minPsrrBandDb` the `.ac` sweep.
+  # Which limit is stated picks the analysis; a mode string would be
+  # invisible to `claimingRoles`.
   let d = regBoard()
   discard d.addRole("linear_regulator", "r",
                     {"regulator": comp("U1"), "output": net("vdd"),
@@ -736,8 +712,7 @@ test "the two rejection limits select two different quantities":
   check byId(a, "r.psrr_swept").condition["f_to"] == "10000.0"
 
 test "psrrAtF redirects the swept claim rather than adding a second one":
-  # The `gain_stage`/`atF` pattern. Two claims about one curve would be one
-  # claim that can only ever be weaker than the other.
+  # As `gain_stage`/`atF`: two claims about one curve would be redundant.
   let d = regBoard()
   discard d.addRole("linear_regulator", "r",
                     {"regulator": comp("U1"), "output": net("vdd"),
@@ -766,8 +741,8 @@ test "the tone claim carries the amplitude, because a .tran is not linear":
   check a[0].condition["ripple_points"] == "400.0"
 
 test "the output-current claims are made about the sense part, not the regulator":
-  # Forced rather than chosen: a regulator that reaches the deck as a code
-  # model or a subcircuit has no terminal current of its own to probe.
+  # A regulator reaching the deck as a code model or subcircuit has no
+  # terminal current to probe.
   let d = regBoard()
   discard d.addRole("switching_regulator", "r",
                     {"regulator": comp("U1"), "output": net("vdd"),
@@ -787,8 +762,8 @@ test "the output-current claims are made about the sense part, not the regulator
   check byId(a, "r.i_out_derating").quantity == "i_out_derating"
 
 test "no sense part means no current claims, whatever the limits say":
-  # There is nothing to probe, and guessing which part carries the output
-  # current is exactly the guess the binding exists to remove.
+  # Guessing which part carries the output current is what the binding
+  # removes.
   let d = regBoard()
   discard d.addRole("switching_regulator", "r",
                     {"regulator": comp("U1"), "output": net("vdd")},
@@ -844,8 +819,8 @@ test "switching_regulator is regulator plus its own, and subtracts nothing":
   check byId(a, "sw.isat_derating").quantity == "i_peak_derating"
 
 test "the switching claims sharing a window share a setup key":
-  # The ripple, the inductor current and the derating are all `t_settle` /
-  # `t_window` claims, so they batch into one `.tran` -- which on a model
+  # Ripple, inductor current and derating are all window claims, batched into
+  # one `.tran`.
   # costing fifty timepoints a cycle is most of the check.
   let d = regBoard()
   discard d.addRole("switching_regulator", "sw",
@@ -862,9 +837,8 @@ test "the switching claims sharing a window share a setup key":
     check x.condition["t_window"] == "0.00002"
 
 test "all three roles accept every base parameter":
-  # `RoleDef.params` is what `Design.validate` checks a stated parameter
-  # against, so a specialisation that forgot to re-declare one would reject
-  # a perfectly good design with a message about an unknown parameter.
+  # `Design.validate` checks against `RoleDef.params`; a specialisation
+  # missing one would reject a valid design.
   let base = roleDef("regulator").params.mapIt(it.key)
   for name in ["linear_regulator", "switching_regulator"]:
     let own = roleDef(name).params.mapIt(it.key)

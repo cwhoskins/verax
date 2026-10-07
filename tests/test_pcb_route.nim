@@ -1,8 +1,5 @@
-## `verax/pcb/trace`: stitching a net's copper into a route. Hand-built
-## `Pcb`s through `pcb/graph`, the fixture style of `tests/test_pcb_core.nim`
-## -- each test builds only the copper the case under test needs, rather
-## than reusing one shared board, since what makes a fixture wrong here is
-## exactly the kind of accidental extra copper a shared fixture invites.
+## `verax/pcb/trace`: stitching a net's copper into a route. Each test builds
+## only the copper it needs, since stray copper is what breaks fixtures here.
 
 import std/[tables, unittest]
 
@@ -86,9 +83,8 @@ test "a Y gives one trunk and two branches, the trunk shared":
   let graphs = extractRoutes(pcb, net)
   check graphs.len == 1
   check graphs[0].edges.len == 3
-  # One node is a real junction (degree 3, no pin/via/pour) -- the branch
-  # point -- surviving the degree-2 collapse precisely because its degree
-  # isn't 2.
+  # One real junction (degree 3, no pin/via/pour) survives the degree-2
+  # collapse.
   var junctions = 0
   for n in graphs[0].nodes:
     if n.kind == rnJunction: inc junctions
@@ -149,8 +145,7 @@ test "endpoints 0.5um apart join, 5um apart do not":
     let top = addLayer(pcb, newPcbLayer("F.Cu", lfSignal, lsTop))
     let net = addNet(pcb.netlist, newNet("SIG", ntSignal))
     discard addTrack(top, pt(mm(0.0), mm(0.0)), pt(mm(5.0), mm(0.0)), net = net)
-    # Same nominal point, offset by 500nm (0.5um) -- inside the default 1um
-    # `joinTol`.
+    # Offset 500nm, inside the default 1um `joinTol`.
     let offset = pt(mm(5.0), mm(0.0)) + pt(nm(500), nm(0))
     discard addTrack(top, offset, pt(mm(10.0), mm(0.0)), net = net)
     let graphs = extractRoutes(pcb, net)
@@ -162,7 +157,7 @@ test "endpoints 0.5um apart join, 5um apart do not":
     let top = addLayer(pcb, newPcbLayer("F.Cu", lfSignal, lsTop))
     let net = addNet(pcb.netlist, newNet("SIG", ntSignal))
     discard addTrack(top, pt(mm(0.0), mm(0.0)), pt(mm(5.0), mm(0.0)), net = net)
-    # 5000nm (5um) -- outside the default 1um `joinTol`.
+    # Offset 5um, outside the default 1um `joinTol`.
     let offset = pt(mm(5.0), mm(0.0)) + pt(nm(5000), nm(0))
     discard addTrack(top, offset, pt(mm(10.0), mm(0.0)), net = net)
     let graphs = extractRoutes(pcb, net)

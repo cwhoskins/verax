@@ -12,8 +12,7 @@ const
   fc = 1.0 / (2.0 * PI * tau)       # 1591.549... Hz
 
 proc rcSweep(ptsPerDecade: int, fStart, fStop: float): tuple[f, magDb, phase: seq[float]] =
-  ## Exact first-order low-pass response, so every extraction below is
-  ## checked against closed form rather than against another simulation.
+  ## Exact first-order low-pass, so extractions check against closed form.
   let n = int(round(float(ptsPerDecade) * log10(fStop / fStart)))
   for k in 0 .. n:
     let f = fStart * pow(10.0, float(k) / float(ptsPerDecade))
@@ -37,9 +36,8 @@ test "corner3dB recovers the exact RC corner from a decade sweep":
   check abs(got - fc) / fc < 0.005
 
 test "logX interpolates geometrically, not arithmetically":
-  # Halfway (in y) between decade-spaced samples is the geometric mean on a
-  # log axis, not the arithmetic one. This is the whole reason the frequency
-  # extractors pass logX = true.
+  # Halfway between decade samples is the geometric mean on a log axis --
+  # why frequency extractors pass logX = true.
   let x = @[100.0, 1000.0]
   let y = @[0.0, 10.0]
   check abs(interpCrossing(x, y, 5.0, logX = true) - sqrt(100.0 * 1000.0)) < 1e-9
@@ -101,8 +99,8 @@ test "corner3dB on a high-pass reports NaN rather than a bogus corner":
     let w = fr / fc
     f.add fr
     g.add 20.0 * log10(w / sqrt(1.0 + w * w))
-  # Passband is at the *top* here, so the -3 dB point relative to the first
-  # swept sample does not exist; the reference is the low-frequency value.
+  # The passband is at the top, so the -3 dB point relative to the first
+  # sample doesn't exist.
   check corner3dB(f, g).isNaN
 
 test "localMaxima and localMinima find interior extrema only":
@@ -114,9 +112,8 @@ test "localMaxima and localMinima find interior extrema only":
   let mn = localMinima(x, y)
   check mn.len == 1
   check mn[0] == (x: 3.0, y: 1.0)
-  # y[3] = 4 rises into the endpoint y[4] = 9, so it is not an interior
-  # maximum, and the endpoint itself is never reported -- a peak at the edge
-  # of the swept band is not known to be a peak.
+  # y[3] rises into the endpoint, so it isn't an interior maximum; an edge
+  # peak is never reported.
 
 # --- time-domain extraction --------------------------------------------
 
@@ -203,9 +200,8 @@ test "invented() separates what was assumed from what the design stated":
 
 proc bandpassSweep(ptsPerDecade: int, fStart, fStop, fLo, fHi, gain: float):
     tuple[f, magDb: seq[float]] =
-  ## A single-pole high-pass cascaded with a single-pole low-pass, at gain
-  ## `gain` in the midband. Exact, so the extractions below are checked
-  ## against closed form. This is the shape of every AC-coupled stage.
+  ## A single-pole high-pass cascaded with a low-pass at midband `gain` --
+  ## an AC-coupled stage, in closed form.
   let n = int(round(float(ptsPerDecade) * log10(fStop / fStart)))
   for k in 0 .. n:
     let f = fStart * pow(10.0, float(k) / float(ptsPerDecade))
@@ -215,16 +211,13 @@ proc bandpassSweep(ptsPerDecade: int, fStart, fStop, fLo, fHi, gain: float):
     result.magDb.add 20.0 * log10(gain * hp * lp)
 
 test "gainMax reports the midband gain a DC-referenced figure cannot":
-  # 100 Hz to 10 kHz at a gain of 20, sampled densely enough that the peak
-  # lands near the geometric centre of the band.
+  # 100 Hz to 10 kHz at a gain of 20.
   let s = bandpassSweep(200, 1.0, 1.0e6, 100.0, 10.0e3, 20.0)
   let g = gainMax(s.f, s.magDb)
-  # Midband gain is 20x = 26.02 dB, less the small loss from each pole at
-  # the band centre.
+  # 20x = 26.02 dB, less a little from each pole at band centre.
   check abs(g.db - 26.02) < 0.15
   check abs(g.hz - 1000.0) / 1000.0 < 0.05     # geometric centre of 100..10k
-  # And the DC-referenced figure, for contrast: the first swept point is in
-  # the stopband, so it says the stage has essentially no gain.
+  # For contrast: the first swept point is in the stopband.
   check s.magDb[0] < 0.0
 
 test "bandEdges finds both corners of an AC-coupled response":
@@ -234,28 +227,22 @@ test "bandEdges finds both corners of an AC-coupled response":
   check abs(e.hi - 10.0e3) / 10.0e3 < 0.03
 
 test "a DC-coupled response has no lower edge, and says so":
-  # Reporting the bottom of the sweep as a corner would be inventing one.
+  # The bottom of the sweep is not a corner.
   let s = rcSweep(50, 1.0, 1.0e6)
   let e = bandEdges(s.f, s.magDb)
   check e.lo.isNaN
   check abs(e.hi - fc) / fc < 0.01
 
 test "on a DC-coupled response the upper edge agrees with corner3dB":
-  # The two references coincide exactly when the first swept point *is* the
-  # passband, which is what makes keeping both honest rather than redundant.
+  # Both references coincide when the first point is in the passband.
   let s = rcSweep(50, 1.0, 1.0e6)
   check abs(bandEdges(s.f, s.magDb).hi - corner3dB(s.f, s.magDb)) / fc < 0.01
 
 test "bandEdges is measured from the maximum, not from the first point":
-  # The sharpest version of why the two references are not interchangeable.
-  # `corner3dB` looks for 3 dB below the *first swept point*, which here is
-  # the bottom of the stopband -- and the response never goes lower, so it
-  # reports no corner at all. The band-referenced pair finds both.
-  #
-  # A real stage can be worse than this rather than better: the TS808 drive
-  # stage does fall back past its own starting point at high frequency, so
-  # `corner3dB` returns a confident 710 kHz measured 3 dB below *unity*, on
-  # the far side of a passband that ends at 7 kHz.
+  # `corner3dB` looks 3 dB below the first swept point, the stopband floor,
+  # and the response never goes lower, so it finds no corner. The
+  # band-referenced pair finds both. A stage that falls past its starting
+  # level at high frequency would give `corner3dB` a confident wrong answer.
   let s = bandpassSweep(200, 1.0, 1.0e6, 100.0, 10.0e3, 20.0)
   let e = bandEdges(s.f, s.magDb)
   check corner3dB(s.f, s.magDb).isNaN
@@ -266,14 +253,12 @@ test "bandEdges is measured from the maximum, not from the first point":
 
 proc distorted(f0, a2, a3: float; n: int; periods: float;
                jitter = false): tuple[t, v: seq[float]] =
-  ## A fundamental plus stated 2nd and 3rd harmonics, so THD is known in
-  ## closed form: sqrt(a2^2 + a3^2) / 1.
+  ## A fundamental plus stated 2nd and 3rd harmonics: THD = sqrt(a2^2 + a3^2).
   var rng = 12345
   for k in 0 .. n:
     var frac = float(k) / float(n)
     if jitter and k > 0 and k < n:
-      # Deterministic non-uniform spacing, standing in for an adaptive
-      # timestep -- the case a resampling implementation would blur.
+      # Deterministic non-uniform spacing, like an adaptive timestep.
       rng = (rng * 1103515245 + 12345) and 0x7fffffff
       frac += (float(rng mod 1000) / 1000.0 - 0.5) * 0.8 / float(n)
     let t = frac * periods / f0
@@ -297,8 +282,8 @@ test "the harmonic amplitudes themselves come back":
   check a[4] < 0.01
 
 test "non-uniform sampling is integrated, not resampled":
-  # A .tran result is never uniformly sampled, and the timestep shrinks
-  # exactly where the harmonics live.
+  # A .tran result is non-uniform, and the timestep shrinks where the
+  # harmonics live.
   let s = distorted(1000.0, 0.1, 0.05, 4000, 8.0, jitter = true)
   check abs(thd(s.t, s.v, 1000.0) - 0.1118) < 0.004
 
@@ -307,9 +292,8 @@ test "a pure sine has essentially no distortion":
   check thd(s.t, s.v, 1000.0) < 0.002
 
 test "the window is a whole number of periods, so nothing leaks":
-  # Over a fractional window the fundamental leaks into every harmonic bin
-  # and reads as distortion the circuit does not have. 8.37 periods of a
-  # pure sine must still measure as clean.
+  # A fractional window leaks the fundamental into every bin; 8.37 periods of
+  # a pure sine must still measure clean.
   let s = distorted(1000.0, 0.0, 0.0, 4000, 8.37)
   check thd(s.t, s.v, 1000.0) < 0.01
 
@@ -345,14 +329,14 @@ test "fundamentalFreq recovers a sine's rate from its mean crossings":
   check abs(fundamentalFreq(s.t, s.v) - 1584.3) < 0.5
 
 test "the crossing level is the mean, not zero -- a single-supply oscillator never reaches zero":
-  # Offset well clear of ground, which is what a mid-rail-biased oscillator
-  # looks like. A zero-crossing detector finds nothing here at all.
+  # Offset well above ground, like a mid-rail-biased oscillator; a
+  # zero-crossing detector finds nothing.
   let s = periodic(1584.3, 2.5, 8000, 30.0, proc (p: float): float = sin(p))
   check abs(fundamentalFreq(s.t, s.v) - 1584.3) < 0.5
 
 test "hysteresis keeps a harmonic-rich wave from counting three times its rate":
-  # A fundamental with a 3rd harmonic 70% of it crosses the mean six times a
-  # period, not twice. Without the hysteresis band this reads 3*f0.
+  # A 70% 3rd harmonic crosses the mean six times a period; without
+  # hysteresis this reads 3*f0.
   let s = periodic(1000.0, 0.0, 20000, 30.0,
                    proc (p: float): float = sin(p) + 0.7 * sin(3.0 * p))
   check abs(fundamentalFreq(s.t, s.v) - 1000.0) < 2.0
@@ -376,11 +360,8 @@ test "less than two crossings is NaN rather than a rate from one":
 # --- time-weighted window statistics -----------------------------------
 
 test "timeMean weights by elapsed time, not by sample count":
-  # A square wave, 25% high at 4 V and 75% low at 0, sampled *densely* over
-  # the high part and sparsely over the low part -- which is what ngspice
-  # does around an edge. The time-weighted answer is 1 V; a plain mean over
-  # these samples is 2.9 V, because most of the samples sit on the quarter of
-  # the period that is high.
+  # A square wave, 25% at 4 V, sampled densely on the high part (as ngspice
+  # does around an edge). Time-weighted it's ~1 V; a sample mean is 2.9 V.
   var t, v: seq[float]
   for k in 0 .. 100:                      # 0 .. 25 us, dense
     t.add float(k) * 0.25e-6
@@ -388,19 +369,16 @@ test "timeMean weights by elapsed time, not by sample count":
   for k in 1 .. 5:                        # 25 .. 100 us, sparse
     t.add 25.0e-6 + float(k) * 15.0e-6
     v.add 0.0
-  # The step down lands between two samples, so the trapezoid spreads it over
-  # the first sparse interval: 4 V for 25 us plus the ramp's 15 us at a mean
-  # of 2 V, over 100 us.
+  # The step lands between samples, so the trapezoid spreads it: 4 V for
+  # 25 us plus a 15 us ramp at a mean of 2 V, over 100 us.
   check abs(timeMean(t, v) - 1.3) < 1e-9
   var plain = 0.0
   for x in v: plain += x
   check plain / float(v.len) > 2.5        # what sample-counting would say
 
 test "timeRms integrates the square exactly for a triangle":
-  # A symmetric triangle of amplitude 1 has an RMS of 1/sqrt(3), and it is the
-  # shape a converter's inductor ripple takes -- sampled coarsely between
-  # corners, which is exactly where the trapezoid rule over v*v is worst.
-  # Four samples per period is deliberately brutal.
+  # A symmetric triangle has RMS 1/sqrt(3), sampled at only four points a
+  # period -- where a trapezoid over v*v is worst.
   var t, v: seq[float]
   let period = 1.0e-6
   for k in 0 .. 40:
@@ -411,10 +389,8 @@ test "timeRms integrates the square exactly for a triangle":
           of 2: 0.0
           else: -1.0)
   check abs(timeRms(t, v) - 1.0 / sqrt(3.0)) < 1e-9
-  # What a trapezoid over v*v would have said, for contrast: the square of a
-  # triangle is a parabola, and joining its samples with straight lines
-  # overestimates by 22% -- 0.7071 against 0.5774, which would read as a part
-  # running hotter than it does.
+  # For contrast: a trapezoid over v*v overestimates by 22% (0.7071 vs
+  # 0.5774).
   var trap = 0.0
   for i in 0 ..< t.len - 1:
     trap += 0.5 * (t[i + 1] - t[i]) * (v[i] * v[i] + v[i + 1] * v[i + 1])

@@ -1,20 +1,7 @@
-## Renders a `ModelSpec` as the `ifspec.ifs` text that ngspice's `cmpp -ifs`
-## consumes.
-##
-## Two deliberate simplifications over the files shipped in ngspice's own
-## `src/xspice/icm/`:
-##
-## * **One row per table block.** Upstream `.ifs` files pack several ports or
-##   parameters into one `PORT_TABLE:`/`PARAMETER_TABLE:` as aligned columns.
-##   Repeating the table header instead is equally legal (ngspice's own
-##   `digital/d_dff/ifspec.ifs` repeats both headers), and it removes all
-##   column-alignment logic -- which would otherwise have to reason about the
-##   widest entry in the block.
-## * **Fixed label column.** `cmpp`'s lexer tokenizes; it does not care about
-##   alignment. The padding here is purely so a human can read the generated
-##   file when debugging a build.
-##
-## Pure string work -- no filesystem, no ngspice, no C. Testable anywhere.
+## Renders a `ModelSpec` as the `ifspec.ifs` text `cmpp -ifs` consumes. Two
+## simplifications vs ngspice's own files: **one row per table block**
+## (repeated headers are legal, and need no column alignment), and a fixed
+## label column (for human readability only). Pure string work.
 
 import std/[os, strutils]
 import ./spec
@@ -29,11 +16,8 @@ func quoted(s: string): string =
   '"' & s.multiReplace(("\\", "\\\\"), ("\"", "\\\"")) & '"'
 
 func descField(text: string): string =
-  ## An empty `Description:` is *not* the same as no description: cmpp lexes
-  ## `""` as zero elements and rejects the table with "Wrong number of
-  ## elements in sub-table". Omitting the line is accepted. That is only safe
-  ## because this renderer emits exactly one row per table block, so there is
-  ## no sibling column whose element count could disagree.
+  ## Omit an empty `Description:` (cmpp rejects `""` as zero elements).
+  ## Safe because each table block has one row.
   if text.len == 0: "" else: field("Description:", quoted(text))
 
 func render(b: Bound): string =
@@ -46,8 +30,7 @@ func render(b: Bound): string =
 func yesNo(b: bool): string = (if b: "yes" else: "no")
 
 func renderIfs*(spec: ModelSpec): string =
-  ## Render `spec` as `ifspec.ifs` text. Call `validate(spec)` first; this
-  ## proc renders whatever it is given.
+  ## Render `spec` as `.ifs` text; call `validate(spec)` first.
   result = "NAME_TABLE:\n\n"
   result &= field("C_Function_Name:", spec.cFunction)
   result &= field("Spice_Model_Name:", spec.name)
@@ -85,6 +68,5 @@ func renderIfs*(spec: ModelSpec): string =
       result &= field("Data_Type:", v.dataType.ifsName)
 
 proc writeIfsFile*(dir, text: string) =
-  ## Write rendered `.ifs` text as `<dir>/ifspec.ifs` -- the filename
-  ## `cmpp -ifs` insists on, since it reads from the working directory.
+  ## Write `<dir>/ifspec.ifs` (the filename `cmpp -ifs` requires).
   writeFile(dir / "ifspec.ifs", text)

@@ -1,8 +1,5 @@
-## The readiness report and its exit-code contract.
-##
-## Everything here runs with `offlineCapabilities`, so the whole file is
-## hermetic and needs no simulator -- the graded exit codes are a property of
-## how results are classified, not of what a simulation returned.
+## The readiness report and its exit-code contract. Runs offline, so needs no
+## simulator.
 
 import std/[os, strutils, tables, unittest]
 
@@ -15,8 +12,8 @@ import verax/netlist/packages
 proc bus(pullup: string): Design =
   ## An I2C board whose RC corner passes or fails depending on `pullup`.
   design("board"):
-    # Stated: an unstated rail is a STRUCTURE finding of its own, and the
-    # i2c sink-current claim cannot be evaluated without it.
+    # Stated: an unstated rail is its own STRUCTURE finding, and the
+    # sink-current claim needs it.
     net vdd, kind = ntPower, voltage = "3.3"
     net gnd, kind = ntGround, name = "0"
     net sda, kind = ntSignal
@@ -54,8 +51,7 @@ suite "readiness":
     check count(r.results, esFail) == 0
 
   test "a failing claim exits 1":
-    # 100k against the assumed bus capacitance puts the corner far under the
-    # ten-times-clock the role asks for.
+    # 100k puts the corner far below 10x the clock.
     let r = readiness(bus("100k"), offlineCapabilities)
     check exitCode(r) == exitFailed
     check count(r.results, esFail) > 0
@@ -79,9 +75,8 @@ suite "readiness":
     check "z_min" in text
 
   test "withholding a capability is not the same as nothing producing it":
-    # `dc_voltage` has an evaluator; offline simply does not offer it. That
-    # must read as not-evaluated, never as not-evaluable, or an author
-    # deletes a requirement that was fine.
+    # `dc_voltage` has an evaluator that offline doesn't offer: not
+    # evaluated, never not-evaluable.
     var d = bus("2.2k")
     d.assertThat mkAssertion("dc_voltage", @[Subject(kind: skNet, name: "vdd")],
                              expectEq(3.3.V, 5.pct), "V", id = "REQ-DC")
@@ -138,20 +133,18 @@ suite "readiness":
 
   test "sections appear in priority order":
     let text = render(readiness(bus("100k"), offlineCapabilities))
-    # Structure first (it undermines every number below it), then the tests
-    # themselves, then the digest of what did not hold -- last, so it is what
-    # is still on screen when the run ends.
+    # Structure first, then checks, then the failure digest last so it stays
+    # on screen.
     check text.find("CHECKS") < text.find("FAILED")
 
   test "an assumption is reported under the test that rests on it":
-    # Pooled at the foot of the report, forty invented values say that
-    # something was assumed *somewhere*, and the reader cannot tell which
-    # number each one moved.
+    # Pooled at the foot, assumptions can't be tied to the numbers they
+    # moved...
     let text = render(readiness(bus("2.2k"), offlineCapabilities))
     check "ASSUMPTIONS" notin text
     let ass = text.find("assuming")
     check ass > text.find("CHECKS")
-    # ... inside a check block, above the claims that rest on it.
+    # ...so they sit inside a check block, above the claims that rest on them.
     check ass < text.find("rc_corner(net 'sda')")
 
   test "a claim is rendered as a comparison, both numbers on one line":
@@ -167,17 +160,14 @@ suite "readiness":
     check "ran: a graph walk of net 'sda'" in text
 
   test "the report never carries a simulation curve":
-    # `AnalysisReport.raw` holds thousands of points. `AssertionResult` has no
-    # field for it, which is what keeps this true -- pin the size anyway, so a
-    # future "attach the curve for context" change fails here rather than in
-    # someone's context window.
+    # `AnalysisReport.raw` holds thousands of points; pin the output size so
+    # attaching it would fail here.
     let text = render(readiness(bus("2.2k"), offlineCapabilities), verbose = true)
     check text.splitLines().len < 200
 
   test "a claim stating no unit against a measured one is reported":
-    # `unitOf(Fraction)` is "" and `unitsAgree` treats an empty unit as
-    # unchecked, so `<= 5.pct` against a quantity measured in "%" compares
-    # 0.05 to 5.0 and is wrong by a hundred with nothing said.
+    # `unitOf(Fraction)` is "" and an empty unit is unchecked, so `<= 5.pct`
+    # against a "%" quantity would be off by 100 silently.
     var d = bus("2.2k")
     d.assertThat mkAssertion("rc_corner", @[Subject(kind: skNet, name: "sda")],
                              expectMin(1.0), "", id = "REQ-NOUNIT")
@@ -214,8 +204,7 @@ suite "capabilities":
       else: delEnv("VERAX_SCHEMATIC_LAYOUT")
 
   test "an unknown capability is rejected rather than ignored":
-    # `dc` used to be the example here, which is what an enum member's
-    # arrival looks like from a test: the word stopped being unknown.
+    # `dc` is a real capability; `noise` is not.
     check parseCapabilities("dc") == {capStatic, capSpiceDc}
     expect ValueError:
       discard parseCapabilities("noise")
@@ -260,8 +249,7 @@ suite "checks: one block per test":
   test "results are grouped by the run that produced them, not by status":
     let r = readiness(bus("2.2k"), offlineCapabilities)
     check r.checks.len > 0
-    # Every result accounted for exactly once: the flat list is the checks
-    # followed by whatever reached no test at all.
+    # Every result appears once: the checks, then anything reaching no test.
     var grouped = 0
     for c in r.checks: grouped += c.results.len
     check grouped + r.rejected.len == r.results.len
@@ -271,9 +259,8 @@ suite "checks: one block per test":
 
   test "a check carries only the assumptions its own batch rested on":
     let r = readiness(bus("2.2k"), offlineCapabilities)
-    # `rc_corner` invents a per-pin bus capacitance; `pullup_count` counts
-    # resistors and invents nothing. Pooling them would attribute the
-    # invented number to both.
+    # `rc_corner` invents a pin capacitance; `pullup_count` invents nothing.
+    # Pooling would attribute it to both.
     var withAssumption, without: int
     for c in r.checks:
       if c.evaluator == "static.rc_corner":
@@ -309,9 +296,7 @@ suite "folding assumptions":
     check folded.len == 2
 
   test "a narrative note folds too, when it names a part":
-    # `note` has no key and no magnitude, and its detail is a whole sentence.
-    # Folding still applies -- four capacitors derated identically are one
-    # statement about four parts.
+    # `note` has no key or magnitude; folding still applies.
     let folded = foldAssumptions(@[
       note("C1", "derates to 65% of nominal"),
       note("C2", "derates to 65% of nominal"),
@@ -348,8 +333,7 @@ suite "the catalog names a two-subject quantity as one":
   test "channel_match's role parts render as `role`, not `class`":
     let text = describeRole("channel_match")
     check "role" in text
-    # The generic `($kind)[2..^1]` slice would print `class`; a role
-    # reference is a role to a reader.
+    # The generic slice would print `class`; a role reference reads as a role.
     check "class" notin text
 
   test "a quantity whose evaluator takes two subjects is marked in the catalog":
@@ -362,8 +346,7 @@ suite "the catalog names a two-subject quantity as one":
 suite "relative and predicate claims in the report":
   test "a relative claim folds to one result and never leaks its hidden requests":
     var d = bus("2.2k")
-    # 1 pull-up on sda >= 2 * 1 pull-up on scl is false: the reference run
-    # (scl) exists only to feed this claim and must not appear as a claim.
+    # The reference run (scl) only feeds this claim; it isn't a claim itself.
     d.assertThat relAssertion("pullup_count",
       @[Subject(kind: skNet, name: "sda")], roGe, 2.0,
       "pullup_count", @[Subject(kind: skNet, name: "scl")],
@@ -393,10 +376,8 @@ suite "relative and predicate claims in the report":
 
 suite "margin in the text report":
   test "a passing claim's comparison line also states its margin":
-    # `bus.sda.pullup` is `pullup_count(sda) >= 1`, measured 1 -- a one-sided
-    # minimum with a zero limit, so `hasFrac` is false and only the absolute
-    # headroom prints; `bus.sda.rc_corner` has a real limit and prints a
-    # percentage.
+    # A one-sided minimum with a zero limit prints only absolute headroom;
+    # `rc_corner` has a real limit and prints a percentage.
     let text = render(readiness(bus("2.2k"), offlineCapabilities))
     check "margin" in text
     var sawPercent = false
@@ -416,9 +397,7 @@ suite "margin in the text report":
     for line in text.splitLines():
       if "REQ-REL-NOMARGIN" in line: found = true
     check found
-    # The comparison line for a relative claim is `expect ... <reason>`, with
-    # no measured/margin suffix at all -- `marginOf` returns `none` for
-    # `ekRelative` before `renderClaim` ever computes one.
+    # A relative claim's line is `expect ... <reason>` with no margin.
     for line in text.splitLines():
       if "expect >=" in line and "pullup_count" in line:
         check "margin" notin line

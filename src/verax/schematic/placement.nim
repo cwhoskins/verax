@@ -4,19 +4,15 @@ proc cmpJunction(a, b: SchematicJunction): int =
   if result == 0: result = cmp(a.y, b.y)
 
 proc pinKey(c: Component, pinName: string): string =
-  ## A composite lookup key for a pin position, since ref objects are not
-  ## hashable table keys. A designator is unique within a netlist and a pin
-  ## name within a component, so the pair is unique.
+  ## A table key for a pin position (designator + pin name; ref objects
+  ## aren't hashable).
   c.designator & "\x1f" & pinName
 
 proc overlapsAny(i: int, x, y: float, pos: seq[Point],
                  ohw, ohh: seq[float], against: openArray[int]): bool =
-  ## Whether the candidate centre `(x, y)` for part `i` overlaps the inflated
-  ## body of any part named in `against` (strict interior; touching is
-  ## allowed). `i` itself is skipped if listed. The separation pass passes the
-  ## indices it has already placed; taking an explicit list rather than
-  ## hard-coding `0 ..< i` keeps the non-overlap check reusable by a later
-  ## pass that places parts in a different order.
+  ## Whether candidate centre `(x, y)` for part `i` overlaps any inflated
+  ## body in `against` (strict interior; `i` skipped). An explicit list so
+  ## passes with different orders can reuse it.
   for j in against:
     if j == i: continue
     if abs(x - pos[j].x) < ohw[i] + ohw[j] - 1e-9 and
@@ -25,12 +21,9 @@ proc overlapsAny(i: int, x, y: float, pos: seq[Point],
   false
 
 proc rotatedSlot(s: Point, rot: float): Point =
-  ## A pin slot after an SVG `rotate(rot)` around the part centre, for `rot` one
-  ## of {0, 90, 180, 270}. In the y-down world `svg.nim` uses, `rotate(90)`
-  ## sends a +X slot to +Y -- the same transform the body is drawn under, so a
-  ## rotated symbol's pins and body cannot disagree. Only the square
-  ## two-terminal symbols are ever rotated, so 90/270 swapping `bodyW`/`bodyH`
-  ## does not matter (they are equal) and the obstacle rects stay valid.
+  ## A pin slot after SVG `rotate(rot)` about the centre (0/90/180/270), in
+  ## y-down world: the same transform as the body. Only square two-terminal
+  ## symbols rotate, so body extents don't change.
   if abs(rot - 90.0) < 1e-9: Point(x: -s.y, y: s.x)
   elif abs(rot - 180.0) < 1e-9: Point(x: -s.x, y: -s.y)
   elif abs(rot - 270.0) < 1e-9: Point(x: s.y, y: -s.x)
@@ -39,17 +32,14 @@ proc rotatedSlot(s: Point, rot: float): Point =
 const rotationChoices = [0.0, 90.0, 180.0, 270.0]
 
 proc addRot(a, b: float): float {.inline.} =
-  ## Compose two quarter-turns, wrapped into `[0, 360)`. Both operands are
-  ## always a member of `rotationChoices`, so the sum is at most 540 and one
-  ## subtraction normalises it -- `rotatedSlot` only recognises 0/90/180/270.
+  ## Compose two quarter-turns into `[0, 360)` (operands are always
+  ## `rotationChoices`).
   result = a + b
   if result >= 360.0: result -= 360.0
 
 proc rotatable(sd: SymbolDef): bool {.inline.} =
-  ## A symbol is turned only when it is a square two-terminal non-box: a
-  ## quarter turn then never changes `bodyW`/`bodyH`, so the separation and
-  ## routing obstacle rects stay valid without a width/height swap, and every
-  ## one of the four orientations is a distinct, meaningful pin assignment.
+  ## Only a square two-terminal non-box turns: extents stay valid and all
+  ## four orientations are distinct pin assignments.
   not sd.isBox and sd.slots.len == 2 and abs(sd.bodyW - sd.bodyH) <= 1e-9
 
 proc slotOf(sd: SymbolDef, pinName: string, ordinal: int): Point {.inline.} =
@@ -58,9 +48,8 @@ proc slotOf(sd: SymbolDef, pinName: string, ordinal: int): Point {.inline.} =
 proc pinWorldPositions(comps: seq[Component], syms: seq[SymbolDef],
                        pos: seq[Point], rots: seq[float]):
     Table[string, Point] =
-  ## Every pin's world position given the current centres and rotations. The
-  ## pin-level attraction force and the rotation search both read net-mates'
-  ## pin positions out of this, rebuilt once per force-layout iteration.
+  ## Every pin's world position for the current centres and rotations,
+  ## rebuilt once per force iteration.
   result = initTable[string, Point]()
   for i, c in comps:
     var ord = 0
@@ -78,9 +67,9 @@ proc isRailForOrientation(net: Net): bool {.inline.} =
   net != nil and isRail(net) and not isGroundForOrientation(net)
 
 proc powerRank(sd: SymbolDef, comp: Component, angle: float): array[4, int] =
-  ## Orientation penalties, compared lexicographically before wire length:
-  ## ground, non-positive rails, positive rails, then unannotated rails.
-  ## Thus semantic power direction is never traded for a shorter wire.
+  ## Orientation penalties, compared before wire length: ground,
+  ## non-positive rails, positive rails, unannotated rails. Power direction
+  ## is never traded for wire length.
   var ord = 0
   for pinName, p in comp.pins:
     let slot = rotatedSlot(slotOf(sd, pinName, ord), angle)
@@ -114,10 +103,8 @@ proc hasPowerDirection(comp: Component): bool {.inline.} =
 
 proc rotationScore(sd: SymbolDef, comp: Component, centre: Point, angle: float,
                    pinWorld: Table[string, Point]): float =
-  ## Total Manhattan distance from each of this part's pins, placed at `angle`,
-  ## to the centroid of the *other* pins on that pin's net. Minimising it over
-  ## the four orientations picks both the pin axis and which end each pin takes
-  ## -- a flip falls out when it shortens the wires, with no separate rule.
+  ## Total Manhattan distance from each pin at `angle` to the centroid of its
+  ## net-mates. Minimising over four orientations picks axis and flip.
   var ord = 0
   for pinName, p in comp.pins:
     let mine = centre + rotatedSlot(slotOf(sd, pinName, ord), angle)
@@ -139,9 +126,8 @@ proc rotationScore(sd: SymbolDef, comp: Component, centre: Point, angle: float,
 
 proc bestRotation(sd: SymbolDef, comp: Component, centre: Point, current: float,
                   pinWorld: Table[string, Point], margin: float): float =
-  ## Power direction has a strong lexicographic rank; wire length only breaks
-  ## equal power ranks. `margin` applies solely within the incumbent's rank,
-  ## so hysteresis cannot retain an electrically backwards orientation.
+  ## Power rank first; wire length breaks ties. `margin` applies only within
+  ## the incumbent's rank, so hysteresis can't keep a backwards orientation.
   if not rotatable(sd): return 0.0
   var bestAngle = 0.0
   var bestScore = Inf
@@ -167,8 +153,7 @@ proc bestRotation(sd: SymbolDef, comp: Component, centre: Point, current: float,
     current
 
 proc slotEscape(slot: Point, bw, bh: float): Point =
-  ## The outward axis direction of a pin at `slot` relative to its part centre,
-  ## by the same body-half-extent test `escapeDir` runs on a placed part.
+  ## A pin's outward axis direction at `slot`, by the `escapeDir` test.
   if abs(abs(slot.x) - bw / 2.0) < abs(abs(slot.y) - bh / 2.0):
     Point(x: (if slot.x >= 0.0: 1.0 else: -1.0), y: 0.0)
   else:
@@ -200,13 +185,10 @@ type
 proc terminalClearance(comps: seq[Component], syms: seq[SymbolDef],
                        pos: seq[Point], rots: seq[float]):
     tuple[coincidences, violations: int, involved: seq[bool]] =
-  ## Count exact distinct-net terminal-pin coincidences and prospective
-  ## *full-length* power/ground terminal glyph collisions. Coincidences are a
-  ## hard placement condition; the glyph checks remain a soft safeguard before
-  ## routing has shortened a terminal stem. A 40-unit glyph must clear foreign
-  ## signal escapes, routing-inflated foreign bodies, and a differently-named
-  ## terminal glyph. The router retains its shortening/blocking checks for
-  ## arrangements this bounded repair cannot improve.
+  ## Counts distinct-net terminal-pin coincidences (a hard condition) and
+  ## prospective full-length power/ground glyph collisions (a soft
+  ## safeguard): a 40-unit glyph must clear foreign escapes, inflated bodies
+  ## and differently-named glyphs. The router still shortens/blocks.
   let n = comps.len
   result.involved = newSeq[bool](n)
   var terminals: seq[TerminalPlan]
@@ -242,8 +224,7 @@ proc terminalClearance(comps: seq[Component], syms: seq[SymbolDef],
   for ti, t in terminals:
     var bad = false
     for g in t.glyphs:
-      # The terminal begins at its own body boundary, so only foreign bodies
-      # are obstacles here.
+      # The terminal starts at its own body, so only foreign bodies count.
       for j in 0 ..< n:
         if j == t.owner: continue
         let hw = syms[j].bodyW / 2.0 + routingClearance
@@ -268,10 +249,8 @@ proc terminalClearance(comps: seq[Component], syms: seq[SymbolDef],
       result.involved[t.owner] = true
 
 proc protectedLeaf(c: Component, sd: SymbolDef): bool =
-  ## A power-directed part with exactly one real (non-ground/rail) signal net:
-  ## its orientation is already pinned by that power direction, so prefer a
-  ## different implicated part when possible rather than disturbing it; the
-  ## leaf remains available if it is the only choice.
+  ## A power-directed part with one real signal net: its orientation is
+  ## pinned, so prefer moving another part if possible.
   if not rotatable(sd) or not hasPowerDirection(c): return false
   var signals = 0
   for _, p in c.pins:
@@ -281,8 +260,8 @@ proc protectedLeaf(c: Component, sd: SymbolDef): bool =
   signals == 1
 
 proc terminalRepairClass(c: Component, sd: SymbolDef): int =
-  ## Prefer moving compact passive symbols. Boxes and larger active symbols are
-  ## still eligible when they are the only way to release a terminal corridor.
+  ## Prefer moving compact passives; boxes and larger symbols only when
+  ## nothing else frees the corridor.
   if not sd.isBox and sd.slots.len == 2:
     var passive = true
     for _, p in c.pins:
@@ -302,14 +281,11 @@ proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
                              sides: seq[LayoutSide] = @[],
                              leftSplit = NegInf, rightSplit = Inf,
                              isPower: seq[bool] = @[], powerSplit = Inf) =
-  ## Deterministic, bounded post-placement repair. Exact distinct-net pin
-  ## coincidences are reduced first as a hard condition; otherwise it keeps a
-  ## grid move that strictly reduces full-glyph conflicts, preserving the
-  ## ordinary placement separation invariant and leaving routing as the final
-  ## safeguard. The small-sheet glyph shortcut never bypasses a coincidence.
-  # A two-part sheet has no third part that could release a corridor by
-  # moving. Keep its minimal layout and let stem shortening handle a glyph
-  # overlap, but not a distinct-net terminal coincidence.
+  ## Deterministic, bounded post-placement repair: reduce distinct-net pin
+  ## coincidences first (hard), then keep grid moves that strictly reduce
+  ## glyph conflicts, preserving separation.
+  # A two-part sheet has no third part to move: keep it and let stem
+  # shortening handle glyph overlap, but not a pin coincidence.
   let initial = terminalClearance(comps, syms, pos, rots)
   if comps.len < 3 and initial.coincidences == 0: return
   var state = initial
@@ -371,9 +347,8 @@ proc repairTerminalClearance(comps: seq[Component], syms: seq[SymbolDef],
     if not improved: break
 
 proc ufFind(parent: var seq[int], x: int): int =
-  ## Union-find root with path compression. The root of a class is always its
-  ## smallest member index (see `ufUnion`), so a class id is a stable function
-  ## of the partition alone -- never of the order the unions happened in.
+  ## Union-find root with path compression. A class's root is its smallest
+  ## member, so ids don't depend on union order.
   var r = x
   while parent[r] != r: r = parent[r]
   var c = x
@@ -394,32 +369,19 @@ proc groupsOf(nl: Netlist, comps: seq[Component], pos: seq[Point],
               extraMembers: Table[string, seq[string]] =
                 initTable[string, seq[string]](),
               noMerge: seq[bool] = @[]): seq[int] =
-  ## A group id per part. Parts joined by a *signal* net (ground and rails
-  ## excluded -- neither is routed as a tree) are one group; then every group
-  ## of at most `mergeMaxParts` parts is folded into the group holding its
-  ## nearest power-rail net-mate, so a decoupling cap or a pull-up is not
-  ## stranded away from the IC it serves. Ids are renumbered by ascending
-  ## lowest-member index. Fully deterministic: union-find over a fixed edge
-  ## set, merge decisions taken against a snapshot of the pre-merge partition.
+  ## A group id per part. Parts sharing a signal net (not ground/rails) form
+  ## a group; groups of at most `mergeMaxParts` fold into the group of their
+  ## nearest power-rail net-mate (a decoupling cap stays by its IC). Ids by
+  ## lowest member. Deterministic: merges decided against a pre-merge
+  ## snapshot.
   ##
-  ## `noMerge` (parallel to `comps`, the `extraMembers` plain-data-escape-
-  ## hatch discipline -- `schematic/power.rawPowerFlags`) suppresses this
-  ## fold for a root group every one of whose members is flagged: a
-  ## power-band unit must not be re-glued to the IC it was just pulled away
-  ## from. Default empty ⇒ today's behaviour, bit-for-bit.
+  ## `noMerge` (parallel to `comps`) suppresses the fold for an all-flagged
+  ## group, so a power-band unit isn't re-glued to its IC.
   ##
-  ## `extraMembers` is a plain-data escape hatch, not `ArrayPlan` itself --
-  ## `arrays.nim` (which owns that type) is `include`d *after* this file (it
-  ## needs `pinKey`/`portDirection` from here), so a forward reference to it
-  ## cannot compile. `state.nim`'s wrapper, included after both, is what
-  ## turns `state.arrays.extraPins` into this by designator name: a collapsed
-  ## array's chain head/tail physically sits on a *hidden* member, invisible
-  ## to the raw pin scan below, so without this a net like a chain's tail
-  ## reads as connecting to nothing in `comps` and the whole array is
-  ## partitioned away from a part that is genuinely wired to it (the bug that
-  ## stranded `spi_daisy_chain`'s R1/R2 terminations in their own singleton
-  ## group, undoing the semantic layering that had already placed them to
-  ## the array's right).
+  ## `extraMembers` is plain data (arrays.nim is included later, so
+  ## `ArrayPlan` isn't visible here): an array chain's head/tail sits on a
+  ## hidden member, and without it the parts wired to the chain would be
+  ## split into their own group.
   let n = comps.len
   var parent = newSeq[int](n)
   for i in 0 ..< n: parent[i] = i
@@ -439,9 +401,8 @@ proc groupsOf(nl: Netlist, comps: seq[Component], pos: seq[Point],
     let m = members(net)
     for a in 1 ..< m.len: ufUnion(parent, m[0], m[a])
 
-  # Fold small groups into the group of their nearest power-rail net-mate.
-  # Every decision is computed against the current (pre-merge) partition and
-  # only applied afterwards, so the outcome cannot depend on merge order.
+  # Fold small groups into their nearest power-rail net-mate's group,
+  # decided against the pre-merge partition.
   var size = newSeq[int](n)
   for i in 0 ..< n: inc size[ufFind(parent, i)]
   var mergeTo = newSeq[int](n)
@@ -481,8 +442,7 @@ proc groupsOf(nl: Netlist, comps: seq[Component], pos: seq[Point],
   for root in 0 ..< n:
     if mergeTo[root] >= 0: ufUnion(parent, root, mergeTo[root])
 
-  # Renumber: roots are minimal member indices, so scanning 0 ..< n meets them
-  # in ascending order and the first-seen order is the id order.
+  # Roots are minimal members, so scanning 0 ..< n gives ids in order.
   var gid = initTable[int, int]()
   result = newSeq[int](n)
   for i in 0 ..< n:
@@ -492,23 +452,11 @@ proc groupsOf(nl: Netlist, comps: seq[Component], pos: seq[Point],
     result[i] = gid[ufFind(parent, i)]
 
 proc packGroups(pos: var seq[Point], ohw, ohh: seq[float], group: seq[int]) =
-  ## Shelf-packs the per-group inflated bounding boxes with a `groupGap`
-  ## gutter, translating each group by a grid-snapped delta -- but only if the
-  ## packed arrangement is *smaller* than what the force layout produced.
-  ##
-  ## The force layout keeps disconnected blocks apart by repulsion alone (the
-  ## only counter-force is a weak gravity), so on a design with genuinely
-  ## independent sub-circuits it leaves a page of empty space between them;
-  ## re-packing collapses that. But when the blocks are already close --
-  ## pulled together by a shared rail -- re-packing would scatter a sensible
-  ## arrangement, so the total-area guard reverts to the force layout in that
-  ## case. Deterministic: the guard is a pure comparison of two bounding-box
-  ## areas.
-  ##
-  ## Each translation is rigid, so intra-group geometry -- and the separation
-  ## invariant it satisfies -- is untouched; the shelves make boxes x-disjoint
-  ## within a row and y-disjoint across rows with `groupGap` between, so any
-  ## cross-group part pair clears `ohw[i] + ohw[j]` on the separating axis.
+  ## Shelf-packs per-group inflated boxes with a `groupGap` gutter, by rigid
+  ## grid-snapped translations -- only if the packed result is *smaller* than
+  ## the force layout (which spreads independent sub-circuits apart but keeps
+  ## rail-linked blocks close). Rigid moves keep intra-group geometry; shelf
+  ## disjointness keeps cross-group separation.
   let n = pos.len
   var ng = 0
   for g in group: ng = max(ng, g + 1)
@@ -584,10 +532,9 @@ proc packGroups(pos: var seq[Point], ohw, ohh: seq[float], group: seq[int]) =
     if abs(pos[i].y) < 1e-9: pos[i].y = 0.0
 
 proc portDrives(c: Component): bool =
-  ## Whether a component sitting on a port net can source a signal onto it: a
-  ## real or synthesized source, a hierarchical block, or any part
-  ## `classifyConductivity` cannot rule out (an IC, a transistor, an
-  ## unrecognised kind -- assumed capable rather than guessed harmless).
+  ## Whether a component on a port net can source a signal onto it: a
+  ## source, a hierarchical block, or anything `classifyConductivity` can't
+  ## rule out (assumed capable).
   if c == nil: return false
   if c.subNetlist != nil: return true
   let k = c.kind.toLowerAscii()
@@ -596,11 +543,9 @@ proc portDrives(c: Component): bool =
   classifyConductivity(c) == condAmbiguous
 
 proc portDirection(n: Net): PortDirection =
-  ## Which way a port net flows. An explicit `Pin.kind` wins -- `ptOutput`,
-  ## then `ptInOut`, then `ptInput` -- because that is the authored answer.
-  ## With nothing stated, a driver test decides: a net nothing on the sheet
-  ## drives is an input; a net something drives makes no directional claim
-  ## (`pdUnspecified`, a neutral symbol).
+  ## Which way a port net flows. An explicit `Pin.kind` wins (`ptOutput`,
+  ## then `ptInOut`, then `ptInput`). Otherwise: nothing drives it -> input;
+  ## something drives it -> `pdUnspecified`.
   var sawInput = false
   for p in n.pins:
     case p.kind

@@ -44,9 +44,8 @@ test "component/net designator overrides and string-literal labels work":
   check nl.components.hasKey("weird designator")
 
 test "a multi-dimensional bus needs no macro change, only a new addBus overload":
-  ## `width =`'s expression passes straight to `addBus` (`handleBus`), so
-  ## `width = [8, 2]` resolves to the new `openArray[int]` overload with no
-  ## change to the DSL itself.
+  ## `width =` passes straight to `addBus`, so `width = [8, 2]` picks the
+  ## `openArray[int]` overload.
   let nl = netlist("t"):
     bus a, width = [8, 2]
     component U1, kind = "mcu":
@@ -68,8 +67,7 @@ test "net [a, b, c], kind = ... declares a group sharing one kind":
   check nl.nets.len == 4
   for n in ["a", "b", "c"]:
     check nl.nets[n].kind == ntSignal
-  # Each name is a real bound identifier, not a runtime loop variable, so it
-  # stays addressable for the rest of the block -- `a`/`b` above wired R1.
+  # Each name is a bound identifier, addressable for the rest of the block.
   check nl.components["R1"].pins["1"].net.name == "a"
 
 test "net [...] entries may be string literals too, with no identifier bound":
@@ -163,8 +161,7 @@ test "named instance groups can be explicitly opened":
   let top = netlist("top"):
     net wired, kind = ntSignal
     instance XOPEN, peripheral, {"sense": open, "link": open}
-    # A named scalar connection remains ordinary wiring while another group
-    # is explicitly open.
+    # A named scalar connection stays wired while another group is open.
     instance XWIRED, peripheral, {"sense": wired, "link": open}
 
   let opened = top.components["XOPEN"]
@@ -198,8 +195,8 @@ test "a model statement registers a card that reaches the deck verbatim":
   check "D1 a 0 1N4148" in s.data
 
 test "a part whose value names a model is no longer unmodelled":
-  # Which is the point: without one a diode was stood in for by two
-  # resistors to ground, and `spice/isolate` would not traverse it.
+  # Without a model a diode is two resistors to ground and `spice/isolate`
+  # won't traverse it.
   let nl = netlist("d"):
     net a, kind = ntSignal
     net gnd, kind = ntGround, name = "0"
@@ -217,9 +214,7 @@ test "a part whose value names a model is no longer unmodelled":
   check not isPassive(nl.components["D2"])
 
 test "model binding is case-insensitive, as SPICE is":
-  # A deck saying `1n4148` against a card saying `1N4148` binds in the
-  # simulator, and a check that disagreed with the simulator about the same
-  # part is the failure this area keeps producing.
+  # ngspice binds `1n4148` to `1N4148`, so the check must agree.
   let nl = netlist("d"):
     net a, kind = ntSignal
     net gnd, kind = ntGround, name = "0"
@@ -240,11 +235,9 @@ test "a value that is a source spec is not mistaken for a model name":
   check not hasDeviceModel(nl.components["V1"])
 
 test "value = <Quantity> writes the identical text spiceValue would":
-  # `2.2.kohm` is a typed Nim expression, not a string to disambiguate, so it
-  # needs no RKM parser and cannot collide with a model name the way a
-  # string like "2k2" could. It must still reach the deck exactly as
-  # `spiceValue` would format it -- scientific notation, explicit exponent --
-  # since `value` is the one key `formatDeviceLine` appends verbatim.
+  # `2.2.kohm` is typed, so it needs no RKM parsing and can't collide with a
+  # model name. It reaches the deck as `spiceValue` formats it, since `value`
+  # is appended verbatim.
   let nl = netlist("d"):
     net a, kind = ntSignal
     net b, kind = ntSignal
@@ -258,9 +251,7 @@ test "value = <Quantity> writes the identical text spiceValue would":
   check ("R1 a b " & spiceValue(2200.0)) in s.data
 
 test "value = <string> is unaffected by the Quantity dispatch":
-  # A model name and a source spec must take the untouched `$value` branch
-  # exactly as before -- regression guard on the `else` side of the new
-  # `when value is Quantity` dispatch.
+  # Model names and source specs take the plain `$value` branch.
   let nl = netlist("d"):
     net a, kind = ntSignal
     net gnd, kind = ntGround, name = "0"
@@ -279,12 +270,9 @@ test "a model needs a name":
     setModel(nl, "", "D(IS=1n)")
 
 suite "control flow over DSL statements":
-  # `for`, `if`, `case` and `when` are admitted the same way: the header is
-  # passed through untouched and every branch body is expanded by the same
-  # dispatcher, so whatever is inside is still a net/component/instance/model.
-  # `for` removes repetition; `if`/`case` remove the other way a value drifts
-  # out of step -- build variants kept as two files, or as one file with the
-  # unused half commented out.
+  # `for`, `if`, `case` and `when` pass their header through and expand each
+  # body with the same dispatcher. `if`/`case` keep build variants in one
+  # file.
 
   test "a repeated part is generated once and registered N times":
     let nl = netlist("bank"):
@@ -323,8 +311,7 @@ suite "control flow over DSL statements":
     check nl.nets.hasKey("tap3")
 
   test "a loop whose naming does not vary fails exactly as two literals would":
-    # `addComponent` has always raised at runtime rather than at compile time,
-    # so nothing is weakened here.
+  # `addComponent` raises at runtime, as it always has.
     expect NetlistError:
       discard netlist("dup"):
         net gnd, kind = ntGround, name = "0"
@@ -342,8 +329,7 @@ suite "control flow over DSL statements":
           echo "not a DSL statement"))
 
   test "spec: keys are still validated at compile time inside a loop":
-    # The strictness that matters does not depend on how many times the body
-    # runs, so none of it is weakened by looping.
+  # The strictness doesn't depend on how many times the body runs.
     check(not compiles(block:
       discard netlist("badkey"):
         net gnd, kind = ntGround, name = "0"
@@ -426,8 +412,7 @@ suite "control flow over DSL statements":
     check nl.components["R1"].attrs["value"] == "9k"
 
   test "a bare discard is an empty branch":
-    # `if`/`case` branches need a body, and "this variant adds no parts" is an
-    # ordinary thing for one to say.
+  # A variant that adds no parts is ordinary.
     proc board(extra: bool): Netlist =
       netlist("b"):
         net gnd, kind = ntGround, name = "0"
@@ -468,10 +453,8 @@ suite "control flow over DSL statements":
         else: discard))
 
 suite "designators you did not write":
-  # For the parts nobody ever refers to -- a decoupling bank, a termination
-  # network -- where hand-authoring twenty designators buys nothing. Safe
-  # *because* nothing addresses them: a generated designator is positional,
-  # so inserting a part earlier renumbers everything after it.
+  # For parts nobody refers to (decoupling banks, terminations). Generated
+  # designators are positional, so inserting a part renumbers the rest.
 
   test "omitting the label generates one from kind":
     let nl = netlist("b"):
@@ -500,9 +483,7 @@ suite "designators you did not write":
     check nl.components["C2"].attrs["value"] == "100n"
 
   test "the prefix is the schematic convention, not the SPICE device letter":
-    # They genuinely disagree, and deriving either from the other is how a
-    # ferrite bead came to be simulated as a current-controlled current
-    # source. FB on a board; L in a deck.
+    # They differ: FB on a board, L in a deck. Neither derives from the other.
     let nl = netlist("b"):
       net a, kind = ntSignal
       net b, kind = ntSignal
@@ -528,9 +509,8 @@ suite "designators you did not write":
     check nl2.components.hasKey("WD1")
 
   test "generated ones are marked, so a board flow can tell them apart":
-    # A designator is the join key to a layout, a BoM line and silkscreen
-    # text. One this library chose is positional and must not be trusted to
-    # be stable the way a written one is.
+    # A designator joins layout, BoM and silkscreen; a generated one is
+    # positional and not stable.
     let nl = netlist("b"):
       net gnd, kind = ntGround, name = "0"
       net vdd, kind = ntPower
@@ -558,7 +538,7 @@ suite "designators you did not write":
         pin "2", gnd, kind = ptPassive
       instance XA, blk(), [a, gnd]
       instance XB, blk(), [a, gnd]
-    # Each netlist numbers from 1 in its own scope.
+    # Each netlist numbers from 1.
     check nl.components.hasKey("C1")
     check nl.children["XA"].components.hasKey("C1")
     check nl.children["XB"].components.hasKey("C1")
@@ -579,9 +559,8 @@ suite "designators you did not write":
           pin "1", a, kind = ptPassive))
 
   test "a generated designator still reaches the deck as the right device":
-    # The two naming schemes stay independent all the way to the simulator:
-    # the generated designator is the board's name, and `deckDesignator`
-    # prepends the SPICE letter from `kind` on top of it.
+    # The generated designator is the board name; `deckDesignator` prepends
+    # the SPICE letter.
     let nl = netlist("b"):
       net a, kind = ntSignal
       net b, kind = ntSignal
@@ -597,10 +576,8 @@ suite "designators you did not write":
     check "LFB1" in s.data          # prepended, not substituted
 
 test "a component may carry more than one simReplace, told apart by name":
-  # The DSL statement adds rather than assigns, which is what lets a part
-  # declare the model for each question it can be asked. `suits` is the only
-  # thing that says which is which; without it every model would be a
-  # candidate for every analysis and the choice would be an accident.
+  # The DSL adds rather than assigns, so a part can carry a model per
+  # question; `suits` says which.
   let nl = netlist("two models"):
     net vout, kind = ntPower
     net gnd, kind = ntGround, name = "0"
@@ -619,8 +596,7 @@ test "a component may carry more than one simReplace, told apart by name":
   check u1.simReplace.kind == "voltage_source"
   check u1.simModels["switching"].suits == @["steady_state"]
   check u1.simModels["averaged"].suits.len == 0
-  # And the component itself is untouched: `simReplace` is inert data beside
-  # the part, never a mutation of it.
+  # The component is untouched; `simReplace` is data beside it.
   check u1.kind == "buck"
   check u1.pins.len == 2
 
@@ -828,9 +804,7 @@ suite "layout: block":
     check layoutPower(c) == powerAuto
 
   test "layout: variant = \"name\" writes and reads back through layoutVariant":
-    # Unlike `side`/`mirror`/`power`, `variant` takes a string literal
-    # rather than a bare ident -- `pcb/variant.LayoutVariant` names are
-    # open-ended, not a closed set `netlist/dsl.nim` could enumerate.
+    # `variant` takes a string literal: layout variant names are open-ended.
     let nl = netlist("variants"):
       net gnd, kind = ntGround, name = "0"
       net a, kind = ntSignal
@@ -936,9 +910,8 @@ suite "traverse: block":
     check nl.components["Z1"].attrs["traverse.blocked"] == "RF1,RF2"
 
   test "traverse: block may precede the pin statements it names":
-    # The worked example from the plan: pin names inside `traverse:` are not
-    # checked against the component's own pins at DSL time, so the block may
-    # come first -- `validateTraversal` is what catches an unknown pin name.
+    # Pin names in `traverse:` aren't checked at DSL time, so the block may
+    # come first; `validateTraversal` catches unknown pins.
     let nl = netlist("t"):
       net a, kind = ntSignal
       net b, kind = ntSignal

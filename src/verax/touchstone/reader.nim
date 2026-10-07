@@ -1,36 +1,14 @@
-## Building the typed `SParams` from a Touchstone (`.sNp`) stream.
+## Building `SParams` from a Touchstone (`.sNp`) stream, via
+## `readTouchstone(s)`/`readTouchstoneFile(path)`. No writer.
 ##
-## Implements the file-format contract's spelling used elsewhere in this
-## codebase -- `readTouchstone(s: Stream)` / `readTouchstoneFile(path)`,
-## names that do not stutter the format, matching `verax/ibis/reader` and
-## `verax/netlist/formats/common`. There is **no writer**: emitting
-## Touchstone is not a stated need here, and `verax/ibis/reader`'s reason for
-## the same choice applies verbatim -- a half-writer is worse than none.
+## **A v1 file doesn't state its port count**; the extension does (`.s2p`).
+## So `name` must end in `.s<N>p` (case-insensitive); otherwise it raises
+## rather than guess a column stride. (v2's `[Number of Ports]` isn't
+## supported.)
 ##
-## **A Touchstone (version 1) file never states its own port count.** The
-## number of ports is a property of the *filename extension* by convention
-## (`.s1p`, `.s2p`, `.s25p`), not of anything inside the file -- version 2
-## adds an explicit `[Number of Ports]` keyword, which this reader does not
-## implement, matching the scope this phase set for the S-parameter reader.
-## So `readTouchstone` needs `name` to end in `.s<N>p` (case-insensitive) to
-## know what shape to expect from the data rows that follow; a stream handed
-## in with no such name, or a caller that changes it, would otherwise force
-## a guess about how many columns the data section holds, and a wrong guess
-## reads every subsequent number off by a stride. Refusing here is the same
-## call `ibis/parse.parseIbisNumber` makes for a suffix it will not vouch
-## for: a `TouchstoneError` naming what is missing beats a matrix that looks
-## complete but was assembled from the wrong column count.
-##
-## Two behaviours carried over from `verax/ibis/reader`'s own borrowing from
-## `verax/netlist/formats/spice`: every failure is a `TouchstoneError` **with
-## line context** wherever the lexer can supply it, and comment text (`!` to
-## end of line, anywhere -- including trailing an option or data line) is
-## stripped before anything downstream sees the line. Unlike IBIS there is no
-## degrade-and-keep path for unrecognised content: `parse.parseOptionLine`
-## already explains why an option-line token cannot be safely skipped, and a
-## data row has no "block" structure for unrecognised content to belong to
-## in the first place -- it is either the right number of columns or the
-## file is malformed.
+## Every failure is a `TouchstoneError` with line context where available;
+## `!` comments are stripped first. A data row either has the right column
+## count or the file is malformed.
 
 import std/[complex, math, streams, strutils]
 import ./types
@@ -42,9 +20,8 @@ type
   Token = tuple[line: int, text: string]
 
 proc extractPortCount(name: string): int =
-  ## Pulls `N` out of a `.sNp`/`.SNp` filename suffix. Returns 0 (never a
-  ## legal port count) when `name` does not match, so the caller can raise
-  ## with the whole filename in the message rather than a bare "invalid".
+  ## `N` from a `.sNp` suffix, or 0 (never legal) so the caller can raise
+  ## naming the file.
   let lower = name.toLowerAscii()
   if not lower.endsWith("p"): return 0
   var i = lower.len - 2  # just before the trailing 'p'
@@ -71,11 +48,9 @@ proc toComplex(a, b: float, fmt: parse.DataFormat): Complex64 =
     complex(mag * cos(rad), mag * sin(rad))
 
 proc readTouchstone*(s: Stream, name = ""): SParams =
-  ## Parses a Touchstone stream into the typed S-parameter matrix. `name`
-  ## must carry the `.sNp` extension the port count is inferred from (see
-  ## the module doc); raises `TouchstoneError` if it does not, if the option
-  ## line is missing or unparseable, or if a data row does not divide evenly
-  ## into `1 + 2*nPorts*nPorts` numbers.
+  ## Parses a Touchstone stream into `SParams`. Raises `TouchstoneError` if
+  ## `name` lacks the `.sNp` extension, the option line is missing or bad, or
+  ## a row doesn't fit `1 + 2*nPorts*nPorts` numbers.
   let nPorts = extractPortCount(name)
   if nPorts <= 0:
     raise newException(TouchstoneError,
@@ -114,11 +89,8 @@ proc readTouchstone*(s: Stream, name = ""): SParams =
   let scale = parse.freqScale(opt.freqUnit)
   let groupLen = 1 + 2 * nPorts * nPorts
 
-  # The on-disk column order agrees with the row-major target order for
-  # every port count except 2, whose historical layout is S11 S21 S12 S22 --
-  # diskDataOrder maps disk pair index -> row-major target index, and is the
-  # identity everywhere else. See `types.SParams.points` for why the target
-  # is always row-major regardless.
+  # Disk column order is row-major except for 2 ports (S11 S21 S12 S22);
+  # `diskDataOrder` maps disk pair -> row-major index.
   var diskDataOrder: seq[int]
   if nPorts == 2:
     diskDataOrder = @[0, 2, 1, 3]
@@ -155,10 +127,8 @@ proc readTouchstone*(s: Stream, name = ""): SParams =
     i += groupLen
 
 proc readTouchstoneFile*(path: string): SParams =
-  ## Path wrapper around `readTouchstone`, passing `path` itself as the
-  ## `name` the port count is read from -- the ordinary case, since a file
-  ## on disk already carries its `.sNp` extension. Raises `TouchstoneError`
-  ## if the file cannot be opened.
+  ## `readTouchstone` on a file, using `path` as `name`. Raises
+  ## `TouchstoneError` if it can't be opened.
   var s: FileStream
   try:
     s = openFileStream(path, fmRead)

@@ -1,23 +1,13 @@
-## The verify-level run archive: `runFULL` pictures and JSON scenes of the
-## *authored* design.
+## The verify-level run archive: `runFULL` pictures and scenes of the
+## authored design.
 ##
-## `spice/ngspice.run` already writes per-run `runNNN.svg`/`runNNN.json` of
-## the derived fragment it simulated; `tests/test_spice_keep.nim` and
-## `tests/test_schematic.nim` pin those. The one picture those never contain
-## is the circuit the author actually wrote, so `verify` writes `runFULL.svg`
-## and its `runFULL.json` scene once, overwritten every check, *before*
-## `readiness` runs any fragment -- each pair from the same routed scene.
+## Per-run `runNNN` files show the derived fragment; `runFULL.svg`/`.json`
+## show the design as written, written once before `readiness` runs. Pinned:
+## they exist even when nothing simulates, are overwritten rather than
+## slotted, and take no `index.txt` row.
 ##
-## The properties worth pinning here are: the files exist even when no
-## simulation runs (so they are gated on the archive, not on a run); they are
-## overwritten rather than slotted; and they take no `index.txt` row -- the
-## index names one analysis run per row, and these pictures are not runs.
-##
-## One property -- that a *derived* simulation fragment's `run000` archive
-## routes cleanly rather than degrading to dashed fallback markers -- lives
-## behind `-d:slowTests`: it costs ~140s, almost all of it one `layout()` of
-## the op-substituted fragment (`schematic.layout()` is superlinear), not the
-## simulation. Run it with
+## That a derived fragment's `run000` routes without fallback markers is
+## behind `-d:slowTests` (~140s, nearly all one `layout()`):
 ##   nim c -r --path:./src -d:slowTests tests/test_verify_keep.nim
 
 import std/[json, os, strutils, tempfiles, unittest]
@@ -49,8 +39,8 @@ proc bareBoard(): Design =
       pin "2", gnd, kind = ptPassive
 
 proc dividerBoard(): Design =
-  ## A 10 V source divided down to a nominal 3.3 V rail, claimed through a
-  ## `power_rail` role so `allCapabilities` runs exactly one `.op`.
+  ## A 10 V source divided to a nominal 3.3 V rail via a `power_rail` role,
+  ## so `allCapabilities` runs one `.op`.
   design("divider"):
     net vin, kind = ntPower, voltage = "10"
     net vdd, kind = ntPower
@@ -72,8 +62,7 @@ proc dividerBoard(): Design =
     role "power_rail", vdd_rail, rail = vdd, voltage = 3.3.V, band = 5.pct
 
 proc gainBlock(): Netlist =
-  ## A trivial one-resistor block with two signal ports, to be instantiated
-  ## more than once.
+  ## A one-resistor block with two signal ports.
   subckt("GAIN_BLOCK", [IN, OUT]):
     net IN, kind = ntSignal
     net OUT, kind = ntSignal
@@ -82,7 +71,7 @@ proc gainBlock(): Netlist =
       pin "2", OUT, kind = ptPassive
 
 proc twoChannelBoard(): Design =
-  ## One subcircuit instantiated twice -- the stereo shape.
+  ## One subcircuit instantiated twice.
   design("two_channel"):
     net inL, kind = ntSignal
     net inR, kind = ntSignal
@@ -99,7 +88,7 @@ proc twoChannelBoard(): Design =
     instance XR, gainBlock(), [inR, outR]
 
 proc namedGain(value: string): Netlist =
-  ## Deliberately shares a subcircuit name while changing its rendered scene.
+  ## Shares a subcircuit name but renders a different scene.
   subckt("GAIN_BLOCK", [IN, OUT]):
     net IN, kind = ntSignal
     net OUT, kind = ntSignal
@@ -116,7 +105,7 @@ proc leaf(value: string): Netlist =
       pin "2", OUT, kind = ptPassive
 
 proc parentWithLeaf(value: string): Netlist =
-  ## Its own sheet is unchanged; only its descendant's resolved target varies.
+  ## Its own sheet is unchanged; only a descendant's target varies.
   subckt("PARENT", [IN, OUT]):
     net IN, kind = ntSignal
     net OUT, kind = ntSignal
@@ -166,11 +155,8 @@ proc safeNameCollisionBoard(): Design =
     instance XB, underscoreNamedBlock(), [c, d]
 
 proc riaaBoard(): Design =
-  ## The real stereo RIAA design (`designs/riaa_preamp.nim`) rebuilt here so a
-  ## test can drive `verify` in-process: the same two `riaaChannel()`
-  ## instances, supplies and claims. Its first simulation run is the
-  ## `run000.svg` operating-point fragment the foreign escape-seed protection
-  ## must not change into new fallback markers.
+  ## A stereo RIAA design built in-process: two `riaaChannel()` instances,
+  ## supplies and claims. Its first run is an operating-point fragment.
   design("riaa_preamp"):
     net gnd, kind = ntGround, name = "0", global = true
     net vp, kind = ntPower:
@@ -236,7 +222,7 @@ test "runFULL.svg and its json scene are written before readiness, even with no 
 
   check fileExists(dir / "runFULL.svg")
   check fileExists(dir / "runFULL.json")
-  # No fragment ran, so no slot was taken and no index row was written.
+  # No fragment ran: no slot, no index row.
   check not fileExists(dir / "run000.svg")
   check not fileExists(dir / "run000.json")
   check not fileExists(dir / "index.txt")
@@ -245,8 +231,7 @@ test "runFULL.svg and its json scene are written before readiness, even with no 
   check svg.startsWith("<?xml")
   check ">R1</text>" in svg
 
-  # The JSON is the public scene of the very netlist `verify` laid out, not a
-  # second layout: byte-for-byte what `sceneToJsonString` produces for it.
+  # The JSON is byte-for-byte `sceneToJsonString` of the same netlist.
   check readFile(dir / "runFULL.json") == sceneToJsonString(bareBoard().netlist)
 
 test "a subcircuit gets its own runFULL.<name> svg+json sheet, deduped by name":
@@ -292,8 +277,8 @@ test "runFULL.html is a self-contained hierarchy browser linking blocks to sheet
   check "src=" notin html
   check "<link" notin html
 
-  # The embedded model carries both sheets and wires each instance of the
-  # block to the one deduplicated child sheet.
+  # The model carries both sheets and links each instance to the one child
+  # sheet.
   let modelStart = html.find("const MODEL = ") + "const MODEL = ".len
   let modelEnd = html.find(";\n", modelStart)
   let model = parseJson(html[modelStart ..< modelEnd])
@@ -311,7 +296,7 @@ test "runFULL.html is a self-contained hierarchy browser linking blocks to sheet
   for p in model["sheets"]["GAIN_BLOCK"]["parts"]:
     check p["child"].kind == JNull
 
-  # Each sheet inlines its SVG with the XML prolog stripped (invalid mid-HTML).
+  # Each sheet inlines its SVG without the XML prolog.
   check model["sheets"]["@root"]["svg"].getStr.startsWith("<svg")
 
 test "same-named children get distinct sheets when their rendered scenes differ":
@@ -320,8 +305,7 @@ test "same-named children get distinct sheets when their rendered scenes differ"
   withEnv("VERAX_KEEP_RUNS", dir):
     discard verify(sameNameVariantBoard(), offlineCapabilities)
 
-  # The first occurrence keeps the legacy name; later non-equivalent ones are
-  # suffixed, both on disk and in the hierarchy browser.
+  # The first keeps the plain name; later non-equivalent ones are suffixed.
   check fileExists(dir / "runFULL.GAIN_BLOCK.svg")
   check fileExists(dir / "runFULL.GAIN_BLOCK.2.svg")
   let html = readFile(dir / "runFULL.html")
@@ -434,19 +418,15 @@ suite "runFULL.svg beside the derived runNNN.svg":
       check fileExists(dir / "run000.raw")
       check fileExists(dir / "index.txt")
 
-      # The full picture is the design as written: the source, both legs of
-      # the divider, and the unmodelled MCU that the simulation must stand in
-      # for.
+      # The full picture is the design as written, unmodelled MCU included.
       let full = readFile(dir / "runFULL.svg")
       check ">V1</text>" in full
       check ">R1</text>" in full
       check ">R2</text>" in full
       check ">U1</text>" in full
 
-      # The per-run picture is the derived fragment; it keeps its slot. The
-      # MCU is gone there -- `expandPinModels` replaced it with per-pin
-      # stand-in resistors before ngspice ran -- which is exactly why the
-      # authored picture has to exist alongside it.
+      # The per-run picture is the derived fragment, where the MCU was
+      # replaced by stand-in resistors.
       check fileExists(dir / "run000.svg")
       check ">U1</text>" notin readFile(dir / "run000.svg")
 
@@ -460,11 +440,8 @@ suite "runFULL.svg beside the derived runNNN.svg":
 
     when defined(slowTests):
       test "the real RIAA archive records a fully routed derived sheet":
-        # The Hanan grid routes the first derived fragment's op-amp-substitution
-        # internal nets, so the archived SVG and JSON must describe real wires,
-        # not fallback markers. ~140s, almost all of it one `layout()` of the
-        # derived fragment -- hence `-d:slowTests`. The authored-side half of
-        # this property is pinned cheaply below, off `{capStatic}`.
+        # The derived fragment's op-amp-substitution nets must route as real
+        # wires. The authored half is pinned cheaply below.
         let dir = createTempDir("verax_riaaregress_", "")
         defer: removeDir(dir)
         withEnv("VERAX_KEEP_RUNS", dir):
@@ -473,14 +450,12 @@ suite "runFULL.svg beside the derived runNNN.svg":
         check fileExists(dir / "run000.svg")
         check fileExists(dir / "run000.json")
 
-        # SVG is the rendered archive view: dashed strokes only represent
-        # fallback stubs, so their absence says every connection was routed.
+        # Dashed strokes mean fallback stubs; none means everything routed.
         let runSvg = readFile(dir / "run000.svg")
         check runSvg.startsWith("<?xml")
         check "stroke-dasharray=\"6 4\"" notin runSvg
 
-        # JSON is the same routed scene. Require actual wire geometry as well
-        # as no fallback records, rather than pinning an incidental wire count.
+        # The JSON must have real wires and no fallback records.
         let runScene = parseJson(readFile(dir / "run000.json"))
         check runScene["fallbacks"].len == 0
         check runScene["wires"].len > 0
@@ -488,10 +463,8 @@ suite "runFULL.svg beside the derived runNNN.svg":
           check wire["points"].len >= 2
 
 test "the RIAA archive keeps a routed authored design and child sheet":
-  # The authored-side half of the routed-archive property, off `{capStatic}`
-  # so no derived fragment is simulated (~2s rather than ~140s). The full
-  # top sheet and the `RIAA_CHANNEL` child sheet both come from the design as
-  # written, so they are written even with no run.
+  # The authored half, under `{capStatic}` so nothing simulates (~2s). Both
+  # sheets come from the design as written.
   let dir = createTempDir("verax_riaaauthored_", "")
   defer: removeDir(dir)
   withEnv("VERAX_KEEP_RUNS", dir):
@@ -502,8 +475,7 @@ test "the RIAA archive keeps a routed authored design and child sheet":
   check fileExists(dir / "runFULL.RIAA_CHANNEL.svg")
   check fileExists(dir / "runFULL.RIAA_CHANNEL.json")
 
-  # The authored child archive routes cleanly and preserves its semantic
-  # IN/OUT interface ports.
+  # The child routes cleanly and keeps its IN/OUT ports.
   let child = readFile(dir / "runFULL.RIAA_CHANNEL.svg")
   check child.startsWith("<?xml")
   check "stroke-dasharray=\"6 4\"" notin child

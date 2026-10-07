@@ -23,8 +23,7 @@ test "segment bounding box spans its endpoints":
     boxOf(pt(mm(0.0), mm(-1.0)), pt(mm(3.0), mm(0.0)))
 
 test "arc bounding box includes swept axis crossings, not just endpoints":
-  # Upper half circle, radius 1mm, centred on the origin: the top of the arc
-  # is an extreme even though neither endpoint touches it.
+  # Upper half circle: the top is an extreme neither endpoint touches.
   let a = arc(pt(mm(0.0), mm(0.0)), mm(1.0), deg(0.0), deg(180.0))
   let b = box(a)
   check approx(b.lo.x.raw.float, mm(-1.0).raw.float)
@@ -32,8 +31,7 @@ test "arc bounding box includes swept axis crossings, not just endpoints":
   check approx(b.hi.x.raw.float, mm(1.0).raw.float)
   check approx(b.hi.y.raw.float, mm(1.0).raw.float)
 
-  # A quarter arc in the first quadrant crosses no axis extreme, so its box
-  # really is just its endpoints.
+  # A first-quadrant quarter arc crosses no extreme: endpoints only.
   let q = arc(pt(mm(0.0), mm(0.0)), mm(1.0), deg(0.0), deg(90.0))
   check approx(box(q).lo.x.raw.float, 0.0)
   check approx(box(q).lo.y.raw.float, 0.0)
@@ -73,7 +71,7 @@ test "collinear three-point input degrades to a segment rather than raising":
   check c.kind == cvSeg
 
 test "polygon winding normalises to CCW outer, CW holes":
-  # Authored clockwise, which is what ODB++ hands over for an island.
+  # Authored clockwise, as ODB++ gives an island.
   var poly = Polygon(
     outer: polyline([pt(mm(0.0), mm(0.0)), pt(mm(0.0), mm(4.0)),
                      pt(mm(4.0), mm(4.0)), pt(mm(4.0), mm(0.0))], closed = true),
@@ -139,8 +137,7 @@ test "pad transform rotates the flash and its box":
   check approx(tb.height.raw.float, mm(2.0).raw.float, 2.0)
 
 test "Transform maps footprint-local coordinates onto the board":
-  # Counter-clockwise positive in the canonical Y-up frame: a point on +X
-  # rotated 90 degrees lands on +Y, then translates by the origin.
+  # CCW-positive in Y-up: +X rotated 90 lands on +Y, then translates.
   let t = Transform(origin: pt(mm(100.0), mm(50.0)), rot: deg(90.0))
   let p = t.apply(pt(mm(1.0), mm(0.0)))
   check approx(p.x.raw.float, mm(100.0).raw.float, 2.0)
@@ -164,16 +161,14 @@ test "flattening an arc stays within the chord tolerance":
     check approx(distance(pt(mm(0.0), mm(0.0)), p), mm(10.0).raw.float, 10.0)
 
 test "a quarter-circle arc measures pi*r/2, exactly, not through flatten":
-  # A segment is exact by construction (`distance`); an arc's `length` must
-  # be too, or summing thousands of them into a net's total would carry a
-  # systematic short bias -- a chord always undershoots the arc it spans.
+  # An arc's `length` must be exact; a chord always undershoots, biasing net
+  # totals.
   let r = mm(5.0)
   let quarter = arc(pt(mm(0.0), mm(0.0)), r, deg(0.0), deg(90.0))
   let want = PI * r.toMm / 2.0 / 1000.0    # metres
   check approx(length(quarter), want, 1e-9)
 
-  # A full circle is four quarters, and the direction of the sweep (CW vs
-  # CCW) must not change the magnitude.
+  # Sweep direction doesn't change magnitude.
   let full = arc(pt(mm(0.0), mm(0.0)), r, deg(0.0), deg(360.0))
   check approx(length(full), 2.0 * PI * r.toMm / 1000.0, 1e-9)
   let reverse = arc(pt(mm(0.0), mm(0.0)), r, deg(90.0), deg(-90.0))
@@ -196,9 +191,7 @@ test "an arc's exact length differs from its flattened polyline, by less than th
   let pts = flatten(a, DefaultFlattenTol)
   for i in 0 ..< pts.len - 1:
     polyLen += distance(pts[i], pts[i + 1]) * 1e-9
-  # The polyline is strictly shorter (a chord undershoots its arc) but by
-  # less than the sagitta-bounding tolerance times the point count -- not
-  # equal, and not off by anything close to the tolerance summed unscaled.
+  # The polyline is shorter, but by less than the scaled sagitta tolerance.
   check polyLen < exact
   check exact - polyLen < DefaultFlattenTol.toMetres * pts.len.float
 

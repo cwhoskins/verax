@@ -34,8 +34,8 @@ proc runPdn(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
 
   var spec = defaultPdnSpec()
   measurementOnly(spec)
-  # The sweep runs against capacitances derated from the shared operating
-  # point rather than from whatever the nets happened to be annotated with.
+  # Derate capacitances from the shared operating point, not net
+  # annotations.
   spec.bias = nodeVoltages(sharedOperatingPoint(ctx))
   let fFrom = conditionFloat(batch[0], "f_from", 0.0)
   let fTo = conditionFloat(batch[0], "f_to", 0.0)

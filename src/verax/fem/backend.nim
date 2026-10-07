@@ -1,33 +1,18 @@
-## Shared contract for finite-element solver backends.
-##
-## The direct analogue of `verax/spice/backend`: every backend module
-## implements the same proc names over `verax/fem`'s problem, mesh and
-## result types, so a caller needing more than one imports both and
-## disambiguates with module-qualified calls.
+## Shared contract for finite-element solver backends, analogous to
+## `verax/spice/backend`: every backend implements the same procs over
+## `verax/fem` types, so several can be imported and module-qualified.
 ##
 ## .. code-block:: nim
 ##   proc writeCase*(p: FemProblem, m: Mesh, path: string)
 ##   proc solve*(p: FemProblem, m: Mesh, opts = SolveOptions()): FemResult
 ##   proc available*(): bool
 ##
-## `available()` has no counterpart in `spice/backend`, and that is
-## deliberate. The ngspice backend never probes for its binary -- it just
-## runs it -- which pushed the "is the toolchain here?" decision into 22
-## separate test files, each re-implementing `findExe("ngspice")`. One proc
-## on the contract keeps that in one place.
+## `available()` keeps the "is the toolchain here?" check in one place.
 ##
-## **The intended first backend is MFEM** (`verax/fem/mfem`, not yet
-## written): a C++ finite-element library, driven here through a small
-## solver executable and its mesh/grid-function file formats. As with
-## `verax/spice/ngspice`, a concrete backend will be opt-in per import --
-## nothing in this hub pulls one in.
+## The intended first backend is MFEM (not yet written), opt-in per import.
 ##
-## **Real vs complex results.** A static or thermal solve produces real
-## fields; a full-wave solve produces complex ones. `Field` is an object
-## variant over that split, not a real vector with an "is it complex?" flag
-## -- reading a magnetostatic result as complex is not merely wrong, the
-## branch has no `cvalues`. `[]` / `cplx` / `mag` / `db` mirror
-## `spice/backend` so a reader who knows one knows the other.
+## **`Field` is a variant over real/complex** (static/thermal vs
+## full-wave); `[]`/`cplx`/`mag`/`db` mirror `spice/backend`.
 
 import std/[complex, math, tables]
 import ./types
@@ -37,10 +22,8 @@ export types, mesh
 
 type
   FemSolveError* = object of CatchableError
-    ## Raised when a solve fails to produce usable output -- the backend
-    ## process failed, did not converge to a usable state, or wrote a result
-    ## that could not be parsed -- and when a `Field` is read at the wrong
-    ## kind.
+    ## Raised when a solve fails (process failure, non-convergence,
+    ## unparseable output) or a `Field` is read as the wrong kind.
 
   FieldKind* = enum
     fkScalarPotential   ## V
@@ -69,9 +52,8 @@ type
     mesh*: Mesh
     fields*: OrderedTable[string, Field]
     scalars*: OrderedTable[string, float]
-      ## Extracted figures a caller actually asked for: `r_dc`, `l_11`,
-      ## `c_11`, `z0`, `t_max`, `theta_ja`. This is the part an
-      ## `verax/analysis` evaluator would read.
+      ## Extracted figures (`r_dc`, `l_11`, `c_11`, `z0`, `t_max`,
+      ## `theta_ja`) -- what an analysis evaluator would read.
     frequencies*: seq[float]
       ## Populated for a full-wave sweep; one entry otherwise.
     converged*: bool
@@ -121,8 +103,7 @@ proc cplx*(r: FemResult, name: string): seq[Complex64] =
   r.fields[name].cvalues
 
 proc mag*(r: FemResult, name: string): seq[float] =
-  ## Magnitude per point, defined for both kinds so an extraction reader
-  ## needn't branch on the problem type.
+  ## Magnitude per point, for either kind.
   let f = r.fields[name]
   if f.complexValued:
     for c in f.cvalues: result.add abs(c)
@@ -130,7 +111,6 @@ proc mag*(r: FemResult, name: string): seq[float] =
     for x in f.values: result.add abs(x)
 
 proc db*(r: FemResult, name: string): seq[float] =
-  ## `20*log10(|x|)`. A zero magnitude yields `-Inf` rather than raising -- a
-  ## null in a field is a real result.
+  ## `20*log10(|x|)`; a zero magnitude gives `-Inf`.
   for m in mag(r, name):
     result.add(if m <= 0.0: -Inf else: 20.0 * log10(m))

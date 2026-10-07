@@ -10,14 +10,9 @@ proc render(nl: Netlist): string =
   result = outStream.data
 
 proc switchBoard(): Netlist =
-  ## A 4-pin switch -- `RFC` common, `RF1`/`RF2` throws, `EN` control -- with
-  ## more than two connected pins, so the historical `isTraversable`/
-  ## `classifyConductivity` defaults have nothing to say about it. `Z1`, not
-  ## `U1`/`X1`: `formats/spice` reads a `U`/`X`-prefixed designator as a
-  ## hierarchical subcircuit instance regardless of `kind`, and `rf_switch`
-  ## has no `.SUBCKT` behind it here -- `Z1` reaches the writer as a generic
-  ## `pin1..pinN` device instead, which is what the SPICE-round-trip test
-  ## below wants to exercise.
+  ## A 4-pin switch (`RFC` common, `RF1`/`RF2` throws, `EN` control) that
+  ## the 2-pin defaults say nothing about. `Z1` because `formats/spice`
+  ## reads `U`/`X` designators as subcircuit instances.
   result = newNetlist("t")
   let rfc = addNet(result, newNet("rfc"))
   let rf1 = addNet(result, newNet("rf1"))
@@ -81,7 +76,7 @@ test "setTraversal/traversal round-trip through the raw attrs keys":
 
   setTraversalMode(c, tmAll)
   check c.attrs[traversalModeKey] == "all"
-  # Edges already declared are untouched by a later mode statement.
+  # A later mode statement leaves declared edges alone.
   check c.attrs[traversalPathsKey] == "RFC,RF1;RFC,RF2"
 
   let spec = traversal(c)

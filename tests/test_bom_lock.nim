@@ -21,8 +21,8 @@ proc relock(r: BomResult): ResolveOptions =
   result = defaultResolveOptions()
   result.lock = parseLock(renderJson(r))
 
-# A source registered ahead of the fixture, offering a 10k 1 % 0402 part with
-# more stock than anything in it -- what a fresh ranking would now pick.
+# A source registered ahead of the fixture, offering a better-stocked 10k 1 %
+# 0402 -- what a fresh ranking would pick.
 const Better = """{"schema": "verax.catalog/1", "parts": [
   {"mpn": "ACME-10K", "manufacturer": "Acme", "family": "resistor",
    "value": 10000, "tolerance": 0.01, "caseCode": "0402",

@@ -5,26 +5,20 @@ import ./common
 import ../analyses/transient
 
 const oscQuantities = ["osc_freq", "swing_pp", "osc_thd_pct"]
-  ## `swing_pp` rather than reusing `output_swing`, which `spice.large_signal`
-  ## already produces: `registerEvaluator` refuses a second producer of a
-  ## quantity outright, and the two are not the same measurement anyway --
-  ## one is the response to a stated drive, the other is what the circuit
-  ## does with no drive at all.
+  ## `swing_pp`, not `output_swing` (`spice.large_signal`'s): one producer
+  ## per quantity, and an undriven oscillation isn't a driven response.
 
 proc measurementOnly(spec: var TransientSpec) =
   spec.settleTol = 0.0
 
 proc oscKick(ctx: EvalContext, a: Assertion): tuple[net: string, v: float] =
-  ## The node given a starting voltage, and how much. Empty when the role
-  ## bound no `kick` part, which is right for a circuit that starts by
-  ## itself -- and is why the evaluator declares no `binds`.
+  ## The kicked node and voltage; empty when no `kick` is bound (a
+  ## self-starting circuit), hence no `binds`.
   (bindingName(ctx.design, a, "kick"), conditionFloat(a, "kick_v", 0.1))
 
 proc oscKey(ctx: EvalContext, a: Assertion): string =
   let d = ctx.design
-  # The kick joins the key alongside the window: where a circuit is started
-  # from and how hard is part of the setup, not part of the claim, and two
-  # claims started differently are two runs.
+  # The kick is setup, so it joins the key with the window.
   let k = oscKick(ctx, a)
   subjectNet(d, a) & "|" & $conditionFloat(a, "t_settle", 0.0) &
                      "|" & $conditionFloat(a, "t_window", 0.0) &

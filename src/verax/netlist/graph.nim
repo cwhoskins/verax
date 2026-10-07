@@ -93,19 +93,10 @@ proc addPort*(nl: Netlist, portName: string, n: Net) =
   nl.ports[portName] = n
 
 proc adoptNet*(nl: Netlist, n: Net, name: string, context = "") =
-  ## Re-homes an existing `Net` into `nl` under `name`, deregistering it from
-  ## wherever it was.
-  ##
-  ## `context` is appended to the collision message: the caller knows *why*
-  ## the name was chosen (which instance is being flattened) and this proc
-  ## does not, and a reader told only "that name is taken" has no way to see
-  ## that one side of the clash was generated.
-  ##
-  ## It re-homes **the object**, not a copy, and that is the whole point:
-  ## every `Pin.net` back-reference pointing at it stays valid untouched, and
-  ## so does its `attrs` bag -- which carries `voltage` and the `role.*`
-  ## membership tags that must survive a transform. Copying would mean
-  ## rebuilding both, and getting either wrong is silent.
+  ## Re-homes an existing `Net` into `nl` under `name`. `context` is appended
+  ## to a collision message (the caller knows why the name was generated).
+  ## Moves **the object**, not a copy, so `Pin.net` references and `attrs`
+  ## (`voltage`, `role.*`) survive untouched.
   if n == nil: raise newException(NetlistError, "adoptNet: nil net")
   if nl.nets.hasKey(name) and nl.nets[name] != n:
     let incumbent = nl.nets[name]
@@ -155,13 +146,10 @@ proc adoptComponent*(nl: Netlist, c: Component, designator: string,
   if c.subNetlist != nil: nl.children[designator] = c.subNetlist
 
 proc mergeNets*(keep, gone: Net) =
-  ## Moves every pin on `gone` onto `keep`, then deregisters `gone`.
-  ##
-  ## This is what a subcircuit port *is* once the hierarchy is gone: the net
-  ## inside and the net outside were always the same conductor, joined by the
-  ## instance pin. `keep`'s own annotations win and `gone`'s only fill gaps,
-  ## because the outer net is the one the design as a whole talks about -- a
-  ## port's local `voltage` must not overwrite the rail's.
+  ## Moves every pin on `gone` onto `keep`, then deregisters `gone` -- what a
+  ## subcircuit port becomes once hierarchy is gone. `keep`'s annotations win;
+  ## `gone`'s only fill gaps (a port's local `voltage` mustn't overwrite the
+  ## rail's).
   if keep == nil or gone == nil or keep == gone: return
   for p in gone.pins:
     p.net = keep
@@ -175,28 +163,14 @@ proc mergeNets*(keep, gone: Net) =
   gone.netlist = nil
 
 proc hierNetPeers*(n: Net): seq[Net] =
-  ## Every net that is the *same conductor* as `n` one hierarchy boundary
-  ## away, in either direction. Non-mutating counterpart to `mergeNets`:
-  ## `flatten.inline`'s `mergeNets(p.net, p.hierNet)` unifies a port net with
-  ## its caller's net by *merging the objects*, which is right for a
-  ## simulation copy about to be thrown away but wrong for a read-only
-  ## evaluator walking the design as authored -- there is no canonical flat
-  ## name until `spice/flatten` actually runs, and unifying identity here
-  ## would make two callers disagree about how many distinct `Net` objects a
-  ## design has depending on which one ran first.
+  ## Every net that is the same conductor as `n` one hierarchy boundary away.
+  ## The read-only counterpart of `mergeNets`, for evaluators walking the
+  ## design as authored (before `spice/flatten` assigns flat names).
   ##
-  ## Down: for every pin on `n` whose component is itself a hierarchical
-  ## instance (`subNetlist != nil`), that pin's `hierNet` is the same
-  ## conductor one level inside the child.
-  ##
-  ## Up: if `n` is itself a port net *inside* an instance
-  ## (`n.netlist.instanceOf != nil`), the instance's own pin bound to that
-  ## port (`pp.hierNet == n`) contributes its outer `.net`.
-  ##
-  ## Both directions are needed because a pull-up nested inside a child
-  ## reached through a pass-through port has no other link to the net a
-  ## `Design.resolve` call actually returns -- `Design.resolve` finds the
-  ## *outer* net object, and the resistor's pin lives on the *inner* one.
+  ## Down: a pin on `n` whose component is an instance contributes its
+  ## `hierNet`. Up: if `n` is a port net inside an instance, the instance pin
+  ## bound to it contributes its outer `.net`. Both are needed, e.g. a pull-up
+  ## nested behind a pass-through port.
   for p in n.pins:
     if p.component != nil and p.component.subNetlist != nil and p.hierNet != nil:
       result.add p.hierNet
@@ -207,15 +181,8 @@ proc hierNetPeers*(n: Net): seq[Net] =
 
 proc hierNetGroup*(n: Net): seq[Net] =
   ## `n` plus every net that is the same conductor through instance
-  ## boundaries, any depth, either direction -- the BFS closure of
-  ## `hierNetPeers`, generalizing the one-hop-in-one-direction walk
-  ## `contract/evaluators/static.dcConnected` already does inline for its own
-  ## boundary-crossing to a reusable, enumerable primitive.
-  ##
-  ## For a design with no hierarchy this is `@[n]`: `hierNetPeers` finds
-  ## nothing to add, so every caller of this degenerates to exactly its
-  ## pre-hierarchy-aware behaviour and nothing here changes a number for a
-  ## flat design.
+  ## boundaries, any depth, either direction (BFS over `hierNetPeers`).
+  ## `@[n]` for a flat design.
   result = @[n]
   var qi = 0
   while qi < result.len:
@@ -225,25 +192,13 @@ proc hierNetGroup*(n: Net): seq[Net] =
       if peer notin result: result.add peer
 
 const hierSep* = '.'
-  ## Separates one level of hierarchy from the next in a flattened or
-  ## hierarchically-addressed name: `R1` inside `XA` inside `XL` is
-  ## `XL.XA.R1`.
+  ## Separates hierarchy levels in a flattened or hierarchical name:
+  ## `XL.XA.R1`. A dot because ngspice uses it (`v(x1.n1)`), the contract
+  ## layer's `DESIGNATOR.pin` already means "descend", and `_` collides with
+  ## designators and synthesized suffixes.
   ##
-  ## A dot, for three reasons, in order of weight. It is **what ngspice
-  ## itself produces** when it expands a subcircuit -- `v(x1.n1)` is its
-  ## hierarchical probe syntax -- so an internal node addressed this way is
-  ## addressed under the name a reader already knows. The contract layer
-  ## already spells `DESIGNATOR.pin` with the same meaning, so one dot
-  ## uniformly means "descend one level". And the alternatives are worse: an
-  ## underscore collides with ordinary designators and with the suffixes
-  ## `spice/isolate` synthesizes, and a slash matches nothing the simulator
-  ## or this codebase already says.
-  ##
-  ## The cost is that a name can no longer be split on the first or last dot
-  ## to separate a component from its pin, because both halves may contain
-  ## one -- XSPICE already names a differential port's pins `name.p`/`name.n`.
-  ## Resolution is therefore a search over split points, longest component
-  ## prefix winning, and `findPin` below is where that lives.
+  ## Names can't be split on a dot (XSPICE pins are `name.p`), so resolution
+  ## searches split points, longest component prefix winning (`findPin`).
 
 proc hierName*(parts: varargs[string]): string =
   ## Joins `parts` with `hierSep`, skipping empties.
@@ -253,13 +208,9 @@ proc hierName*(parts: varargs[string]): string =
     result.add part
 
 proc findNet*(nl: Netlist, path: string): Net =
-  ## A net by flat name, or by a `hierSep`-separated path into `children`.
-  ## `nil` when absent -- callers raise with their own message.
-  ##
-  ## The **flat key is tried first**, and that ordering is what lets one call
-  ## serve both an authored hierarchy and a flattened one: before flattening
-  ## `XL.amp` is found by descending, after it is found directly, and nothing
-  ## that holds such a name has to know which world it is in.
+  ## A net by flat name, or by a `hierSep` path into `children`; `nil` when
+  ## absent. The flat key is tried first, so one call works before and after
+  ## flattening.
   if nl == nil: return nil
   if nl.nets.hasKey(path): return nl.nets[path]
   let i = path.find(hierSep)
@@ -279,13 +230,9 @@ proc findComponent*(nl: Netlist, path: string): Component =
   findComponent(nl.children[head], path[i + 1 .. ^1])
 
 proc findPin*(nl: Netlist, path: string): Pin =
-  ## A pin by `<component path><hierSep><pin name>`.
-  ##
-  ## Searched right to left rather than split, because **both halves may
-  ## contain a dot**: the component may be `XL.U1` and the pin may be `in.p`.
-  ## The first split point where the left side names a component and the
-  ## right side names one of its pins wins, so the longest component prefix
-  ## is preferred -- which is the reading a person makes too.
+  ## A pin by `<component path><hierSep><pin name>`. Both halves may contain
+  ## a dot (`XL.U1`, `in.p`), so split points are searched right to left and
+  ## the longest component prefix wins.
   if nl == nil: return nil
   var i = path.rfind(hierSep)
   while i > 0:
@@ -297,32 +244,15 @@ proc findPin*(nl: Netlist, path: string): Pin =
   nil
 
 const generatedDesignatorAttr* = "designator.generated"
-  ## Marks a designator this library chose rather than a person. Namespaced,
-  ## so the annotation registry never validates it.
-  ##
-  ## It matters downstream: a reference designator is the join key to a board
-  ## (`pcb/graph.bindComponent` raises on a mismatch), the line in a BoM and
-  ## the text on a silkscreen. A generated one is **positional** -- insert a
-  ## part earlier and everything after it renumbers -- so it is safe for a
-  ## part nothing names and nothing places, and wrong for anything that has
-  ## already been laid out or fabricated. Marking them is what lets a layout
-  ## or BoM flow tell the two apart instead of trusting every designator
-  ## equally.
+  ## Marks a designator this library chose (namespaced, never validated). A
+  ## generated designator is positional -- inserting a part renumbers later
+  ## ones -- so board and BoM flows must not trust it as a stable join key.
 
 proc nextDesignator*(nl: Netlist, kind: string): string =
-  ## The next free designator for `kind` in `nl`, e.g. `"C3"`.
-  ##
-  ## Numbered **per netlist, not per design**, and that is the property that
-  ## makes generation tolerable at all: a subcircuit gets its own `C1`, `C2`,
-  ## so adding a part to one module cannot renumber another, and flattening
-  ## then prefixes with the instance path anyway. Global numbering would make
-  ## every module's parts depend on every other module's edit history.
-  ##
-  ## Existing designators are respected, including hand-authored ones: a
-  ## netlist that already carries `R1` and `R2` generates `R3`. Only a
-  ## designator that is exactly the prefix followed by digits counts, so
-  ## `R_LEAK_vdd` is not mistaken for an `R`, and `FB1` counts toward `FB`
-  ## rather than toward `F`.
+  ## The next free designator for `kind` in `nl`, e.g. `"C3"`. Numbered per
+  ## netlist, so editing one module never renumbers another. Existing
+  ## designators count only when exactly prefix + digits (`R_LEAK_vdd` isn't
+  ## an `R`; `FB1` counts toward `FB`, not `F`).
   let prefix = designatorPrefixFor(kind)
   var highest = 0
   for designator in nl.components.keys:
@@ -344,8 +274,7 @@ proc addGenerated*(nl: Netlist, kind: string): Component =
   discard addComponent(nl, result)
 
 proc generatedDesignators*(nl: Netlist, recursive = true): seq[string] =
-  ## Every component here whose designator this library chose. What a board
-  ## or BoM flow should look at before trusting a designator to be stable.
+  ## Every component with a generated designator.
   for designator, c in nl.components:
     if c.attrs.getOrDefault(generatedDesignatorAttr, "") == "true":
       result.add designator
@@ -354,52 +283,25 @@ proc generatedDesignators*(nl: Netlist, recursive = true): seq[string] =
       for d in generatedDesignators(child): result.add instance & hierSep & d
 
 proc registerGlobalNet*(globals: var OrderedTable[string, Net], n: Net) =
-  ## Marks `n` as a net shared by *identity* across every level of hierarchy,
-  ## keyed by its name -- what `clone`/`instantiate` consult so that SPICE
-  ## node "0" is one object on the whole board rather than one per instance.
-  ##
-  ## Here rather than as a bare table assignment for exactly the reason
-  ## `setModel` is: the DSL's `global = true` expanded to `globals[name] = n`,
-  ## which forced every design file that used it to `import std/tables` for a
-  ## statement that has nothing to do with tables. That went unnoticed until
-  ## the first design with a subcircuit was written, because `global = true`
-  ## is only worth stating when there is a child netlist to share a net with.
+  ## Marks `n` as shared by identity across every hierarchy level, keyed by
+  ## name (what `clone`/`instantiate` consult, so node "0" is one object).
+  ## A proc so DSL users needn't import `std/tables`.
   globals[n.name] = n
 
 proc setModel*(nl: Netlist, name, card: string) =
-  ## Registers a `.MODEL` card under `name`, to be written verbatim.
-  ##
-  ## Here rather than as a bare table assignment for the same reason every
-  ## other mutation is: `Netlist.models` is state this module owns, and a DSL
-  ## that expanded to `nl.models[name] = card` would force every design file
-  ## to `import std/tables` for a statement that has nothing to do with
-  ## tables.
-  ##
-  ## The card body is **not parsed**. Doing so would mean tracking every
-  ## parameter of every device type in every SPICE dialect, and getting one
-  ## wrong silently simulates a different part -- passing it through means
-  ## the simulator reads exactly what the datasheet said. The one thing that
-  ## does read it is `kinds.hasDeviceModel`, which only asks whether a name
-  ## is present.
+  ## Registers a `.MODEL` card under `name`, written verbatim. A proc so DSL
+  ## users needn't import `std/tables`. The body is **not parsed** (that risks
+  ## silently simulating a different part); `kinds.hasDeviceModel` only
+  ## checks the name exists.
   if name.len == 0:
     raise newException(NetlistError, "a model needs a name")
   nl.models[name] = card
 
 proc renameNet*(nl: Netlist, oldName, newName: string) =
-  ## Rekeys a net in `nl.nets` (and under every `ports` entry pointing at it)
-  ## and updates `Net.name` to match. The `Pin`/`Net` object graph is
-  ## untouched -- every pin already holds a direct reference, so nothing
-  ## needs rewiring; only the name-keyed dictionaries do.
-  ##
-  ## This lives here rather than in a caller because `Netlist.nets` keying is
-  ## exactly the back-reference state this module exists to own. The concrete
-  ## need is simulation: an extracted circuit fragment has to promote some
-  ## rail to SPICE node `"0"`, which has no meaning until the net is actually
-  ## named `"0"`.
-  ##
-  ## Port *names* are deliberately left alone: a port name is the subcircuit's
-  ## published interface and is independent of the net name behind it (see
-  ## `addPort`). Only the mapping's target net is renamed.
+  ## Rekeys a net in `nl.nets` (and every `ports` entry pointing at it) and
+  ## updates `Net.name`; the object graph is untouched. Used to promote a
+  ## fragment's ground to SPICE node `"0"`. Port *names* are left alone --
+  ## they're the published interface.
   if oldName == newName: return
   if not nl.nets.hasKey(oldName):
     raise newException(NetlistError, "no such net: " & oldName)
@@ -411,18 +313,10 @@ proc renameNet*(nl: Netlist, oldName, newName: string) =
   nl.nets[newName] = n
 
 proc clone*(nl: Netlist, globalNets: var OrderedTable[string, Net]): Netlist =
-  ## Deep-copies `nl` into a brand-new, detached `Netlist` graph (fresh
-  ## `Component`/`Net`/`Pin` objects). The returned netlist's `parent` is
-  ## left unset -- callers wire that up via `addChild`.
-  ##
-  ## Any net whose name is already a key in `globalNets` (e.g. SPICE node
-  ## `"0"`) is *not* cloned: the copy's pins are wired to the shared object
-  ## in `globalNets` instead, so global/ground nets stay a single identical
-  ## object across the whole hierarchy.
-  ##
-  ## Nested hierarchy (components in `nl` that themselves have a
-  ## `subNetlist`) is cloned recursively, so instantiating a template that
-  ## contains its own sub-instances works transparently.
+  ## Deep-copies `nl` into a detached `Netlist` (fresh objects; `parent`
+  ## unset -- wire it with `addChild`). Nets named in `globalNets` are not
+  ## cloned: pins connect to the shared object. Nested hierarchy is cloned
+  ## recursively.
   result = newNetlist(nl.name)
   result.models = nl.models
   result.attrs = nl.attrs
@@ -446,9 +340,8 @@ proc clone*(nl: Netlist, globalNets: var OrderedTable[string, Net]): Netlist =
   for designator, oldComp in nl.components:
     let newComp = newComponent(designator, oldComp.name, oldComp.partNumber, oldComp.kind)
     newComp.attrs = oldComp.attrs
-    # Every model, not just the default: `simReplace` is the *default* one,
-    # and a clone that kept only that would silently drop the alternative a
-    # later analysis is about to ask for by purpose.
+    # Every model, not just the default: a later analysis may ask for an
+    # alternative by purpose.
     newComp.simModels = oldComp.simModels
     newComp.simDefault = oldComp.simDefault
     newComp.netlist = result
@@ -480,18 +373,11 @@ proc clone*(nl: Netlist, globalNets: var OrderedTable[string, Net]): Netlist =
 proc instantiate*(parent: Netlist, instanceDesignator: string, defNetlist: Netlist,
                    portNets: seq[Net], globalNets: var OrderedTable[string, Net],
                    componentKind = "subcircuit"): Component =
-  ## Clones `defNetlist` as a new child of `parent` (see `clone`), creates
-  ## the instance `Component` (designator = `instanceDesignator`), and for
-  ## each port of `defNetlist` (in declaration order) creates and connects a
-  ## `Pin` to the matching entry of `portNets`, setting `pin.hierNet` to the
-  ## clone's corresponding port net.
-  ##
-  ## Deliberately leaves `partNumber` unset: it used to be stamped with
-  ## `defNetlist.name`, but that is the template's *name*, not a purchasable
-  ## part number, and `formats/spice.nim` reads `subNetlist.name` (via
-  ## `Netlist.instanceOf`) for the deck's `.SUBCKT` reference now, not this
-  ## field -- so a design assigning its own `partNumber` on an `instance`
-  ## statement no longer collides with anything the writer depends on.
+  ## Clones `defNetlist` as a child of `parent`, creates the instance
+  ## `Component`, and connects one `Pin` per port (declaration order) to
+  ## `portNets`, with `pin.hierNet` set to the clone's port net.
+  ## `partNumber` is left unset; the writer uses `subNetlist.name` for the
+  ## `.SUBCKT` reference.
   if portNets.len != defNetlist.ports.len:
     raise newException(NetlistError,
       "port count mismatch instantiating '" & defNetlist.name & "' as " & instanceDesignator &
@@ -528,19 +414,10 @@ proc instantiateByPort*(parent: Netlist, instanceDesignator: string,
                         wiring: openArray[(string, Net)],
                         globalNets: var OrderedTable[string, Net],
                         componentKind = "subcircuit"): Component =
-  ## `instantiate`, wiring ports **by name** instead of by position.
-  ##
-  ## Positional wiring is fine for a subcircuit whose ports a person just
-  ## wrote. It is a trap for one produced by `spice/boundary.asSubcircuit`,
-  ## where the port list came from whichever nets the connectors happened to
-  ## sit on: two boards in a system routinely both call a port `vin`, and
-  ## swapping two same-shaped nets is a miswiring that raises nothing and
-  ## simulates happily.
-  ##
-  ## Every port must be named. An unwired one raises listing what the
-  ## subcircuit exposes, rather than being quietly left open -- an open port
-  ## on a board-to-board connection is a disconnected system, and the whole
-  ## point of assembling one is that the connection exists.
+  ## `instantiate`, wiring ports **by name**. Positional wiring is a trap for
+  ## `spice/boundary.asSubcircuit` output, where port order is incidental and
+  ## swapping same-shaped nets simulates silently. Every port must be named;
+  ## an unwired one raises listing the exposed ports.
   var ordered: seq[Net]
   for portName, _ in defNetlist.ports:
     var found: Net = nil

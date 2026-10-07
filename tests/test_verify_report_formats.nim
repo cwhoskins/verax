@@ -1,6 +1,5 @@
-## §48/§49: `--format=json`, `--format=junit`, the margin every checked claim
-## now carries, and `--baseline` diffing. Everything here runs offline, so
-## the whole file is hermetic and needs no simulator.
+## `--format=json`, `--format=junit`, per-claim margins, and `--baseline`
+## diffing. Runs offline.
 
 import std/[json, options, os, strutils, tables, unittest, xmlparser, xmltree]
 
@@ -11,8 +10,7 @@ import verax/units
 proc net(name: string): Subject = Subject(kind: skNet, name: name)
 
 proc bus(pullup: string): Design =
-  ## The same fixture `test_verify_readiness.nim` uses: an I2C board whose
-  ## RC corner passes or fails depending on `pullup`.
+  ## An I2C board whose RC corner passes or fails depending on `pullup`.
   design("board"):
     net vdd, kind = ntPower, voltage = "3.3"
     net gnd, kind = ntGround, name = "0"
@@ -135,9 +133,8 @@ suite "--format=json":
     d.assertThat mkAssertion("z_ripple", @[net("vdd")], expectMax(10.mV), "V",
                             id = "REQ-BOGUS")
     let text = renderJson(readiness(d, offlineCapabilities))
-    # `parseJson` itself is the proof: a bare `nan` token is not valid JSON
-    # and this raises on it. The explicit field checks below pin *where* it
-    # would have appeared.
+    # `parseJson` raises on a bare `nan`; the field checks pin where it would
+    # have been.
     let j = parseJson(text)
     var found = false
     for res in j["results"]:

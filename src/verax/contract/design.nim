@@ -1,18 +1,10 @@
-## A `Design`: a netlist plus what is claimed about it.
+## A `Design`: a netlist plus what is claimed about it. A `Design` **owns** a
+## `Netlist` (as `Pcb` does): the electrical model isn't duplicated and
+## nothing is added to `netlist/types.nim`.
 ##
-## `netlist(...)` returns a bare `Netlist`, which has nowhere to hang
-## design-global data -- role instances and directly-authored assertions
-## belong to the design as a whole, not to any one net or component. So a
-## `Design` **owns** a `Netlist`, exactly as `Pcb` does and for the same
-## reasons: the electrical model is not duplicated, nothing is added to
-## `netlist/types.nim`, and a netlist-only consumer carries none of this.
-##
-## Role *membership* is the exception and is stored on the entity itself
-## (`net.attrs["role.i2c0"] = "sda"`), because membership must survive
-## `clone`, `extractSubcircuit` and `isolate` -- a fragment cut out for
-## simulation should still know its nets were an I2C bus. Role *definitions*
-## and parameters stay here, where losing them on a fragment extraction is
-## the correct behaviour.
+## Role *membership* is stored on the entity (`net.attrs["role.i2c0"] =
+## "sda"`) so it survives clone and isolation. Role definitions and
+## parameters stay here.
 
 import std/[strutils, tables]
 import ../netlist/types
@@ -47,17 +39,10 @@ proc innerNames(nl: Netlist, what: string): string =
   names.join(", ")
 
 proc innerComponent*(inst: Component, path: varargs[string]): Subject =
-  ## A component *inside* this instance, as a `Subject` a role can bind.
-  ##
-  ## `role "gain_stage", left, opamp = XL.innerComponent("U1")` is the whole
-  ## point: the instance `XL` is a real Nim binding at the design site, but
-  ## nothing inside it is -- those identifiers were bound inside a `subckt`
-  ## in another module and are long out of scope. So the instance is asked
-  ## for them by name.
-  ##
-  ## The path is walked **immediately**, so a typo raises here, naming what
-  ## the instance actually contains, rather than surfacing later as a role
-  ## binding that resolves to nothing.
+  ## A component *inside* this instance as a bindable `Subject`
+  ## (`opamp = XL.innerComponent("U1")`): inner identifiers are out of scope
+  ## at the design site. Walked **immediately**, so a typo raises naming
+  ## what the instance contains.
   if inst == nil:
     raise newException(NetlistError, "innerComponent on a nil instance")
   if inst.subNetlist == nil:
@@ -99,29 +84,16 @@ proc innerPin*(inst: Component, comp, pin: string): Subject =
   Subject(kind: skPin, name: hierName(c.name, pin))
 
 proc roleRef*(name: string): Subject =
-  ## A reference to another role instance, as a subject a multi-subject role
-  ## can bind: `role "channel_match", stereo, a = roleRef("left"), ...`.
-  ##
-  ## One line, and no validation of its own on purpose. `dsl.subjectOf(Subject)`
-  ## is an identity overload, so a helper returning a `Subject` routes through
-  ## the `role` macro as a *binding* with no macro change -- and `resolve`
-  ## below raises when the named instance is not there yet, which is also what
-  ## makes "declare the referenced roles first" an enforced ordering rather
-  ## than a convention. This is the `skClass` counterpart of `innerComponent`
-  ## walking its path immediately.
+  ## A reference to another role instance, as a binding for a multi-subject
+  ## role (`a = roleRef("left")`). Routes through the `role` macro via the
+  ## `subjectOf(Subject)` identity overload; `resolve` raises if the instance
+  ## isn't declared yet.
   Subject(kind: skClass, name: name)
 
 proc resolve(d: Design, s: Subject): tuple[net: Net, comp: Component, pin: Pin] =
-  ## Subject -> live entity, so a binding to something that does not exist is
-  ## caught when the role is attached rather than when it is evaluated.
-  ##
-  ## Names are resolved through `graph.find*`, so a subject may address
-  ## something **inside a subcircuit instance** by a `hierSep`-separated path
-  ## (`XL.U1`). A stereo board is two instances of one channel, and a claim
-  ## about the left channel's amplifier has no other way to say which
-  ## amplifier it means. The same call finds the entity before flattening, by
-  ## descending, and after it, by the flat key -- so whatever holds the name
-  ## does not have to know which of the two it is looking at.
+  ## Subject -> live entity, so a bad binding is caught when attached. Via
+  ## `graph.find*`, so a `hierSep` path (`XL.U1`) reaches inside an instance,
+  ## before or after flattening.
   case s.kind
   of skNet:
     let n = findNet(d.netlist, s.name)
@@ -142,12 +114,8 @@ proc resolve(d: Design, s: Subject): tuple[net: Net, comp: Component, pin: Pin] 
       raise newException(NetlistError, "no such pin: " & s.name)
     (nil, p.component, p)
   of skClass:
-    # A reference to another role instance. It resolves to no netlist entity
-    # -- a role is not a net or a component -- so this returns all-nil, and
-    # `tagMembership` below therefore tags nothing, which is correct. What it
-    # does do is raise when the instance is absent: a `channel_match` naming
-    # `left`/`right` must be declared *after* the two `gain_stage`s, and this
-    # is where that is enforced.
+    # A role reference resolves to no entity (so nothing is tagged), but
+    # raises if the instance is absent: declare referenced roles first.
     if not d.roles.hasKey(s.name):
       var have: seq[string]
       for k in d.roles.keys: have.add k
@@ -167,10 +135,8 @@ proc tagMembership(d: Design, inst: RoleInstance) =
     if p != nil: p.attrs[key] = partName
     elif c != nil: c.attrs[key] = partName
     elif n != nil: n.attrs[key] = partName
-    # An `skClass` binding resolves to all-nil and so tags nothing, which is
-    # right: a role instance is not a netlist entity and has nothing to carry
-    # a membership attr. The reference is still validated -- `resolve` raised
-    # above if the named instance did not exist.
+    # `skClass` bindings tag nothing (a role isn't a netlist entity); the
+    # reference was validated by `resolve`.
 
 proc validate(d: Design, def: RoleDef, inst: RoleInstance) =
   var known: Table[string, RolePart]
@@ -207,9 +173,8 @@ proc validate(d: Design, def: RoleDef, inst: RoleInstance) =
 proc addRole*(d: Design, roleName, instanceName: string,
               bindings: openArray[(string, Subject)],
               params: openArray[(string, string)] = []): RoleInstance =
-  ## Attaches a role instance: validates it, tags membership on the bound
-  ## entities, and runs the role's `apply` half so its parameters land as
-  ## ordinary annotations that existing consumers already read.
+  ## Attaches a role instance: validates it, tags membership, and runs
+  ## `apply` so its parameters land as ordinary annotations.
   if d.roles.hasKey(instanceName):
     raise newException(NetlistError, "duplicate role instance: " & instanceName)
   let def = roleDef(roleName)
@@ -217,9 +182,7 @@ proc addRole*(d: Design, roleName, instanceName: string,
   var inst = RoleInstance(role: roleName, name: instanceName)
   for (k, v) in bindings: inst.bindings[k] = v
   for (k, v) in params:
-    # `without` is reserved on every role rather than declared by each one:
-    # it says which of the role's claims this instance does not make, and a
-    # role should not have to opt into being declinable.
+    # `without` is reserved on every role: any claim may be declined.
     if k == "without":
       for part in v.split(','):
         let name = part.strip()
@@ -229,10 +192,8 @@ proc addRole*(d: Design, roleName, instanceName: string,
 
   d.validate(def, inst)
   d.tagMembership(inst)
-  # Validated by expanding once, which is free: an expander is pure. A
-  # declined suffix that matches nothing is the same hazard as a misspelled
-  # annotation key -- indistinguishable from an absent one, and it would
-  # leave the claim standing while reading as though it had been dropped.
+  # Expand once (pure) to check declined suffixes: one matching nothing
+  # would leave the claim standing while looking dropped.
   if inst.declined.len > 0:
     var claimed: seq[string]
     for a in def.expand(inst):
@@ -289,12 +250,8 @@ proc addImpliedRoles*(d: Design) =
     for claim in iface.def.implies:
       var params: seq[(string, string)]
       for key, value in claim.params: params.add (key, value)
-      # `claim.binds` maps a role part name to the interface signal it reads
-      # from, for a def whose signals are not named to match the role's
-      # parts (a `dp`/`dn` differential pair implying `diff_pair`, whose
-      # parts are `p`/`n`). Everything not named here still auto-binds by
-      # same-name matching in `addRoleFromInterface`; an explicit entry
-      # simply reaches that call as a normal explicit binding.
+      # `claim.binds` maps role parts to differently-named interface signals
+      # (`dp`/`dn` -> `p`/`n`); everything else auto-binds by name.
       var bindings: seq[(string, Subject)]
       for partName, signalName in claim.binds:
         if not iface.signals.hasKey(signalName):
@@ -307,20 +264,11 @@ proc addImpliedRoles*(d: Design) =
             "' is wide and cannot bind scalar role part '" & partName & "'")
         bindings.add (partName, Subject(kind: skNet, name: b[0].name))
 
-      # Fan-out: a role part is bound to an interface signal wider than one
-      # bit (`spiInterface(3)`'s `cs`) when a scalar `skNet` role part shares
-      # its name -- or its `claim.binds` target -- with a wide signal.
-      # `addRoleFromInterface`'s own same-name matching raises on that (a
-      # wide signal cannot bind a scalar part), so this has to happen here,
-      # before that call, rather than by loosening it: loosening it would
-      # let a non-implied, hand-written `addRoleFromInterface` call silently
-      # bind only member 0 of a wide bus instead of refusing.
-      #
-      # `interfaces.narrow` is exactly the tool this needs and already
-      # exists for the opposite direction (a design narrowing its own
-      # interface onto a child sheet): a pure value-space copy of `iface`
-      # with one signal cut to a single member, touching neither the netlist
-      # nor the interface registry, so it is free to call once per member.
+      # Fan-out: a scalar role part matching a wide signal (`cs` of
+      # `spiInterface(3)`) gets one instance per member, via
+      # `interfaces.narrow`. Done here rather than by loosening
+      # `addRoleFromInterface`, which must keep refusing to bind a wide bus
+      # to a scalar part.
       let def = roleDef(claim.role)
       var wideSignal = ""
       var width = 0
@@ -344,17 +292,14 @@ proc addImpliedRoles*(d: Design) =
             "through")
 
       if wideSignal.len == 0:
-        # The historical, unfanned path -- byte-identical for `i2c`,
-        # `diff_pair` and `usb2`, whose every signal is width 1.
+        # Unfanned path: every signal is width 1.
         if d.roles.hasKey(iface.name): continue
         discard addRoleFromInterface(d, claim.role, iface.name, iface,
                                       bindings, params)
       else:
         for k in 0 ..< width:
-          # `<iface>_<signal><k>`: `spi_0_cs0`, `spi_0_cs1`, `spi_0_cs2` for
-          # the first bus of `designs/spi_memories.nim`. The "an explicitly
-          # declared role of this name wins" guard applies per member name
-          # here, exactly as it applies to the base name above.
+          # `<iface>_<signal><k>` (`spi_0_cs0`, ...). An explicitly declared
+          # role of that name wins, per member.
           let instName = iface.name & "_" & wideSignal & $k
           if d.roles.hasKey(instName): continue
           discard addRoleFromInterface(d, claim.role, instName,
@@ -363,9 +308,8 @@ proc addImpliedRoles*(d: Design) =
           d.roles[instName].member = k
 
 proc expandInstance*(inst: RoleInstance): seq[Assertion] =
-  ## One role instance's claims, minus the ones it declined. Everything that
-  ## reads a design's claims goes through here, so what `explain` prints and
-  ## what `evaluate` checks cannot drift apart.
+  ## One role instance's claims, minus declined ones. Everything that reads
+  ## claims goes through here, so `explain` and `evaluate` can't drift.
   for a in roleDef(inst.role).expand(inst):
     var suffix = ""
     if a.id.startsWith(inst.name & "."):
@@ -379,26 +323,21 @@ proc assertThat*(d: Design, a: Assertion) =
   d.assertions.add it
 
 proc expandAll*(d: Design): seq[Assertion] =
-  ## Everything claimed about this design: what was authored directly, plus
-  ## what every role instance expands to.
+  ## Everything claimed: authored assertions plus every role's expansion.
   result = d.assertions
   for _, inst in d.roles:
     result.add expandInstance(inst)
 
 proc rolesOf*(e: Net | Component | Pin): seq[tuple[instance, part: string]] =
-  ## Which role instances an entity belongs to, read back from the membership
-  ## tags -- so this still works on a fragment that was cut out of the design
-  ## and no longer has the `Design` object around it.
+  ## Which role instances an entity belongs to, from its membership tags
+  ## (works on a fragment without the `Design`).
   for key, part in e.attrs:
     if key.startsWith(rolePrefix):
       result.add (instance: key[rolePrefix.len .. ^1], part: part)
 
 proc explain*(d: Design): string =
-  ## What each role claims, in full.
-  ##
-  ## Printability is not a nicety. Assertions generated on your behalf, that
-  ## you cannot inspect, are how a contract layer turns into filler that
-  ## always passes -- so the expansion is always dumpable.
+  ## What each role claims, in full: generated assertions must be
+  ## inspectable.
   var lines = @["design '" & d.netlist.name & "'"]
   if d.roles.len == 0 and d.assertions.len == 0:
     lines.add "  (no roles or assertions)"
@@ -410,8 +349,7 @@ proc explain*(d: Design): string =
     lines.add "  role " & inst.name & " : " & inst.role
     lines.add "    binds " & binds.join(", ")
     if ps.len > 0: lines.add "    params " & ps.join(", ")
-    # Declining is stated, never silent: a claim dropped without a trace is
-    # the same failure as a claim nobody evaluated.
+    # Declining is always stated.
     if inst.declined.len > 0:
       lines.add "    declines " & inst.declined.join(", ")
     for a in expandInstance(inst):

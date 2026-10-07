@@ -1,33 +1,19 @@
 ## KiCad `.kicad_pcb` reader/writer: the typed mapping over `sexp.nim`'s
-## arena, kept a byte-exact round-trip for an unmodified board and a valid
-## (not byte-identical) regeneration for an edited one.
+## arena. Byte-exact round trip for an unmodified board; valid (not
+## byte-identical) regeneration for an edited one.
 ##
-## Mirrors the house lexer/reader split -- `verax/ibis/parse` ("no knowledge
-## of what any keyword means") -> `verax/ibis/reader` -- for the identical
-## reason: `sexp.nim` retains the whole tree so a KiCad field this module
-## does not model still survives a write, verbatim.
+## `sexp.nim` keeps the whole tree, so fields this module doesn't model
+## survive a write verbatim.
 ##
-## **What "byte-exact" actually rests on.** `render(doc, fastPath = true)`
-## (the default) returns the source bytes untouched, and `writePcb` takes
-## that path whenever `pcb.rev == doc.snapshotRev` -- nothing has called a
-## `pcb/graph` mutator since the read. That is what makes this module's
-## read-side coverage gap harmless for round-tripping: a board this reader
-## does not fully understand still comes back byte-for-byte, because an
-## unedited write never looks at what was or was not mapped. Editing is a
-## different claim, made only for the classes in the regenerator table below
-## (`formats/kicadfmt.nim`'s module) -- everything else is refused by name
-## rather than silently dropped or silently kept stale.
+## **Byte-exact rests on the fast path**: `writePcb` returns the source bytes
+## untouched when `pcb.rev == doc.snapshotRev`, so unmapped content never
+## matters for an unedited board. Edits are supported only for the classes
+## the regenerators below cover; everything else is refused by name.
 ##
-## **The corrupt-file split, made concrete.** `sexp.parseSexp` never raises
-## on a structural defect (see that module's doc comment); `readPcb` is the
-## layer that turns "not a single well-formed `(kicad_pcb ...)` root" into a
-## named refusal. `RoyalBlue54L-Feather.kicad_pcb`'s 349 missing parens drift
-## the nesting far enough that the root closes near line 627 of a
-## 69,495-line file and everything after becomes independent top-level
-## fragments -- `doc.roots.len` ends up in the thousands, not `1`, which is
-## exactly the check below. `kicad-cli pcb drc` on the same file exits `0`
-## ("Found 283 violations, Found 0 unconnected items"), having read about 1%
-## of it without complaint; refusing by name here is strictly better.
+## **Corrupt files**: `sexp.parseSexp` never raises on structural defects;
+## `readPcb` refuses anything that isn't exactly one well-formed
+## `(kicad_pcb ...)` root. Missing parens typically leave thousands of
+## top-level fragments -- which `kicad-cli` may read silently and partially.
 
 import std/[tables, sets, hashes, random, strutils, os]
 
@@ -48,49 +34,32 @@ export common
 type
   KicadDoc* = ref object of SexpDoc
     version*: int
-      ## e.g. `20241229`. `0` if the file states none (should not happen on
-      ## a real board, but nothing here assumes it must be present).
+      ## e.g. `20241229`; `0` if the file states none.
     generator*: string
     snapshotRev*: int
-      ## `Pcb.rev` at the moment `readPcb` finished. `writePcb` compares
-      ## `pcb.rev` against this to decide whether anything changed at all.
+      ## `Pcb.rev` when `readPcb` finished; `writePcb` compares against it.
     netByCode*: Table[int, Net]
-      ## Populated only for a board with a `(net N "name")` declaration
-      ## block (version < `20251028`, finding 4). On a newer board every
-      ## `(net "name")` reference is resolved straight by name instead.
+      ## Only for boards with a `(net N "name")` declaration block (version
+      ## < `20251028`); newer boards resolve `(net "name")` by name.
     hasNetCodes*: bool
-      ## True the moment a single top-level `(net N "name")` declaration was
-      ## read. Distinguishes "no code declarations exist on this board" from
-      ## "no net happens to be assigned yet", which `netByCode.len == 0`
-      ## alone cannot -- a numbered board with only net `0` in use would
-      ## otherwise look identical to a KiCad-10, name-only board, and the
-      ## write side needs to know which `(net ...)` shape to regenerate.
+      ## True once any top-level `(net N "name")` declaration was read --
+      ## distinguishes a numbered board with only net `0` from a name-only
+      ## board, so the writer knows which `(net ...)` shape to emit.
     mapped*: HashSet[int32]
-      ## Every source node this reader turned into a live `Pcb` entity --
-      ## one entry per distinct node, never one per `Copper` a wildcard pad
-      ## layer expansion produced from it. `writePcb`'s delete sweep walks
-      ## every still-reachable entity, collects the same set from
-      ## `attrs["kicad.node"]`, and marks anything in `mapped` but not in
-      ## that set deleted.
+      ## Every source node mapped to a live entity (one per node, not per
+      ## wildcard-expanded `Copper`). `writePcb`'s delete sweep marks anything
+      ## here but no longer reachable as deleted.
     rngSeed*: int64
-      ## `hash(pcb.name)`, the deterministic base an inserted node's `uuid`
-      ## is derived from (see `nextUuid`).
+      ## `hash(pcb.name)`, the deterministic base for inserted `uuid`s.
     insertCounter*: int
 
 # ---------------------------------------------------------------- small helpers
 #
-# `refuse`, `readMm`, `readDeg`, `readXy`, `buildAperture`, `expandPadLayers`,
-# `graphicCurves` and `graphicNodeLayer` live in `kicadgeom.nim` now -- a
-# `.kicad_mod` library footprint (`formats/kicadmod.nim`) parses the exact
-# same node shapes a board's embedded footprint does, and two copies of "how
-# big is a roundrect corner" would eventually disagree (see that module's
-# doc comment).
+# Node-shape helpers shared with `.kicad_mod` parsing live in `kicadgeom.nim`.
 
 proc readAt(d: SexpDoc, n: int32): tuple[p: Point, rot: Deg] =
-  ## `(at x y [rot])`. The angle field is absent for zero (1307-of-4152 case
-  ## in the corpus, see `kicadfmt.formatAt`); KiCad's rotation reads
-  ## clockwise in the Y-up canonical frame, so it is negated on the way in,
-  ## matching `geometry.nim`'s documented boundary rule.
+  ## `(at x y [rot])`; the angle is absent for zero. KiCad's rotation is
+  ## clockwise in the Y-up frame, so it is negated on the way in.
   let rN = arg(d, n, 2)
   (pt(readMm(d, arg(d, n, 0)), -readMm(d, arg(d, n, 1))),
    (if rN >= 0: -readDeg(d, rN) else: deg(0.0)))
@@ -100,11 +69,8 @@ proc ensureNet(pcb: Pcb, name: string): Net =
   nlgraph.addNet(pcb.netlist, newNet(name))
 
 proc resolveNetRef(pcb: Pcb, doc: KicadDoc, d: SexpDoc, netNode: int32): Net =
-  ## `netNode` is a `(net ...)` list, in any of its three corpus shapes:
-  ## `(net N)` (a segment/via/zone reference), `(net N "name")` (a pad
-  ## reference, or a top-level declaration), `(net "name")` (any reference
-  ## on a board with no declaration block, finding 4). Net code `0` and an
-  ## empty name both mean "no net" and return `nil`.
+  ## `netNode` is `(net N)`, `(net N "name")` or `(net "name")`. Code `0`
+  ## and an empty name mean "no net" and return `nil`.
   if netNode < 0: return nil
   let a0 = arg(d, netNode, 0)
   if a0 < 0: return nil
@@ -116,11 +82,8 @@ proc resolveNetRef(pcb: Pcb, doc: KicadDoc, d: SexpDoc, netNode: int32): Net =
   let code = int(codeF)
   if code == 0: return nil
   if doc.netByCode.hasKey(code): return doc.netByCode[code]
-  # A referenced code with no declaration -- either a `(net N "name")` pad
-  # reference on a board that also carries the declaration block (the common
-  # case, already registered when the block was read) or a malformed file.
-  # Fall back to the name riding alongside the code, if any, rather than
-  # inventing a placeholder that would silently merge with a real net.
+  # An undeclared code: fall back to the name alongside it, if any, rather
+  # than invent a placeholder that could merge with a real net.
   let a1 = arg(d, netNode, 1)
   if a1 >= 0 and d.kind(a1) == skString and d.text(a1).len > 0:
     let net = ensureNet(pcb, d.text(a1))
@@ -159,9 +122,8 @@ proc classifyLayer(name, typ: string): tuple[fn: LayerFunction, side: LayerSide]
 
 proc readLayers(pcb: Pcb, d: SexpDoc, layersNode: int32) =
   ## `(layers)` is already in physical stack order for copper despite
-  ## non-monotonic ordinals (finding 3, verified on 6- and 10-layer demos:
-  ## `0 F.Cu, 4 In1.Cu, 6 In2.Cu, ... 2 B.Cu`), so adding in file order alone
-  ## satisfies "insertion order is stack order" -- no sort needed.
+  ## non-monotonic ordinals (`0 F.Cu, 4 In1.Cu, ... 2 B.Cu`), so file order
+  ## is stack order.
   for row in d.kids(layersNode):
     if d.kind(row) != skList: continue
     let nameNode = arg(d, row, 0)
@@ -218,9 +180,8 @@ proc readSetup(pcb: Pcb, d: SexpDoc, setupNode: int32) =
 # ---------------------------------------------------------------- nets
 
 proc readNetDecl(pcb: Pcb, doc: KicadDoc, d: SexpDoc, node: int32) =
-  ## A top-level `(net N "name")` declaration (version < `20251028` only --
-  ## finding 4). Net code `0` is the reserved "no net" sentinel and is
-  ## deliberately never registered as a real `Net`.
+  ## A top-level `(net N "name")` declaration (version < `20251028`). Code
+  ## `0` is "no net" and is never registered.
   var codeF: float
   if not parseNumber(d, arg(d, node, 0), codeF): return
   doc.hasNetCodes = true
@@ -280,10 +241,8 @@ proc readArcTrack(pcb: Pcb, doc: KicadDoc, d: SexpDoc, node: int32) =
   discard addCopper(l, c)
   setNet(c, resolveNetRef(pcb, doc, d, netChild))
   c.attrs["kicad.node"] = $node
-  # The arc caveat: `arcFrom3Points` is float trig, so re-deriving `(mid)`
-  # from the canonical centre+sweep this became is not bit-exact even when
-  # unchanged. Stash the source `(mid)` text so a regenerator can reuse it
-  # verbatim whenever the shape turns out unchanged from what was just read.
+  # `arcFrom3Points` is float trig, so re-deriving `(mid)` isn't bit-exact;
+  # stash the source text for reuse when the shape is unchanged.
   c.attrs["kicad.arc.mid"] = raw(d, midChild)
   let uuidChild = d.child(node, "uuid")
   if uuidChild >= 0: c.attrs["kicad.uuid"] = raw(d, arg(d, uuidChild, 0))
@@ -330,9 +289,8 @@ proc readVia(pcb: Pcb, doc: KicadDoc, d: SexpDoc, node: int32) =
 # ---------------------------------------------------------------- footprints + pads
 
 proc footprintTransform(p: Placement): Transform =
-  ## KiCad's rule: `absolute = fp.at + Rotate(local, +fp.angle)`, no extra
-  ## mirror term -- a side flip is already baked into local coordinates and
-  ## layer names (`geometry.nim`'s documented boundary rule for `Transform`).
+  ## KiCad: `absolute = fp.at + Rotate(local, +fp.angle)`, no mirror term --
+  ## a side flip is already baked into local coordinates and layer names.
   Transform(origin: p.at, rot: p.rot, mirrorX: false)
 
 proc readPad(pcb: Pcb, doc: KicadDoc, d: SexpDoc, padNode: int32, p: Placement) =
@@ -384,22 +342,13 @@ proc readPad(pcb: Pcb, doc: KicadDoc, d: SexpDoc, padNode: int32, p: Placement) 
       for c in p.lands[padName]:
         attachPad(h, c)
     producedAnything = true
-  # `mark` only when a live entity actually resulted: a paste-only SMD pad
-  # (`(pad "" smd roundrect (layers "B.Paste") ...)`, real corpus shape,
-  # `StickHub.kicad_pcb`/`tiny_tapeout-demo.kicad_pcb`) has no copper and no
-  # drill -- nothing in `pcb/types` represents a stencil-aperture-only pad,
-  # correctly, since it genuinely is not copper. Marking it anyway would put
-  # a node in `doc.mapped` with no live counterpart ever, which is exactly
-  # the gap `liveEntities(pcb).len == doc.mapped.len` exists to catch (it
-  # did, against three boards in this corpus during development) --
-  # `runDeleteSweep` would then delete a real, unmodified pad the very first
-  # time anything else on the board changed.
+  # `mark` only when a live entity resulted. A paste-only SMD pad has no
+  # copper or drill and no `pcb/types` entity; marking it would make the
+  # delete sweep remove it on the first edit.
   if producedAnything: mark(doc, padNode)
 
-# Forward declaration -- implemented after `readFootprint` (which needs it
-# for footprint-owned Edge.Cuts/silkscreen graphics) but defined in terms of
-# helpers that read more naturally grouped with the outline-stitching code
-# below.
+# Forward declaration: `readFootprint` needs it for footprint-owned
+# graphics; implemented with the outline-stitching code below.
 proc processGraphicNode(pcb: Pcb, doc: KicadDoc, d: SexpDoc, node: int32,
                          t: Transform, edgeCurves: var seq[Curve])
 
@@ -426,10 +375,8 @@ proc readFootprint(pcb: Pcb, doc: KicadDoc, d: SexpDoc, node: int32,
     if key == "Reference": designator = val
     elif key == "Value": valueText = val
 
-  # Placement designator collisions (the documented trap): real boards carry
-  # unannotated footprints with designator `""` or `REF**`.
-  # `graph.addPlacement` raises on a duplicate, so synthesise a unique key
-  # and keep the raw one for round-tripping.
+  # Designator collisions are real (`""`, `REF**`): `addPlacement` raises on
+  # duplicates, so synthesise a unique key and keep the raw one.
   var uniqueDes = designator
   if uniqueDes.len == 0 or pcb.placements.hasKey(uniqueDes):
     let base = if designator.len > 0: designator else: "REF**"
@@ -442,23 +389,13 @@ proc readFootprint(pcb: Pcb, doc: KicadDoc, d: SexpDoc, node: int32,
   p.rot = rot
   p.side = side
   if designator != uniqueDes: p.attrs["kicad.reference"] = designator
-  # `attrs["kicad.Value"]`, not `attrs["value"]`: KiCad's `(property "Value"
-  # ...)` is not always the same claim as the annotation registry's `value`
-  # -- "10k" on a resistor is the same fact spelled twice, "STM32F103" on an
-  # IC is not a component value in the registry's sense at all. Landing it
-  # in the reserved, unvalidated `kicad.*` namespace (`netlist/annotations.nim`)
-  # is what makes this the real collision `contract/CLAUDE.md`'s
-  # `normalizeAnnotations` deferral was waiting for, rather than resolving
-  # it here by guessing which of the two cases a given part is.
+  # `kicad.Value`, not `value`: KiCad's Value property isn't always a
+  # component value in the registry's sense ("STM32F103" on an IC), so it
+  # stays in the unvalidated `kicad.*` namespace rather than being guessed.
   if valueText.len > 0: p.attrs["kicad.Value"] = valueText
-  # The literal `(property "Reference" ...)` text as read, independent of
-  # `uniqueDes`. A rename is detected at write time by comparing this
-  # against whatever `p.attrs["kicad.reference"]` (or, absent that,
-  # `p.designator`) says *now* -- there is no `graph.renamePlacement`, so
-  # the documented way to rename a placement post-read is to set
-  # `p.attrs["kicad.reference"]` directly and call `touch(pcb, p)`, exactly
-  # the `p.rot = deg(90)` escape hatch `graph.nim` already documents for
-  # every other bypass of its own mutators.
+  # The literal Reference text as read. A rename is detected at write time
+  # by comparing it with `attrs["kicad.reference"]` (or `designator`).
+  # There's no `renamePlacement`: set `attrs["kicad.reference"]` and `touch`.
   p.attrs["kicad.node.refText"] = designator
   for (key, propNode) in propNodes:
     if key != "Reference" and key != "Value":
@@ -556,12 +493,9 @@ proc closeEnough(a, b: Point, tol: Nm): bool =
   abs(a.x - b.x) <= tol and abs(a.y - b.y) <= tol
 
 proc stitchLoops(curves: seq[Curve], tol: Nm): seq[seq[Curve]] =
-  ## Greedy nearest-endpoint chaining. `Edge.Cuts` is drawn as an unordered
-  ## bag of segments/arcs (finding: KiCad has no explicit outline node at
-  ## all -- `pcb/CLAUDE.md`), so this is the whole job: repeatedly grow one
-  ## chain from either end until nothing more attaches within `tol`, then
-  ## start a new chain from whatever is left. Quadratic in curve count per
-  ## loop, which is fine at outline scale (tens of segments, not thousands).
+  ## Greedy nearest-endpoint chaining of the unordered `Edge.Cuts` bag: grow
+  ## a chain from either end until nothing attaches within `tol`, then start
+  ## another. Quadratic, fine at outline scale.
   var remaining = curves
   while remaining.len > 0:
     var chain = @[remaining[0]]
@@ -587,11 +521,9 @@ proc forceOrientation(p: Path, ccw: bool): Path =
   if (signedArea(p) > 0) != ccw: reversed(p) else: p
 
 proc stitchOutline(pcb: Pcb, curves: seq[Curve]) =
-  ## Edge.Cuts graphics, **including those owned by footprints**, become
-  ## `Pcb.outline`: the largest closed loop by area is the board boundary,
-  ## any smaller loop found inside it is a cutout hole, and any loop that is
-  ## not inside it is a separate, deliberately disjoint piece (a panel, or a
-  ## board with an island).
+  ## Edge.Cuts graphics, **including footprint-owned ones**, become
+  ## `Pcb.outline`: the largest closed loop is the boundary, loops inside it
+  ## are cutouts, loops outside it are separate pieces.
   if curves.len == 0: return
   let tol = pcb.outline.stitchTolerance
   var paths: seq[Path]
@@ -667,9 +599,7 @@ proc readZone(pcb: Pcb, doc: KicadDoc, d: SexpDoc, node: int32) =
 # ---------------------------------------------------------------- readPcb
 
 proc readPcb*(path: string, step = ""): Pcb =
-  ## Reads a KiCad `.kicad_pcb` board. `step` is ignored -- a KiCad board is
-  ## a single file, matching `formats/common.nim`'s documented single-file
-  ## case.
+  ## Reads a KiCad `.kicad_pcb` board. `step` is ignored (single file).
   var doc = KicadDoc()
   let content =
     try: readFile(path)
@@ -726,29 +656,18 @@ proc readPcb*(path: string, step = ""): Pcb =
   stitchOutline(pcb, edgeCurves)
 
   pcb.source = doc
-  # **Not** `pcb.rev = 0` here: every `graph` mutator called during this read
-  # (`addLayer`, `addCopper`, `addShape` for ordinary silkscreen/fab
-  # graphics, ...) has already bumped `pcb.rev` and stamped it into the
-  # entity it touched, and that is correct, wanted bookkeeping -- resetting
-  # the counter to zero afterwards would leave every entity's own `rev`
-  # (still its real, larger value from during the read) greater than
-  # `snapshotRev`, so `writePcb`'s refusal checks (`l.rev > doc.snapshotRev`
-  # for a graphics change) would fire on every board that has *any*
-  # silkscreen, immediately after a plain read with no edits at all. The
-  # snapshot has to be taken *after* the read's own mutations, at whatever
-  # value `pcb.rev` organically reached -- which is exactly `pcb.rev` here,
-  # untouched.
+  # Snapshot `rev` after the read's own mutations, not reset to 0: entities
+  # keep the `rev` they were stamped with, and a reset would make every
+  # unedited board with silkscreen trip the refusal checks.
   doc.snapshotRev = pcb.rev
   result = pcb
 
 # ---------------------------------------------------------------- writePcb
 
 proc nodeIdOf(attrs: OrderedTable[string, string], key: string): int32 =
-  ## `-1` for "not a real node" -- either the key is absent (never mapped:
-  ## an entity created after the read) or it was set to the empty-string
-  ## sentinel `insertNewEntities` leaves behind once an insert has already
-  ## been queued for it, so a second `writePcb` call on the same in-memory
-  ## `Pcb` does not queue the same insertion twice.
+  ## `-1` when not a real node: the key is absent (created after the read)
+  ## or holds the "" sentinel left once an insert was queued, so a second
+  ## `writePcb` doesn't queue it twice.
   if not attrs.hasKey(key): return -1
   let s = attrs[key]
   if s.len == 0: return -1
@@ -756,13 +675,9 @@ proc nodeIdOf(attrs: OrderedTable[string, string], key: string): int32 =
   except ValueError: -1
 
 iterator liveEntityNodes(pcb: Pcb): int32 =
-  ## Every source node still reachable from a live `Pcb` entity, walking
-  ## every container the model keeps one in: `pcb.layers[*].copper`,
-  ## `pcb.zones` (their own node only -- `fills`/`areas` carry no node of
-  ## their own, see `readZone`), `pcb.holes`, `pcb.placements[*]`. A
-  ## container this iterator forgets to walk fails the very first
-  ## `nimble roundtrip` run once anything is deleted from it, since its
-  ## nodes would wrongly look dead -- see `examples/pcb_roundtrip.nim`.
+  ## Every source node reachable from a live entity: layer copper, zones
+  ## (own node only), holes, placements. A container missed here makes its
+  ## nodes look dead and get deleted.
   for _, l in pcb.layers:
     for c in l.copper:
       let n = nodeIdOf(c.attrs, "kicad.node")
@@ -781,8 +696,8 @@ iterator liveEntityNodes(pcb: Pcb): int32 =
       if n2 >= 0: yield n2
 
 proc liveEntitySet*(pcb: Pcb): HashSet[int32] =
-  ## Exported for `examples/pcb_roundtrip.nim`'s coverage assertion
-  ## (`liveEntities(pcb).len == doc.mapped.len` immediately after a read).
+  ## Exported for the round-trip coverage check
+  ## (`liveEntities(pcb).len == doc.mapped.len` right after a read).
   for n in liveEntityNodes(pcb): result.incl(n)
 
 proc runDeleteSweep(pcb: Pcb, doc: KicadDoc) =
@@ -811,33 +726,15 @@ proc classIndex(head: string): int =
   high(int)
 
 proc resolveInsertAnchor(doc: KicadDoc, root: int32, headToken: string): tuple[after, before: int32] =
-  ## The insert-anchor ladder: (1) after the last existing sibling with the
-  ## same head token -- covers any board that already has one of the thing;
-  ## (2) failing that, before the first sibling whose own head sits later in
-  ## `CanonicalOrder` -- covers a zone-less or unrouted board
-  ## (`multichannel_mixer-unrouted.kicad_pcb` is exactly that case); (3)
-  ## failing *that* too (an empty board, or every later class also absent),
-  ## `(-1, -1)` tells the caller to anchor after the root's very last child.
-  ## `doc.kids(root)` yields the head token `kicad_pcb` itself as the
-  ## *first* child (it is `root`'s `firstChild` in the arena, same as every
-  ## other list's head) -- both loops below skip anything that is not
-  ## itself a list, or `doc.head(c)` on that atom returns `""`,
-  ## `classIndex("")` falls into the unmatched-class case (`high(int)`,
-  ## bigger than everything), and rule 2 would return the head token itself
-  ## as the "before" anchor on the very first call.
+  ## The insert-anchor ladder: (1) after the last sibling with the same head;
+  ## (2) before the first sibling later in `CanonicalOrder` (e.g. an
+  ## unrouted board); (3) `(-1, -1)`: after the root's last child.
   ##
-  ## **Every candidate here is also required to not already be in
-  ## `doc.deleted`.** `writePcb` runs the delete sweep before this resolver,
-  ## so by the time an insert is being anchored, a node already marked
-  ## deleted is exactly the case "rip up the last track on this net, add a
-  ## new one" produces: the *last* `(segment ...)` in the file is often the
-  ## very one a caller just removed. `sexp.emitSiblings` skips a deleted
-  ## node's own gap-and-body *and* anything queued at it (`markDeleted`'s
-  ## contract), so anchoring on a node about to vanish would queue the
-  ## insertion into bytes that never reach the output -- not wrong output,
-  ## no output, and silently. Verified against the live corpus: this exact
-  ## sequence (delete the last existing segment, insert a new one) against
-  ## `ecc83-pp.kicad_pcb` reproduced it before this guard was added.
+  ## Traps, both guarded: `doc.kids(root)` yields the head atom first, so
+  ## non-list children are skipped (else rule 2 anchors on the head token).
+  ## Candidates already in `doc.deleted` are skipped -- the delete sweep
+  ## runs first, and an insert anchored to a deleted node is never emitted
+  ## (e.g. rip up the last segment, add a new one).
   var lastSame: int32 = -1
   for c in doc.kids(root):
     if doc.kind(c) != skList: continue
@@ -852,10 +749,7 @@ proc resolveInsertAnchor(doc: KicadDoc, root: int32, headToken: string): tuple[a
   (-1'i32, -1'i32)
 
 proc lastChildOf(d: SexpDoc, n: int32): int32 =
-  ## The rule-3 fallback anchor: the very last child of `n`, skipping
-  ## anything already `markDeleted` for the same reason `resolveInsertAnchor`
-  ## skips a deleted candidate -- an insertion queued there would never
-  ## reach the output.
+  ## Rule 3's anchor: the last child of `n`, skipping deleted nodes.
   result = -1
   for c in d.kids(n):
     if int32(c) notin d.deleted: result = c
@@ -867,11 +761,8 @@ proc insertAtAnchor(doc: KicadDoc, root: int32, headToken, text: string) =
   else: markInserted(doc, lastChildOf(doc, root), text)
 
 proc nextUuid(doc: KicadDoc): string =
-  ## A v4-shaped UUID string (quoted, ready to splice into `(uuid ...)`),
-  ## deterministic from `hash(pcb.name) xor insertCounter` so a test run
-  ## produces the same bytes every time. The writer checks the result
-  ## against the read-time UUID set for in-file uniqueness -- KiCad asks
-  ## for nothing more.
+  ## A quoted v4-shaped UUID, deterministic from `hash(pcb.name) xor
+  ## insertCounter`, checked against the read-time set for uniqueness.
   var rng = initRand(doc.rngSeed xor int64(doc.insertCounter))
   inc doc.insertCounter
   var bytes: array[16, uint8]
@@ -885,12 +776,9 @@ proc nextUuid(doc: KicadDoc): string =
   "\"" & s & "\""
 
 proc ensureNetCode(pcb: Pcb, doc: KicadDoc, root: int32, net: Net) =
-  ## Assigns the next free code and inserts `(net N "name")` for a net the
-  ## board did not declare -- **never a renumbering** of an existing code,
-  ## since that would rewrite the `(net N)` reference inside every segment,
-  ## via, pad and zone on the board (documented, deliberate). A no-op on a
-  ## KiCad-10, name-only board (`doc.hasNetCodes == false`): a new net there
-  ## needs no declaration at all.
+  ## Assigns the next free code and inserts `(net N "name")` for an
+  ## undeclared net -- **never renumbers** (that would rewrite every
+  ## reference). No-op on a name-only board.
   if net == nil or not doc.hasNetCodes: return
   if codeForNet(doc, net) >= 0: return
   var maxCode = 0
@@ -900,8 +788,8 @@ proc ensureNetCode(pcb: Pcb, doc: KicadDoc, root: int32, net: Net) =
   insertAtAnchor(doc, root, "net", "(net " & $code & " " & escapeKicadString(net.name) & ")")
 
 proc trackNetRefText(doc: KicadDoc, net: Net): string =
-  ## The `(net ...)` shape a segment/arc/via carries: numeric-only when the
-  ## board declares codes at all, name-only otherwise (finding 4).
+  ## A track's `(net ...)`: numeric when the board declares codes, else
+  ## name-only.
   if doc.hasNetCodes:
     "(net " & $codeForNet(doc, net) & ")"
   else:
@@ -919,10 +807,9 @@ proc uuidTextFor(attrs: OrderedTable[string, string], doc: KicadDoc): string =
   if attrs.hasKey("kicad.uuid") and attrs["kicad.uuid"].len > 0: attrs["kicad.uuid"]
   else: nextUuid(doc)
 
-# --- track/via regeneration (the correctness net: always regenerate and
-# compare against source bytes, independent of `rev` -- this is what catches
-# a direct field write that bypassed `touch`, and it is not extra machinery
-# since the regenerator runs on the dirty path regardless).
+# --- track/via regeneration: always regenerate and compare against source
+# bytes, independent of `rev`, which also catches a field write that
+# bypassed `touch`.
 
 proc regenSegmentText(doc: KicadDoc, c: Copper): string =
   let shp = c.shape
@@ -948,10 +835,8 @@ proc regenArcText(doc: KicadDoc, c: Copper): string =
   let midText =
     if c.attrs.hasKey("kicad.arc.mid"): c.attrs["kicad.arc.mid"]
     else:
-      # No stashed source `(mid)` (a brand-new arc): derive one. Not
-      # bit-exact against what KiCad's own writer would produce for the
-      # same arc (float trig -- the documented arc caveat), but it is the
-      # only shape-consistent value available.
+      # A new arc has no stashed `(mid)`: derive one (not bit-exact with
+      # KiCad's writer, but shape-consistent).
       let m = pointOnArc(curve, curve.startAngle + curve.sweep * 0.5)
       "(mid " & formatMm(m.x) & " " & formatMm(-m.y) & ")"
   "(arc\n" &
@@ -1027,8 +912,7 @@ proc insertNewTracksAndVias(pcb: Pcb, doc: KicadDoc, root: int32) =
     insertAtAnchor(doc, root, "via", text)
     h.attrs["kicad.node"] = ""
 
-# --- footprint / pad field overrides (no whole-node regenerator for either
-# -- see the refusal table in this module's doc comment).
+# --- footprint / pad field overrides (no whole-node regeneration).
 
 proc regenerateFootprintFields(pcb: Pcb, doc: KicadDoc, root: int32) =
   for _, p in pcb.placements:
@@ -1064,8 +948,7 @@ proc regenerateFootprintFields(pcb: Pcb, doc: KicadDoc, root: int32) =
         let want = padNetRefText(doc, c.net)
         if want != raw(doc, netChild): markDirty(doc, netChild, want)
 
-# --- zone scalar overrides (the outline/fill polygons themselves are not
-# regenerated this stage -- see the refusal table).
+# --- zone scalar overrides (outline/fill polygons are not regenerated).
 
 proc regenerateZoneScalars(pcb: Pcb, doc: KicadDoc, root: int32) =
   for z in pcb.zones:
@@ -1092,10 +975,8 @@ proc regenerateZoneScalars(pcb: Pcb, doc: KicadDoc, root: int32) =
 # --- refusals
 
 proc checkRefusals(pcb: Pcb, doc: KicadDoc) =
-  ## Everything this writer will not synthesize or regenerate, named rather
-  ## than silently dropped or silently kept stale. Order matters only in
-  ## that the first offender found is the one reported -- there is no
-  ## ranking beyond that.
+  ## Everything this writer won't synthesize or regenerate, refused by name.
+  ## The first offender found is reported.
   for _, p in pcb.placements:
     if nodeIdOf(p.attrs, "kicad.node") < 0 and not p.attrs.hasKey("kicad.node"):
       refuse("writePcb: cannot write a new footprint. Placement '" & p.designator &
@@ -1125,37 +1006,14 @@ proc checkRefusals(pcb: Pcb, doc: KicadDoc) =
            "-- edit the KiCad file directly for a stack-up change.")
 
 proc writePcb*(pcb: Pcb, path: string) =
-  ## Regenerates the board this `pcb` was read from (`pcb.source`) back into
-  ## `path`, byte-exact if nothing changed and valid-but-not-byte-identical
-  ## KiCad otherwise -- see this module's doc comment for what "valid" rests
-  ## on and the refusal table in `checkRefusals` for what it will not do.
+  ## Writes the board back to `path`: byte-exact if unchanged, otherwise
+  ## valid regenerated KiCad (see `checkRefusals` for what's refused).
   if pcb.source == nil and pcb.layers.len > 0:
-    # A board with no KiCad source at all but a real layer stack (built,
-    # never read) is exactly what `pcb/assemble.nim` hands back --
-    # `kicadgen.renderNewPcb` splices each placement's real footprint (see
-    # that module's doc comment) rather than regenerating KiCad's own
-    # graphics syntax by rule, the same bet this module already makes for
-    # an *edited* board, extended to cover "authored from nothing" too.
-    # `placements.len == 0` is not excluded from this branch (an earlier
-    # draft checked it): a design where every part's footprint went
-    # unresolved still has a real layer stack, stack-up and outline worth
-    # writing out, with the `footprint_unresolved` `Issue` for each missing
-    # part reported by `pcb/assemble.assemble` rather than by refusing to
-    # write anything at all -- refusing here would turn "no part placed
-    # yet" into a worse error message than the one that already names what
-    # to fix.
-    #
-    # Deliberately does **not** then re-read the written text back into
-    # `pcb.source`/`attrs["kicad.node"]` on every entity (the "elegant"
-    # graft a first draft of this stage considered): `pcb`'s own `Placement`/
-    # `Copper` objects were never the ones a re-parse would produce, and
-    # setting `pcb.source` to a freshly-parsed `KicadDoc` while leaving
-    # every entity's own `attrs` unmapped would make `checkRefusals` refuse
-    # a *second* `writeBoard` call outright ("cannot write a new footprint")
-    # for placements that had just been written successfully the first
-    # time. Leaving `pcb.source` nil keeps a second call idempotent: it
-    # re-synthesizes the whole file fresh again, which always works, rather
-    # than half-adopting a snapshot with no entity actually mapped into it.
+    # Built, never read (`pcb/assemble.nim`): synthesize the whole file via
+    # `kicadgen.renderNewPcb`, splicing real footprint source. An empty
+    # placement list still writes (unresolved footprints are reported by
+    # `assemble`). `pcb.source` stays nil, so a second call re-synthesizes
+    # rather than half-adopting a snapshot no entity is mapped into.
     writeFile(path, renderNewPcb(pcb))
     return
   if not (pcb.source of KicadDoc):

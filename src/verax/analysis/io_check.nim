@@ -1,29 +1,15 @@
-## Two static IO/electrical-rules checks over a `Netlist`:
+## Static IO/electrical-rules checks over a `Netlist` (no simulation):
 ##
-##  - `checkOutputConflicts`: no net should be driven by more than one
-##    output.
-##  - `checkDCPaths`: every input pin should have a DC path to an output or
-##    to a power/ground net.
+##  - `checkOutputConflicts`: no net driven by more than one output.
+##  - `checkDCPaths`: every input has a DC path to an output or a rail.
 ##
-## Both are pure graph walks over `verax/netlist` -- no simulation. When
-## `checkDCPaths` walks through a component it can't classify as
-## DC-conductive or DC-blocking (an active device like a diode/transistor,
-## an IC, or any unrecognized `Component.kind`), it reports the finding as
-## `"ambiguous_dc_path"` rather than guessing; `verax/analysis/spice_fallback`
-## is the opt-in, ngspice-backed way to attempt resolving those.
+## A component that's neither conductive nor blocking (diodes, ICs, unknown
+## kinds) yields `"ambiguous_dc_path"` rather than a guess;
+## `spice_fallback` can try to resolve those.
 ##
-## These checks are only as informative as the `Pin.kind` data on the
-## netlist they're given. A netlist read from a raw SPICE deck via
-## `verax/netlist/formats/spice` mostly carries `ptPassive`/`ptUnknown`
-## pins (SPICE has no native pin-direction concept), so these checks will
-## find nothing to flag on it -- not because it's clean, but because
-## there's no `ptInput`/`ptOutput` data to reason about. This analysis is
-## meaningful for DSL-authored (or otherwise pin-kind-rich) netlists.
-##
-## "A section of a netlist" is handled by extracting first with
-## `verax/spice/extract` (`extractSubcircuit`/`extractInstance`), then
-## analyzing the resulting standalone `Netlist` like any other -- no subset
-## selection is reinvented here.
+## Only as good as the `Pin.kind` data: a raw SPICE deck has no pin
+## directions, so these find nothing on it. Analyse a section by extracting
+## it first (`spice/extract`).
 
 import std/[strutils, tables]
 import ../netlist/types
@@ -47,13 +33,10 @@ proc componentListLabel*(comps: seq[Component]): string =
   parts.join(", ")
 
 proc checkOutputConflicts*(nl: Netlist, recursive = true): seq[Issue] =
-  ## Flags any net driven by more than one `ptOutput` pin (`sevError`), or by
-  ## exactly one `ptOutput` plus one-or-more `ptInOut` pins, or by two-or-more
-  ## `ptInOut` pins with no `ptOutput` (`sevWarning` -- `ptInOut` pins count
-  ## as conflict *participants*, but only at reduced confidence, since a
-  ## `ptInOut` pin may be an intentionally tri-stated/open-drain bus member,
-  ## e.g. I2C SDA/SCL -- `PinType` has no drive-strength field to distinguish
-  ## that case from a real conflict).
+  ## Flags a net driven by more than one `ptOutput` (`sevError`), or one
+  ## `ptOutput` plus `ptInOut`s, or several `ptInOut`s (`sevWarning` -- an
+  ## inout may be tri-stated/open-drain, e.g. I2C, which `PinType` can't
+  ## express).
   for _, net in nl.nets:
     var outputs: seq[Pin]
     var inouts: seq[Pin]
@@ -68,8 +51,8 @@ proc checkOutputConflicts*(nl: Netlist, recursive = true): seq[Issue] =
         $outputs.len & " output pins drive net '" & net.name & "': " & pinListLabel(drivers),
         net = net, pins = drivers)
     elif drivers.len >= 2:
-      # A declared shared interface signal is the one case PinType alone
-      # cannot distinguish: all sides are open-drain/tri-stated inouts.
+      # A declared shared interface signal: all-inout open-drain/tri-state is
+      # intended.
       var declaredShared = outputs.len == 0 and inouts.len == drivers.len and drivers.len > 0
       let instance = net.attrs.getOrDefault("iface.instance")
       declaredShared = declaredShared and instance.len > 0 and
@@ -88,20 +71,16 @@ proc checkOutputConflicts*(nl: Netlist, recursive = true): seq[Issue] =
       result.add checkOutputConflicts(child, recursive = true)
 
 proc isTerminus(net: Net): bool =
-  ## A net counts as "reached" if it is a power/ground rail (see
-  ## `netlist/kinds.isRail` for why that test accepts either signal), or if
-  ## it carries an output pin.
+  ## "Reached": a rail (`kinds.isRail`) or a net carrying an output pin.
   if isRail(net): return true
   for p in net.pins:
     if p.kind == ptOutput: return true
   false
 
 proc dcReachable(startNet: Net): tuple[reached: bool, ambiguous: seq[Component]] =
-  ## Breadth-first walk from `startNet` across conductive components and
-  ## hierarchy boundaries (`Pin.hierNet` to descend into a `subNetlist`,
-  ## `Netlist.instanceOf`/matching `hierNet` to ascend back out) until a
-  ## terminus is reached or the walk is exhausted. Ambiguous components
-  ## encountered along the way are collected but not traversed through.
+  ## BFS from `startNet` across conductive components and hierarchy
+  ## boundaries until a terminus or exhaustion. Ambiguous components are
+  ## collected, not traversed.
   var visited: seq[Net] = @[startNet]
   var queue: seq[Net] = @[startNet]
   var ambiguous: seq[Component]
@@ -121,15 +100,9 @@ proc dcReachable(startNet: Net): tuple[reached: bool, ambiguous: seq[Component]]
           queue.add p.hierNet
         continue
 
-      # Per-pin, not per-component: `conductiveExits` answers "every net this
-      # walk can reach from `p` through `comp`", which for an undeclared
-      # two-terminal part is the single other pin it always was, and for a
-      # declared multi-throw switch is only the pins its own spec names as
-      # conducting -- an ADG904's RFC reaches whichever RFn is selected and
-      # nothing else, rather than every other RF pin at once. This also
-      # folds in the old "a dead end for this walk" guard for free: a
-      # component with no other *connected* pin at all yields no exits and
-      # no ambiguous pair either, with nothing further to check.
+      # Per pin: `conductiveExits` gives one exit for a plain two-terminal
+      # part, only the declared nets for a switch, and none for a part with
+      # no other connected pin.
       let exits = conductiveExits(comp, p)
       for n in exits:
         if n notin visited:
@@ -137,16 +110,9 @@ proc dcReachable(startNet: Net): tuple[reached: bool, ambiguous: seq[Component]]
           queue.add n
 
       if exits.len == 0:
-        # Nothing was reached from `p` through `comp` -- either every other
-        # pin is genuinely blocked (an ordinary two-terminal part, or a
-        # declared spec that names other edges but not this pin), or the
-        # walk simply cannot tell (an unrecognized kind, or more than two
-        # connected pins with nothing declared). Only the second case is
-        # worth reporting: an undeclared IC is `ambiguous_dc_path` exactly
-        # as it was when this asked `classifyConductivity(comp)` once for
-        # the whole part, while a fully declared switch -- whose unlisted
-        # pairs answer `condBlocking`, never `condAmbiguous` -- is crossed
-        # where its spec says so and silently blocked everywhere else.
+        # No exits: report ambiguity only if the walk couldn't tell (unknown
+        # kind, or >2 pins undeclared). A declared spec's unlisted pairs are
+        # `condBlocking`, so a declared switch is silently blocked there.
         for _, otherPin in comp.pins:
           if otherPin != p and otherPin.net != nil and otherPin.net != net and
              conductivityBetween(comp, p, otherPin) == condAmbiguous:
@@ -163,14 +129,11 @@ proc dcReachable(startNet: Net): tuple[reached: bool, ambiguous: seq[Component]]
   (false, ambiguous)
 
 proc checkDCPaths*(nl: Netlist, recursive = true): seq[Issue] =
-  ## For every `ptInput` pin (over `nl.components`, and recursively into
-  ## `nl.children` if `recursive`), walks for a DC path to a terminus (see
-  ## `isTerminus`). An unconnected pin is flagged immediately as
-  ## `"unconnected_input"`. A connected pin that exhausts the walk with no
-  ## ambiguous component encountered is `"no_dc_path"` (`sevError`,
-  ## confident). If ambiguous components were encountered along the way,
-  ## it's `"ambiguous_dc_path"` (`sevWarning`) instead -- this is exactly the
-  ## record `verax/analysis/spice_fallback.resolveAmbiguousDCPaths` consumes.
+  ## For every `ptInput` pin (recursing into children if `recursive`),
+  ## walks for a DC path to a terminus. Unconnected: `"unconnected_input"`.
+  ## Exhausted with nothing ambiguous: `"no_dc_path"` (`sevError`). With
+  ## ambiguous parts: `"ambiguous_dc_path"` (`sevWarning`), which
+  ## `spice_fallback.resolveAmbiguousDCPaths` consumes.
   for _, comp in nl.components:
     for _, p in comp.pins:
       if p.kind != ptInput: continue
@@ -198,50 +161,30 @@ proc checkDCPaths*(nl: Netlist, recursive = true): seq[Issue] =
       result.add checkDCPaths(child, recursive = true)
 
 proc isPort(nl: Netlist, net: Net): bool =
-  ## Whether `net` is a published port of `nl` -- compared by identity, since
-  ## `Netlist.ports` is keyed by the port's published name, which need not be
-  ## the net's own.
+  ## Whether `net` is a published port of `nl`, by identity (port names may
+  ## differ from net names).
   for _, p in nl.ports:
     if p == net: return true
   false
 
 proc checkRailVoltages*(nl: Netlist, recursive = true): seq[Issue] =
-  ## A power net whose nominal voltage nobody stated.
+  ## A power net with no stated voltage. Simulation fragments terminate
+  ## rails at their boundary; a rail without a voltage is **cut loose as a
+  ## floating node** -- a change of topology, not a substituted value, so
+  ## it's a structural finding rather than an assumption (a floating bias
+  ## rail can turn a gain stage into a follower with every claim passing).
   ##
-  ## Every simulation-backed analysis cuts a fragment out of the design and
-  ## has to terminate the rails at its boundary. A rail with a stated voltage
-  ## gets an ideal source there; a rail without one is **cut loose as a
-  ## floating node**. That is not a substituted value, it is a change of
-  ## topology, and it is why this is a structural finding rather than an
-  ## assumption.
-  ##
-  ## The case that put it here: `designs/ts808_drive.nim` derives its 4.5 V
-  ## bias from a divider, so no `power_rail` role fits it and it initially
-  ## carried no voltage. Cutting it loose detached the drive stage's gain leg
-  ## and measured an amplifier with a gain of 65 as a unity-gain follower --
-  ## 5.9 mdB of peaking against a real 31.6 dB. Every claim passed and the
-  ## report said `exit 0 (clean)`. The floating rail *was* reported, as one
-  ## assumption among fifteen, reading exactly like the package-typical ESR
-  ## two lines above it. Being reported and being *noticed* are different,
-  ## and the difference is which section it lands in.
-  ##
-  ## `sevWarning`, not `sevError`: a rail nothing simulates is harmless, and
-  ## a design may legitimately not know a voltage yet. It costs nothing to
-  ## state one, so the message says so; `--strict` promotes it.
+  ## `sevWarning`: an unsimulated rail is harmless and stating one is cheap;
+  ## `--strict` promotes it.
   for _, net in nl.nets:
     if not isRail(net) or isGround(net): continue
     if railVoltage(net).has: continue
-    # A subcircuit's *port* is not a rail of its own: it is whatever the
-    # parent wired to it, and the parent is where the voltage is stated. A
-    # stereo board instancing one channel twice would otherwise report the
-    # same missing voltage once per instance for a rail that is stated, and
-    # the finding this check exists to make -- a genuinely floating node --
-    # would be sitting among the false ones.
+    # A subcircuit port isn't its own rail; the parent states the voltage.
+    # Otherwise each instance would report a false finding.
     if isPort(nl, net): continue
 
-    # Naming what terminates on the rail is the actionable half. A rail
-    # carrying only power pins and bypass capacitors loses little by
-    # floating; one with a signal path returning to it loses the path.
+    # Name what terminates on the rail: a bypass-only rail loses little by
+    # floating; a signal path returning to it loses the path.
     var onIt: seq[string]
     var comps: seq[Component]
     for p in net.pins:

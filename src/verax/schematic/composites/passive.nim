@@ -1,29 +1,16 @@
-## The passive composite motifs. Two live here:
+## The passive composite motifs, registered into `compositeKinds` at the
+## bottom:
 ##
-## * **parallel stack** (`parallelStackKind`) -- a group of parallel flat
-##   two-terminal parts sharing the same unordered net pair, recognized and
-##   packed as one placement unit. Ported verbatim from the pre-registry inline
-##   code -- each hook body below is the corresponding fragment of the old
-##   `compositePlan` / `positionedCompositePlan` / `compositeInternalRoutes` /
-##   `constrainedRecomputeRotations`, unchanged in substance.
-## * **series chain** (`seriesChainKind`) -- flat two-terminal passive parts
-##   wired end to end through *private* two-pin link nets and nothing else, drawn
-##   as one horizontal row (`docs/composites.md` idea 1). The complementary case
-##   to the parallel stack: chained, not paralleled. Non-nesting -- members are
-##   always raw singletons, so a chain never contains a parallel bank and a
-##   parallel bank never contains a chain (`docs/composite_placement_stage2.md`
-##   §2.6).
-##
-## Both are registered into `compositeKinds` (`./composite`) at the bottom.
+## * **parallel stack** (`parallelStackKind`) -- parallel flat two-terminal
+##   parts on the same unordered net pair, packed as one unit.
+## * **series chain** (`seriesChainKind`) -- flat two-terminal passives
+##   joined end to end through private two-pin link nets, drawn as one row.
+##   Non-nesting: members are always raw singletons.
 
 proc parallelRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]] =
-  ## `CompositeKind.recognize` for the parallel stack: the *total* partition
-  ## of `comps` into groups this kind recognises, singletons included. `syms`
-  ## is unused -- recognition here is topology-only -- but is part of the
-  ## hook signature every `recognize` proc shares.
-  ##
-  ## Parallel flat two-terminal parts are one placement unit.  Their endpoint
-  ## key is unordered, so declaration and pin order cannot split the group.
+  ## `recognize` for the parallel stack: the total partition, singletons
+  ## included. Topology-only (`syms` unused). The endpoint key is unordered,
+  ## so declaration and pin order can't split a group.
   var groupOf = initTable[string, int]()
   for i, c in comps:
     if not isTwoTerminal(c, c.netlist):
@@ -41,8 +28,8 @@ proc parallelRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int
 
 proc parallelInternalLayout(comps: seq[Component], syms: seq[SymbolDef],
                             members: seq[int]): seq[Point] =
-  ## Members are stacked at raw-body-touching, grid-rounded centres: an
-  ## 80 x 80 passive pair is exactly 80 units apart.
+  ## Members stacked at body-touching, grid-rounded centres (an 80 x 80
+  ## pair is 80 apart).
   var totalH = 0.0
   for i in members: totalH += syms[i].bodyH
   var y = -totalH / 2.0
@@ -62,19 +49,15 @@ proc parallelExternalPins(comps: seq[Component],
       for pinName, pin in comps[i].pins:
         if pin.net != nil and pin.net.name == netName:
           port.covered.add (i, pinName)
-    # The first member/pin is the deterministic shared external endpoint.
+    # The first member/pin is the deterministic external endpoint.
     port.representative = port.covered[0]
     result.add port
 
 proc parallelPickRepresentative(parts: seq[SchematicPart], footprint: seq[Obstacle],
                                 port: CompositePort):
     tuple[partIdx: int, pinName: string] =
-  ## Pick a physical pin whose normal escape leaves the full composite
-  ## footprint. The canonical first member can be an interior tap when the
-  ## group is vertically stacked; using an exposed member keeps the one
-  ## external endpoint routable while all ordering remains deterministic.
-  ## `port.representative` (the deterministic default) stands when no
-  ## covered pin actually clears the footprint.
+  ## Pick a pin whose escape leaves the whole footprint (the first member may
+  ## be an interior tap). Keeps the default if none does.
   result = port.representative
   for candidate in port.covered:
     let part = parts[candidate.partIdx]
@@ -87,12 +70,9 @@ proc parallelPickRepresentative(parts: seq[SchematicPart], footprint: seq[Obstac
 
 proc parallelInternalRoute(parts: seq[SchematicPart],
                           port: CompositePort): seq[SchematicWire] =
-  ## Deterministic trunk-and-tap fanout. For three or more members, use one
-  ## trunk plus disjoint taps: independent tap-to-root Ls would overlap along
-  ## the shared same-net trunk. The stacking axis is read from the covered
-  ## pins rather than assumed vertical -- `lsCompositeOrient` may turn the
-  ## whole unit, and after a 90/270 turn the members stack in x with the
-  ## trunk running horizontal and the taps vertical.
+  ## Deterministic trunk-and-tap fanout (one trunk plus disjoint taps, so
+  ## tap Ls don't overlap). The stacking axis is read from the pins, since
+  ## `lsCompositeOrient` may have turned the unit.
   let rep = parts[port.representative.partIdx]
   var root: Point
   for pin in rep.pins:
@@ -109,8 +89,8 @@ proc parallelInternalRoute(parts: seq[SchematicPart],
         minY = min(minY, pin.y); maxY = max(maxY, pin.y)
         if covered != port.representative:
           taps.add Point(x: pin.x, y: pin.y)
-  # The canonical-side mapping makes same-net terminals share the cross-axis
-  # coordinate; the wider covered-pin spread is therefore the trunk axis.
+  # Same-net terminals share the cross-axis coordinate, so the wider spread
+  # is the trunk axis.
   let vertical = (maxY - minY) >= (maxX - minX)
   proc joinPoint(p: Point): Point =
     if vertical: Point(x: root.x, y: p.y) else: Point(x: p.x, y: root.y)
@@ -139,8 +119,8 @@ proc parallelRotationCandidates(nl: Netlist, comps: seq[Component],
                                 syms: seq[SymbolDef], pos: seq[Point],
                                 current: seq[float],
                                 members: seq[int]): seq[seq[float]] =
-  ## `angle` only defines the canonical side through the reference member.
-  ## Every other member derives its own rotation from its native terminal.
+  ## `angle` defines the canonical side via the reference member; others
+  ## derive their rotation from their native terminal.
   var nets: seq[string]
   for _, p in comps[members[0]].pins: nets.add p.net.name
   nets.sort()
@@ -172,18 +152,12 @@ proc parallelStackKind(): CompositeKind =
     footprint: boundingBoxFootprint)
 
 # --- the series chain ------------------------------------------------------
-# Flat two-terminal passive parts wired end to end. Two members are chained
-# when they share a *link net*: a net with exactly two pins in total, both on
-# distinct usable members, that is neither ground, nor a rail, nor a declared
-# interface port. Link nets give every usable part degree <= 2, so the link
-# graph is a disjoint set of paths and cycles; a cycle cannot be a horizontal
-# row, so it is declined rather than cut. Recognition is topology-only, never a
-# `Component.kind` string or a pin name -- the discipline `isTwoTerminal`
-# documents.
+# Members chain through a *link net*: exactly two pins, both on distinct
+# usable members, not ground/rail/port. That gives degree <= 2, so links
+# form paths and cycles; cycles are declined. Topology-only.
 
 proc seriesSharedNet(a, b: Component): string =
-  ## The net name both `a` and `b` have a pin on ("" if none). Both are flat
-  ## two-terminal, so at most one such net exists for a chain pair.
+  ## The net `a` and `b` both touch ("" if none).
   for _, pa in a.pins:
     if pa.net == nil: continue
     for _, pb in b.pins:
@@ -202,13 +176,8 @@ proc seriesRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]]
     var pinsOn = initTable[string, seq[int]]()   # net name -> usable member idxs
     var netByName = initTable[string, Net]()
     for i, c in comps:
-      # A chain member must draw as an actual flat two-terminal passive symbol.
-      # The widened `isTraversable` alone would also pass a fallback *box* --
-      # an unrecognized kind, a many-pin part (an MCU with only two nets
-      # wired), or now a declared multi-exit switch -- that `pathsFrom`'s
-      # semantic walker traverses but that has no business being rigidified
-      # into a horizontal passive row, which is why this tests `isTwoTerminal`
-      # and not `isTraversable`.
+      # Must draw as a flat two-terminal passive symbol: `isTwoTerminal`, not
+      # `isTraversable` (which also passes boxes and declared switches).
       usable[i] = isTwoTerminal(c, nl) and isPassiveElement(syms[i]) and
                   not syms[i].isBox
       for _, pin in c.pins:
@@ -227,9 +196,8 @@ proc seriesRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]]
       if net == nil or isGround(net) or isRail(net): return false
       true
 
-    # adjacency over link nets: for each usable member, its <= 2 neighbours, in
-    # pin declaration order. Iterates `comps`/`c.pins` (both insertion order)
-    # and only *looks up* the tables -- the determinism rule schematic keeps.
+    # Adjacency over link nets (<= 2 neighbours, pin order). Iterates in
+    # insertion order and only looks tables up, for determinism.
     var adj = newSeq[seq[int]](comps.len)
     for i, c in comps:
       if not usable[i]: continue
@@ -239,7 +207,7 @@ proc seriesRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]]
         adj[i].add (if pair[0] == i: pair[1] else: pair[0])
 
     var visited = newSeq[bool](comps.len)
-    # Walk each path from a degree-<=1 usable endpoint, lowest index first.
+    # Walk each path from a degree-<=1 endpoint, lowest index first.
     for start in 0 ..< comps.len:
       if not usable[start] or visited[start] or adj[start].len > 1: continue
       if adj[start].len == 0: continue            # a lone part is not a chain
@@ -255,8 +223,8 @@ proc seriesRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]]
         prev = cur
         cur = nxt
       if path.len < 2: continue
-      # Canonical direction: head is the end with the earlier-sorting free net,
-      # falling back to the lower member index when the two free nets match.
+      # Head is the end with the earlier-sorting free net (else the lower
+      # index).
       let headFree = twoTermOtherNet(comps[path[0]], seriesSharedNet(
         comps[path[0]], comps[path[1]]))
       let tailFree = twoTermOtherNet(comps[path[^1]], seriesSharedNet(
@@ -271,8 +239,8 @@ proc seriesRecognize(comps: seq[Component], syms: seq[SymbolDef]): seq[seq[int]]
   totalPartition(comps.len, groups)
 
 proc seriesNodes(comps: seq[Component], members: seq[int]): seq[string] =
-  ## The `members.len + 1` net names along the chain: free-head, each link net
-  ## in order, free-tail.
+  ## The `members.len + 1` nets along the chain: free head, links, free
+  ## tail.
   let headLink = seriesSharedNet(comps[members[0]], comps[members[1]])
   let headFree = twoTermOtherNet(comps[members[0]], headLink)
   result.add (if headFree != nil: headFree.name else: "")
@@ -284,12 +252,9 @@ proc seriesNodes(comps: seq[Component], members: seq[int]): seq[string] =
 
 proc seriesInternalLayout(comps: seq[Component], syms: seq[SymbolDef],
                           members: seq[int]): seq[Point] =
-  ## Members left to right, bodies separated by a `2 * grid` gutter so every
-  ## internal link is a real positive-length wire and every centre lands on the
-  ## grid (an 80-wide passive at a `2 * grid` gutter is a 160 pitch -- an even
-  ## number of grid steps, so the midpoints round symmetrically, which a single
-  ## `grid` gutter's odd pitch would not). Centred about the origin, mirroring
-  ## `parallelInternalLayout` along the other axis.
+  ## Members left to right with a `2 * grid` gutter (a positive-length link
+  ## wire, and an even pitch so centres stay on the grid), centred on the
+  ## origin.
   var totalW = 2.0 * grid * float(members.len - 1)
   for i in members: totalW += syms[i].bodyW
   var x = -totalW / 2.0
@@ -300,10 +265,9 @@ proc seriesInternalLayout(comps: seq[Component], syms: seq[SymbolDef],
 
 proc seriesExternalPins(comps: seq[Component],
                         members: seq[int]): seq[CompositePort] =
-  ## One port per *link* net -- covering the two adjacent members' pins on it.
-  ## The two free end nets get no port: each has a single pin inside the
-  ## composite, so `compositeExternalPins` passes it through unchanged and a
-  ## ground/rail end still draws its own glyph.
+  ## One port per link net, covering both adjacent pins. Free end nets get
+  ## none: each has one pin inside, passes through, and a rail end keeps its
+  ## glyph.
   let nodes = seriesNodes(comps, members)
   for k in 0 ..< members.len - 1:
     let netName = nodes[k + 1]
@@ -317,14 +281,12 @@ proc seriesExternalPins(comps: seq[Component],
 proc seriesPickRepresentative(parts: seq[SchematicPart], footprint: seq[Obstacle],
                               port: CompositePort):
     tuple[partIdx: int, pinName: string] =
-  ## A link net never reaches the external router (`fullyInternalComposite`),
-  ## so the deterministic default stands.
+  ## Link nets never reach the external router; the default stands.
   port.representative
 
 proc seriesInternalRoute(parts: seq[SchematicPart],
                          port: CompositePort): seq[SchematicWire] =
-  ## One straight (or L, should a future layout break the row) segment from the
-  ## representative pin to the other covered pin.
+  ## A straight (or L) segment from the representative to the other pin.
   proc at(c: tuple[partIdx: int, pinName: string]): Point =
     for pin in parts[c.partIdx].pins:
       if pin.name == c.pinName: return Point(x: pin.x, y: pin.y)
@@ -343,8 +305,8 @@ proc seriesRotationCandidates(nl: Netlist, comps: seq[Component],
                               syms: seq[SymbolDef], pos: seq[Point],
                               current: seq[float],
                               members: seq[int]): seq[seq[float]] =
-  ## One canonical assignment: every member horizontal with its head-side net
-  ## (`seriesNodes[k]`) on the -x side, so the chain reads left to right.
+  ## One assignment: every member horizontal, head-side net on -x, reading
+  ## left to right.
   let nodes = seriesNodes(comps, members)
   let left = Point(x: -1.0, y: 0.0)
   var cand = current

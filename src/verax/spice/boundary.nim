@@ -1,31 +1,15 @@
 ## The edge of a board: where it stops, and what is on the other side.
 ##
-## A connector is not a component in the sense the rest of this library uses
-## the word. Each of its pins touches exactly one net, so there is nothing to
-## pass *through* to -- its electrical behaviour is entirely whatever is
-## plugged into it, and a netlist cannot know that. That is why standing one
-## in with per-pin impedances is wrong in a specific way rather than merely
-## approximate: `models.expandPinModels` gives each pin an impedance to
-## ground, which for a USB inlet means **VBUS as 1 Mohm to ground and no
-## supply on the board at all**.
+## A connector's behaviour is whatever is plugged into it, which a netlist
+## can't know; per-pin stand-ins make a USB inlet's VBUS 1 Mohm to ground
+## with no supply at all. So connectors are treated as boundary markers:
 ##
-## So a connector is treated here as a *boundary marker*, and two separate
-## things follow from that. They are separable and only one of them fixes a
-## wrong answer:
-##
-## * `asSubcircuit` promotes every connector pin's net to a port and drops the
-##   connectors, giving the board as a reusable `.SUBCKT`. This is a
-##   **composition** feature -- exporting the board into somebody else's deck,
-##   or instantiating it twice -- and it changes no measurement.
-## * `harness` attaches what is outside: a source of stated stiffness, a load,
-##   or nothing. This is the **simulation** feature, and it is what turns the
-##   1 Mohm above into the supply the board actually has.
-##
-## Worth stating plainly because it is not obvious: for simulation the
-## subcircuit round-trip buys nothing. Instantiating the board and then
-## flattening it produces the same netlist as attaching the drives directly,
-## which is why `harness` does the latter. The subcircuit is for export and
-## for saying where the boundary *is*, not for making the sums come out.
+## * `asSubcircuit` promotes connector nets to ports and drops the
+##   connectors -- a **composition** feature (export, reuse); changes no
+##   measurement.
+## * `harness` attaches what's outside (a source of stated stiffness, a load,
+##   or nothing) -- the **simulation** feature. It attaches drives directly;
+##   instantiating the subcircuit and flattening would give the same netlist.
 
 import std/[strutils, tables]
 
@@ -64,28 +48,18 @@ type
       discard
 
 proc driveSource*(voltage: Volts, rout = 10.mohm, lout = 0.H): PortDrive =
-  ## A supply attaching here. `rout`/`lout` are its output impedance, and
-  ## they matter more than the voltage does for anything measured in the
-  ## frequency domain: **an ideal source is a dead short at AC**, so a port
-  ## driven by one reports the rail behind it as 0 ohm at every frequency and
-  ## passes any decoupling target. The default is deliberately non-zero.
+  ## A supply attaching here. `rout`/`lout` matter more than the voltage at
+  ## AC: an ideal source is a dead short and passes any decoupling target.
+  ## The default is deliberately non-zero.
   PortDrive(kind: dkSource, voltage: voltage, rout: rout, lout: lout)
 
 proc driveLoad*(impedance: Ohms): PortDrive =
   PortDrive(kind: dkLoad, impedance: impedance)
 
 proc driveSink*(current: Amps): PortDrive =
-  ## Something out there drawing a fixed current -- an MCU board, a sensor
-  ## module, anything regulating its own supply.
-  ##
-  ## **Not the same as `driveLoad` and the difference is not only accuracy.**
-  ## A resistor and a current source can be made to agree at one operating
-  ## point, and they behave oppositely away from it: a resistor's current
-  ## follows the rail, so it *damps* the decoupling network, while a constant
-  ## current sink is an **open circuit at AC** and damps nothing. A PDN sweep
-  ## against a resistive stand-in for a regulated load therefore reports an
-  ## impedance peak lower than the board will have. Most real sinks -- an MCU,
-  ## a module with its own regulator -- are much closer to constant current.
+  ## A fixed-current draw (an MCU board, a regulated module). Unlike
+  ## `driveLoad`, a current sink is open at AC and damps nothing; a
+  ## resistive stand-in would understate the board's impedance peak.
   PortDrive(kind: dkSink, current: current)
 
 proc driveOpen*(): PortDrive =
@@ -95,14 +69,9 @@ proc isConnector*(c: Component): bool =
   c != nil and c.kind.toLowerAscii in connectorKinds
 
 proc connectorPorts*(nl: Netlist): seq[tuple[port: string, net: Net]] =
-  ## Every net a connector pin sits on, named by the **net**, not by the
-  ## connector.
-  ##
-  ## Named by the net because that is what `extract.extractSubcircuit`
-  ## already does for a computed boundary, and because it cannot collide:
-  ## net names are unique within a netlist where `J1.VBUS`-style names would
-  ## have to be invented and checked. Ground is never a port -- SPICE node
-  ## `"0"` is global, so promoting it would create a second reference.
+  ## Every net a connector pin sits on, named by the **net** (unique, as
+  ## `extractSubcircuit` does). Ground is never a port (node `"0"` is
+  ## global).
   var seen: seq[string]
   for _, c in nl.components:
     if not isConnector(c): continue
@@ -113,11 +82,8 @@ proc connectorPorts*(nl: Netlist): seq[tuple[port: string, net: Net]] =
       result.add (port: p.net.name, net: p.net)
 
 proc asSubcircuit*(nl: Netlist, name = ""): Netlist =
-  ## The board as a reusable `.SUBCKT`, with its connector nets as ports.
-  ##
-  ## Clones; `nl` is untouched. The connector components themselves are
-  ## **removed**, because a port is what a connector *was* -- leaving both
-  ## would put a part with no SPICE device on the boundary it defines.
+  ## The board as a reusable `.SUBCKT` with connector nets as ports. Clones;
+  ## the connectors are **removed** (a port is what a connector was).
   var globals: OrderedTable[string, Net]
   result = clone(nl, globals)
   if name.len > 0: result.name = name
@@ -133,11 +99,8 @@ proc asSubcircuit*(nl: Netlist, name = ""): Netlist =
 
 proc attachDrives*(nl: Netlist, drives: openArray[(string, PortDrive)]):
     seq[Assumption] =
-  ## Attaches what is outside each named net, in place.
-  ##
-  ## A port with no entry is left alone rather than defaulted: inventing a
-  ## supply for a pin nobody described is exactly the kind of guess that makes
-  ## a rail measure its own assumption back.
+  ## Attaches what's outside each named net, in place. A port with no entry
+  ## is left alone, never given an invented supply.
   let gnd = groundOf(nl)
   if gnd == nil:
     result.add note("no ground reference, so nothing could be attached to " &
@@ -156,8 +119,7 @@ proc attachDrives*(nl: Netlist, drives: openArray[(string, PortDrive)]):
       result.add note("port '" & portName & "' is driven by nothing; it " &
         "keeps whatever DC reference the rest of the board gives it")
     of dkSink:
-      # `I<name> N+ N- value` drives current from N+ through the source to
-      # N-, so this one pulls out of the port and into the reference: a sink.
+      # `I N+ N- value` drives N+ -> N-, so this pulls out of the port: a sink.
       let i = addComponent(nl, newComponent(
         $spiceFormat.designatorPrefix("current_source") & "_EXT_" & portName,
         kind = "current_source"))
@@ -177,9 +139,8 @@ proc attachDrives*(nl: Netlist, drives: openArray[(string, PortDrive)]):
       result.add note("port '" & portName & "' loaded with " &
         eng(float(drive.impedance), "ohm") & " to represent what is plugged in")
     of dkSource:
-      # Source -> series R -> series L -> the port, so the stated output
-      # impedance is actually in the path. Attaching an ideal source straight
-      # to the net would be a dead short at AC.
+      # Source -> series R -> series L -> port, so the output impedance is in
+      # the path.
       let mid = addNet(nl, newNet(portName & "_EXT_S"))
       let midL = addNet(nl, newNet(portName & "_EXT_L"))
       let v = addComponent(nl, newComponent(
@@ -189,15 +150,10 @@ proc attachDrives*(nl: Netlist, drives: openArray[(string, PortDrive)]):
       discard connect(v, "-", gnd, ptPassive)
       v.attrs["value"] = "DC " & spiceValue(float(drive.voltage))
       setRailVoltage(net, drive.voltage, annAuthored)
-      # The source itself is ideal **and must be said to be**, because the
-      # output impedance is already explicit in the R and L below. Left
-      # unannotated, `models.expandSourceImpedance` sees a bare
-      # `voltage_source` and adds its own default 10 mohm and **1 uH** on top
-      # -- and that microhenry is not a rounding error. Measured: a bench
-      # supply stated as 10 mohm rang against a board's 865 nF at 178 kHz and
-      # reported the rail at 10.5 ohm, an anti-resonance built entirely out
-      # of impedance nobody asked for. `rout = 0` plus `lout = 0` is
-      # documented as the way to opt back into an ideal source.
+      # Mark the source ideal (`rout = 0`): the impedance is already explicit
+      # in R and L, and `expandSourceImpedance` would otherwise add its own
+      # default 10 mohm + 1 uH, which can resonate into a false
+      # anti-resonance.
       setAnnotation(v, "rout", 0.0.ohm, annAuthored)
       setAnnotation(v, "lout", 0.0.H, annAuthored)
 
@@ -222,13 +178,8 @@ proc attachDrives*(nl: Netlist, drives: openArray[(string, PortDrive)]):
 
 proc harness*(nl: Netlist, drives: openArray[(string, PortDrive)]):
     tuple[netlist: Netlist, assumptions: seq[Assumption]] =
-  ## The board with its outside world attached, ready to simulate.
-  ##
-  ## Clones, drops the connector components, and attaches each drive at the
-  ## net that connector pin sat on. **Not** built by instantiating
-  ## `asSubcircuit`'s template: flattening would immediately undo that, and
-  ## the result would be identical for more work. The subcircuit is for
-  ## export; this is for simulating.
+  ## The board with its outside world attached, ready to simulate: clones,
+  ## drops connectors, attaches each drive at the connector's net.
   var globals: OrderedTable[string, Net]
   let work = clone(nl, globals)
   var drop: seq[string]
@@ -245,15 +196,9 @@ const
   driveLoutAttr* = "boundary.lout"
   driveLoadAttr* = "boundary.load"
   driveSinkAttr* = "boundary.sink"
-    ## What is plugged into a connector pin, recorded **on the pin**.
-    ##
-    ## Namespaced, so the annotation registry never validates them and no new
-    ## bare keys are spent -- and, more usefully, this makes a drive ordinary
-    ## netlist *data* rather than a captured closure. It is visible in the
-    ## netlist, it survives `clone`, and anything can read it back. A
-    ## `SimReplacement.build` proc is `{.nimcall.}` and therefore has no
-    ## environment to capture a drive in, so this is not merely tidier: it is
-    ## what makes the mechanism work at all.
+    ## What's plugged into a connector pin, recorded **on the pin** as
+    ## namespaced data: visible, survives `clone`, readable back. Required
+    ## because a `{.nimcall.}` `build` proc can't capture a drive.
 
 proc driveOf*(p: Pin): PortDrive =
   ## The drive recorded on a pin, or `dkOpen` when it says nothing.
@@ -290,14 +235,8 @@ proc setDrive*(p: Pin, drive: PortDrive) =
 
 proc buildConnectorBoundary*(nl: Netlist, old: Component): Component
     {.nimcall.} =
-  ## A `SimReplacement.build` for a connector: replace it with whatever its
-  ## pins say is plugged into them.
-  ##
-  ## This is what `simReplace` is for -- "for simulation purposes, replace
-  ## this component with ..." -- and a connector replaced by its external
-  ## world is exactly that. The design netlist keeps the connector, so a BoM
-  ## and a layout still see the part that gets soldered; only the simulation
-  ## copy sees the supply behind it.
+  ## A `SimReplacement.build` for a connector: replace it with what its pins
+  ## say is plugged in. The design keeps the connector for BoM and layout.
   var drives: seq[(string, PortDrive)]
   for _, p in old.pins:
     if p.net == nil or isGround(p.net): continue
@@ -309,12 +248,8 @@ proc buildConnectorBoundary*(nl: Netlist, old: Component): Component
   nil
 
 proc driveConnector*(c: Component, pinDrives: openArray[(string, PortDrive)]) =
-  ## States what is plugged into a connector, and arranges for simulation to
-  ## see it.
-  ##
-  ## Call it after the `design(...)` block. It records each drive on the named
-  ## pin and installs the `simReplace` that acts on it, touching nothing else
-  ## -- the connector stays in the design netlist as the part it is.
+  ## States what's plugged into a connector: records each drive on the named
+  ## pin and installs the `simReplace`. Call after the `design(...)` block.
   if c == nil: raise newException(NetlistError, "driveConnector on nil")
   if not isConnector(c):
     raise newException(NetlistError,

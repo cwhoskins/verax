@@ -1,10 +1,5 @@
-## What the discovery commands read: the role, evaluator and annotation
-## registries.
-##
-## These are the only way an author working outside this repository can find
-## out what may be claimed, so the properties worth pinning are that every
-## registered thing is *reachable* and that nothing a third party registers
-## can make a listing raise.
+## The discovery commands' registries. Pinned: everything registered is
+## reachable, and nothing a third party registers makes a listing raise.
 
 import std/[options, strutils, tables, unittest]
 
@@ -20,16 +15,8 @@ suite "role discovery":
       check def.parts.len > 0
 
   test "every built-in role can claim something once its parameters are stated":
-    # Deliberately weaker than "claims something with nothing stated".
-    # `gain_stage` claims nothing until a specification is given, and that is
-    # the same rule `power_rail`'s `targetZ` follows: a gain figure comes
-    # from what the stage is *for*, and a default would manufacture a
-    # requirement the designer never made. `power_rail` gets away with an
-    # always-claim only because a rail's nominal voltage is itself a
-    # parameter it insists on.
-    #
-    # What must hold is that no role is a dead end -- one that can never
-    # claim anything is a name in `verax roles` that does nothing.
+    # Not "claims something with nothing stated": `gain_stage` claims nothing
+    # until given a spec. What must hold is that no role is a dead end.
     for name in registeredRoles():
       let def = roleDef(name)
       var params: seq[(string, string)]
@@ -45,8 +32,8 @@ suite "role discovery":
     check previewRoleDelta(roleDef("power_rail"), "band").len == 0
 
   test "an expander that raises is contained, not propagated":
-    # A role registered by someone else is not obliged to tolerate
-    # placeholder bindings; `verax roles` must survive one that does not.
+    # A third-party role may reject placeholder bindings; the listing must
+    # survive it.
     registerRole(RoleDef(
       name: "test_hostile",
       doc: "raises when expanded",
@@ -63,8 +50,7 @@ suite "quantity and annotation discovery":
       check isEvaluable(q)
 
   test "the simulated evaluators are registered by importing verify":
-    # The whole reason `verify` exists as one entry point: without this,
-    # `dc_voltage` reports as a quantity nothing produces, which is false.
+    # Otherwise `dc_voltage` would report as produced by nothing.
     for q in ["dc_voltage", "z_max_in_band", "phase_margin_deg", "final_v"]:
       check isEvaluable(q)
 
@@ -81,21 +67,17 @@ suite "quantity and annotation discovery":
   test "a name nothing resembles suggests nothing":
     check didYouMean("xyzzy_quantity_that_is_nothing").len == 0
 
-# Template health -- that every file we hand an author builds and checks
-# clean -- is `nimble verify`'s job: it runs `bin/verax check templates/*.nim`,
-# which compiles and runs each one. It lived here too, as a per-template
-# `nim c` sweep, but that cost ~42s of every `nimble test` for coverage the
-# verify task already gives with the simulator available rather than `--offline`.
+# Template health is `nimble verify`'s job, not this file's.
 
 # --- reachability, which is what the quantities listing is for ----------
 
 test "every quantity is labelled with how it can actually be claimed":
   let text = describeQuantities()
-  # A bare `require` reaches these: their evaluators need only the subjects.
+  # A bare `require` reaches these.
   for q in ["z_min", "cap_count", "f_antiresonance", "dc_voltage"]:
     check (q & " ") in text
   check "`require`" in text
-  # And these need a role, because the evaluator reads bindings back off it.
+  # These need a role: the evaluator reads bindings back.
   check "needs a role binding" in text
 
 test "the claiming-role map is computed from the expanders, not written down":
@@ -106,25 +88,23 @@ test "the claiming-role map is computed from the expanders, not written down":
   check "i2c" in byRole["pullup_count"]
 
 test "a parameter that redirects a claim is still discovered":
-  # gain_stage's `atF` moves the gain claim from gain_max_db onto gain_at_f,
-  # so one expansion with every parameter stated hides the branch the other
-  # shows. Both have to be reported or the listing lies about one of them.
+  # gain_stage's `atF` switches gain_max_db to gain_at_f, so both branches
+  # must be reported.
   let byRole = claimingRoles()
   check "gain_stage" in byRole["gain_max_db"]
   check "gain_stage" in byRole["gain_at_f"]
 
 test "the startup and opamp evaluators declare what they bind":
-  # Declared rather than inferred: something has to answer "can a bare
-  # `require` reach this?" without running anything.
+  # Declared, so reachability is known without running anything.
   check evaluatorFor("overshoot_pct").get.binds == @["regulator", "output"]
   check evaluatorFor("phase_margin_deg").get.binds == @["opamp", "input"]
   check evaluatorFor("controller_count").get.binds == @["controller"]
-  # A PDN sweep needs only the net it is about.
+  # A PDN sweep needs only its net.
   check evaluatorFor("z_min").get.binds.len == 0
   check evaluatorFor("dc_voltage").get.binds.len == 0
 
 test "the built-in roles now claim the start-up quantities":
-  # They were advertised and unclaimable by any built-in path.
+  # Each is claimable through a built-in path.
   let byRole = claimingRoles()
   for q in ["inrush_peak", "rise_time_10_90", "settle_time"]:
     check "regulator" in byRole[q]
@@ -134,7 +114,6 @@ test "the large-signal quantities are reachable through the role":
   let byRole = claimingRoles()
   check "large_signal" in byRole["thd_pct"]
   check "large_signal" in byRole["output_swing"]
-  # clip_high/clip_low are diagnostics rather than specifications, so no
-  # role claims them -- and the listing says exactly that.
+  # clip_high/clip_low are diagnostics; no role claims them.
   check byRole.getOrDefault("clip_high", @[]).len == 0
   check evaluatorFor("clip_high").get.binds.len > 0

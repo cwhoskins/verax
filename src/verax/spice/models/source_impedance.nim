@@ -1,8 +1,6 @@
-## A finite output impedance in series with every source, because an ideal
-## source is a dead short at AC: a PDN sweep over a design that includes its
-## own regulator would otherwise report 0 ohm at every frequency.
-##
-## Mutates the `Netlist` it is given; run it on a simulation clone.
+## A finite output impedance in series with every source: an ideal source is
+## a dead short at AC, so a PDN sweep including the regulator would read
+## 0 ohm everywhere. Mutates its netlist; use a clone.
 
 import std/tables
 import ../../netlist/types
@@ -20,22 +18,11 @@ type
     fallback*: SourceImpedance
 
 proc defaultSourceImpedance*(): SourceDefaults =
-  ## A supply is not a short circuit, and modelling it as one is not a small
-  ## error: an ideal source pins its rail at zero ohms, so a PDN sweep over a
-  ## design that includes its own regulator reports 0 ohm at every frequency
-  ## and passes every target that could be set. Measured on a rail that
-  ## reads 129 mohm undriven, adding an ideal source takes it to 0.
-  ##
-  ## The flat part is the regulator's closed-loop output resistance; the
-  ## inductive part stands in for two things at once -- the supply wiring,
-  ## and the rise in output impedance above the loop's bandwidth, where the
-  ## regulator stops being able to correct and the decoupling takes over.
-  ##
-  ## The exact numbers matter far less than their being finite. The supply
-  ## sits in *parallel* with the decoupling, so once its impedance is well
-  ## above the capacitors' the answer barely moves -- which is the whole
-  ## reason a default is defensible here and not, say, for an ESR. Annotate
-  ## `rout`/`lout` from a datasheet when the supply is what you are studying.
+  ## Defaults: the flat part is the regulator's closed-loop output
+  ## resistance; the inductance stands for wiring and the impedance rise
+  ## above loop bandwidth. The exact numbers matter far less than being
+  ## finite -- the supply is in parallel with the decoupling. Annotate
+  ## `rout`/`lout` when the supply itself is under study.
   result.byKind = {
     "voltage_source": (rout: 10.0e-3, lout: 1.0e-6),
     "regulator": (rout: 10.0e-3, lout: 1.0e-6),
@@ -73,14 +60,8 @@ proc sourceImpedanceFor(c: Component, d: SourceDefaults):
 proc expandSourceImpedance*(nl: Netlist, d = defaultSourceImpedance(),
                             kinds: openArray[string] = ["voltage_source"]): seq[Assumption] =
   ## Puts a finite output impedance in series with every source of a listed
-  ## `kind`, so a rail that has a supply on it is not reported as a short.
-  ##
-  ## Annotate `rout = 0.ohm` and `lout = 0.H` on a source to opt out and keep
-  ## it ideal -- which is right for a stimulus source, and wrong for anything
-  ## standing in for a real supply.
-  ##
-  ## Idempotent: a source already expanded is marked and skipped, so running
-  ## twice does not stack two networks in series.
+  ## kind. Annotate `rout = 0.ohm` and `lout = 0.H` to keep a source ideal
+  ## (right for a stimulus, wrong for a supply). Idempotent.
   var sources: seq[Component]
   for _, c in nl.components:
     if c.kind in kinds and c.subNetlist == nil and
@@ -94,7 +75,7 @@ proc expandSourceImpedance*(nl: Netlist, d = defaultSourceImpedance(),
 
     let (z, notes) = sourceImpedanceFor(src, d)
     if z.rout == 0.0 and z.lout == 0.0:
-      # Deliberately ideal. Say nothing and change nothing.
+      # Ideal by request: mark and leave it.
       src.attrs["source.zout.expanded"] = "true"
       continue
     result.add notes

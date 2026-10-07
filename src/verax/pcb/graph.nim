@@ -1,17 +1,9 @@
-## Mutation API for the PCB data model.
-##
-## Every proc here keeps the back-references on `PcbLayer`, `Copper`, `Hole`,
-## `Zone` and `Placement` consistent, and keeps the two lookup indexes --
-## `Pcb.netCopper` (by net name) and `Pcb.index` (by location) -- in step with
-## the graph. Code outside this module should never hand-set `.pcb`, `.layer`,
-## `.net`, `.pin`, `.hole`, `.pads`, `.lands`, `.box`, `.index` or
-## `.sourceIndex` directly, exactly as `netlist/graph` requires for the
-## electrical model.
-##
-## The electrical side is *not* duplicated here: a reader builds nets,
-## components and pins with `netlist/graph`'s `addNet`/`addComponent`/
-## `addPin`/`connect`, precisely as `netlist/formats/spice` does, then links
-## geometry to the objects that call produced.
+## Mutation API for the PCB data model. Keeps back-references on
+## `PcbLayer`, `Copper`, `Hole`, `Zone` and `Placement` consistent, and keeps
+## `Pcb.netCopper` and `Pcb.index` in step. Nothing else may set `.pcb`,
+## `.layer`, `.net`, `.pin`, `.hole`, `.pads`, `.lands`, `.box`, `.index` or
+## `.sourceIndex`. Electrical objects are built with `netlist/graph`, then
+## geometry is linked to them.
 
 import std/tables
 import ./units
@@ -23,32 +15,24 @@ import ../netlist/packages
 export types
 
 proc touch*(pcb: Pcb) {.inline.} =
-  ## Records that the board changed: bumps `pcb.rev` and marks the spatial
-  ## index dirty. **Exported**, on the same reasoning as `index.dirty` being
-  ## a public field -- a caller that writes an entity's field directly
-  ## (`p.rot = deg(90)`) has bypassed every mutator in this module and must
-  ## say so explicitly by calling this, or the change is invisible to both
-  ## the index and (new in this stage) to `formats/kicad.writePcb`, which
-  ## decides whether anything needs regenerating purely from `pcb.rev`.
+  ## Records a board change: bumps `pcb.rev` and dirties the spatial index.
+  ## Exported: a direct field write (`p.rot = deg(90)`) must call it, or the
+  ## change is invisible to the index and to `writePcb`.
   if pcb == nil: return
   inc pcb.rev
   if pcb.index != nil: pcb.index.dirty = true
 
 proc touch*(pcb: Pcb, e: Copper | Zone | Hole | Placement | PcbLayer | Stackup | Outline) {.inline.} =
-  ## `touch(pcb)` plus stamping the *same* new revision into `e.rev`. One
-  ## global counter shared by every entity, rather than a per-entity counter
-  ## each starting at zero, is what makes "which of these two changed more
-  ## recently" answerable by a plain `>` with no possibility of two entities
-  ## disagreeing about it after being touched in the same mutation.
+  ## `touch(pcb)` plus stamping the same revision into `e.rev`. One global
+  ## counter makes "changed since T" a plain `>`.
   touch(pcb)
   if e != nil: e.rev = pcb.rev
 
 # ---------------------------------------------------------------- layers
 
 proc addLayer*(pcb: Pcb, l: PcbLayer): PcbLayer {.discardable.} =
-  ## Registers `l` under `pcb.layers[l.name]` and assigns its stack position.
-  ## Insertion order *is* physical stack order, so readers must add layers
-  ## top-to-bottom.
+  ## Registers `l` and assigns its stack position. Insertion order is stack
+  ## order: add layers top to bottom.
   if pcb.layers.hasKey(l.name):
     raise newException(PcbError, "duplicate layer name: " & l.name)
   l.pcb = pcb
@@ -61,23 +45,15 @@ proc addLayer*(pcb: Pcb, l: PcbLayer): PcbLayer {.discardable.} =
   else:
     l.copperIndex = -1
   pcb.layers[l.name] = l
-  touch(pcb)   ## `(layers)` is a whole-board-scoped refusal in the KiCad
-               ## writer (see `formats/kicad.nim`), not a per-layer one, so
-               ## there is nothing to gain from stamping `l.rev` here --
-               ## `pcb.rev` alone is what the writer checks before refusing.
+  touch(pcb)   ## board-level only: the KiCad writer refuses layer-stack
+               ## edits by checking `pcb.rev`
   result = l
 
 proc addShape*(l: PcbLayer, s: Shape) =
-  ## Appends `s` to `l.shapes` and touches the layer. `PcbLayer.shapes` used
-  ## to be mutated by direct `seq` access before this stage, which cannot be
-  ## dirty-tracked -- a `Shape` is a plain `object` with no field a reader
-  ## could stamp `attrs["kicad.node"]` onto, and giving it one is untenable
-  ## at 326,626 `fp_line` nodes on the largest demo board (one extra
-  ## `Table` entry per line would dwarf the arena itself). So graphics are
-  ## dirty-tracked at `l.rev` alone: enough to know *something* changed,
-  ## never *what*. Since `formats/kicad.writePcb` does not regenerate
-  ## graphics at all this stage, any detected change here is exactly what
-  ## turns into a named refusal rather than a silently stale write.
+  ## Appends `s` to `l.shapes` and touches the layer. Graphics are tracked
+  ## at `l.rev` only (a `Shape` has no node to stamp, and adding one per
+  ## `fp_line` would be too costly) -- enough for the KiCad writer to refuse
+  ## rather than write stale graphics.
   l.shapes.add(s)
   touch(l.pcb, l)
 
@@ -95,8 +71,7 @@ proc copperLayers*(pcb: Pcb): seq[PcbLayer] =
     if l.isCopper: result.add(l)
 
 proc layer*(pcb: Pcb, name: string): PcbLayer =
-  ## `nil` when absent, matching the `getOrDefault` idiom used for the
-  ## name-keyed tables in `netlist/formats/spice`.
+  ## `nil` when absent.
   pcb.layers.getOrDefault(name)
 
 # ---------------------------------------------------------------- copper
@@ -118,8 +93,8 @@ proc unregisterNet(pcb: Pcb, c: Copper) =
   pcb.netCopper[c.net.name] = s
 
 proc addCopper*(l: PcbLayer, c: Copper): Copper {.discardable.} =
-  ## Appends `c` to `l.copper`, caches its bounding box, records its source
-  ## ordinal, and registers it under its net name if it already has one.
+  ## Appends `c` to `l.copper`, caches its box, records its source ordinal,
+  ## and registers it under its net name if it has one.
   if l == nil:
     raise newException(PcbError, "cannot add copper to a nil layer")
   c.layer = l
@@ -146,11 +121,10 @@ proc setShape*(c: Copper, s: Shape) =
   if c.layer != nil: touch(c.layer.pcb, c)
 
 proc removeCopper*(l: PcbLayer, c: Copper) =
-  ## Detaches `c` from its layer, its net index and any hole it belonged to.
+  ## Detaches `c` from its layer, net index and hole.
   ##
-  ## .. warning:: This renumbers `sourceIndex` on every later feature of the
-  ##   layer, breaking ODB++ `FID` ordinals. Source ordinals are only valid
-  ##   immediately after a load; do any positional resolution first.
+  ## .. warning:: Renumbers `sourceIndex` on every later feature, breaking
+  ##   ODB++ `FID` ordinals; resolve positions first.
   var found = -1
   for i in 0 ..< l.copper.len:
     if l.copper[i] == c:
@@ -160,16 +134,9 @@ proc removeCopper*(l: PcbLayer, c: Copper) =
     raise newException(PcbError, "copper feature not on layer " & l.name)
   unregisterNet(l.pcb, c)
   l.copper.delete(found)
-  touch(l.pcb)   ## Global bump only -- **not** `touch(l.pcb, l)`. `l.rev` is
-                  ## reserved exclusively for `PcbLayer.shapes` graphics edits
-                  ## (`addShape`/`setShape`/`removeShape`, below), because
-                  ## `formats/kicad.writePcb` refuses outright the moment a
-                  ## layer's `rev` moves past its read-time snapshot -- it has
-                  ## no regenerator for graphics at all. Copper deletion is a
-                  ## *supported* edit (segments/vias/pads are a regenerable
-                  ## class with their own delete sweep), so stamping `l.rev`
-                  ## here would make an ordinary "rip up this track" trip the
-                  ## same refusal meant for "I hand-edited the silkscreen".
+  touch(l.pcb)   ## global bump only, not `l.rev`: `l.rev` means a graphics
+                  ## edit (which the KiCad writer refuses), and copper
+                  ## deletion is a supported edit
   for i in found ..< l.copper.len:
     l.copper[i].sourceIndex = i
   if c.hole != nil:
@@ -181,8 +148,7 @@ proc removeCopper*(l: PcbLayer, c: Copper) =
   c.layer = nil
 
 proc copperOn*(pcb: Pcb, netName: string, layerName = ""): seq[Copper] =
-  ## Every copper feature on the named net, optionally restricted to one
-  ## layer. This is the by-name lookup the model exists to make cheap.
+  ## Every copper feature on the named net, optionally on one layer.
   if not pcb.netCopper.hasKey(netName): return
   if layerName.len == 0:
     return pcb.netCopper[netName]
@@ -197,13 +163,8 @@ proc copperOn*(pcb: Pcb, net: Net, layerName = ""): seq[Copper] =
 # ---------------------------------------------------------------- apertures
 
 proc internAperture*(pcb: Pcb, a: Aperture): Aperture =
-  ## Returns the shared instance for `a.name`, storing `a` if it is new. One
-  ## `Aperture` object then backs every pad that uses that shape.
-  ##
-  ## `touch(pcb)` only, no entity form: `Aperture` is not one of the seven
-  ## types `rev` was added to (it is shared, interned data, not a per-board
-  ## placed feature the KiCad writer ever regenerates on its own), so there
-  ## is nothing to stamp beyond the board-level counter.
+  ## Returns the shared instance for `a.name`, storing `a` if new. Board-level
+  ## `touch` only (interned data, never regenerated on its own).
   if a == nil: return nil
   if pcb.apertures.hasKey(a.name):
     return pcb.apertures[a.name]
@@ -229,9 +190,8 @@ proc attachPad*(h: Hole, c: Copper) =
   touch((if c.layer != nil: c.layer.pcb else: nil), h)
 
 proc setSpan*(h: Hole, fromLayer, toLayer: PcbLayer) =
-  ## Sets the inclusive copper span and derives the via classification from
-  ## it: a span touching neither outer layer is buried, one touching exactly
-  ## one is blind, both is through.
+  ## Sets the inclusive copper span and derives the via class: touching
+  ## neither outer layer is buried, one is blind, both is through.
   h.fromLayer = fromLayer
   h.toLayer = toLayer
   let pcb = if fromLayer != nil: fromLayer.pcb elif toLayer != nil: toLayer.pcb else: nil
@@ -246,8 +206,8 @@ proc setSpan*(h: Hole, fromLayer, toLayer: PcbLayer) =
     else: vkBuried
 
 proc spanLayers*(pcb: Pcb, h: Hole): seq[PcbLayer] =
-  ## Every copper layer the hole passes through, inclusive of its endpoints.
-  ## An unset span means the full board.
+  ## Every copper layer the hole passes through, inclusive; unset spans the
+  ## full board.
   let cu = copperLayers(pcb)
   if cu.len == 0: return
   let
@@ -260,14 +220,11 @@ proc spanLayers*(pcb: Pcb, h: Hole): seq[PcbLayer] =
 # ---------------------------------------------------------------- zones
 
 proc addZone*(pcb: Pcb, z: Zone): Zone {.discardable.} =
-  ## Registers the zone and, for each of its layers, creates and adds the
-  ## matching `ckZone` copper record for the authored outline.
+  ## Registers the zone and adds a `ckZone` record of the authored outline on
+  ## each layer.
   ##
-  ## .. warning:: That `ckZone` record is the *authored* outline, not real
-  ##   copper -- `fem/extrude.extrudeCopper` must skip it (`cu.kind == ckZone`)
-  ##   and mesh `Zone.fills` instead, or a plane gets meshed twice: once here
-  ##   as a solid slab with no clearances, once again (correctly) from
-  ##   `extrudeZones`. See `Zone.fills`'s own doc comment.
+  ## .. warning:: `ckZone` is not real copper: copper walks must skip it and
+  ##   use `Zone.fills`, or a plane is counted twice.
   pcb.zones.add(z)
   z.outline.normalize()
   for l in z.layers:
@@ -288,17 +245,9 @@ proc addZoneLayer*(pcb: Pcb, z: Zone, l: PcbLayer) =
   touch(pcb, z)
 
 proc addZoneFill*(pcb: Pcb, z: Zone, l: PcbLayer, poly: Polygon): Copper {.discardable.} =
-  ## Registers one derived fill polygon of `z` on layer `l`: a `ckFill`
-  ## record on the zone's net, added through `addCopper` so it lands in
-  ## `Pcb.netCopper` and the spatial index like any other copper feature, and
-  ## appended to `z.fills`.
-  ##
-  ## `poly` is taken as given, not re-derived from `z.outline` -- the whole
-  ## point of a fill is that it is *not* the authored outline (clearances,
-  ## thermal reliefs, priority against other zones all reshape it), so this
-  ## proc has no opinion on where `poly` came from. A KiCad reader passes the
-  ## `(filled_polygon)` points directly; nothing here could reconstruct that
-  ## shape from `z.outline` alone even if it wanted to.
+  ## Registers one derived fill polygon of `z` on `l`: a `ckFill` on the
+  ## zone's net via `addCopper` (so it's indexed like any copper), appended
+  ## to `z.fills`. `poly` is taken as given (e.g. KiCad's `filled_polygon`).
   let c = newCopper(ckFill, fill(poly))
   c.net = z.net
   discard addCopper(l, c)
@@ -317,14 +266,9 @@ proc addPlacement*(pcb: Pcb, p: Placement): Placement {.discardable.} =
   result = p
 
 proc bindComponent*(p: Placement, c: Component) =
-  ## Links a placement to its `verax/netlist` component.
-  ##
-  ## The designators normally agree -- they are the join key in both file
-  ## formats. The one exception is a multi-channel package: `c` may be one
-  ## *section* of the part, whose own designator is arbitrary, joined to the
-  ## placement through `package.ref`. Then the section is recorded in
-  ## `p.sections` and `p.component` is left nil, because there is no single
-  ## netlist component this placement *is*.
+  ## Links a placement to its netlist component by designator. For a
+  ## multi-channel package section (joined via `package.ref`), records it in
+  ## `p.sections` and leaves `p.component` nil.
   if c == nil: return
   if p.designator == c.designator:
     p.component = c
@@ -344,20 +288,9 @@ proc bindComponent*(p: Placement, c: Component) =
            "or on the component's package.ref for a multi-channel part"))
 
 proc bindComponent*(p: Placement, c: Component, path: string) =
-  ## Binds `p` to `c` by an explicit hierarchical path, for a leaf inside a
-  ## `subNetlist` instance whose own designator is *local* (`"U1"`) while the
-  ## placement is keyed by the board-global path `pcb/assemble.nim` computed
-  ## (`hierName("X1", "U1")` = `"X1.U1"`) -- the plain designator-join
-  ## overload above cannot see that path at all, since `c.designator` never
-  ## carries it.
-  ##
-  ## Raises when `path != p.designator` rather than trusting the caller
-  ## silently: `assemble` derives both `p` and `path` from the same walk, so
-  ## a mismatch here means a caller passed the wrong pair, not a real
-  ## multi-channel exception (that is what the two-argument overload's own
-  ## `package.ref` branch is for) -- and binding to a placement that does not
-  ## actually match would join the wrong copper to the wrong pins with no
-  ## error at all.
+  ## Binds `p` to `c` by hierarchical path (`"X1.U1"`), for a leaf whose own
+  ## designator is local. Raises if `path != p.designator`: a mismatch would
+  ## silently join the wrong copper to the wrong pins.
   if c == nil: return
   if p.designator != path:
     raise newException(PcbError,
@@ -367,15 +300,9 @@ proc bindComponent*(p: Placement, c: Component, path: string) =
   touch(p.pcb, p)
 
 proc placementOf*(pcb: Pcb, c: Component): Placement =
-  ## The placement for a netlist component, or `nil` if it was never placed.
-  ## For a section of a multi-channel package the placement is keyed by the
-  ## package's board designator, not the section's own, so fall back to a
-  ## scan of `Placement.sections`. The same scan also checks `p.component`
-  ## directly, which is what makes a *hierarchical* bind
-  ## (`bindComponent(p, c, path)`, above) reverse-lookupable at all: `path`
-  ## is not `c.designator`, so the fast `getOrDefault(c.designator)` above
-  ## finds nothing, and without this the scan below only ever matched a
-  ## multi-channel section, never an ordinary hierarchical leaf.
+  ## The placement for a netlist component, or `nil`. Falls back to scanning
+  ## `p.sections` and `p.component`, which finds multi-channel sections and
+  ## hierarchical binds (keyed by path, not `c.designator`).
   if c == nil: return nil
   result = pcb.placements.getOrDefault(c.designator)
   if result != nil and result.component == c: return
@@ -388,9 +315,8 @@ proc placementOf*(pcb: Pcb, c: Component): Placement =
   result = nil
 
 proc addLand*(p: Placement, pinName: string, c: Copper) =
-  ## Records `c` as copper belonging to pin `pinName` of this placement, and
-  ## points it at the matching `verax/netlist` pin when the placement is
-  ## bound to a component.
+  ## Records `c` as copper for pin `pinName`, pointing it at the netlist pin
+  ## when the placement is bound.
   c.kind = ckLand
   if p.component != nil and p.component.pins.hasKey(pinName):
     let pin = p.component.pins[pinName]
@@ -398,10 +324,8 @@ proc addLand*(p: Placement, pinName: string, c: Copper) =
     if c.net == nil and pin.net != nil:
       setNet(c, pin.net)
   elif p.component == nil and p.sections.len > 0:
-    # A multi-channel package: `pinName` is a package pad id. Resolve it
-    # through the definition to `(section, logical)` and bind from that
-    # section's own pin. A pad the definition does not declare leaves
-    # `c.pin` nil rather than guessing.
+    # Multi-channel package: `pinName` is a pad id, resolved through the
+    # definition to `(section, logical)`. An undeclared pad binds nothing.
     var defName = ""
     for _, sc in p.sections:
       let dn = packageDefName(sc)
@@ -460,9 +384,7 @@ proc stackEntryFor*(pcb: Pcb, l: PcbLayer): StackEntry =
   nil
 
 proc dielectricBetween*(pcb: Pcb, a, b: PcbLayer): seq[StackEntry] =
-  ## The dielectric entries physically between two copper layers -- the
-  ## substrate a via passes through, or the material separating a trace from
-  ## its reference plane.
+  ## The dielectric entries between two copper layers.
   if pcb.stackup == nil or a == nil or b == nil: return
   var ia, ib = -1
   for i, e in pcb.stackup.entries:

@@ -1,49 +1,23 @@
-## Running a design's contract, and saying plainly what was *not* checked.
+## Running a design's contract, and saying plainly what was *not* checked:
+## the runner behind `verax check` and a design file's last line.
 ##
-## `verax/contract` can already state intent and evaluate it; `verax/analysis`
-## can already check a netlist's structure. Neither is reachable without
-## writing a program, and nothing joins the two into one answer. This module is
-## that answer: the runner behind `verax check` and behind the one line a
-## design file ends with.
+## At the package root because it needs `contract`, `analysis` and
+## `netlist/annotations` at once, and `contract` must never depend on
+## `analysis`.
 ##
-## It sits at the package root for the reason `units.nim` and `eng.nim` do --
-## more than one submodule is needed at once and the dependency order gives it
-## nowhere else. A readiness report needs `contract` (plan, evaluate),
-## `analysis` (the static IO checks) and `netlist/annotations` (vocabulary
-## validation) simultaneously, and `contract` must never gain an edge to
-## `analysis`, because a design staying inspectable with no simulator in the
-## build is what that separation buys.
+## **It imports `analysis/contract_eval` unconditionally.** Without it a valid
+## claim reports `no evaluator produces 'z_max_in_band'` (false -- the
+## registering module just wasn't imported) and a reader deletes it. Gating on
+## capabilities instead gives `requires capSpiceAc, which was not offered`.
 ##
-## **It imports `analysis/contract_eval` unconditionally, and that is the
-## point.** Without it, a perfectly good requirement reports
-## `no evaluator produces 'z_max_in_band'` -- which is false; `spice.pdn`
-## produces it, the module registering that evaluator merely was not imported.
-## A reader who believes the message deletes a correct requirement. With one
-## entry point that always registers the simulated evaluators and gates on
-## *capabilities* instead, the same claim reports `requires capSpiceAc, which
-## was not offered`, which is true and tells the reader what to do about it.
+## The report centres on `NOT CHECKED`, not pass/fail: an unevaluated claim is
+## not a passing one.
 ##
-## The report's centre of gravity is deliberately **not** pass/fail. It is the
-## `NOT CHECKED` section: an assertion nobody evaluated is not a passing
-## assertion, and a contract layer whose silence reads as approval is the
-## failure mode the whole layer exists to prevent.
-##
-## **The body is one block per *test*.** A test is one analysis run -- a plan
-## step, seen after it has run -- and it is the grouping the whole layer is
-## built around, because an evaluator is handed a *batch* and one simulation
-## answers every claim in it. Reported as a flat list of results instead,
-## three things a reader needs together are lost: which claims came out of
-## one run, what that run actually was, and which invented values it rested
-## on. The last is the sharpest. An assumption is attached to every result in
-## its batch, so pooling them at the foot of the report says forty numbers
-## were assumed *somewhere* and leaves the reader to work out which
-## measurement each one moved -- which is the only question worth asking
-## about an assumption.
-##
-## So `readiness` runs the plan through `runPlan` rather than `evaluate`: the
-## grouping cannot be recovered afterwards, since a result carries its
-## evaluator's name but not its setup key, and two steps of one evaluator are
-## two different runs of it.
+## **The body is one block per test** (one analysis run), so a reader sees
+## which claims one run answered, what it was, and which assumptions moved
+## which numbers. `readiness` therefore uses `runPlan`, not `evaluate`: a
+## result carries its evaluator but not its setup key, so the grouping can't
+## be recovered afterwards.
 
 import std/[algorithm, editdistance, json, math, os, osproc, sets, strutils,
             tables, wordwrap, xmltree]
@@ -63,16 +37,11 @@ import ./analysis/io_check
 import ./analysis/evaluators/contract_eval
 import ./pcb/units
 import ./pcb/assemble
-# Registers the KiCad `FootprintSource` (`pcb/footprint.registerFootprintSource`)
-# so `verax layout` resolves real land patterns off
-# `/usr/share/kicad/footprints` (or `$VERAX_FOOTPRINT_PATH`) with no further
-# setup -- opt-in per import everywhere else in this codebase, and this is
-# the one call site that must actually opt in for the CLI command to do
-# anything but report every part `footprint_unresolved`.
+# Registers the KiCad `FootprintSource`; without it `verax layout` reports
+# every part `footprint_unresolved`.
 import ./pcb/formats/kicadmod
-# `verax bom`. The hub registers no catalogue source; `--bom-catalog=` and
-# `$VERAX_BOM_CATALOG` name the files `sources/local` registers, so nothing
-# is read that the caller did not point at.
+# `verax bom`. No catalogue registers by default; only files named by
+# `--bom-catalog=` or `$VERAX_BOM_CATALOG` are read.
 import ./bom
 import ./bom/sources/local
 
@@ -80,30 +49,17 @@ export contract_eval, io_check, environment, assemble, kicadmod
 
 type
   Check* = object
-    ## One *test*: a single analysis run, everything it rests on, and every
-    ## claim it answered.
-    ##
-    ## A plan step and a `Check` are the same grouping seen before and after
-    ## running -- which is the grouping that matters, because an evaluator is
-    ## handed a *batch* and one run answers every claim in it. Reported as a
-    ## flat list of results instead, three facts are lost that a reader needs
-    ## together: which claims came out of one simulation (so a single wrong
-    ## setup explains all of them at once), what that simulation was, and
-    ## which invented values it rested on. The last is the sharpest: an
-    ## assumption is attached to every result in its batch, so a pooled list
-    ## at the foot of a report says forty things were assumed *somewhere* and
-    ## leaves the reader to work out which number each one moved.
+    ## One *test*: a single analysis run, what it rests on, and every claim
+    ## it answered (a plan step, seen after running).
     evaluator*: string
     needs*: set[Capability]
     key*: string
-      ## The setup key that grouped this batch. Machinery, kept for a caller
-      ## that wants to correlate two runs; `setup` is what a person reads.
+      ## The setup key that grouped this batch; `setup` is the readable form.
     setup*: string
       ## What actually ran, in the evaluator's own words.
     results*: seq[AssertionResult]
     assumptions*: seq[Assumption]
-      ## Deduplicated across this batch, and only what nobody stated --
-      ## `annAuthored` values are the design speaking, not the tool.
+      ## Deduplicated; only what nobody stated (`annAuthored` is excluded).
 
   Readiness* = object
     ## Everything one run of a design's contract found out.
@@ -111,89 +67,65 @@ type
     requested*: set[Capability]
       ## What the caller offered.
     available*: set[Capability]
-      ## What this machine can actually do. `requested - available` is an
-      ## environment problem, reported as one rather than degraded silently.
+      ## What this machine can do. `requested - available` is reported as an
+      ## environment problem, not degraded silently.
     simulator*: string
       ## Version line of the backing simulator, or "" if there is none.
     environment*: Environment
-      ## The board-level operating conditions the design stated. Reported
-      ## rather than used: nothing here is temperature-dependent yet, and a
-      ## premise that is quietly carried is a premise nobody checks.
+      ## The stated operating conditions, echoed back. Nothing is
+      ## temperature-dependent yet.
     hottest*: string
-      ## The part running hottest at the top of the ambient range, and how
-      ## hot, pre-rendered -- or "" when nothing states a rise. A `delta_t`
-      ## that nothing repeats back is indistinguishable from one that was
-      ## never written.
+      ## The hottest part at top-of-range ambient, pre-rendered; "" when no
+      ## rise is stated.
     structural*: seq[Issue]
-      ## Annotation-vocabulary and static IO findings, before any claim is
-      ## considered. A misspelled `esr` makes every impedance number below it
-      ## meaningless, so it is reported first.
+      ## Annotation-vocabulary and static IO findings, reported first (a
+      ## misspelled `esr` invalidates every impedance number).
     plan*: Plan
-      ## What was going to run, kept even after running: the count of analysis
-      ## steps against the count of assertions is the cheapest evidence that
-      ## claims are being batched rather than re-simulated one by one.
+      ## The plan, kept after running: steps vs. assertions shows claims are
+      ## batched.
     checks*: seq[Check]
-      ## The steps with what each one produced, in plan order. A run that
-      ## existed only to measure a relative claim's reference (and so
-      ## answered no authored claim of its own) is folded into the claim that
-      ## used it rather than printed as an empty block.
+      ## Steps with their results, in plan order. A step that only measured a
+      ## relative claim's reference is folded into that claim.
     rejected*: seq[AssertionResult]
-      ## Claims no step could take: nothing produces the quantity, the
-      ## subjects are the wrong shape, or the capability was withheld. Kept
-      ## apart from `checks` because no test ran for them -- filing them
-      ## under one would say a run happened that did not.
+      ## Claims no step could take (no producer, wrong subject shape,
+      ## capability withheld). No test ran for them.
     results*: seq[AssertionResult]
-      ## Every result flat, `checks` then `rejected`, in the order
-      ## `evaluate` would have produced them. Kept so everything that reads a
-      ## whole run -- `summary`, `failed`, `invented` -- goes on working.
+      ## Every result flat, `checks` then `rejected`, as `evaluate` would
+      ## return them (for `summary`, `failed`, `invented`).
 
 const
   exitClean* = 0
   exitFailed* = 1
     ## At least one assertion was checked and did not hold.
   exitStructural* = 2
-    ## The netlist itself is wrong in a way that makes claims about it
-    ## untrustworthy.
+    ## The netlist is wrong in a way that makes claims untrustworthy.
   exitUnchecked* = 3
-    ## Nothing can produce some quantity that was claimed. Non-zero on
-    ## purpose: a claim nobody checks must not exit like a claim that passed.
+    ## Nothing can produce some claimed quantity. Non-zero on purpose.
   exitEnvironment* = 4
     ## A capability was requested that this machine cannot provide.
   exitCompile* = 5
-    ## The design file did not compile. Only `verax check` produces this --
-    ## a design file that failed to build never ran to report anything. It is
-    ## separate from every other code on purpose: told only "it failed", a
-    ## reader edits the circuit to fix what is actually a syntax error.
+    ## The design file did not compile (`verax check` only). Separate so a
+    ## syntax error isn't mistaken for a circuit problem.
 
 type
   ReportFormat* = enum
-    ## `rfText` is the default and the only one a human reads directly;
-    ## `rfJson`/`rfJunit` exist for `verax check` to sit in a CI job rather
-    ## than only a terminal -- a pass/fail exit code alone cannot carry *why*,
-    ## and a build system that wants to diff two runs needs a document, not a
-    ## paragraph.
+    ## `rfText` for humans; `rfJson`/`rfJunit` for CI.
     rfText, rfJson, rfJunit
 
   BomFormat* = enum
-    ## `verax bom`'s output: text for a terminal, CSV for procurement, JSON
-    ## for a machine -- and as the next run's `--bom-lock`.
+    ## `verax bom` output; JSON doubles as the next run's `--bom-lock`.
     bfText, bfCsv, bfJson
 
   BaselineEntry* = object
-    ## One remembered result, read back from a previous run's `--format=json`
-    ## document by `loadBaseline`. Only what a comparison needs -- `status`,
-    ## `value`, `unit` -- never the whole `AssertionResult`, since a baseline
-    ## is a stored fact about one earlier run, not a rehydrated one.
+    ## One result read back from a previous `--format=json` run: only
+    ## `status`, `value`, `unit`.
     value*: float
     unit*: string
     status*: string
 
   BaselineChange* = object
-    ## What differs about one claim between a baseline and this run. One
-    ## record per id, not one record per *kind* of difference, because a
-    ## claim can carry more than one at once (a status transition and a
-    ## value move together) and a reader wants them about the claim, not
-    ## scattered across separate entries that happen to share an id.
+    ## What differs about one claim between a baseline and this run; one
+    ## record per id, since a status and a value can move together.
     id*: string
     isNew*: bool
       ## This id was not in the baseline at all.
@@ -201,42 +133,27 @@ type
       ## This id was in the baseline and is not among this run's results.
     statusChanged*: bool
     regressed*: bool
-      ## `pass -> fail`, or a checked claim (`pass`/`fail`) going to an
-      ## unchecked one (`not_evaluated`/`not_evaluable`) -- the direction a
-      ## reader has to see first, since the opposite motion (a claim that
-      ## started passing again, or one that started being checked) is good
-      ## news carried by the same two fields.
+      ## `pass -> fail`, or checked -> unchecked: shown first. The reverse
+      ## motion uses the same fields.
     fromStatus*, toStatus*: string
     valueChanged*: bool
-      ## A numeric move worth reporting: the relative change exceeds 1e-6,
-      ## or the prior value was exactly zero and the new one is not (where a
-      ## relative change is not a number at all). Never set when the units
-      ## disagree -- see `unitChanged`.
+      ## Set when the relative change exceeds 1e-6, or the prior value was
+      ## zero and the new one isn't. Never set when units differ.
     fromValue*, toValue*: float
     unitChanged*: bool
-      ## The measurement's unit itself moved -- a role or an evaluator was
-      ## changed to report in different terms. Reported as a move that
-      ## cannot be numerically compared, never silently differenced against
-      ## a number in a different unit.
+      ## The unit itself changed; reported, never differenced numerically.
     fromUnit*, toUnit*: string
 
   BaselineError* = object of CatchableError
-    ## Raised by `loadBaseline` on anything short of a readable, parseable
-    ## `--format=json` document with a `results` array. `verify` turns this
-    ## into a usage error (`exitCompile`) rather than letting the exception
-    ## propagate as a stack trace, and never into a silently skipped
-    ## comparison -- a CI job whose baseline file went missing or got
-    ## corrupted and quietly stopped comparing is a worse failure than one
-    ## that stops and says why.
+    ## Raised by `loadBaseline` on anything but a readable `--format=json`
+    ## document. `verify` turns it into `exitCompile`, never a silently
+    ## skipped comparison.
 
 # --- what this machine can do -------------------------------------------
 
 proc ngspiceVersion*(exe = "ngspice"): string =
-  ## The installed simulator's version, or "" when there is none on `PATH`.
-  ##
-  ## Best-effort by design: a version we cannot parse is still a simulator we
-  ## can run, so an unrecognised banner reports the executable rather than
-  ## claiming absence.
+  ## The installed simulator's version, or "" when none is on `PATH`. An
+  ## unparseable banner reports the executable, not absence.
   if findExe(exe).len == 0: return ""
   try:
     let (outp, _) = execCmdEx(exe & " -v")
@@ -251,10 +168,8 @@ proc ngspiceVersion*(exe = "ngspice"): string =
   exe
 
 proc availableCapabilities*(simulator = ""): set[Capability] =
-  ## `capBench` is never included: nothing in this library takes a bench
-  ## measurement, and offering a capability nothing can honour would turn
-  ## every bench-backed claim from "not offered" into "ran and produced
-  ## nothing", which reads much worse than it is.
+  ## `capBench` is never included: nothing takes bench measurements, and
+  ## offering it would turn "not offered" into "ran and produced nothing".
   result = {capStatic}
   let sim = if simulator.len > 0: simulator else: ngspiceVersion()
   if sim.len > 0:
@@ -264,20 +179,10 @@ proc label(a: Assertion): string =
   if a.id.len > 0: a.id else: a.quantity
 
 proc claimLint*(results: seq[AssertionResult]): seq[Issue] =
-  ## Claims whose stated unit is missing where the measurement has one.
-  ##
-  ## `unitsAgree` treats an empty unit as "not stated, therefore unchecked",
-  ## which is right for a bare count like `pullup_count` and dangerous
-  ## everywhere else. The trap in practice: `unitOf(Fraction)` is "" and
-  ## `overshoot_pct` is measured in "%" as `5.0`, so
-  ## `require overshoot_pct(vdd) <= 5.pct` compares 5.0 against 0.05 and is
-  ## wrong by a hundred -- with no mismatch reported, because neither side
-  ## claimed a unit to disagree about.
-  ##
-  ## Detected after the fact rather than before, because nothing declares what
-  ## unit a quantity comes back in until it has been measured. That is worth
-  ## fixing at the source one day (a `units` field on `Evaluator`, parallel to
-  ## `produces`); until then, reporting it beats comparing silently.
+  ## Claims with no stated unit where the measurement has one. `unitsAgree`
+  ## treats "" as unchecked, so `overshoot_pct <= 5.pct` compares 5.0 (in
+  ## "%") with 0.05 and is wrong by 100 with no mismatch reported. Detected
+  ## after the fact because `Evaluator` doesn't declare result units.
   for r in results:
     if r.status notin {esPass, esFail}: continue
     if r.assertion.expect.kind in {ekRelative, ekPredicate}: continue
@@ -291,13 +196,9 @@ proc claimLint*(results: seq[AssertionResult]): seq[Issue] =
 
 proc previewRole*(def: RoleDef,
                   params: openArray[(string, string)] = []): seq[Assertion] =
-  ## What a role would claim, with placeholder bindings.
-  ##
-  ## Safe because `RoleExpander` takes only a `RoleInstance` and never touches
-  ## a netlist -- that is what separates `expand` from `apply`. A role someone
-  ## else registered may still dislike placeholder bindings, so an expander
-  ## that raises yields nothing rather than taking down the caller: a bad
-  ## third-party role must not make `verax roles` unusable.
+  ## What a role would claim, with placeholder bindings. Safe because
+  ## `expand` never touches a netlist; an expander that raises yields
+  ## nothing, so a bad third-party role can't break `verax roles`.
   var inst = RoleInstance(role: def.name, name: "<preview>")
   for p in def.parts:
     inst.bindings[p.name] = Subject(kind: p.kind, name: "<" & p.name & ">")
@@ -308,8 +209,7 @@ proc previewRole*(def: RoleDef,
     @[]
 
 proc previewRoleDelta*(def: RoleDef, param: string): seq[Assertion] =
-  ## The claims that stating `param` adds, found by diffing two expansions
-  ## rather than documented by hand -- so it cannot drift from the expander.
+  ## The claims stating `param` adds, found by diffing two expansions.
   var seen: seq[string]
   for a in previewRole(def): seen.add a.id
   for a in previewRole(def, [(param, "1")]):
@@ -318,9 +218,8 @@ proc previewRoleDelta*(def: RoleDef, param: string): seq[Assertion] =
 # --- running -------------------------------------------------------------
 
 proc readiness*(d: Design, allowed = allCapabilities): Readiness =
-  ## Check a design as far as `allowed` and this machine jointly permit.
-  ##
-  ## Pure with respect to the design: nothing here mutates `d` or its netlist.
+  ## Check a design as far as `allowed` and this machine permit. Does not
+  ## mutate `d`.
   result.design = if d.netlist.name.len > 0: d.netlist.name else: "(unnamed)"
   result.requested = allowed
   result.simulator = ngspiceVersion()
@@ -340,27 +239,16 @@ proc readiness*(d: Design, allowed = allCapabilities): Readiness =
   result.hottest = describeHottest(d.netlist, result.environment)
 
   let usable = allowed * result.available
-  # One context for the whole run, and that is the point of it: the simulated
-  # evaluators share an operating point through `EvalContext.scratch`, so
-  # planning, running and describing all have to be the same run. It lives
-  # exactly as long as this call, so nothing it caches can outlive the design
-  # state it was computed from -- which a module-level cache could only
-  # promise by asking every caller to remember to clear it.
+  # One context per run: simulated evaluators share an operating point
+  # through `EvalContext.scratch`, and nothing cached outlives this call.
   let ctx = newEvalContext(d, usable)
   result.plan = plan(ctx)
   let batches = runPlan(ctx, result.plan)
 
-  # Run through the plan rather than calling `evaluate`, which flattens the
-  # batches away. The grouping cannot be recovered afterwards: a result
-  # carries its evaluator's name but not its setup key, and two steps of one
-  # evaluator -- a PDN sweep of two rails, a start-up of two regulators --
-  # are two separate runs resting on two separate sets of assumptions.
-  #
-  # Relative and predicate claims were decomposed by `plan` into hidden
-  # measurement requests. Those requests run in the same steps, but they are
-  # not claims: they are filtered out of every check block, and the single
-  # authored claim they feed is folded back and attached to the run that
-  # measured it.
+  # Run through the plan rather than `evaluate` to keep the per-run grouping.
+  # Hidden requests from relative/predicate claims run in the same steps but
+  # are filtered out; the authored claim they feed is attached to the run
+  # that measured it.
   var stepOf = initTable[string, int]()
   for i, step in result.plan.steps:
     for a in step.assertions:
@@ -384,8 +272,7 @@ proc readiness*(d: Design, allowed = allCapabilities): Readiness =
     if stepOf.hasKey(anchor):
       checks[stepOf[anchor]].results.add r
     else:
-      # The anchor request never reached a step (it was rejected at plan
-      # time), so the folded claim files with the others no test took.
+      # The anchor was rejected at plan time, so the folded claim is too.
       result.rejected.add r
 
   for c in checks:
@@ -409,13 +296,9 @@ proc missing*(r: Readiness): set[Capability] {.inline.} =
   r.requested - r.available
 
 proc exitCode*(r: Readiness, strict = false): int =
-  ## Graded, so a caller can branch on *why* rather than only on whether.
-  ##
-  ## Precedence runs most-fundamental first: an unavailable capability makes
-  ## the run incomplete, a broken netlist makes its numbers untrustworthy, a
-  ## failed assertion is a real answer, and an unevaluable one is a claim
-  ## nobody checked. `esNotEvaluated` alone stays clean -- withholding a
-  ## capability is a deliberate act, not an oversight -- unless `strict`.
+  ## Graded, most fundamental first: unavailable capability, broken netlist,
+  ## failed assertion, unevaluable claim. `esNotEvaluated` alone is clean
+  ## (withholding a capability is deliberate) unless `strict`.
   if r.missing.len > 0: return exitEnvironment
   for i in r.structural:
     if i.severity == sevError or (strict and i.severity == sevWarning):
@@ -438,11 +321,8 @@ proc exitLabel*(code: int): string =
 # --- rendering -----------------------------------------------------------
 
 proc capList*(s: set[Capability]): string =
-  ## A capability set as a comma list of the labels a designer reads, so a
-  ## report and `verax env` never spell the same set two ways. Exported
-  ## because the CLI echoed `$s` and printed the enum identifiers -- which is
-  ## right in a stack trace and wrong in the one line meant to tell somebody
-  ## what this machine can do.
+  ## A capability set as the labels a designer reads, shared by the report
+  ## and `verax env`.
   var parts: seq[string]
   for c in s: parts.add capLabel(c)
   if parts.len == 0: "none" else: parts.join(", ")
@@ -454,12 +334,8 @@ proc sevLabel(s: Severity): string =
   of sevError: "error"
 
 proc statusJsonName(s: EvalStatus): string =
-  ## The spelling `--format=json`, `loadBaseline` and `baselineDiff` all
-  ## share, so a status is never spelled two ways across a report and the
-  ## baseline it is compared against. Snake-cased rather than `$s`'s bare
-  ## enum identifier (`esNotEvaluated`), which is implementation vocabulary,
-  ## not a value a consuming tool should have to know this library's enum
-  ## names to match against.
+  ## The snake_case status spelling shared by `--format=json`,
+  ## `loadBaseline` and `baselineDiff`.
   case s
   of esPass: "pass"
   of esFail: "fail"
@@ -475,11 +351,8 @@ proc annSourceName(s: AnnSource): string =
   of annDerived: "derived"
 
 proc didYouMean*(quantity: string, limit = 3): seq[string] =
-  ## The registered quantities closest to one nothing produces.
-  ##
-  ## A misspelled quantity is the likeliest way to write a claim that cannot
-  ## be checked, and `no evaluator produces 'z_ripple'` on its own is a dead
-  ## end -- it says the door is locked without mentioning that a door exists.
+  ## The registered quantities closest to one nothing produces, since a
+  ## misspelling is the likeliest cause.
   let budget = max(3, quantity.len div 2)
   var scored: seq[(int, string)]
   for q in evaluableQuantities():
@@ -490,8 +363,7 @@ proc didYouMean*(quantity: string, limit = 3): seq[string] =
 
 proc indented(text: string, prefix: string, hang = "",
               width = 74): seq[string] =
-  ## Wrapped, with an optional deeper indent on continuation lines so a
-  ## multi-line entry cannot be mistaken for two entries.
+  ## Wrapped, with an optional deeper indent on continuation lines.
   let cont = if hang.len > 0: hang else: prefix
   var first = true
   for line in wrapWords(text, width).splitLines():
@@ -499,16 +371,9 @@ proc indented(text: string, prefix: string, hang = "",
     first = false
 
 proc foldAssumptions*(assumptions: seq[Assumption]): seq[string] =
-  ## One line per *distinct* assumption, naming every part it was made about.
-  ##
-  ## Producers emit one record per component, which is right -- a consumer
-  ## that wants to count them, or ask which parts a package default touched,
-  ## needs them separate. Printed one per line it is mostly repetition: a
-  ## four-capacitor bank contributes twelve lines that say the same three
-  ## things, and the reader who skims past them is skimming past the two
-  ## lines that were about something else. Folding on `(key, value, unit,
-  ## detail)` loses nothing -- every entity is still named -- and it is the
-  ## difference between a list worth reading and a wall.
+  ## One line per distinct assumption, naming every part it was made about.
+  ## Producers emit one record per component; folding on `(key, value, unit,
+  ## detail)` loses nothing and avoids walls of repetition.
   var order: seq[string]
   var entities = initTable[string, seq[string]]()
   var first = initTable[string, Assumption]()
@@ -522,10 +387,8 @@ proc foldAssumptions*(assumptions: seq[Assumption]): seq[string] =
       entities[sig].add a.entity
   for sig in order:
     let a = first[sig]
-    # A narrative assumption has no key and no magnitude -- "these parts were
-    # cut at the boundary" is a real thing a result rests on -- and its
-    # `detail` is already a whole sentence. It still folds, when it names a
-    # part.
+    # A narrative assumption has no key or magnitude; its `detail` is a
+    # whole sentence. It still folds when it names a part.
     var body = a.detail
     if a.key.len > 0:
       body = a.key & " " & eng(a.value, a.unit) &
@@ -534,10 +397,8 @@ proc foldAssumptions*(assumptions: seq[Assumption]): seq[string] =
                 else: entities[sig].join(", ") & ": " & body)
 
 proc statusMark(st: EvalStatus): string =
-  ## Four characters, fixed width, so a column of verdicts is scannable.
-  ## `----` and `????` rather than words for the two negative statuses: they
-  ## are the same marks `$AssertionResult` already uses, and they read as
-  ## *absence* rather than as a third and fourth kind of verdict.
+  ## Four characters, fixed width. `----`/`????` match `$AssertionResult`
+  ## and read as absence rather than as verdicts.
   case st
   of esPass: "PASS"
   of esFail: "FAIL"
@@ -545,14 +406,9 @@ proc statusMark(st: EvalStatus): string =
   of esNotEvaluable: "????"
 
 proc marginText(r: AssertionResult, m: Margin): string =
-  ## `contract/evaluate.marginOf` computes the number; this is the one place
-  ## it is put into words, matching `acceptance`'s split (types.nim computes
-  ## the interval, `renderClaim` here decides how to say it). A two-sided
-  ## band is read as a fraction of *itself* (1.0 = dead centre, 0.0 = right
-  ## on an edge) because "58% of band" needs nothing else to be understood; a
-  ## one-sided limit has no natural ceiling to be a fraction *of* -- a
-  ## measurement can clear a floor by 500% -- so the absolute headroom leads
-  ## and the fraction rides along in parentheses.
+  ## Puts `marginOf` into words. A two-sided band reads as a fraction of
+  ## itself (1.0 = centre, 0.0 = edge); a one-sided limit leads with absolute
+  ## headroom, fraction in parentheses.
   if m.twoSided:
     if m.hasFrac: "margin " & eng(m.frac * 100.0) & "% of band"
     else: "margin " & eng(m.abs, r.unit) & " of band"
@@ -567,14 +423,8 @@ proc marginText(r: AssertionResult, m: Margin): string =
 
 proc renderClaim(L: var seq[string], r: AssertionResult, indent: string,
                  verbose: bool) =
-  ## One claim as *a comparison*: what was expected, what came back.
-  ##
-  ## The two numbers go on one line together because that is the act a reader
-  ## performs, and separating them across a `describe` line and a `reason`
-  ## line -- which is what the status sections do -- makes them something to
-  ## be reassembled. The band or drive level comes first, on the heading
-  ## line, since a limit read against the wrong part of a curve is not a
-  ## check at all.
+  ## One claim as a comparison: expected and measured on one line, with the
+  ## band or drive level on the heading line.
   var head = indent & "[" & statusMark(r.status) & "]  " & label(r.assertion)
   if r.assertion.expect.kind == ekPredicate:
     head &= "   predicate"
@@ -593,14 +443,12 @@ proc renderClaim(L: var seq[string], r: AssertionResult, indent: string,
   case r.status
   of esPass, esFail:
     if r.assertion.expect.kind in {ekRelative, ekPredicate}:
-      # The comparison needs the referenced value(s), which are in `reason`;
-      # there is no single bare number to print after "measured".
+      # The referenced values are in `reason`; there's no single number.
       cmpLine &= "   " & r.reason
     else:
       cmpLine &= "   measured " & eng(r.value, r.unit)
-      # `reason` carries more than the bare number when the measurement was
-      # taken somewhere the subject does not name -- `inrush_peak` is read on
-      # the rail being charged, not on the net the claim judges.
+      # `reason` may name where the value was measured (`inrush_peak` is read
+      # on the rail being charged).
       let at = r.reason.find(" at ")
       if at >= 0: cmpLine &= r.reason[at .. ^1]
       let m = marginOf(r)
@@ -612,38 +460,20 @@ proc renderClaim(L: var seq[string], r: AssertionResult, indent: string,
   if r.status in {esNotEvaluated, esNotEvaluable} and r.reason.len > 0:
     for line in indented(r.reason, deep, deep & "  "): L.add line
 
-  # The most valuable field on an assertion, and until now printed nowhere:
-  # a limit whose reason is lost is the limit that gets relaxed the first
-  # time it fails. Shown wherever the reader is deciding what to do about
-  # the claim -- always when it did not pass, on request when it did.
+  # Rationale: always when not passing, on request otherwise.
   if r.assertion.rationale.len > 0 and (verbose or r.status != esPass):
     for line in indented("because " & r.assertion.rationale, deep,
                          deep & "  "): L.add line
 
 proc renderResult(L: var seq[string], r: AssertionResult,
                   seenIssues: var HashSet[string]) =
-  ## One claim in a status section: the same comparison the check block
-  ## printed, plus the diagnosis.
-  ##
-  ## Rendered through `renderClaim` rather than through `describe` so a
-  ## failure and the check it came out of read the same -- a band spelled
-  ## `over 100 kHz .. 100 MHz` in one place and `[f_from=100k, f_to=100M]` in
-  ## the other is two spellings of one claim, and the reader has to work out
-  ## that they are the same limit.
+  ## One claim in a status section, rendered like the check block (via
+  ## `renderClaim`) so both spell the limit the same way.
   renderClaim(L, r, "  ", verbose = true)
 
-  # An analysis that could not answer usually knows *why*, and says so in an
-  # `Issue` rather than in `reason` -- which is a short, generic sentence
-  # written by `verdict` and cannot name a cause it does not know. Printing
-  # only the reason strands the diagnosis: a Sallen-Key's phase margin comes
-  # back "the quantity was not found in the range that was analysed", which
-  # is true and sends the reader to widen a sweep that is not the problem,
-  # while the issue sitting next to it says the loop break did not open the
-  # loop and why.
-  #
-  # De-duplicated across the whole report, because evaluation is *batched*:
-  # one loop-gain run answers every claim in its batch, so its issues ride
-  # on all of them and would otherwise print once per claim.
+  # An analysis that couldn't answer usually explains why in an `Issue`, not
+  # in `verdict`'s generic `reason`, so print the issues too. Deduplicated
+  # across the report, since one batched run attaches them to every claim.
   for i in r.issues:
     if i.message in seenIssues: continue
     seenIssues.incl i.message
@@ -684,9 +514,7 @@ proc renderChecks(L: var seq[string], r: Readiness, verbose: bool) =
     if c.setup.len > 0:
       for line in indented("ran: " & c.setup, "    ", "         "): L.add line
 
-    # Under the run that rests on them, never pooled at the foot of the
-    # report. Which number an invented value moved is the whole question, and
-    # a single list answers it for none of them.
+    # Assumptions under the run that rests on them, never pooled.
     if c.assumptions.len > 0:
       L.add "    assuming " & $c.assumptions.len & " value(s) nobody stated:"
       for text in foldAssumptions(c.assumptions):
@@ -694,10 +522,7 @@ proc renderChecks(L: var seq[string], r: Readiness, verbose: bool) =
 
     for res in c.results: renderClaim(L, res, "    ", verbose)
 
-  # The claims no step could take are *not* listed again here. They are the
-  # whole content of `NOT CHECKED`, which prints the same comparison plus the
-  # spelling hint, and a report that says the identical thing twice teaches
-  # the reader to skip one of the two places.
+  # Rejected claims aren't repeated here; they are `NOT CHECKED`'s content.
   if r.rejected.len > 0:
     L.add ""
     L.add "  " & $r.rejected.len & " further claim(s) reached no test at all" &
@@ -724,17 +549,11 @@ proc describeBaselineChange(c: BaselineChange): string =
 
 proc renderBaselineSection(L: var seq[string], changes: seq[BaselineChange],
                            path: string) =
-  ## `MOVED`, placed by `render` after `NOT CHECKED` and before the summary:
-  ## informational relative to structure, a failure or an unchecked claim --
-  ## the report's existing ordering doctrine -- but still worth its own
-  ## section rather than folding into `FAILED`, since a value moving is not
-  ## itself a verdict; whether it should have moved is a question only the
-  ## reader can answer.
+  ## `MOVED`, after `NOT CHECKED` and before the summary. Its own section
+  ## because a moved value isn't itself a verdict.
   if changes.len == 0: return
   L.add "MOVED  " & $changes.len & " measurement(s) changed since " & path
-  # `algorithm.sort` is a stable merge sort, so within each of the two
-  # buckets (regression / everything else) insertion order -- `results`
-  # order -- survives.
+  # `sort` is stable, so `results` order survives within each bucket.
   var ordered = changes
   ordered.sort(proc (a, b: BaselineChange): int =
     cmp((if a.regressed: 0 else: 1), (if b.regressed: 0 else: 1)))
@@ -751,9 +570,7 @@ proc render*(r: Readiness, verbose = false, changes: seq[BaselineChange] = @[],
   var capLine = "capabilities: " & capList(r.requested * r.available)
   if r.simulator.len > 0: capLine &= "   (" & r.simulator & ")"
   L.add capLine
-  # Printed only when stated. Nothing consumes the range yet, so nagging
-  # every design for one would be noise -- but a design that *has* stated it
-  # has stated a premise, and a premise is worth reading back.
+  # Printed only when stated: nothing consumes the range yet.
   if r.environment.stated:
     L.add "environment: " & $r.environment &
           (if r.hottest.len > 0: "   hottest " & r.hottest else: "")
@@ -818,14 +635,8 @@ proc render*(r: Readiness, verbose = false, changes: seq[BaselineChange] = @[],
 
 # --- JSON (--format=json) -------------------------------------------------
 #
-# `std/json` only, hand-assembled with `newJObject`/`newJArray` rather than
-# the `%*` macro -- the same explicit style `schematic/json.nim` already
-# uses for a public, versioned document. `jnum` is the one float-writing
-# path everything here goes through, because `NaN`/`Inf` written as the bare
-# Nim literal `nan`/`inf` is not valid JSON and would corrupt every `jq` or
-# parser call downstream of this format -- the whole reason `--format=json`
-# exists is to be machine-read, so this is the one place that cannot be
-# gotten away with fixing later.
+# Hand-assembled with `std/json`. Every float goes through `jnum`, since a
+# bare `nan`/`inf` is not valid JSON.
 
 proc jnum(x: float): JsonNode =
   if x.isNaN or x == Inf or x == -Inf: newJNull() else: newJFloat(x)
@@ -912,12 +723,9 @@ proc baselineChangeJsonNode(c: BaselineChange): JsonNode =
 proc renderJson*(r: Readiness, strict = false,
                  changes: seq[BaselineChange] = @[],
                  baselinePath = ""): string =
-  ## `verax.readiness/1`, versioned so a consumer can branch on it rather
-  ## than guess from field presence. `results` is the flat authoritative
-  ## list, mirroring `Readiness.results` (`checks` then `rejected`); `checks`
-  ## carries run metadata only, and each result names the check it came from
-  ## by index (`null` for a rejected claim) rather than being nested inside
-  ## it, so nothing is serialized twice.
+  ## `verax.readiness/1`. `results` is the flat authoritative list (`checks`
+  ## then `rejected`); `checks` carries run metadata, and each result names
+  ## its check by index (`null` if rejected), so nothing is serialized twice.
   var root = newJObject()
   root["schema"] = newJString("verax.readiness/1")
   root["design"] = newJString(r.design)
@@ -1001,8 +809,7 @@ proc renderJson*(r: Readiness, strict = false,
     results.add ro
   root["results"] = results
 
-  # Only when `--baseline` was given -- an absent key, not an empty object,
-  # is how a consumer tells "nothing changed" apart from "nothing was asked".
+  # Only with `--baseline`: an absent key means "not asked", not "no change".
   if baselinePath.len > 0:
     var baselineNode = newJObject()
     baselineNode["path"] = newJString(baselinePath)
@@ -1016,23 +823,11 @@ proc renderJson*(r: Readiness, strict = false,
 # --- JUnit (--format=junit) ------------------------------------------------
 
 proc renderJunit*(r: Readiness, strict = false): string =
-  ## One `<testsuite>`, one `<testcase>` per result plus one per structural
-  ## issue -- `classname="<design>.<evaluator>"` for a result,
-  ## `"<design>.structure"` for a structural finding, so a CI tool grouping
-  ## by classname gets the same grouping `CHECKS` uses. `esFail` becomes
-  ## `<failure>` (message is the expect/measured comparison, matching
-  ## `renderClaim`'s own line; the body is `reason` plus `rationale` plus
-  ## every issue, so the diagnosis a text report prints under `FAILED`
-  ## is not lost here); `esNotEvaluated`/`esNotEvaluable` become `<skipped>`
-  ## with `reason` as the message -- the `NOT CHECKED` content, which must
-  ## not silently vanish from a CI job the way an ordinary skip would; a
-  ## pass carries its margin, when it has one, as `<system-out>` rather than
-  ## dropping it, since a CI consumer that only reads JUnit should not have
-  ## to also fetch `--format=json` to see how close a claim ran.
-  ##
-  ## Escaped with `xmltree.escape`, never by hand -- a designator or a
-  ## rationale containing `<`, `>` or `&` is ordinary English, not an attack,
-  ## but it is exactly the character class that breaks hand-rolled XML.
+  ## One `<testsuite>`; one `<testcase>` per result (`<design>.<evaluator>`)
+  ## and per structural issue (`<design>.structure`). `esFail` -> `<failure>`
+  ## (comparison as message; reason, rationale and issues as body);
+  ## unevaluated -> `<skipped>` with the reason; a pass carries its margin in
+  ## `<system-out>`. Escaped with `xmltree.escape`.
   let code = exitCode(r, strict)
   var failures = count(r.results, esFail)
   for i in r.structural:
@@ -1044,11 +839,8 @@ proc renderJunit*(r: Readiness, strict = false): string =
   body &= "<testsuite name=\"" & xmltree.escape(r.design) & "\" tests=\"" & $tests &
           "\" failures=\"" & $failures & "\" skipped=\"" & $skipped &
           "\">\n"
-  # The exit code a text or JSON run would have handed to the shell, carried
-  # as a JUnit `<properties>` extension rather than a bespoke attribute --
-  # `tests`/`failures`/`skipped` alone cannot distinguish "clean" from
-  # "capability unavailable", and a CI job branching on more than pass/fail
-  # needs somewhere to read that from without also fetching `--format=json`.
+  # The exit code goes in `<properties>`: test counts can't distinguish
+  # "clean" from "capability unavailable".
   body &= "  <properties>\n"
   body &= "    <property name=\"exitCode\" value=\"" & $code & "\"/>\n"
   body &= "    <property name=\"exitLabel\" value=\"" &
@@ -1095,11 +887,8 @@ proc renderJunit*(r: Readiness, strict = false): string =
 # --- baseline (--baseline=<path>) ------------------------------------------
 
 proc loadBaseline*(path: string): Table[string, BaselineEntry] =
-  ## Parses a document this same module's `renderJson` wrote, indexed by
-  ## `id`. Anything short of that -- a missing file, invalid JSON, JSON that
-  ## is not a verax readiness report -- raises `BaselineError`; `verify`
-  ## turns that into a usage error rather than a silently skipped
-  ## comparison.
+  ## Parses a `renderJson` document, indexed by `id`. Anything else raises
+  ## `BaselineError`.
   var text: string
   try:
     text = readFile(path)
@@ -1127,12 +916,9 @@ proc loadBaseline*(path: string): Table[string, BaselineEntry] =
 
 proc baselineDiff*(r: Readiness, baseline: Table[string, BaselineEntry]):
                    seq[BaselineChange] =
-  ## Per id: a numeric move (the relative change exceeds 1e-6, or the prior
-  ## value was exactly zero and the new one is not), a status transition, a
-  ## claim new since the baseline, or one gone since it. A unit change is
-  ## reported as a move that cannot be compared -- never silently
-  ## differenced against a number in a different unit, which is worse than
-  ## not comparing at all.
+  ## Per id: a numeric move (relative change > 1e-6, or from exactly zero), a
+  ## status transition, a new claim, or a gone one. A unit change is reported
+  ## as incomparable, never differenced.
   var seen = initHashSet[string]()
   for res in r.results:
     let id = label(res.assertion)
@@ -1148,8 +934,7 @@ proc baselineDiff*(r: Readiness, baseline: Table[string, BaselineEntry]):
                            fromUnit: b.unit, toUnit: res.unit)
     if b.status != toStatus:
       c.statusChanged = true
-      # `pass -> fail`, or a checked claim going unchecked: the direction a
-      # reader needs to see before anything else in this section.
+      # `pass -> fail`, or checked -> unchecked: shown first.
       let wasChecked = b.status in ["pass", "fail"]
       let nowChecked = toStatus in ["pass", "fail"]
       c.regressed = (b.status == "pass" and toStatus == "fail") or
@@ -1171,21 +956,14 @@ proc baselineDiff*(r: Readiness, baseline: Table[string, BaselineEntry]):
 
 proc verify*(d: Design, allowed = allCapabilities, verbose = false,
              strict = false, format = rfText, baseline = ""): int =
-  ## Check a design, print the report, and hand back the exit code.
-  ##
-  ## The one line a design file ends with: `quit(verify(d))`. `format` and
-  ## `baseline` are appended at the end, with defaults, so every existing
-  ## call site (every design's `quit(verifyMain(d))`, every test calling
-  ## `verify` with the original four arguments) keeps compiling unchanged.
+  ## Check a design, print the report, and return the exit code: a design
+  ## file ends with `quit(verify(d))`.
   keepFullSchematic(d.netlist)
   let r = readiness(d, allowed)
 
   var changes: seq[BaselineChange]
   if baseline.len > 0:
-    # A usage error (`exitCompile`), not a silent skip -- caught here rather
-    # than left to propagate as a stack trace, and never swallowed: a CI job
-    # whose baseline went missing or got corrupted and quietly stopped
-    # comparing is a worse failure than one that stops and says why.
+    # A bad baseline is a usage error, never a silently skipped comparison.
     try:
       changes = baselineDiff(r, loadBaseline(baseline))
     except BaselineError as e:
@@ -1205,44 +983,31 @@ type
     allowed*: set[Capability]
     verbose*, strict*: bool
     keepRuns*: string
-      ## Where to archive each simulation (deck, rawfile, ngspice log, an
-      ## SVG schematic and its JSON scene, and an index). Empty means keep
-      ## nothing, which is the default.
+      ## Where to archive each simulation (deck, rawfile, log, schematic SVG
+      ## and JSON, index). Empty keeps nothing.
     saveCurrents*: bool
-      ## Ask ngspice for device terminal currents as well as the node
-      ## voltages it saves anyway. Only meaningful alongside `keepRuns`.
+      ## Also save device terminal currents. Only with `keepRuns`.
     schematicLayout*: string
-      ## Normalized archive-layout spelling, or empty when the environment's
-      ## selection (if any) should remain in effect.
+      ## Normalized archive-layout spelling; empty leaves the environment's
+      ## choice in effect.
     schematicOnly*: bool
-      ## Draw the `runFULL*` archive and stop -- no `readiness`, so no
-      ## simulation runs. Needs `--keep-runs=<dir>`; nothing to draw into is
-      ## a usage error, not a silent no-op.
+      ## Draw the `runFULL*` archive and stop (no simulation). Needs
+      ## `--keep-runs=<dir>`.
     layoutOut*: string
-      ## `pcb/assemble.writeBoard`'s target path. Empty means "not asked",
-      ## the same shape `keepRuns` takes -- `verax layout` is the CLI
-      ## surface, `--layout-out=<path>` is what actually reaches the design
-      ## binary through `cmdCheck`'s two-process shape (`cli.nim`'s
-      ## `cmdLayout` forwards it as an ordinary compiled-design flag rather
-      ## than adding a second entry point that would need its own copy of
-      ## `locateLib`/the compile step).
+      ## `pcb/assemble.writeBoard`'s target; empty means not asked.
+      ## `verax layout` forwards it as `--layout-out=<path>`.
     layoutLayers*: int
       ## `0` means "not stated" -- `AssembleOptions`' own default (2) applies.
     layoutSize*: tuple[w, h: Nm]
-      ## `(nm(0), nm(0))` means "not stated" -- `AssembleOptions`' own
-      ## default board size applies.
+      ## `(nm(0), nm(0))` means not stated (the default board size applies).
     format*: ReportFormat
-      ## `rfText` by default -- a human at a terminal is still the common
-      ## case, and every existing invocation with no `--format` flag must
-      ## keep printing exactly what it always has.
+      ## `rfText` by default.
     baseline*: string
-      ## `--baseline=<path>`, made absolute for the same reason `--keep-runs`
-      ## is: the design binary inherits the caller's working directory, not
-      ## necessarily the shell's.
+      ## `--baseline=<path>`, made absolute (the design binary may run in a
+      ## different directory).
     bom*: bool
-      ## Compile a BOM and stop -- no `readiness`, the `--layout-out` shape.
-      ## Set by `--bom` or by any `--bom-*` flag, so `verax check foo.nim
-      ## --bom-format=csv` cannot quietly run the checks and ignore it.
+      ## Compile a BOM and stop. Set by `--bom` or any `--bom-*` flag, so a
+      ## BOM flag can't be silently ignored.
     bomOut*: string
       ## Where the rendered BOM goes; empty is stdout.
     bomFormat*: BomFormat
@@ -1255,9 +1020,7 @@ type
       ## `-1` means "not stated" -- `defaultResolveOptions` applies.
 
 proc parseCapabilities*(text: string): set[Capability] =
-  ## `--caps=op,ac` and friends. `capStatic` is always included: withholding
-  ## graph walks would withhold the checks that cost nothing and need no
-  ## toolchain, which nobody wants and no flag should quietly do.
+  ## `--caps=op,ac` and friends. `capStatic` is always included.
   result = {capStatic}
   for raw in text.split(','):
     case raw.strip().toLowerAscii().strip(chars = {'.'})
@@ -1274,8 +1037,8 @@ proc parseCapabilities*(text: string): set[Capability] =
         "'; expected any of static, op, dc, ac, tran, all")
 
 proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
-  ## Flags a design file understands. Unrecognised arguments are left alone,
-  ## so a design may take flags of its own without this stealing them.
+  ## Flags a design file understands. Unrecognised arguments are left for
+  ## the design's own flags.
   result.allowed = allCapabilities
   result.bomMinCandidates = -1
   for a in args:
@@ -1287,8 +1050,8 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
       result.allowed = parseCapabilities(a["--caps=".len .. ^1])
     elif a == "--save-currents": result.saveCurrents = true
     elif a.startsWith("--keep-runs="):
-      # Absolute, because the path is baked into each archived deck's own
-      # `write` line and the design binary inherits the caller's directory.
+      # Absolute: it's baked into each archived deck and the design binary
+      # inherits the caller's directory.
       result.keepRuns = absolutePath(a["--keep-runs=".len .. ^1])
     elif a.startsWith("--schematic-layout="):
       result.schematicLayout = layoutPolicyName(parseLayoutPolicy(
@@ -1356,10 +1119,7 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
 
 # --- the catalog: what may be claimed ------------------------------------
 #
-# Rendered to strings rather than printed, because there are two consumers
-# with no terminal in common: the CLI echoes these, and the MCP server
-# returns them. An author working outside this repository has no other way
-# to find out what vocabulary exists.
+# Rendered to strings for both the CLI and the MCP server.
 
 proc describeInterfaces*(): string =
   var lines = @["interfaces -- declared wire bundles and their modports", ""]
@@ -1399,8 +1159,8 @@ proc describeRoles*(): string =
   L.join("\n")
 
 proc claimLine(a: Assertion): string =
-  ## Quantity and subjects only. A preview's bounds come from placeholder
-  ## parameters, so printing `<= 1 ohm` would state a limit nobody set.
+  ## Quantity and subjects only: a preview's bounds come from placeholder
+  ## parameters, so printing them would state limits nobody set.
   var subj: seq[string]
   for s in a.subjects: subj.add $s
   result = "  " & a.id & " : " & a.quantity & "(" & subj.join(", ") & ")"
@@ -1415,18 +1175,14 @@ proc describeRole*(name: string): string =
     raise newException(ValueError,
       "no role named '" & name & "'; `verax roles` lists them")
   let def = roleDef(name)
-  # Widened to the longest name actually present rather than a constant: a
-  # column that a name overruns runs the name into the next one, and
-  # `maxLineRegPerV%/V` is what that reads as.
+  # Widened to the longest name present.
   var w = 12
   for p in def.parts: w = max(w, p.name.len)
   for p in def.params: w = max(w, p.key.len)
   w += 2
   var L = @["role " & def.name & " -- " & def.doc, "", "parts"]
   for p in def.parts:
-    # `skClass` renders `class` through the generic `[2..^1]` slice, which is
-    # wrong for a part that references another role instance -- to a reader it
-    # is a role. The other kinds (`net`, `component`, `pin`) come out right.
+    # An `skClass` part references another role instance, so print "role".
     let kindText = if p.kind == skClass: "role"
                    else: ($p.kind)[2 .. ^1].toLowerAscii
     L.add "  " & p.name.alignLeft(w) &
@@ -1454,19 +1210,13 @@ proc describeRole*(name: string): string =
   L.join("\n")
 
 proc claimingRoles*(): Table[string, seq[string]] =
-  ## Quantity -> the built-in roles that can claim it.
-  ##
-  ## Computed by expanding every registered role with every one of its
-  ## parameters stated, rather than written down: a hand-kept list is exactly
-  ## the thing that drifts from the expanders, and this answer is the one a
-  ## reader is about to act on.
+  ## Quantity -> the built-in roles that can claim it, computed by expanding
+  ## every role rather than kept by hand.
   for name in registeredRoles():
     let def = roleDef(name)
-    # Every parameter at once, then each on its own. One expansion is not
-    # enough: a parameter can *redirect* a claim rather than add one --
-    # `gain_stage`'s `atF` moves the gain claim from `gain_max_db` onto
-    # `gain_at_f` -- so the all-params expansion hides the branch the
-    # single-param one shows, and vice versa.
+    # Every parameter at once, then each alone: a parameter can redirect a
+    # claim (`gain_stage.atF`: `gain_max_db` -> `gain_at_f`), so one
+    # expansion hides branches.
     var shots: seq[seq[(string, string)]] = @[@[]]
     var all: seq[(string, string)]
     for p in def.params:
@@ -1479,16 +1229,9 @@ proc claimingRoles*(): Table[string, seq[string]] =
           result[a.quantity].add name
 
 proc describeQuantities*(): string =
-  ## Which quantities exist, what produces them, and **what can claim them**.
-  ##
-  ## The third column is the one worth having. A quantity is only reachable
-  ## through a role that binds the topology its evaluator needs -- an op-amp
-  ## measurement has to know which component the stage is built around, and
-  ## an assertion carries only its subjects -- so a quantity no role claims
-  ## is one a bare `require` will report as `not evaluable`, however
-  ## correctly it is spelled. Listing them without saying so invited exactly
-  ## that: ten of twenty-six were unreachable by any built-in path and
-  ## nothing said which.
+  ## Which quantities exist, what produces them, and what can claim them. A
+  ## quantity whose evaluator needs a role binding is `not evaluable` from a
+  ## bare `require`, however correctly spelled.
   let byRole = claimingRoles()
   var L = @["quantities -- what a `require` can name", ""]
   var w = 0
@@ -1499,12 +1242,10 @@ proc describeQuantities*(): string =
     let ev = evaluatorFor(q)
     if ev.isNone: continue
     let roles = byRole.getOrDefault(q, @[])
-    # Three genuinely different answers, and conflating any two of them is
-    # how a reader ends up writing a claim nothing will check.
+    # Three distinct answers; conflating them leads to unchecked claims.
     var reach: string
     if ev.get.binds.len == 0:
-      # The subjects are all its evaluator needs, so a bare `require`
-      # reaches it whether or not a role also happens to claim it.
+      # The subjects are all the evaluator needs.
       reach = "`require`"
       if roles.len > 0: reach &= " / role: " & roles.join(", ")
     elif roles.len > 0:
@@ -1512,9 +1253,7 @@ proc describeQuantities*(): string =
     else:
       reach = "-- needs a role binding " & ev.get.binds.join("/")
       orphans.add q
-    # A quantity whose evaluator takes more than one subject cannot be reached
-    # by a bare `require q(x)` -- it needs the pair -- so a reader has to be
-    # able to tell that without running it. `channel_match`'s are the first.
+    # A multi-subject quantity needs the pair, not a bare `require q(x)`.
     var subjTag = ""
     if ev.get.arity != 1 .. 1:
       subjTag =
@@ -1542,10 +1281,7 @@ proc describeQuantities*(): string =
 
 proc describeAnnotations*(): string =
   var L = @["annotations -- the keys a `spec:` block accepts", ""]
-  # Width from the longest key present rather than a constant: `voltage_rating`
-  # ran straight into the type column and printed `voltage_ratingfloat`. A
-  # fixed width is a bet that no future key is longer than today's, and the
-  # registry is a runtime table anyone may add to.
+  # Width from the longest key present; the registry is open.
   var keyW = 12
   for key in registeredKeys():
     if key.len + 2 > keyW: keyW = key.len + 2
@@ -1565,13 +1301,9 @@ proc describeAnnotations*(): string =
 # --- bill of materials (--bom) ----------------------------------------------
 
 proc compileBom*(nl: Netlist, o: VerifyOptions): int =
-  ## Collect -> resolve -> render, and stop: `--layout-out`'s "build and
-  ## stop, no `readiness`" shape. A catalogue or lock that cannot be read is
-  ## a usage error (`exitCompile`), never a silently skipped source; a part
-  ## that reaches assembly unresolved is `exitStructural`.
-  ##
-  ## With the document on stdout and not text, findings go to stderr, so
-  ## `--bom-format=json | jq` sees JSON alone.
+  ## Collect -> resolve -> render, then stop (no `readiness`). An unreadable
+  ## catalogue or lock is `exitCompile`; an unresolved assembled part is
+  ## `exitStructural`. With CSV/JSON on stdout, findings go to stderr.
   var catalogs = o.bomCatalogs
   if catalogs.len == 0:
     for p in getEnv("VERAX_BOM_CATALOG").split(PathSep):
@@ -1615,26 +1347,19 @@ proc compileBom*(nl: Netlist, o: VerifyOptions): int =
   if worstSeverity(res) == sevError: exitStructural else: exitClean
 
 proc verifyMain*(d: Design, args = commandLineParams()): int =
-  ## What a design file's last line calls: `quit(verifyMain(d))`.
-  ##
-  ## Reading the flags here rather than baking them into the call means the
-  ## compiled design can be re-run offline without being edited, which is what
-  ## makes it usable as both a check and an artifact.
-  # A bad flag value is a usage error, not an unhandled exception: that
-  # exits 1, which reads as "a claim failed".
+  ## What a design file's last line calls: `quit(verifyMain(d))`. Flags are
+  ## read here so the compiled design can be re-run without editing.
+  # A bad flag value is a usage error, not an exception (exit 1 reads as a
+  # failed claim).
   var o: VerifyOptions
   try:
     o = parseVerifyArgs(args)
   except ValueError as e:
     stderr.writeLine "verax: " & e.msg
     return exitCompile
-  # The parser stays pure; the environment is set here. An environment
-  # variable is the right mechanism at the bottom of this stack: nothing
-  # below `readiness` takes an options value, and only the capability set
-  # reaches an analysis at all -- so threading an archive directory down to
-  # `spice/ngspice.run` would mean a parameter on every analysis between
-  # here and there, and an import of `spice` from a module that deliberately
-  # has none.
+  # Set via the environment: nothing below `readiness` takes an options
+  # value, and threading an archive directory down to `spice/ngspice.run`
+  # would touch every analysis.
   if o.keepRuns.len > 0: putEnv("VERAX_KEEP_RUNS", o.keepRuns)
   if o.saveCurrents: putEnv("VERAX_SAVE_CURRENTS", "1")
   if o.schematicLayout.len > 0:
@@ -1648,11 +1373,7 @@ proc verifyMain*(d: Design, args = commandLineParams()): int =
     echo "wrote runFULL.* to ", o.keepRuns
     return exitClean
   if o.layoutOut.len > 0:
-    # `pcb/assemble.writeBoard` alone, the same "draw and stop, no
-    # `readiness`" shape `--schematic-only` already takes -- board
-    # generation itself lives in `pcb/`, not here, exactly as the
-    # `$VERAX_KEEP_RUNS` schematic job lives in `schematic/render` and not
-    # here either.
+    # Build the board and stop, like `--schematic-only`.
     var opts = defaultAssembleOptions()
     if o.layoutLayers > 0: opts.copperLayers = o.layoutLayers
     if o.layoutSize.w > nm(0) and o.layoutSize.h > nm(0):

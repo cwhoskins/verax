@@ -1,10 +1,6 @@
-## The `safe_default` role from `designs/lib/xbar_parts.nim` -- the claim
-## `designs/xbar_rf.nim` and `designs/xbar_control.nim` make eight times each
-## that an RF switch enable sits low at power-up.
-##
-## Registering a role from a design-side module and having it expand exactly
-## like a built-in is the property `tests/test_contract_roles.nim` pins for
-## the library's own; this pins it for one written under `designs/`.
+## The `safe_default` role from `designs/lib/xbar_parts.nim`: an RF switch
+## enable sits low at power-up. Pins that a role registered from a
+## design-side module expands like a built-in.
 
 import std/[math, tables, unittest]
 

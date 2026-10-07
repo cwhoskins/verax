@@ -17,9 +17,7 @@ test "integer and float literals both work":
   check toFloat(1.kohm) == 1000.0
 
 test "milli and mega are distinguished by case, unlike SPICE":
-  # This is the whole reason the types exist: in a SPICE deck `1M` is milli
-  # and mega is spelled `MEG`, so a bare "20m" is ambiguous to a reader and
-  # a factor of 1e6 away from `Mohm`.
+  # In SPICE `1M` is milli and mega is `MEG`, so a bare "20m" is ambiguous.
   check toFloat(20.mohm) == 0.02
   check toFloat(20.Mohm) == 20_000_000.0
 
@@ -38,12 +36,11 @@ test "display uses engineering notation, and a fraction reads as a percent":
   check $(600.pH) == "600 pH"
   check $(400.kHz) == "400 kHz"
   check $(3.3.V) == "3.30 V"
-  # 0.05 rendered through SI prefixes is "50.0m", which is true and useless.
+  # "50.0m" would be true and useless.
   check $(5.pct) == "5.00%"
 
 test "quantities of different dimensions are distinct types":
-  # Not a dimensional-analysis system, but the types are at least disjoint,
-  # which is what lets the annotation registry reject `esr = 20.nF`.
+  # Disjoint types let the annotation registry reject `esr = 20.nF`.
   check not compiles((let x: Ohms = 20.nF))
   check not compiles(toFloat(20.mohm) + 1.V)
   check not compiles(20.mohm + 20.mohm)   # no arithmetic on quantities
@@ -51,9 +48,7 @@ test "quantities of different dimensions are distinct types":
 # --- phase and logarithmic ratio ---------------------------------------
 
 test "deg and dB are literals, so a role parameter need not be a bare float":
-  # The roles declare minPhaseMargin in degrees and maxPeaking in dB, and a
-  # bare number in a list of unit literals is exactly the misread this
-  # module exists to remove.
+  # Role parameters take unit literals, not bare floats.
   check toFloat(50.deg) == 50.0
   check toFloat(3.dB) == 3.0
   check unitOf(50.deg) == "deg"
@@ -63,9 +58,7 @@ test "dB and db are the same literal, because Nim reads them as one identifier":
   check toFloat(6.dB) == toFloat(6.db)
 
 test "a dB literal stores the dB figure, not the ratio it denotes":
-  # Every consumer compares against a measurement already in dB --
-  # `gain_max_db` is dB -- so converting here would mean converting back at
-  # each use.
+  # Consumers compare against measurements already in dB.
   check toFloat(20.dB) == 20.0
 
 test "negative phase and gain are ordinary values":
@@ -75,13 +68,9 @@ test "negative phase and gain are ordinary values":
 # --- eng() must not SI-prefix a logarithmic unit -----------------------
 
 test "eng() renders dB as a bare decimal, not SI-prefixed":
-  # The live defect this fixes: eng()'s prefix loop used to treat "dB" like
-  # any other unit, so a real 0.5 dB closed-loop peak rendered "500 mdB" --
-  # analysis/analyses/opamp.nim:546 did exactly this for every design until
-  # noPrefixUnits existed.
+  # eng() must not SI-prefix dB: 0.5 dB is not "500 mdB".
   check eng(0.5, "dB") == "0.5 dB"
-  # A value that would have crossed the milli/micro prefix boundary under
-  # the old behaviour (0.002 -> "2 mdB") stays a plain decimal instead.
+  # Nor "2 mdB".
   check eng(0.002, "dB") == "0.002 dB"
 
 test "NoiseDensity still SI-prefixes, since a spectral density genuinely has decades":

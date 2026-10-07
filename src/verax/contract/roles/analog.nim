@@ -1,23 +1,15 @@
-## Built-in roles for analog signal-path stages.
-##
-## `opamp_stage` and `gain_stage` are a DC-coupled / AC-coupled pair judged by
-## `.ac`; `channel_match` is the first role whose subjects are two other role
-## instances rather than nets; `oscillator` is the counterpart for a circuit
-## whose intent is instability; `large_signal` is the driven, nonlinear one.
-## The reasoning for each -- and why none is a parameter on another -- is in
-## `contract/CLAUDE.md`.
+## Built-in roles for analog signal-path stages: `opamp_stage` (DC-coupled)
+## and `gain_stage` (AC-coupled), judged by `.ac`; `channel_match` (subjects
+## are two role instances); `oscillator` (intent is instability);
+## `large_signal` (driven, nonlinear).
 
 import std/tables
 import ./core
 
 proc opampStageExpand*(inst: RoleInstance): seq[Assertion] =
-  ## Closed-loop behaviour and stability of one amplifier stage.
-  ##
-  ## Peaking and phase margin are both claimed because they are measured
-  ## differently and are wrong in different ways: peaking is what low margin
-  ## looks like from outside the loop, while the margin itself is a property
-  ## of the loop gain at its own crossing and needs the loop broken to
-  ## measure. Neither substitutes for the other.
+  ## Closed-loop behaviour and stability of one amplifier stage. Claims both
+  ## peaking (low margin as seen from outside) and phase margin (needs the
+  ## loop broken); neither substitutes for the other.
   let outNet = inst.subject("output")
   let minBw = paramFloat(inst, "minBandwidth", 0.0)
   let minPm = paramFloat(inst, "minPhaseMargin", 45.0)
@@ -71,34 +63,18 @@ proc opampStageExpand*(inst: RoleInstance): seq[Assertion] =
     origin: inst.name)
 
 proc gainStageExpand*(inst: RoleInstance): seq[Assertion] =
-  ## An amplifier stage judged by its **band**, not by its behaviour at DC.
+  ## An amplifier stage judged by its **band**: for a single-supply
+  ## AC-coupled stage, DC gain is unity by construction, so `opamp_stage`'s
+  ## DC-referenced claims answer nothing. Claims are against the response
+  ## maximum. **No stability claim** (`peaking_db` can't tell a band-pass
+  ## shape from resonance) -- add `opamp_stage` alongside for margin.
   ##
-  ## `opamp_stage` describes a DC-coupled stage and asks DC-referenced
-  ## questions, which is right for a filter or a sensor front end and wrong
-  ## for anything single-supply. There the gain-setting leg is capacitively
-  ## coupled -- that is what makes one supply work -- so the gain at DC is
-  ## unity *by construction*, `gain_dc_db` reports 0 dB for a stage with 32
-  ## of them, and `bw_3db` reports where the response falls 3 dB below unity
-  ## on the far side of its own passband. Neither is wrong arithmetically and
-  ## neither answers a question anyone asks about a guitar pedal or a
-  ## microphone preamp.
-  ##
-  ## So this role claims against the response's maximum instead. It also
-  ## makes **no stability claim**: `peaking_db` cannot tell an intentional
-  ## band-pass shape from resonance, and a margin belongs to `opamp_stage`,
-  ## which can be stated alongside this one on the same stage when the loop
-  ## is one `analyzeLoopGain` can actually open.
-  ##
-  ## Every parameter is optional and omitting one claims nothing, the same
-  ## rule `power_rail`'s `targetZ` follows: a gain specification comes from
-  ## what the stage is for, and inventing a default would manufacture a
-  ## requirement the designer never made.
+  ## Every parameter is optional; omitting one claims nothing.
   let outNet = inst.subject("output")
   let atF = paramFloat(inst, "atF", 0.0)
 
-  # Pinning a frequency changes which quantity the gain claim is about: at a
-  # stated frequency it is `gain_at_f`, otherwise the response's maximum.
-  # Same claim, said two ways, and the unit and rationale do not change.
+  # A stated frequency redirects the gain claim to `gain_at_f`; otherwise
+  # it's the maximum.
   let gainQuantity = if atF > 0.0: "gain_at_f" else: "gain_max_db"
   let gainWhere =
     if atF > 0.0: " at " & $atF & " Hz"
@@ -125,9 +101,8 @@ proc gainStageExpand*(inst: RoleInstance): seq[Assertion] =
               "gain above what the stage was designed for is headroom spent " &
               "on noise, and on a single supply it is clipping")
 
-  # The band edges, each referenced to that same maximum. `f_lo_3db` is
-  # `NaN` for a DC-coupled stage, which has no lower edge -- that reads as
-  # "could not check" rather than as a pass.
+  # Band edges, referenced to the maximum. `f_lo_3db` is `NaN` (not checked)
+  # for a DC-coupled stage.
   if hasParam(inst, "fLoMax"):
     result.add Assertion(
       id: assertionId(inst, "low_corner"),
@@ -153,22 +128,12 @@ proc gainStageExpand*(inst: RoleInstance): seq[Assertion] =
       origin: inst.name)
 
 proc channelMatchExpand*(inst: RoleInstance): seq[Assertion] =
-  ## Two stages judged against each other, rather than each against a band.
+  ## Two stages judged against each other: the channels *agree*, which
+  ## neither meeting its own band implies.
   ##
-  ## `gain_stage` claims each channel reaches its gain; this claims the two
-  ## *agree*, and neither implies the other -- two channels 3 dB apart can
-  ## each sit inside its own band, and a stereo image that shifts with level
-  ## is the most audible fault a two-channel stage has.
-  ##
-  ## **The subjects are the two `skClass` references, not nets.** A
-  ## `RoleExpander` is pure and has no `Design`, so it cannot turn
-  ## `roleRef("left")` into an amplifier and two nets; the evaluator does
-  ## that (`subjectRoleBinding`). Same asymmetry `originRole` exists for --
-  ## an expander states the claim, an evaluator recovers the topology.
-  ##
-  ## Every claim is `hasParam`-gated on its own limit, the rule the regulator
-  ## roles established. `fFrom`/`fTo`/`atF` are **setup**: they say what was
-  ## swept, ride in `Assertion.condition`, and never gate a claim.
+  ## **Subjects are two `skClass` references**: an expander has no `Design`,
+  ## so the evaluator resolves them (`subjectRoleBinding`). Each claim is
+  ## gated on its own limit; `fFrom`/`fTo`/`atF` are setup (conditions).
   let a = inst.subject("a")
   let b = inst.subject("b")
   let atF = paramFloat(inst, "atF", 0.0)
@@ -181,10 +146,8 @@ proc channelMatchExpand*(inst: RoleInstance): seq[Assertion] =
     if atF > 0.0: x.condition["at_f"] = $atF
 
   if hasParam(inst, "maxGainDelta"):
-    # `atF` **redirects** the gain-delta claim onto the single frequency
-    # rather than adding a second one -- the `gain_stage`/`atF` pattern. Two
-    # claims about one pair of curves would be one claim that can only ever
-    # be the weaker.
+    # `atF` redirects the gain-delta claim to one frequency rather than
+    # adding a second.
     let q = if atF > 0.0: "gain_delta_at_f" else: "gain_delta_max_db"
     var x = Assertion(
       id: assertionId(inst, "gain_delta"),
@@ -222,34 +185,16 @@ proc channelMatchExpand*(inst: RoleInstance): seq[Assertion] =
       result.add x
 
 proc oscillatorExpand*(inst: RoleInstance): seq[Assertion] =
-  ## What a circuit whose intent is *instability* is specified by: what it
-  ## runs at, how big it is, and how clean.
+  ## What an oscillator is specified by: frequency, amplitude, purity.
   ##
-  ## **Why this cannot be `opamp_stage` or `gain_stage` with a parameter.**
-  ## Both of those are backed by an `.ac` sweep, and every claim they make is
-  ## about how far the stage is from oscillating -- a phase margin, a bounded
-  ## peak, a flat passband. An oscillator is specified the other way round:
-  ## the loop gain must be *exactly* 1 at *exactly* 0 degrees, and everything
-  ## a stability claim would call a defect is here the product. Worse, the
-  ## measurement itself does not survive the change of intent: a swept
-  ## measurement drives an ideal source onto the stage input, and a Wien
-  ## bridge returns its positive feedback to that very node, so the source
-  ## holds it and the bridge is shorted out of the circuit. There is no
-  ## version of an `.ac` that answers this. The circuit has to be run.
+  ## Not `opamp_stage`/`gain_stage` with a parameter: those are `.ac`
+  ## stability claims, and an `.ac` source on the input would short a Wien
+  ## bridge's feedback. The circuit has to be run.
   ##
-  ## **What binds, and what does not.** The subject is the net the
-  ## oscillation is measured on, and nothing else is needed to *measure*.
-  ## `kick` is optional and binds the node given a stated starting voltage,
-  ## which is what a circuit sitting at an operating point it never leaves
-  ## on its own needs to start at all. A circuit that starts by itself omits
-  ## it, and gets no `uic` and no assumption about unbiased nodes with it.
-  ##
-  ## `tSettle`, `tWindow`, `kick` and `kickV` are **conditions, not limits**,
-  ## for the reason `settled_rail`'s window is and `large_signal`'s drive
-  ## level is: they say what was run, and the answer is a function of them.
-  ## An amplitude-stabilised oscillator settles to a level rather than to a
-  ## time constant, so a window opened too early reports the envelope as
-  ## distortion.
+  ## The subject is the measured net. `kick` optionally sets a starting
+  ## voltage for a circuit that won't start itself (otherwise no `uic`).
+  ## `tSettle`, `tWindow`, `kick`, `kickV` are conditions, not limits; open
+  ## the window late enough that the amplitude has stabilised.
   let outNet = inst.subject("output")
   let tSettle = paramFloat(inst, "tSettle", 0.0)
   let tWindow = paramFloat(inst, "tWindow", 0.0)
@@ -271,11 +216,8 @@ proc oscillatorExpand*(inst: RoleInstance): seq[Assertion] =
     claim.condition["kick_v"] = $kickV
     result.add claim
 
-  # Every claim is opt-in and the role makes none of its own, the same rule
-  # `settled_rail` follows. There is no default frequency for an oscillator
-  # -- the network sets it and only the designer knows what it was meant to
-  # be -- and no default amplitude or distortion budget either, since both
-  # are consequences of a stabilisation scheme rather than of the topology.
+  # Every claim opt-in: frequency, amplitude and distortion budget are all
+  # the designer's intent.
   if hasParam(inst, "freq"):
     running("freq", "osc_freq",
             nominal(paramFloat(inst, "freq", 0.0),
@@ -302,27 +244,15 @@ proc oscillatorExpand*(inst: RoleInstance): seq[Assertion] =
             "at a gain of three or being clipped back to it", sevWarning)
 
 proc largeSignalExpand*(inst: RoleInstance): seq[Assertion] =
-  ## What the stage does when it is *driven*, which for anything with
-  ## deliberate nonlinearity in it is the only question that matters.
-  ##
-  ## Every other amplifier role here is small-signal: `.ac` linearises about
-  ## the operating point, so a clipping diode is whatever conductance it has
-  ## at rest and never clips. That is the right model for gain and stability
-  ## and it is the wrong one for an overdrive, where the clipping *is* the
-  ## product.
-  ##
-  ## `driveV` and `driveF` are **conditions, not limits** -- they say what
-  ## the stage was driven with, and the answer is a function of them, so two
-  ## instances at two levels are two measurements rather than one measured
-  ## twice. They ride in `Assertion.condition`, which is the only channel an
-  ## assertion has for a setup parameter, and the evaluator's setup key reads
-  ## them back so the planner keeps the runs apart.
+  ## What the stage does when *driven* -- for deliberate nonlinearity, where
+  ## `.ac` linearises the clipping away. `driveV`/`driveF` are conditions,
+  ## so two drive levels are two runs.
   let outNet = inst.subject("output")
   let driveV = paramFloat(inst, "driveV", 0.0)
   let driveF = paramFloat(inst, "driveF", 1.0e3)
 
-  # Field names and parameter names must differ here: `quantity: quantity`
-  # inside an object constructor is ambiguous to the template expander.
+  # Field and parameter names must differ: `quantity: quantity` is
+  # ambiguous to the template expander.
   template driven(sfx, qty: string, e: Expectation, un, why: string;
                   sev = sevError) =
     var claim = Assertion(
@@ -342,8 +272,7 @@ proc largeSignalExpand*(inst: RoleInstance): seq[Assertion] =
     driven("thd", "thd_pct", atMost(paramFloat(inst, "maxThd", 0.0)), "%",
            "distortion at the level the stage is actually driven at")
   if hasParam(inst, "minThd"):
-    # Deliberately available: on an overdrive, too *little* distortion is
-    # the defect. A clipping stage that measures clean has lost its diodes.
+    # On an overdrive, too *little* distortion is the defect.
     driven("thd_min", "thd_pct", atLeast(paramFloat(inst, "minThd", 0.0)), "%",
            "a stage whose distortion is what it is for must actually produce it")
   if hasParam(inst, "minSwing"):

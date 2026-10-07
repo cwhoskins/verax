@@ -1,55 +1,40 @@
 # --- fallback reroute diagnostic --------------------------------------------
-# A *final-scene* diagnostic, deliberately not a historical replay: it takes
-# the finished `Schematic` (the one archived beside the SVG), rebuilds the
-# router's inputs from the scene alone -- obstacles from part/port bodies,
-# occupancy from the emitted wires, escape seeds from part pins and ports,
-# rail/ground identity from wire kind -- and re-runs `routeNet` for one
-# fallback net against that final geometry. The answer is therefore "could
-# this net route as a tree in the scene that was actually drawn", not "why
-# did it fail at the exact moment the original layout first tried it". The
-# occupancy seen by the reroute is the complete final set, and no placement
-# feedback move is attempted, so a net that the original layout fell back on
-# may (or may not) route here -- either answer is information, and the
-# limitation is stated rather than hidden.
+# A *final-scene* diagnostic, not a replay: rebuilds the router's inputs
+# from the finished `Schematic` alone and re-runs `routeNet` for one
+# fallback net. It answers "could this net route in the scene as drawn",
+# not "why did it fail originally" (occupancy is the final set, and no
+# placement moves are tried).
 
 type
   RerouteBlockKind* = enum
-    ## What a final-scene reroute names as the first-order blocker of an
-    ## unreachable pin's escape point.
+    ## The first-order blocker of an unreachable pin's escape point.
     rbObstacle
-      ## An inflated part/port body blocks the escape point or every edge out
-      ## of it -- placement left no routing channel there.
+      ## An inflated part/port body blocks the escape point or every edge
+      ## out of it.
     rbOccupancy
-      ## The final scene's own emitted wires block the route (a collinear
-      ## touch or a too-close parallel run against a foreign net, or a
-      ## same-net collinear overlap).
+      ## The scene's own wires block the route (cross-net or same-net
+      ## occupancy rules).
     rbEscapeSeed
       ## A foreign pin/port's fixed escape stub blocks the route's first hop.
 
   FallbackReroute* = object
-    ## The result of re-routing one fallback net against a finished scene's
-    ## final geometry (see the module note above).
+    ## Re-routing one fallback net against a finished scene.
     net*: string
       ## The exact fallback net name.
     pins*: int
-      ## How many route endpoints the net has in the scene (part pins plus
-      ## interface-port connection points). 0 means the net has no endpoint;
-      ## 1 means a single dangling pin, which `layout` always draws as a
-      ## fallback but never treats as a routing failure.
+      ## Route endpoints in the scene (pins plus port points). 0: none; 1: a
+      ## dangling pin (always a fallback, never a routing failure).
     routed*: bool
-      ## Whether `routeNet` can connect every endpoint as a real tree under
-      ## the final occupancy. `true` for a dangling single pin.
+      ## Whether `routeNet` connects every endpoint under final occupancy;
+      ## true for a dangling pin.
     deliberate*: bool
-      ## `true` when every fallback record on this net is `fbNetLabel` -- a
-      ## bus/interface carried by name on purpose. The scene reserved no
-      ## channel for it, so "blocked by occupancy" would be a false alarm;
-      ## this refuses to diagnose rather than invent one.
+      ## True when every record on the net is `fbNetLabel` (carried by name on
+      ## purpose); not diagnosed.
     failPin*: int
-      ## The index of the first unreachable endpoint when `routed` is false;
-      ## -1 otherwise.
+      ## Index of the first unreachable endpoint when not routed; -1
+      ## otherwise.
     failPart*: string
-      ## The owning part's designator of the unreachable endpoint; "" for a
-      ## port connection point.
+      ## Designator owning the unreachable endpoint; "" for a port point.
     failPinName*: string
       ## The unreachable pin's name; "" for a port connection point.
     failX*, failY*: float
@@ -57,18 +42,16 @@ type
     blockKind*: RerouteBlockKind
       ## The first-order blocker classification when `routed` is false.
     blockDetail*: string
-      ## A short human-readable expansion of `blockKind`, including the
-      ## offending net or owner name where the scene identifies one.
+      ## A short explanation of `blockKind`, naming the offending net or
+      ## owner where possible.
     polys*: seq[seq[Point]]
-      ## When `routed`, the polylines `routeNet` would emit for the net in
-      ## the final scene.
+      ## When routed, the polylines `routeNet` would emit.
 
 proc classifyBlock(a, b: Point, netName: string,
                    occ, seeds, glyphs: seq[OccSeg]):
     tuple[kind: RerouteBlockKind, net: string] =
-  ## Which occupancy/seed rule blocks the axis-aligned edge `a`-`b` for
-  ## `netName`, together with the offending net. Mirrors `edgeAllowed`;
-  ## Its caller invokes this only after `edgeAllowed` rejects the edge.
+  ## Which occupancy/seed rule blocks edge `a`-`b` for `netName`, and the
+  ## offending net. Mirrors `edgeAllowed`; called only after it rejects.
   for s in occ:
     if s.net == netName:
       if collinearOverlap(a, b, s.a, s.b): return (rbOccupancy, s.net)
@@ -86,11 +69,9 @@ proc sceneRouterInputs(s: Schematic):
           owners: seq[string],
           free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
           occ: seq[OccSeg], seeds, glyphs: seq[OccSeg]] =
-  ## Rebuilds everything `routeNet` needs from a finished scene alone. Rail
-  ## and ground nets are identified by the kind of their emitted stubs, since
-  ## a scene no longer carries the netlist's `Net.kind` annotation. Obstacle
-  ## owners are kept in parallel so a diagnosis can name the body that blocks
-  ## a pin.
+  ## Rebuilds `routeNet`'s inputs from a finished scene. Rails/grounds are
+  ## identified by stub kind (no `Net.kind` in a scene). Obstacle owners are
+  ## kept parallel for naming blockers.
   for w in s.wires:
     if w.kind in {wkGround, wkSupply}: result.railNets.incl w.net
 
@@ -129,10 +110,8 @@ proc sceneRouterInputs(s: Schematic):
 
 proc endpointsFor(s: Schematic, net: string):
     tuple[pins: seq[RoutePin], part: seq[string], pinName: seq[string]] =
-  ## The route endpoints for `net` in `s`, in the same order `layout` would
-  ## have visited them: part pins in part/pin order, then port connection
-  ## points. `part`/`pinName` parallel the endpoints for failure reporting
-  ## (both "" for a port).
+  ## The route endpoints for `net` in `layout`'s order (part pins, then port
+  ## points), with parallel `part`/`pinName` ("" for a port).
   for pi, p in s.parts:
     for pin in p.pins:
       if pin.net == net:
@@ -156,10 +135,9 @@ proc blockReason(pin: RoutePin, parts: seq[SchematicPart],
                  free: tuple[nodes: seq[Point], adj: seq[seq[int]]],
                  occ, seeds, glyphs: seq[OccSeg], netName: string):
     tuple[kind: RerouteBlockKind, detail: string] =
-  ## A first-order explanation of why the failed pin's escape point is
-  ## unreachable. Honest about its depth: it inspects the pin's own escape
-  ## point and its first-hop edges only -- a failure that lives deeper in the
-  ## grid is reported as occupancy without guessing a specific occupant.
+  ## A first-order explanation of the failed pin's unreachability, from its
+  ## escape point and first-hop edges only; deeper failures read as
+  ## occupancy.
   let d =
     if pin.esc.x != 0.0 or pin.esc.y != 0.0: pin.esc
     else: escapeDir(parts[pin.partIdx], pin.pt)
@@ -220,17 +198,14 @@ proc blockReason(pin: RoutePin, parts: seq[SchematicPart],
     "(placement left no routing channel out of this pin)")
 
 proc diagnoseFallbackNet*(s: Schematic, net: string): FallbackReroute =
-  ## Re-routes one fallback net against `s`'s final geometry and reports
-  ## whether it would route and, if not, which endpoint is blocked and by
-  ## what. This is the final-scene diagnostic described at the top of this
-  ## section -- not a replay of the original layout's routing order.
+  ## Re-routes one fallback net against `s`'s final geometry, reporting
+  ## whether it routes and, if not, which endpoint is blocked by what.
   let ep = endpointsFor(s, net)
   result.net = net
   result.pins = ep.pins.len
   result.failPin = -1
 
-  # A deliberate bus/interface net label is not a failure. Proceed to a real
-  # reroute only if some record on this net is an actual routing failure.
+  # A deliberate net label isn't a failure; reroute only if some record is.
   var haveNet = false
   var allLabel = false
   for f in s.fallbacks:
@@ -284,10 +259,9 @@ proc diagnoseFallbackNets*(s: Schematic, nets: seq[string]): seq[FallbackReroute
   for net in nets: result.add diagnoseFallbackNet(s, net)
 
 proc diagnoseAllFallbacks*(s: Schematic): seq[FallbackReroute] =
-  ## Diagnoses every distinct fallback net in `s`, in first-appearance order.
-  ## A net whose every record is `fbNetLabel` is **skipped**: a sheet with
-  ## three broken-out interfaces carries fifteen deliberate tags, and they
-  ## would bury the one real failure.
+  ## Diagnoses every distinct fallback net in first-appearance order,
+  ## skipping nets whose records are all `fbNetLabel` (they'd bury real
+  ## failures).
   var labelOnly = initHashSet[string]()
   var hasReal = initHashSet[string]()
   for f in s.fallbacks:

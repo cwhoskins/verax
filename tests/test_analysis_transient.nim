@@ -8,12 +8,9 @@ import verax/analysis/analyses/transient
 let haveNgspice = findExe("ngspice").len > 0
 
 proc rcRail(): Netlist =
-  ## A square wave through an RC into a load: something that settles to a
-  ## known average with a known ripple on it, and whose answer is closed form.
-  ##
-  ## `PULSE(0 10 0 1n 1n 5u 10u)` is 50% duty at 100 kHz, so the average is
-  ## 5 V. R = 100 ohm and C = 10 uF gives tau = 1 ms, and the ripple across
-  ## the capacitor is V*d*(1-d)*T/(R*C) = 10*0.25*10u/1m = 25 mV.
+  ## A square wave through an RC into a load, settling to a closed-form
+  ## average and ripple: 50% duty at 100 kHz averages 5 V; with tau = 1 ms
+  ## the ripple is V*d*(1-d)*T/(R*C) = 25 mV.
   result = newNetlist("rc")
   let vin = addNet(result, newNet("vin"))
   let vout = addNet(result, newNet("vout"))
@@ -33,13 +30,9 @@ proc rcRail(): Netlist =
   discard connect(c1, "1", vout)
   discard connect(c1, "2", gnd)
   c1.attrs["value"] = "10u"
-  # Class 1, so the capacitance the arithmetic above assumes is the one the
-  # simulation uses -- a Class 2 part would be bias-derated out from under it.
+  # Class 1, so bias derating doesn't move the capacitance.
   c1.attrs["dielectric"] = "C0G"
-  # Stated rather than left to the package-typical defaults, because those are
-  # not small here: 100 mA of ripple current through a typical ESR puts more
-  # on this node than the capacitance does, and the closed form above would be
-  # measuring the stand-in instead of the filter.
+  # Stated: the package-typical ESR would dominate the ripple here.
   c1.attrs["esr"] = "1e-3"
   c1.attrs["esl"] = "1e-12"
 
@@ -52,14 +45,12 @@ test "the window is what is measured, and the run before it is discarded":
     spec.tWindow = 5.0e-5   ## five periods of the drive
     let r = analyzeTransient(rcRail(), "vout", spec)
 
-    # 5 V average, from a 50% duty square wave through a filter whose corner
-    # is far below the drive.
+    # 5 V average from a 50% square wave far above the corner.
     check abs(r["settled_v"] - 5.0) < 0.05
     # V*d*(1-d)*T/(R*C) = 25 mV, and the measurement is peak-to-peak.
     check abs(r["ripple_pp"] - 0.025) / 0.025 < 0.15
     check r["settled_max"] > r["settled_min"]
-    # The start-up ramp reached 0 V at t = 0 and 5 V here; measuring from the
-    # beginning would have reported the whole rise as ripple.
+    # Measuring from t = 0 would report the whole start-up rise as ripple.
     check r["ripple_pp"] < 0.1
 
 test "a window that opens after the run ends says so rather than answering":
@@ -99,9 +90,8 @@ test "the purpose reaches the model selection":
   if not haveNgspice:
     skip()
   else:
-    # A part carrying a steady-state model gets it here and gets its default
-    # everywhere else. Proven by making the two disagree about the answer,
-    # which is the only way to tell which one ran.
+    # A steady-state model is used here and the default elsewhere; making the
+    # two disagree shows which ran.
     let nl = rcRail()
     let r1 = nl.components["R1"]
     var slow = newSimReplacement("resistor", name = "averaged")
@@ -112,8 +102,7 @@ test "the purpose reaches the model selection":
                                  suits = [spSteadyState])
     fast.pinNets["1"] = "vin"
     fast.pinNets["2"] = "vout"
-    # Ten times the resistance, so ten times the time constant and a tenth of
-    # the ripple.
+    # Ten times the resistance: a tenth of the ripple.
     fast.attrs["value"] = "1000"
     addSimModel(r1, slow)
     addSimModel(r1, fast)
@@ -128,11 +117,8 @@ test "the purpose reaches the model selection":
 # --- oscillation --------------------------------------------------------
 
 proc tank(): Netlist =
-  ## A parallel LC that rings at a frequency closed form gives exactly:
-  ## 1/(2*pi*sqrt(1m * 1u)) = 5032.92 Hz.
-  ##
-  ## Nothing drives it, which is the point -- it has no operating point to
-  ## start from and sits at zero forever unless something puts energy in.
+  ## A parallel LC ringing at 1/(2*pi*sqrt(1m * 1u)) = 5032.92 Hz. Undriven,
+  ## so it sits at zero unless given initial energy.
   result = newNetlist("tank")
   let a = addNet(result, newNet("a"))
   let gnd = addNet(result, newNet("0", ntGround))
@@ -146,9 +132,7 @@ proc tank(): Netlist =
   discard connect(c1, "1", a)
   discard connect(c1, "2", gnd)
   c1.attrs["value"] = "1u"
-  # Class 1 and a stated ESR, for the same reason `rcRail` states them: the
-  # package-typical defaults would put a damping term into a circuit whose
-  # answer is being checked against closed form.
+  # Class 1 and a stated ESR, so defaults add no damping.
   c1.attrs["dielectric"] = "C0G"
   c1.attrs["esr"] = "0.001"
   c1.attrs["esl"] = "1e-12"
@@ -181,9 +165,7 @@ test "no kick means no oscillation, and the issue says which of the two it is":
     spec.tWindow = 1.0e-2
     let r = analyzeOscillation(tank(), "a", spec)
 
-    # `NaN` rather than 0 Hz: an oscillator sitting at its operating point is
-    # a flat line, and reporting a frequency of zero for it would be a
-    # measurement where there was none.
+    # NaN, not 0 Hz: a flat line has no frequency to measure.
     check r["osc_freq"].isNaN
     check r.issues.len == 1
     check r.issues[0].kind == KindDidNotOscillate
@@ -193,8 +175,7 @@ test "a node driven periodically needs no kick at all":
   if not haveNgspice:
     skip()
   else:
-    # The `kick` is optional on the role for this reason: plenty of circuits
-    # are periodic without one, and `uic` is not free.
+    # The `kick` is optional: many circuits are periodic without one.
     var spec = defaultTransientSpec()
     spec.tSettle = 5.0e-3
     spec.tWindow = 5.0e-4      ## fifty periods of the 100 kHz drive
@@ -206,9 +187,8 @@ test "a node driven periodically needs no kick at all":
 
 suite "branch current vector names":
   test "the two shapes are told apart by whether the current is an unknown":
-    # A voltage source, an inductor and the controlled sources that carry a
-    # branch equation are solved *for* their current, so it is already in the
-    # default saved set and no `.save` is needed.
+    # Sources, inductors and controlled sources are solved for their current,
+    # so it's saved by default.
     for desig in ["V1", "L1", "E1", "H1"]:
       let (vec, save, why) = branchCurrentVector(desig)
       check vec == "i(" & desig & ")"
@@ -221,15 +201,13 @@ suite "branch current vector names":
     check branchCurrentVector("D2") == ("i(@D2[id])", "@D2[id]", "")
 
   test "a flattened hierarchical designator keeps its dots":
-    # `spice/flatten` makes `LXA.L1` an ordinary designator, and ngspice reads
-    # it literally in both spellings.
+    # A flattened designator `LXA.L1` is read literally.
     check branchCurrentVector("LXA.L1").vector == "i(LXA.L1)"
     check branchCurrentVector("RXA.R1").saveTerm == "@RXA.R1[i]"
 
   test "a three-terminal device is refused rather than guessed at":
-    # Collector, emitter and base are three different currents and "the
-    # current through Q1" does not say which. Picking one silently would
-    # answer a question nobody asked.
+    # Collector, emitter and base currents differ; "the current through Q1"
+    # is ambiguous, so it's refused.
     let (vec, _, why) = branchCurrentVector("Q3")
     check vec.len == 0
     check "more than one current" in why
@@ -244,13 +222,8 @@ suite "branch current vector names":
 
 suite "analyzeCurrent":
   proc lcRail(): Netlist =
-    ## The same square-wave drive as `rcRail`, through a series inductor into
-    ## a resistive load: a current with a known average and a known triangle
-    ## on it, and two parts carrying exactly the same one.
-    ##
-    ## 10 V at 50% duty into R1 = 100 ohm and RL = 100 ohm is 5 V average
-    ## across a 200 ohm chain, so the settled current is 25 mA and every part
-    ## in the chain carries the same one.
+    ## `rcRail`'s drive through a series inductor into a load: 25 mA average
+    ## through a 200 ohm chain, the same current in every series part.
     result = newNetlist("lc")
     let vin = addNet(result, newNet("vin"))
     let mid = addNet(result, newNet("mid"))
@@ -301,15 +274,13 @@ suite "analyzeCurrent":
     else:
       let r = analyzeCurrent(lcRail(), ["L1", "R1", "V1"], settledSpec())
 
-      # 2.5 V average across a 100 ohm load, fed through 100 ohm.
+      # 2.5 V across 100 ohm.
       check abs(valueFor(r, "i_avg", "L1") - 0.025) / 0.025 < 0.02
       # R1 is in series with L1: same current, to the last digit.
       check abs(valueFor(r, "i_rms", "R1") - valueFor(r, "i_rms", "L1")) < 1e-9
 
-      # **The sign of a branch current is a deck convention.** ngspice reports
-      # a voltage source's current positive when it flows *into* the +
-      # terminal, so V1 delivering 25 mA reads negative -- and the three
-      # rating-facing magnitudes are identical to L1's regardless.
+      # A source's branch current is positive flowing into +, so V1
+      # delivering 25 mA reads negative; the magnitudes match L1's.
       check valueFor(r, "i_max", "V1") < 0.0
       check abs(valueFor(r, "i_peak", "V1") - valueFor(r, "i_peak", "L1")) < 1e-9
       check valueFor(r, "i_avg", "V1") > 0.0
@@ -323,8 +294,7 @@ suite "analyzeCurrent":
       let rms = valueFor(r, "i_rms", "L1")
       let avg = valueFor(r, "i_avg", "L1")
       let pp = valueFor(r, "i_pp", "L1")
-      # A triangle on a DC pedestal: the peak is above the RMS is above the
-      # average, and the peak-to-peak is what separates them.
+      # A triangle on DC: peak > RMS > average.
       check peak > rms
       check rms > avg
       check abs(pp - (valueFor(r, "i_max", "L1") -
@@ -335,15 +305,12 @@ suite "analyzeCurrent":
     if not haveNgspice:
       skip()
     else:
-      # Four parts, one `.tran`. The alternative -- one run per part -- would
-      # simulate a switching model four times to read one set of waveforms
-      # four ways.
+      # Four parts, one `.tran`.
       let r = analyzeCurrent(lcRail(), ["L1", "R1", "RL", "C1"], settledSpec())
       check r.raw.vectors.len > 0
       for part in ["L1", "R1", "RL", "C1"]:
         check not valueFor(r, "i_rms", part).isNaN
-      # The capacitor carries the ripple and none of the DC; the load carries
-      # the DC and almost none of the ripple.
+      # The capacitor carries the ripple, the load the DC.
       check valueFor(r, "i_avg", "C1") < 0.001
       check abs(valueFor(r, "i_avg", "RL") - 0.025) / 0.025 < 0.02
 
@@ -362,9 +329,7 @@ suite "analyzeCurrent":
                 valueFor(r, "i_peak", "L1") / 0.5) < 1e-12
       check abs(valueFor(r, "i_rms_derating", "L1") -
                 valueFor(r, "i_rms", "L1") / 0.1) < 1e-12
-      # **`NaN`, not 1.0 and not 0.** A part that states no rating is one
-      # nobody has chosen yet, not one with infinite headroom -- and `NaN`
-      # reads downstream as *not evaluated* rather than as a pass.
+      # NaN, not 1.0 or 0: no rating means not evaluated, not a pass.
       check valueFor(r, "i_peak_derating", "R1").isNaN
       check valueFor(r, "i_rms_derating", "R1").isNaN
 
@@ -391,8 +356,7 @@ suite "analyzeCurrent":
       setModel(nl, "QMOD", "NPN")
 
       let r = analyzeCurrent(nl, ["L1", "Q1"], settledSpec())
-      # The parts that *can* be measured still are: one unmeasurable subject
-      # must not sink the rest of the batch.
+      # One unmeasurable subject doesn't sink the batch.
       check not valueFor(r, "i_rms", "L1").isNaN
       check valueFor(r, "i_rms", "Q1").isNaN
       check r.issues.anyIt(it.kind == KindNoCurrent and "Q1" in it.message)
@@ -401,10 +365,8 @@ suite "analyzeCurrent":
     if not haveNgspice:
       skip()
     else:
-      # The netlist reaching the deck is a materialized, flattened,
-      # model-substituted copy, so a part the *design* has can be gone by the
-      # time there is a current to read. A ferrite bead becomes a series DCR
-      # into a parallel R-L-C and leaves no device carrying its designator.
+      # The deck is a flattened, model-substituted copy, so a design part may
+      # be gone: a ferrite bead becomes an R-L-C with no device named for it.
       let nl = lcRail()
       let fb1 = addComponent(nl, newComponent("FB1", kind = "ferrite_bead"))
       discard connect(fb1, "1", nl.nets["vout"])
@@ -419,15 +381,9 @@ suite "analyzeCurrent":
 # --- load step --------------------------------------------------------------
 
 proc lcRail(l = "10u", c = "100u", esr = "1e-3"): Netlist =
-  ## An ideal 5 V source through an inductor into a capacitor bank: a rail
-  ## whose step response is closed form.
-  ##
-  ## A current step `dI` into an undamped LC excites a ring of amplitude
-  ## `dI * sqrt(L/C)` about the new operating point, at
-  ## `1 / (2*pi*sqrt(L*C))`. With 10 uH and 100 uF that is a characteristic
-  ## impedance of 316 mohm and 5033 Hz, so a 1 A step droops 316 mV and rings
-  ## with a 199 us period -- numbers this file can assert against arithmetic
-  ## rather than against a previous run of itself.
+  ## An ideal 5 V source through an inductor into a capacitor bank. A step
+  ## `dI` rings at amplitude `dI * sqrt(L/C)` and `1 / (2*pi*sqrt(L*C))`:
+  ## with 10 uH and 100 uF, 316 mV per amp at 5033 Hz (199 us period).
   result = newNetlist("lc")
   let vin = addNet(result, newNet("vin"))
   let vout = addNet(result, newNet("vout"))
@@ -437,8 +393,7 @@ proc lcRail(l = "10u", c = "100u", esr = "1e-3"): Netlist =
   discard connect(v1, "+", vin)
   discard connect(v1, "-", gnd)
   v1.attrs["value"] = "DC 5"
-  # Ideal on purpose: `expandSourceImpedance`'s default 10 mohm + 1 uH would
-  # sit in series with the inductor below and move both numbers.
+  # Ideal: the default source impedance would add to the inductor.
   v1.attrs["rout"] = "0"
   v1.attrs["lout"] = "0"
 
@@ -471,9 +426,8 @@ test "a load step droops the rail by dI * sqrt(L/C)":
     # dI * sqrt(L/C) = 1 * sqrt(10u/100u) = 316 mV.
     let z0 = sqrt(10.0e-6 / 100.0e-6)
     check abs(r["step_droop_v"] - z0) / z0 < 0.12
-    # The ring is about the new operating point, and with an ideal source and
-    # a lossless inductor that point is still 5 V -- so the excursion is
-    # symmetric and the rail comes back *above* where it started.
+    # The ring is about the new operating point (still 5 V when lossless), so
+    # the rail comes back above where it started.
     check r["step_v_min"] < 5.0 - 0.5 * z0
     check r["step_v_max"] > 5.0
 
@@ -481,15 +435,10 @@ test "a load step reports the release as an overshoot":
   if not haveNgspice:
     skip()
   else:
-    # **Damped on purpose, and the reason is worth writing down.** On the
-    # lossless rail above the ring never decays, so a release timed a whole
-    # number of periods after the step arrives exactly out of phase with it
-    # and *cancels* it: measured, a 316 mV droop released after three periods
-    # gives 40 mV of overshoot. That is a correct answer about a circuit
-    # nobody would build, and it makes the release amplitude a function of
-    # the hold time rather than of the step. 200 mohm of ESR puts the ring's
-    # Q near 1.6, so each edge is its own transient and the two are mirror
-    # images -- which is what the check below is.
+    # Damped: on a lossless rail a release timed a whole number of periods
+    # after the step cancels the ring, making the overshoot depend on the
+    # hold time. 200 mohm ESR gives Q ~1.6, so each edge is its own transient
+    # and the two mirror each other.
     var spec = defaultLoadStepSpec()
     spec.iFrom = 0.0
     spec.iTo = 1.0
@@ -501,8 +450,7 @@ test "a load step reports the release as an overshoot":
 
     check r.hasMeasurement("step_overshoot_v")
     check r["step_overshoot_v"] > 0.0
-    # Mirror images of one another, so the release is the droop to within
-    # what the load regulation shifts between them.
+    # Mirror images, to within the load-regulation shift.
     check abs(r["step_overshoot_v"] - r["step_droop_v"]) /
           r["step_droop_v"] < 0.25
 
@@ -517,8 +465,7 @@ test "a load step that holds to the end of the run reports no release":
     spec.tEdge = 1.0e-7
     spec.tRecover = 3.0e-4
     let r = analyzeLoadStep(lcRail(), "vout", spec)
-    # `tHold` was left at zero, so there is no falling edge in the record and
-    # an overshoot would have to be invented to report one.
+    # `tHold` is zero, so there's no falling edge and no overshoot.
     check not r.hasMeasurement("step_overshoot_v")
     check r.hasMeasurement("step_droop_v")
 
@@ -526,9 +473,7 @@ test "a resistive rail droops by dI * R and recovers at once":
   if not haveNgspice:
     skip()
   else:
-    # A source behind 1 ohm with a big, low-ESR bank: the droop is the load
-    # regulation, dI * R, approached with tau = R*C, and there is no ring to
-    # recover from.
+    # 1 ohm behind a big bank: droop is dI * R with tau = R*C, no ring.
     let nl = newNetlist("r")
     let vin = addNet(nl, newNet("vin"))
     let vout = addNet(nl, newNet("vout"))
@@ -559,12 +504,11 @@ test "a resistive rail droops by dI * R and recovers at once":
     spec.tRecover = 1.0e-3      ## ten time constants
     let r = analyzeLoadStep(nl, "vout", spec)
 
-    # dI * R = 100 mV, and the rail is monotone, so the worst excursion is
-    # the new operating point itself.
+    # dI * R = 100 mV; monotone, so the worst excursion is the new level.
     check abs(r["step_droop_v"] - 0.1) / 0.1 < 0.05
     check abs(r["step_v_min"] - 4.9) < 0.01
-    # Measured against where it settles *under the new load*, not against
-    # where it started -- so a permanent offset is not a failure to recover.
+    # Measured against the level under the new load, so an offset isn't a
+    # failure to recover.
     check r["step_recover_s"] < 5.0e-4
 
 test "a load step of zero magnitude is refused rather than measured":
