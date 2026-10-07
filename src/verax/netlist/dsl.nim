@@ -205,6 +205,38 @@ proc handleSpec(entityVar: NimNode, scope: AnnScope, stmt: NimNode,
     result.add call
   result.copyLineInfo(stmt)
 
+proc handleNotes(entityVar: NimNode, stmt: NimNode): NimNode =
+  ## `notes:` is `spec:`'s opposite: free-form `key = value` pairs verax
+  ## stores and never interprets -- a supplier SKU, a reviewer's remark, an
+  ## assembly instruction. Each is kept under `annotations.notesPrefix`
+  ## (`notes.<key>`), a namespace, so `validateAnnotations` skips it and no
+  ## evaluator, resolver or exporter ever mistakes it for vocabulary. A key
+  ## is an identifier or, for one with spaces, a string literal.
+  var args: seq[NimNode]
+  for i in 1 ..< stmt.len: args.add stmt[i]
+  let (rest, blk) = stripTrailingBlock(args)
+  if rest.len > 0:
+    error("`notes` takes no arguments, only a block", stmt)
+  if blk == nil:
+    error("`notes` requires a block", stmt)
+  result = newStmtList()
+  for pair in blk:
+    if pair.kind == nnkCommentStmt: continue
+    if pair.kind != nnkAsgn and pair.kind != nnkExprEqExpr:
+      error("expected `key = value` inside `notes`", pair)
+    let keyNode = pair[0]
+    if keyNode.kind notin {nnkIdent, nnkStrLit, nnkRStrLit, nnkTripleStrLit}:
+      error("a `notes` key must be an identifier or a string literal",
+            keyNode)
+    let key = keyNode.strVal
+    if key.len == 0:
+      error("a `notes` key cannot be empty", keyNode)
+    let call = newCall(ident"setRawAnnotation", entityVar,
+                       newLit(notesPrefix & key), newCall(ident"$", pair[1]))
+    call.copyLineInfo(pair)
+    result.add call
+  result.copyLineInfo(stmt)
+
 proc layoutSideNode(valueNode: NimNode): NimNode =
   ## Maps the bare ident `left`/`right`/`auto` to the matching `LayoutSide`
   ## enum symbol, at compile time, so a design file never has to spell
@@ -473,8 +505,11 @@ proc handleOneNet(nlSym, globalsSym: NimNode, identSym, nameStrNode: NimNode,
       if inner.kind == nnkCommentStmt: continue
       if inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("spec"):
         result.add handleSpec(netVar, asNet, inner)
+      elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("notes"):
+        result.add handleNotes(netVar, inner)
       else:
-        error("only `spec` statements are allowed inside a `net` block", inner)
+        error("only `spec` and `notes` statements are allowed inside a " &
+              "`net` block", inner)
 
 proc handleNet(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
   var args: seq[NimNode]
@@ -829,13 +864,16 @@ proc handleComponent(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =
         result.add handleSimReplace(compVar, inner)
       elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("spec"):
         result.add handleSpec(compVar, asComponent, inner)
+      elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("notes"):
+        result.add handleNotes(compVar, inner)
       elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("layout"):
         result.add handleLayout(compVar, inner)
       elif inner.kind in {nnkCommand, nnkCall} and inner.len > 0 and inner[0].eqIdent("traverse"):
         result.add handleTraverse(compVar, inner)
       else:
-        error("only `pin`, `port`, `simReplace`, `spec`, `layout` and " &
-              "`traverse` statements are allowed inside a `component` block", inner)
+        error("only `pin`, `port`, `simReplace`, `spec`, `notes`, `layout` " &
+              "and `traverse` statements are allowed inside a `component` " &
+              "block", inner)
   result.copyLineInfo(stmt)
 
 proc handleInstance(nlSym, globalsSym: NimNode, stmt: NimNode): NimNode =

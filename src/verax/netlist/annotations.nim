@@ -538,6 +538,22 @@ proc builtinDef*(key: string): AnnDef =
     if d.key == key: return d
   AnnDef()
 
+const notesPrefix* = "notes."
+  ## Where a `notes:` block's keys are stored: `notes.supplier_sku`. A
+  ## namespace this module owns on the author's behalf -- never validated,
+  ## never read by any analysis, kept so an exporter or the author's own
+  ## tooling can read it back (`notesOf`, `noteOf`).
+
+proc notesOf*[E](e: E): OrderedTable[string, string] =
+  ## Every `notes:` entry on an entity, keyed without the prefix, in the
+  ## order written.
+  for k, v in e.attrs:
+    if k.startsWith(notesPrefix): result[k[notesPrefix.len .. ^1]] = v
+
+proc noteOf*[E](e: E, key: string): string =
+  ## One `notes:` entry, or `""` when not written.
+  e.attrs.getOrDefault(notesPrefix & key, "")
+
 proc isNamespaced*(key: string): bool {.inline.} =
   ## Dotted keys belong to a module, format or user and are never validated.
   '.' in key

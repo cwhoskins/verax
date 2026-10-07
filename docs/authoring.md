@@ -185,6 +185,28 @@ or one used on the wrong kind of entity fails the build rather than being
 silently ignored. Run `verax annotations` for the live list. Values take unit
 literals, and the unit is checked: `esr = 20.nF` will not compile.
 
+**`notes:`** — the opposite of `spec:`: free-form `key = value` pairs verax
+stores and never interprets. Use it for anything that is yours rather than
+the shared vocabulary — a supplier SKU, a review remark, an assembly
+instruction. Allowed in a `net` or `component` block; a key is an identifier
+or, if it has spaces, a string literal:
+
+```nim
+component J1, kind = "connector", description = "2-pin header":
+  notes:
+    supplier_sku = "S-1234"
+    "assembly note" = "hand-solder last"
+  pin "1", a
+```
+
+Each is stored as `notes.<key>` and read back with `notesOf(c)` /
+`noteOf(c, "supplier_sku")`. Because it is namespaced, no check warns about
+it and no analysis, resolver or exporter treats it as meaning anything.
+
+**`description`.** What the part is, in words (`"USB-C 2.0 receptacle"`).
+A BOM prints it when no catalogue describes the part. Keep it out of
+`partNumber`, which is a part number and may be ordered by.
+
 **`footprint`.** `spec: footprint = "Lib:Name"` states which land pattern a
 part solders to — `"Resistor_SMD:R_0402_1005Metric"`, or a path to a
 `.kicad_mod` file. Distinct from `package`: `package` is a case size
