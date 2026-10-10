@@ -70,11 +70,12 @@ test "odd/even mode collapse to the single-ended value as s grows":
   let (_, zOddTight, _) = z0Differential(tight)
   let (_, zOddWide, zEvenWide) = z0Differential(wide)
   # Tight coupling pulls odd-mode Z well below single-ended; a wide gap
-  # nearly restores it.
+  # restores both modes (Kirschning-Jansen, `coupledModes`).
   check zOddTight < single * 0.9
-  check approxRel(zOddWide, single, 1e-3)
-  check approxRel(zEvenWide, single, 1e-9)
-  check zEvenWide >= zOddWide
+  check approxRel(zOddWide, single, 2e-3)
+  check approxRel(zEvenWide, single, 2e-3)
+  let (_, _, zEvenTight) = z0Differential(tight)
+  check zEvenTight > single
 
 test "delayPerMetre of a stripline in er=4.3 equals sqrt(4.3)/c":
   let spec = LineSpec(geometry: lgStripline, w: 0.2e-3, t: 35e-6,

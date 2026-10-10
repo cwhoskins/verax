@@ -2,8 +2,9 @@
 ## Two questions, one engine:
 ##
 ## - **Check** (`analyzeSiNet`): a routed board exists. Every corner the
-##   IBIS data supports, both edges; one `AnalysisReport` per receiver with
-##   the **worst** value of each SI quantity and the corner/edge that set it.
+##   IBIS data supports, both edges and, with a UI, the ISI pattern
+##   (`si/sweep`); one `AnalysisReport` per receiver with the **worst**
+##   value of each SI quantity and the run that set it.
 ## - **Derive** (`deriveSiConstraints`): no board yet. A template on a stated
 ##   stack-up, the same pass criteria, and the routing rules that pass.
 ##
@@ -13,6 +14,7 @@
 import std/[tables, strutils, math, os]
 import ../../netlist/types
 import ../../netlist/graph
+import ../../netlist/formats/spice as spiceFormat
 import ../../ibis/reader
 import ../../ibis/types as ibtypes
 import ../../ibis/attach
@@ -24,18 +26,34 @@ import ../../si/simulate
 import ../../si/measure
 import ../../si/board
 import ../../si/constrain
+import ../../si/sweep
 import ../report
 
-export constrain
+export constrain, sweep
 
 const siQuantities* = ["si_overshoot_v", "si_undershoot_v", "si_ringback_margin_v",
                        "si_flight_time", "si_settle_time", "si_threshold_margin_v"]
+const siEyeQuantities* = ["si_eye_height_v", "si_eye_width"]
+  ## With an eye run (`SiNetRequest.eyeBits`).
+const siCrosstalkQuantities* = ["si_crosstalk_v", "si_noise_margin_v"]
+  ## Claimed on an `si_net`'s victim; derived pre-layout as a spacing
+  ## (`deriveSiConstraints`), not yet measured on a routed board.
 
 type
   SiNetRequest* = object
     net*: string
     driver*: PinRef
     receivers*: seq[PinRef]
+    ui*: float
+      ## Unit interval, s; positive adds the ISI pattern to the sweep.
+    hasVictim*: bool
+    victimNet*: string
+    victimDriver*, victimRx*: PinRef
+      ## A quiet neighbour (held low) for the spacing constraint.
+    coupledLength*: float
+      ## The parallel run to derive the spacing for, metres; `0` = none.
+    eyeBits*: int
+      ## With a UI: this many PRBS7 bits folded into an eye; `0` = none.
 
   IbisSetup* = object
     bindings*: seq[IbisBinding]
@@ -48,6 +66,7 @@ type
     reports*: seq[AnalysisReport]
       ## One per receiver, in request order (named by the receiver pin).
     cornersRun*: seq[ibtypes.Corner]
+    sweep*: SiSweep
     assumptions*: seq[Assumption]
     issues*: seq[Issue]
 
@@ -92,30 +111,20 @@ proc designators(req: SiNetRequest): seq[string] =
   result.add req.driver.designator
   for r in req.receivers:
     if r.designator notin result: result.add r.designator
-
-type Worst = object
-  value: float
-  at: string
-  undefined: string   ## why it is `NaN`, when it is
-
-proc track(w: var Worst, x: float, higherIsWorse: bool, at: string) =
-  if x.isNaN: return
-  if w.value.isNaN or (higherIsWorse and x > w.value) or (not higherIsWorse and x < w.value):
-    w.value = x
-    w.at = at
+  if req.hasVictim:
+    for r in [req.victimDriver, req.victimRx]:
+      if r.designator notin result: result.add r.designator
 
 proc analyzeSiNet*(pcb: Pcb, nl: Netlist, req: SiNetRequest,
                    corners = [ibtypes.coTyp, ibtypes.coMin, ibtypes.coMax]): SiCheck =
-  ## Every supported corner, both edges, worst value per receiver.
+  ## Every supported corner x the sweep's stimuli, worst value per receiver.
   discard pcbgraph.bindLandPins(pcb)   # a board read from a file has no pins
   let setup = ibisSetup(nl, req.designators)
   if setup.problems.len > 0:
     result.status = ssUnsupported
     result.reason = setup.problems.join("; ")
     return
-  var worst = newSeq[array[6, Worst]](req.receivers.len)
-  for k in 0 ..< worst.len:
-    for q in 0 .. 5: worst[k][q] = Worst(value: NaN)
+  var runs: seq[SweepCorner]
   for c in corners:
     let spec = boardNetSpec(req.net, req.driver, req.receivers, c)
     let net = buildFromBoard(pcb, spec, setup.bindings, setup.selections)
@@ -128,55 +137,35 @@ proc analyzeSiNet*(pcb: Pcb, nl: Netlist, req: SiNetRequest,
       result.assumptions.add note("net " & req.net,
         cornerName(c) & " corner not run: " & net.unsupported.join("; "))
       continue
-    result.cornersRun.add c
     if c == coTyp:
       result.assumptions.add net.assumptions
       result.issues.add net.issues
-    for e in Edge:
-      let stim = edgeStimulus(e, 0.5e-9)
-      let r = simulate(net, stim)
-      result.issues.add r.issues
-      case r.status
-      of ssUnsupported:
-        result.status = ssUnsupported
-        result.reason = cornerName(c) & " " & edgeName(e) & ": " & r.reason
-        return
-      of ssSolverFailed:
-        result.status = ssSolverFailed
-        result.reason = cornerName(c) & " " & edgeName(e) & ": " & r.reason
-        return
-      of ssOk: discard
-      let (tRef, why, tnote) = timingReference(net.driver, stim)
-      if why.len == 0: result.assumptions.add tnote
-      for k in 0 ..< req.receivers.len:
-        let rx = net.receivers[k]
-        let m = measure(r, k, net.driver, rx.thresholds, rx.overshoot, tRef)
-        let at = cornerName(c) & " " & edgeName(e)
-        worst[k][0].track(m.overshoot, true, at)
-        worst[k][1].track(m.undershoot, true, at)
-        if m.ringbackMargin.isNaN:
-          worst[k][2].undefined = $req.receivers[k] & " never reaches its far threshold (" & at & ")"
-        worst[k][2].track(m.ringbackMargin, false, at)
-        if tRef.isNaN:
-          worst[k][3].undefined = why
-        else:
-          worst[k][3].track((if m.flightTimeMax.isNaN: Inf else: m.flightTimeMax), true, at)
-        worst[k][4].track((if m.settleTime.isNaN: Inf else: m.settleTime), true, at)
-        worst[k][5].track(m.thresholdMargin, false, at)
-  result.status = ssOk
-  let units = ["V", "V", "V", "s", "s", "V"]
+    runs.add SweepCorner(corner: c, net: net)
+  let sw = sweepNet(runs, sweepStimuli(req.ui, prbsBits = (if req.ui > 0: req.eyeBits else: 0)))
+  result.sweep = sw
+  result.cornersRun = sw.corners
+  result.assumptions.add sw.assumptions
+  result.issues.add sw.issues
+  result.status = sw.status
+  result.reason = sw.reason
+  if sw.status != ssOk: return
   for k, rxp in req.receivers:
     var rep = AnalysisReport(name: "si " & req.net & " -> " & $rxp,
                              assumptions: result.assumptions, issues: result.issues)
-    for q in 0 .. 5:
-      var w = worst[k][q]
+    for f in signalFigures:
+      let w = sw.worst[k][f]
       # A figure undefined at any run is undefined: a worst case over the
       # runs that happened to produce one would be optimistic.
       let v = if w.undefined.len > 0: NaN else: w.value
-      rep.add(siQuantities[q], v, units[q],
+      rep.add(siQuantities[ord(f)], v, figureUnit[f],
               at = $rxp & (if w.at.len > 0: ", worst at " & w.at else: ""))
       if w.undefined.len > 0:
-        rep.issues.add newIssue("si_undefined", sevWarning, siQuantities[q] & ": " & w.undefined)
+        rep.issues.add newIssue("si_undefined", sevWarning, siQuantities[ord(f)] & ": " & w.undefined)
+    if sw.eyes:
+      for (f, q) in [(sfEyeHeight, siEyeQuantities[0]), (sfEyeWidth, siEyeQuantities[1])]:
+        let w = sw.worst[k][f]
+        rep.add(q, w.value, figureUnit[f],
+                at = $rxp & (if w.at.len > 0: ", worst at " & w.at else: ""))
     result.reports.add rep
 
 # --- constraint derivation --------------------------------------------------
@@ -282,4 +271,185 @@ proc deriveSiConstraints*(nl: Netlist, req: SiNetRequest, c: Criteria,
   r.stubs = stubRemoval(templates, vb, transitions, 7, c, tolerance)
   for (n, s) in transitions:
     if s > 0: r.stubResonances.add (n, stubResonance(s, vm.stubTdPerM))
+  # Spacing to a victim: the same nets as a coupled point-to-point pair,
+  # routed exactly the parallel run (crosstalk depends on the coupled
+  # length; a route at the length rule's limit would fail on its own
+  # flight time whatever the gap).
+  if req.hasVictim:
+    if req.coupledLength <= 0:
+      r.notes.add "a victim is named but no coupled_length: no spacing derived"
+    elif req.receivers.len != 1:
+      r.notes.add "spacing is derived for a point-to-point net only (this one has " &
+        $req.receivers.len & " receivers)"
+    else:
+      var pts: seq[SiTemplate]
+      for k, t in templates:
+        let corner = corners[k]
+        let vd = resolvePin(setup.bindings, req.victimDriver, setup.selections, corner)
+        let vr = resolvePin(setup.bindings, req.victimRx, setup.selections, corner)
+        if not vd.ok or not vr.ok:
+          if corner == coTyp:
+            r.notes.add "no spacing: " & (if vd.ok: vr.reason else: vd.reason)
+            pts.setLen 0
+            break
+          continue
+        var pt = t
+        var pair = st.line
+        pair.geometry = lgEdgeCoupledMicrostrip
+        pair.s = st.line.w
+        pt.partner = TemplatePartner(role: prVictim, name: req.victimNet,
+                                     driver: driverBehaviour(vd.model, corner, file = vd.file),
+                                     driverPort: TemplatePort(label: $req.victimDriver, pkg: vd.pkg),
+                                     receiver: receiverBehaviour(vr.model, corner, vr.file),
+                                     receiverPort: TemplatePort(label: $req.victimRx, pkg: vr.pkg),
+                                     coupled: pair)
+        pts.add pt
+      if pts.len > 0:
+        var b = base
+        b.length = req.coupledLength
+        b.coupledLength = req.coupledLength
+        r.spacing = spacingFor(pts, b, 0.05e-3, 2.0e-3, max(grid div 2, 6), c, 0.01e-3)
+        r.hasSpacing = true
+        r.victimNet = req.victimNet
+        r.coupledLength = req.coupledLength
+        r.notes.add "spacing derived on routes that are exactly the " &
+          formatFloat(req.coupledLength * 1e3, ffDecimal, 1) & " mm parallel run, the " &
+          "victim held low, both on the same outer-layer microstrip"
+  (true, "", r)
+
+# --- differential pairs -------------------------------------------------------
+
+type
+  DiffPairRequest* = object
+    p*, n*: string
+      ## The two nets.
+    driver*, rx*: PinRef
+      ## The P leg's driver and receiver; the N leg's come from `[Diff Pin]`.
+    zDiff*: float
+      ## Target differential impedance, ohms (sets the template's gap).
+    skewMax*: float
+      ## The role's intra-pair skew budget, seconds; `NaN` = none.
+    ui*: float
+
+proc diffTermination(nl: Netlist, p, n: string): float =
+  ## A resistor straight across the pair (its value), or `0`.
+  var r = 0.0
+  for _, c in nl.components:
+    if c.kind != "resistor" or c.pins.len != 2: continue
+    var nets: seq[string]
+    for _, pin in c.pins:
+      if pin.net != nil: nets.add pin.net.name
+    if nets.len == 2 and ((nets[0] == p and nets[1] == n) or (nets[0] == n and nets[1] == p)):
+      var v: float
+      if parseSpiceMagnitude(c.attrs.getOrDefault("value"), v): r = v
+  r
+
+proc pairGap(line: LineSpec, zDiff: float): tuple[spec: LineSpec, z: float] =
+  ## The edge-coupled microstrip on `line`'s dielectric, gap equal to width
+  ## (a common pair rule), whose `2 Zo` is `zDiff`: width in 0.03 .. 3 mm.
+  var spec = line
+  spec.geometry = lgEdgeCoupledMicrostrip
+  var lo = 0.03e-3
+  var hi = 3e-3
+  for _ in 0 ..< 60:
+    spec.w = 0.5 * (lo + hi)
+    spec.s = spec.w
+    if 2 * coupledModes(spec).zOdd > zDiff: lo = spec.w else: hi = spec.w
+  spec.w = 0.5 * (lo + hi)
+  spec.s = spec.w
+  (spec, 2 * coupledModes(spec).zOdd)
+
+proc deriveDiffConstraints*(nl: Netlist, req: DiffPairRequest, c: Criteria,
+                            st = defaultStackup(), maxLength = 0.3, grid = 11,
+                            tolerance = 0.5e-3): tuple[ok: bool, why: string, report: ConstraintReport] =
+  ## The routing rules for a differential pair before layout: the max
+  ## length of the coupled pair, and the max length mismatch between its
+  ## legs (KiCad `skew`) -- simulated with the role's criteria, and from the
+  ## role's skew budget over the single line's delay, whichever is tighter.
+  let setup = ibisSetup(nl, [req.driver.designator, req.rx.designator])
+  if setup.problems.len > 0:
+    return (false, setup.problems.join("; "), ConstraintReport())
+  let (pair, zd) = pairGap(st.line, req.zDiff)
+  var templates: seq[SiTemplate]
+  var corners: seq[ibtypes.Corner]
+  let rxTerm = diffTermination(nl, req.p, req.n)
+  for corner in [ibtypes.coTyp, ibtypes.coMin, ibtypes.coMax]:
+    let dP = resolvePin(setup.bindings, req.driver, setup.selections, corner)
+    let rP = resolvePin(setup.bindings, req.rx, setup.selections, corner)
+    let dPair = diffPartner(setup.bindings, req.driver, corner)
+    let rPair = diffPartner(setup.bindings, req.rx, corner)
+    var why = ""
+    if not dP.ok: why = dP.reason
+    elif not rP.ok: why = rP.reason
+    elif not dPair.ok: why = dPair.reason
+    elif not rPair.ok: why = rPair.reason
+    var dN, rN: ResolvedPin
+    if why.len == 0:
+      dN = resolvePin(setup.bindings, dPair.other, setup.selections, corner)
+      rN = resolvePin(setup.bindings, rPair.other, setup.selections, corner)
+      if not dN.ok: why = dN.reason
+      elif not rN.ok: why = rN.reason
+    if why.len > 0:
+      if corner == coTyp: return (false, why, ConstraintReport())
+      continue
+    # Vdiff: the receiver's [Diff Pin], else its [Receiver Thresholds].
+    var vdiff = NaN
+    var vsrc = ""
+    if rPair.hasVdiff:
+      vdiff = rPair.vdiff
+      vsrc = rPair.source
+    else:
+      let rt = rP.model.receiverThresholds
+      if rt.vdiffDc.present:
+        vdiff = rt.vdiffDc.value
+        vsrc = rP.model.name & " [Receiver Thresholds] Vdiff_dc"
+      elif rt.vdiffAc.present:
+        vdiff = rt.vdiffAc.value
+        vsrc = rP.model.name & " [Receiver Thresholds] Vdiff_ac"
+    var single = pair
+    single.geometry = lgMicrostrip
+    let line = lineSection(single, lossy = false, layer = "outer", reference = "plane")
+    var t = SiTemplate(name: req.p & "/" & req.n & " differential pair",
+                       driver: driverBehaviour(dP.model, corner, file = dP.file),
+                       driverPort: TemplatePort(label: $req.driver, pkg: dP.pkg),
+                       topology: ttPointToPoint, line: line)
+    t.receivers.add receiverBehaviour(rP.model, corner, rP.file)
+    t.receiverPorts.add TemplatePort(label: $req.rx, pkg: rP.pkg)
+    t.partner = TemplatePartner(role: prDiffPair, name: req.n,
+                                driver: driverBehaviour(dN.model, corner, file = dN.file),
+                                driverPort: TemplatePort(label: $dPair.other, pkg: dN.pkg),
+                                receiver: receiverBehaviour(rN.model, corner, rN.file),
+                                receiverPort: TemplatePort(label: $rPair.other, pkg: rN.pkg),
+                                coupled: pair,
+                                skew: (if dPair.inverting: dPair.tdelay else: -dPair.tdelay),
+                                vdiff: vdiff, hasVdiff: not vdiff.isNaN, vdiffSource: vsrc)
+    templates.add t
+    corners.add corner
+  var base = templateParams(0.0, diffR = rxTerm)
+  var r = ConstraintReport(net: req.p, identity: identity(templates[0], corners, base, c),
+                           hasLength: true, bestSeriesR: NaN, pairNet: req.n)
+  for a in st.notes: r.identity.assumptions.add $a
+  r.identity.assumptions.add "pair: edge-coupled microstrip, width = gap = " &
+    formatFloat(pair.s * 1e3, ffDecimal, 3) & " mm for Zdiff " & formatFloat(zd, ffDecimal, 1) &
+    " ohm (target " & formatFloat(req.zDiff, ffDecimal, 1) & ")"
+  r.identity.assumptions.add (if rxTerm > 0: "differential termination " &
+    formatFloat(rxTerm, ffDecimal, 1) & " ohm across the pair (from the netlist)"
+    else: "no differential termination found across the pair")
+  r.length = sweep(templates, base, spLength, 0.0, maxLength, grid, c, tolerance)
+  let tr = templates[0].driver.edges[edRising].riseTime
+  r.criticalLength = criticalLength(tr, templates[0].line.tdPerM)
+  # Mismatch at the longest length that passes (or 50 mm).
+  var sb = base
+  sb.length = (let m = r.length.maxFromStart; if m.isNaN: 0.05 else: min(m, maxLength))
+  r.skew = sweep(templates, sb, spLegMismatch, 0.0, 0.05, grid, c, 0.2e-3)
+  r.hasSkew = true
+  if not req.skewMax.isNaN:
+    let fromBudget = req.skewMax / templates[0].line.tdPerM
+    r.notes.add "skew budget " & formatFloat(req.skewMax * 1e12, ffDecimal, 1) &
+      " ps over " & formatFloat(templates[0].line.tdPerM * 1e9, ffDecimal, 3) &
+      " ns/m is " & formatFloat(fromBudget * 1e3, ffDecimal, 3) & " mm of mismatch"
+    let m = r.skew.maxFromStart
+    if m.isNaN or fromBudget < m:
+      r.skew.passing = @[(0.0, fromBudget)]
+      r.skew.binding = "the role's skew_intra_max"
   (true, "", r)

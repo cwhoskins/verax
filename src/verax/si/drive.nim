@@ -45,10 +45,35 @@ proc edgeStimulus*(e: Edge, delay = 0.0): Stimulus =
 proc patternStimulus*(bits: string, ui: float, delay = 0.0): Stimulus =
   Stimulus(kind: skPattern, bits: bits, ui: ui, delay: delay)
 
+proc complement*(s: Stimulus): Stimulus =
+  ## The opposite drive: the other edge, or every bit inverted.
+  case s.kind
+  of skEdge:
+    edgeStimulus((if s.edge == edRising: edFalling else: edRising), s.delay)
+  of skPattern:
+    var b = s.bits
+    for c in b.mitems: c = (if c == '1': '0' else: '1')
+    patternStimulus(b, s.ui, s.delay)
+
+proc held*(high: bool): Stimulus =
+  ## A driver that never switches: one bit, so it sits at the end of the
+  ## edge into that level.
+  patternStimulus((if high: "1" else: "0"), 1e-9)
+
+proc delayed*(s: Stimulus, dt: float): Stimulus =
+  result = s
+  result.delay += dt
+
 proc `$`*(s: Stimulus): string =
   case s.kind
   of skEdge: edgeName(s.edge) & " edge at " & $s.delay & " s"
   of skPattern: "pattern " & s.bits & " at UI " & $s.ui & " s"
+
+proc transitions(s: Stimulus): tuple[initialHigh: bool, at: seq[tuple[t: float, e: Edge]]]
+
+proc transitionsOf*(s: Stimulus): seq[tuple[t: float, e: Edge]] =
+  ## Every transition the stimulus makes: when, and which edge.
+  transitions(s).at
 
 proc transitions(s: Stimulus): tuple[initialHigh: bool, at: seq[tuple[t: float, e: Edge]]] =
   case s.kind

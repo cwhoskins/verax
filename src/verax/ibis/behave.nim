@@ -42,6 +42,21 @@
 ##   Waveform], [Falling Waveform]", Usage Rules). Each table's first row is
 ##   the stimulus reference time, so each is shifted to start at 0.
 ##   `V_fixture_min/max` give the fixture voltage at the min/max corner.
+## - **Fixture networks** (`L_fixture`, `R_dut`, `L_dut`, `C_dut`; IBIS
+##   Figure 18: die - L_dut - R_dut - pin, C_dut at the pin, then L_fixture
+##   to the fixture node with C_fixture and R_fixture to V_fixture). The
+##   spec's text does not say where the table is measured; the dut
+##   parasitics exist "if the waveform includes the effects of pin
+##   inductance/capacitance", so it is outside the package: **at the DUT
+##   pin** by default (`ExtractTolerances.probe`), recorded as an
+##   `Assumption`. The linear network is marched from the measured node to
+##   the die (trapezoidal fixture side; derivatives of the sampled table on
+##   the package side), giving the die voltage and current at each time
+##   point, and the same `Ku`/`Kd` solve follows. The reconstruction then
+##   **simulates the whole nonlinear fixture** with the extracted
+##   coefficients (trapezoidal, as `si/engine`) and its residual decides
+##   availability -- the package side differentiates the table twice, so a
+##   coarse table shows up there, not as a silently wrong edge.
 ## - **`[Ramp]`** is the 20 %-80 % time, `C_comp` included, package excluded.
 ##   The ramp-only fallback assumes linear `Ku + Kd = 1` over `dt / 0.6`.
 ## - **`[Model Spec]`**: an `NA` min/max column means the typ value ("NA
@@ -102,6 +117,12 @@ type
       ## current.
     conditioning*: float
       ## Below this the fixtures can't separate pullup from pulldown.
+    probe*: WaveformProbe
+      ## Where a fixture network's waveform is taken.
+
+  WaveformProbe* = enum
+    wpPin       ## the DUT pin: between R_dut/C_dut and L_fixture (default)
+    wpFixture   ## the fixture node: after L_fixture, at C_fixture/R_fixture
 
   Rails* = object
     pullup*, pulldown*, gndClamp*, powerClamp*: float
@@ -133,6 +154,16 @@ type
     hasPullup*, hasPulldown*: bool
     cComp*: float
     edges*: array[Edge, KSeries]
+    kssoPu*, kssoPd*: IvCurve
+      ## Power-aware (`[ISSO PU]`/`[ISSO PD]`): the factor on the pullup
+      ## (pulldown) current against `Vtable` = the pullup rail's droop below
+      ## nominal (the pulldown rail's rise above it), `Isso(Vtable) /
+      ## Isso(0)`. Here `IvCurve.i` holds the factor. Empty: not stated.
+    preDriver*: array[Edge, tuple[t, i: seq[float]]]
+      ## Current from the power to the ground rail that is not in the I/V
+      ## tables, after the start of each edge: `[Composite Current]` minus
+      ## the pullup and POWER clamp current the extracted edge draws into
+      ## the same fixture. Empty without a `[Composite Current]`.
     timing*: TimingLoad
     thresholds*: Thresholds
     substitutions*: seq[Assumption]
@@ -354,22 +385,24 @@ type
     index: int
     t, v: seq[float]
     rf, vf, cf: float
+    lf, rdut, ldut, cdut: float
+    network: bool
+      ## Any of `L_fixture`/`R_dut`/`L_dut`/`C_dut`: the measured node is
+      ## not the die.
 
 proc usableWaveforms(ws: seq[Waveform], c: Corner, label: string,
                      issues: var seq[Issue]): seq[UsableWave] =
-  ## Decision 3: R/V/C fixtures only. Anything else is reported, not dropped
-  ## silently and not simplified.
+  ## Every fixture IBIS defines (Figure 18); a malformed table is reported,
+  ## not dropped silently and not simplified.
   for k, w in ws:
     let tag = label & " #" & $(k + 1)
     var bad: seq[string]
-    if w.lFixture != 0.0: bad.add "L_fixture"
-    if w.rDut != 0.0: bad.add "R_dut"
-    if w.lDut != 0.0: bad.add "L_dut"
-    if w.cDut != 0.0: bad.add "C_dut"
+    for (x, name) in [(w.lFixture, "L_fixture"), (w.rDut, "R_dut"), (w.lDut, "L_dut"),
+                      (w.cDut, "C_dut"), (w.cFixture, "C_fixture")]:
+      if x < 0.0: bad.add name
     if bad.len > 0:
       issues.add newIssue("ibis_waveform_unsupported", sevWarning,
-        tag & " uses " & bad.join(", ") & "; not used for extraction " &
-        "(needs simulation-based extraction, plan stage 8)")
+        tag & " has a negative " & bad.join(", ") & "; not used")
       continue
     if w.rFixture <= 0.0:
       issues.add newIssue("ibis_waveform_unsupported", sevWarning,
@@ -379,7 +412,9 @@ proc usableWaveforms(ws: seq[Waveform], c: Corner, label: string,
       issues.add newIssue("ibis_waveform_unsupported", sevWarning,
         tag & " has no V_fixture at " & cornerName(c) & "; not used")
       continue
-    var u = UsableWave(index: k, rf: w.rFixture, vf: w.vFixture.get(c), cf: w.cFixture)
+    var u = UsableWave(index: k, rf: w.rFixture, vf: w.vFixture.get(c), cf: w.cFixture,
+                       lf: w.lFixture, rdut: w.rDut, ldut: w.lDut, cdut: w.cDut)
+    u.network = u.lf != 0.0 or u.rdut != 0.0 or u.ldut != 0.0 or u.cdut != 0.0
     var ok = true
     for p in w.points:
       if not p.v.has(c): continue
@@ -398,6 +433,53 @@ proc usableWaveforms(ws: seq[Waveform], c: Corner, label: string,
     let t0 = u.t[0]
     for x in u.t.mitems: x -= t0
     result.add u
+
+type
+  FixtureSeries = object
+    ## One network fixture on the extraction axis: every node and branch.
+    vd, iL, vp, iFix, vf: seq[float]
+      ## Die, die -> pin current, pin, pin -> fixture current, fixture node.
+
+proc fixtureSeries(w: UsableWave, ts: seq[float], probe: WaveformProbe): FixtureSeries =
+  ## March the linear network from the measured node to the die. The
+  ## fixture side (L_fixture into C_fixture || R_fixture) is integrated
+  ## trapezoidally when the table is taken at the pin; the package side
+  ## (C_dut, R_dut, L_dut) is the table's derivatives.
+  let n = ts.len
+  var r = FixtureSeries(vd: newSeq[float](n), iL: newSeq[float](n), vp: newSeq[float](n),
+                        iFix: newSeq[float](n), vf: newSeq[float](n))
+  case probe
+  of wpFixture:
+    for k in 0 ..< n:
+      r.vf[k] = valueAt(w.t, w.v, ts[k])
+      r.iFix[k] = (r.vf[k] - w.vf) / w.rf + w.cf * slopeAt(w.t, w.v, ts[k])
+    for k in 0 ..< n: r.vp[k] = r.vf[k] + w.lf * slopeAt(ts, r.iFix, ts[k])
+  of wpPin:
+    for k in 0 ..< n: r.vp[k] = valueAt(w.t, w.v, ts[k])
+    if w.lf == 0.0:
+      for k in 0 ..< n:
+        r.vf[k] = r.vp[k]
+        r.iFix[k] = (r.vf[k] - w.vf) / w.rf + w.cf * slopeAt(w.t, w.v, ts[k])
+    else:
+      # DC at the first point, then trapezoidal: L_fixture
+      # `vp - vf = (2L/h)(iFix - iF0) - vL0`, fixture node
+      # `iFix = (2C/h)(vf - vf0) - iC0 + (vf - Vf)/Rf`.
+      r.vf[0] = r.vp[0]
+      r.iFix[0] = (r.vf[0] - w.vf) / w.rf
+      var vL = 0.0
+      var iC = 0.0
+      for k in 1 ..< n:
+        let h = ts[k] - ts[k - 1]
+        let gL = 2.0 * w.lf / h
+        let gC = 2.0 * w.cf / h
+        let num = r.iFix[k - 1] + (r.vp[k] + vL) / gL + gC * r.vf[k - 1] + iC + w.vf / w.rf
+        r.vf[k] = num / (gC + 1.0 / w.rf + 1.0 / gL)
+        r.iFix[k] = r.iFix[k - 1] + (r.vp[k] - r.vf[k] + vL) / gL
+        vL = r.vp[k] - r.vf[k]
+        iC = gC * (r.vf[k] - r.vf[k - 1]) - iC
+  for k in 0 ..< n: r.iL[k] = r.iFix[k] + w.cdut * slopeAt(ts, r.vp, ts[k])
+  for k in 0 ..< n: r.vd[k] = r.vp[k] + w.rdut * r.iL[k] + w.ldut * slopeAt(ts, r.iL, ts[k])
+  r
 
 proc solveScalar(f: proc(v: float): tuple[r, d: float], x0, lo, hi: float): float =
   ## Root of a decreasing-ish scalar function: Newton, bisection fallback.
@@ -450,6 +532,86 @@ proc rampSeries(m: IbisModel, edge: Edge, c: Corner, hasPu, hasPd: bool,
   result.conditioning = 1.0
   result.provenance = m.name & " [Ramp] " & edgeName(edge) & " " & cornerName(c) & " (dt / 0.6, linear)"
 
+proc solve4(a: var array[4, array[4, float]], b: var array[4, float]): array[4, float] =
+  ## Gaussian elimination with partial pivoting (a fixture's linear part).
+  for col in 0 ..< 4:
+    var p = col
+    for r in col + 1 ..< 4:
+      if abs(a[r][col]) > abs(a[p][col]): p = r
+    swap(a[p], a[col])
+    swap(b[p], b[col])
+    for r in col + 1 ..< 4:
+      let f = a[r][col] / a[col][col]
+      for q in col ..< 4: a[r][q] -= f * a[col][q]
+      b[r] -= f * b[col]
+  for r in countdown(3, 0):
+    var s = b[r]
+    for q in r + 1 ..< 4: s -= a[r][q] * result[q]
+    result[r] = s / a[r][r]
+
+proc reconstructNetwork(cd: CornerData, ser: KSeries, w: UsableWave, ts: seq[float],
+                        meas: FixtureSeries, probe: WaveformProbe): tuple[dv, di: float] =
+  ## Simulate the whole fixture (buffer with the extracted `Ku`/`Kd`,
+  ## C_comp, R_dut + L_dut, C_dut, L_fixture, C_fixture, R_fixture to
+  ## V_fixture) trapezoidally from the table's first (DC) point, and return
+  ## the worst error at the measured node and in the fixture current.
+  var vd = meas.vd[0]
+  var iL = meas.iL[0]
+  var vp = meas.vp[0]
+  var iFix = meas.iFix[0]
+  var vf = meas.vf[0]
+  var iCc, iCd, iCf, vLd, vLf: float   # DC: capacitors open, inductors short
+  let span = max(abs(cd.rails.pullup - cd.rails.pulldown), 1e-3)
+  let lo = min(cd.rails.pulldown, cd.rails.gndClamp) - 2.0 * span
+  let hi = max(cd.rails.pullup, cd.rails.powerClamp) + 2.0 * span
+  for k in 1 ..< ts.len:
+    let h = ts[k] - ts[k - 1]
+    let ku = valueAt(ser.t, ser.ku, ts[k])
+    let kd = valueAt(ser.t, ser.kd, ts[k])
+    let gCc = 2.0 * cd.cComp / h
+    let gLd = 2.0 * w.ldut / h
+    let gCd = 2.0 * w.cdut / h
+    let gLf = 2.0 * w.lf / h
+    let gCf = 2.0 * w.cf / h
+    # Given the die voltage the rest is linear: x = (iL, vp, iFix, vf).
+    proc linear(vdie: float): array[4, float] =
+      var a: array[4, array[4, float]]
+      var b: array[4, float]
+      a[0] = [-(w.rdut + gLd), -1.0, 0.0, 0.0]
+      b[0] = -vdie - gLd * iL - vLd
+      a[1] = [1.0, -gCd, -1.0, 0.0]
+      b[1] = -(gCd * vp + iCd)
+      a[2] = [0.0, 1.0, -gLf, -1.0]
+      b[2] = -gLf * iFix - vLf
+      a[3] = [0.0, 0.0, 1.0, -(gCf + 1.0 / w.rf)]
+      b[3] = -(gCf * vf + iCf) - w.vf / w.rf
+      solve4(a, b)
+    let x0 = linear(0.0)
+    let x1 = linear(1.0)
+    let beta = x1[0] - x0[0]
+    let vdPrev = vd
+    let iCcPrev = iCc
+    let vdn = solveScalar(proc(v: float): tuple[r, d: float] =
+      let b = bufferCurrent(cd, ku, kd, v)
+      let ic = gCc * (v - vdPrev) - iCcPrev
+      (b.i - ic - (x0[0] + beta * v), b.g - gCc - beta), vd, lo, hi)
+    var x: array[4, float]
+    for q in 0 ..< 4: x[q] = x0[q] + (x1[q] - x0[q]) * vdn
+    iCc = gCc * (vdn - vd) - iCc
+    iCd = gCd * (x[1] - vp) - iCd
+    iCf = gCf * (x[3] - vf) - iCf
+    vLd = vdn - x[1] - w.rdut * x[0]
+    vLf = x[1] - x[3]
+    vd = vdn
+    iL = x[0]
+    vp = x[1]
+    iFix = x[2]
+    vf = x[3]
+    let vm = if probe == wpPin: vp else: vf
+    let vt = if probe == wpPin: meas.vp[k] else: meas.vf[k]
+    result.dv = max(result.dv, abs(vm - vt))
+    result.di = max(result.di, abs(iFix - meas.iFix[k]))
+
 proc switchingCoefficients*(m: IbisModel, edge: Edge, c: Corner,
                             cd: CornerData, hasPu, hasPd: bool,
                             tol = defaultTolerances(),
@@ -493,20 +655,41 @@ proc switchingCoefficients*(m: IbisModel, edge: Edge, c: Corner,
   for t in axis:
     if ts.len == 0 or t - ts[^1] > 1e-6 * tEnd: ts.add t
 
+  # A fixture network: the die's voltage and current from the table.
+  var series = newSeq[FixtureSeries](waves.len)
+  var networks: seq[string]
+  for j in 0 ..< waves.len:
+    if waves[j].network:
+      series[j] = fixtureSeries(waves[j], ts, tol.probe)
+      networks.add "#" & $(waves[j].index + 1)
+  if networks.len > 0:
+    assumptions.add note(m.name, label & " " & networks.join(",") & " " & cornerName(c) &
+      ": fixture network (L_fixture/R_dut/L_dut/C_dut) solved back to the die; the table " &
+      "is taken to be measured at the " &
+      (if tol.probe == wpPin: "DUT pin (IBIS Figure 18 does not say; outside the package)"
+       else: "fixture node (after L_fixture)"))
+
   # Column scales, for scale-free conditioning.
   var colMax = [0.0, 0.0]
   type Row = tuple[a: array[2, float], rhs: float]
   var rowsAt = newSeq[seq[Row]](ts.len)
   for k, t in ts:
-    for w in waves:
-      let v = valueAt(w.t, w.v, t)
-      let dv = slopeAt(w.t, w.v, t)
+    for j in 0 ..< waves.len:
+      template w: untyped = waves[j]
+      var v, dv, iOut: float
+      if w.network:
+        v = series[j].vd[k]
+        dv = slopeAt(ts, series[j].vd, t)
+        iOut = series[j].iL[k] + cd.cComp * dv
+      else:
+        v = valueAt(w.t, w.v, t)
+        dv = slopeAt(w.t, w.v, t)
+        iOut = (v - w.vf) / w.rf + (w.cf + cd.cComp) * dv
       var a: array[2, float]
-      var j = 0
-      if hasPu: a[j] = cd.pullup.eval(v).i; inc j
-      if hasPd: a[j] = cd.pulldown.eval(v).i; inc j
-      let rhs = (v - w.vf) / w.rf + (w.cf + cd.cComp) * dv -
-                cd.gndClamp.eval(v).i - cd.powerClamp.eval(v).i
+      var q = 0
+      if hasPu: a[q] = cd.pullup.eval(v).i; inc q
+      if hasPd: a[q] = cd.pulldown.eval(v).i; inc q
+      let rhs = iOut - cd.gndClamp.eval(v).i - cd.powerClamp.eval(v).i
       for q in 0 ..< nUnk: colMax[q] = max(colMax[q], abs(a[q]))
       rowsAt[k].add (a, rhs)
 
@@ -578,10 +761,18 @@ proc switchingCoefficients*(m: IbisModel, edge: Edge, c: Corner,
   for w in waves:
     for k, t in w.t:
       iMax = max(iMax, abs((w.v[k] - w.vf) / w.rf + w.cf * slopeAt(w.t, w.v, t)))
+  for j in 0 ..< waves.len:
+    if waves[j].network:
+      for x in series[j].iFix: iMax = max(iMax, abs(x))
   iMax = max(iMax, 1e-9)
   let ser = result
-  for wl in waves:
-    let w = wl
+  for jw in 0 ..< waves.len:
+    let w = waves[jw]
+    if w.network:
+      let (dv, di) = reconstructNetwork(cd, ser, w, ts, series[jw], tol.probe)
+      result.residualV = max(result.residualV, dv)
+      result.residualI = max(result.residualI, di)
+      continue
     let ctot = w.cf + cd.cComp
     let lo = min(cd.rails.pulldown, cd.rails.gndClamp) - 2.0 * span
     let hi = max(cd.rails.pullup, cd.rails.powerClamp) + 2.0 * span
@@ -630,6 +821,56 @@ proc switchingCoefficients*(m: IbisModel, edge: Edge, c: Corner,
 
 # --- behaviours ------------------------------------------------------------
 
+proc kssoCurve(tbl: IvTable, c: Corner, label: string, issues: var seq[Issue]): IvCurve =
+  ## `Isso(Vtable) / Isso(0)` at corner `c` (an absent corner: typ).
+  var vs, isv: seq[float]
+  for p in tbl:
+    let cc = if p.i.has(c): c else: coTyp
+    if p.i.has(cc):
+      vs.add p.v
+      isv.add p.i.get(cc)
+  if vs.len < 2: return
+  var i0 = NaN
+  for k in 0 ..< vs.len - 1:
+    if vs[k] <= 0.0 and vs[k + 1] >= 0.0:
+      i0 = isv[k] + (isv[k + 1] - isv[k]) * (0.0 - vs[k]) / (vs[k + 1] - vs[k])
+  if i0.isNaN or abs(i0) < 1e-12:
+    issues.add newIssue("ibis_isso_unusable", sevWarning,
+      label & " has no non-zero current at Vtable = 0; not applied")
+    return
+  result.source = label & " " & cornerName(c)
+  for k in 0 ..< vs.len:
+    result.v.add vs[k]
+    result.i.add isv[k] / i0
+
+proc preDriverCurrent(m: IbisModel, edge: Edge, c: Corner, cd: CornerData,
+                      k: KSeries): tuple[t, i: seq[float]] =
+  ## `[Composite Current]` of the first plain R/V/C fixture that has one,
+  ## minus the pullup and POWER clamp current the extracted edge draws
+  ## through the power terminal into that fixture (the table's own pad
+  ## voltage).
+  if k.t.len == 0: return
+  let ws = if edge == edRising: m.risingWaveforms else: m.fallingWaveforms
+  for w in ws:
+    if w.composite.len < 2 or w.points.len < 2: continue
+    if w.lFixture != 0 or w.rDut != 0 or w.lDut != 0 or w.cDut != 0: continue
+    if not w.points[0].v.has(c) or not w.composite[0].v.has(c): continue
+    let t0 = w.points[0].t
+    var tv, vv: seq[float]
+    for p in w.points:
+      if p.v.has(c):
+        tv.add p.t - t0
+        vv.add p.v.get(c)
+    for p in w.composite:
+      if not p.v.has(c): continue
+      let t = p.t - t0
+      let v = valueAt(tv, vv, t)
+      let ku = valueAt(k.t, k.ku, t)
+      let rail = ku * cd.pullup.eval(v).i + cd.powerClamp.eval(v).i
+      result.t.add t
+      result.i.add p.v.get(c) - rail
+    return
+
 proc driverBehaviour*(m: IbisModel, c = coTyp, tol = defaultTolerances(),
                       file = ""): DriverBehaviour =
   ## Everything an engine needs to drive from `m` at corner `c`. Never
@@ -669,6 +910,11 @@ proc driverBehaviour*(m: IbisModel, c = coTyp, tol = defaultTolerances(),
   for e in Edge:
     result.edges[e] = switchingCoefficients(m, e, c, cd, hasPu, hasPd, tol,
                                             result.issues, result.assumptions)
+  result.kssoPu = kssoCurve(m.issoPu, c, m.name & " [ISSO PU]", result.issues)
+  result.kssoPd = kssoCurve(m.issoPd, c, m.name & " [ISSO PD]", result.issues)
+  for e in Edge:
+    if result.edges[e].available and result.edges[e].source == ksWaveforms:
+      result.preDriver[e] = preDriverCurrent(m, e, c, cd, result.edges[e])
 
 proc receiverBehaviour*(m: IbisModel, c = coTyp, file = ""): ReceiverBehaviour =
   ## Clamps + `C_comp` + thresholds at corner `c`.

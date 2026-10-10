@@ -33,7 +33,8 @@ type
     receivers*: seq[PinRef]
     corner*: ibtypes.Corner
     lossy*: bool
-      ## Lossy RLGC ladder per section (at `fKnee`) instead of ideal lines.
+      ## Lossy lines per section instead of ideal ones: a ladder at `fKnee`,
+      ## or recursive convolution over frequency (`SiOptions.lossyModel`).
     fKnee*: float
     tol*: ExtractTolerances
 
@@ -202,8 +203,7 @@ proc buildFromBoard*(pcb: Pcb, spec: BoardNetSpec, bindings: openArray[IbisBindi
         inc seg
         let nn = result.addNode("sec" & $seg)
         if spec.lossy:
-          let q = rlgc(ls, spec.fKnee)
-          result.addLossyLine(cur, nn, q.r, q.l, q.g, q.c, s.length, s.layer.name & " section")
+          result.addLossyLine(cur, nn, ls, spec.fKnee, s.length, s.layer.name & " section")
         else:
           result.addLine(cur, nn, z, tdpm * s.length, s.layer.name & " section")
         cur = nn

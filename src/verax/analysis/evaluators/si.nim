@@ -11,6 +11,7 @@ import ./common
 import ../analyses/si
 import ../../pcb/types as pcbtypes
 import ../../si/simulate as sisim
+import ../../contract/roles/core as rolecore
 
 proc siRequest(ctx: EvalContext, a: Assertion): tuple[ok: bool, req: SiNetRequest, why: string] =
   let inst = originRole(ctx.design, a)
@@ -21,6 +22,14 @@ proc siRequest(ctx: EvalContext, a: Assertion): tuple[ok: bool, req: SiNetReques
   var req = SiNetRequest(net: i.subject("net").name, driver: pinRef(i.subject("driver").name))
   for p in ["rx", "rx2", "rx3", "rx4"]:
     if i.hasPart(p): req.receivers.add pinRef(i.subject(p).name)
+  if hasParam(i, "ui"): req.ui = paramFloat(i, "ui", 0.0)
+  if i.hasPart("victim_rx"):
+    req.hasVictim = true
+    req.victimNet = i.subject("victim").name
+    req.victimDriver = pinRef(i.subject("victim_driver").name)
+    req.victimRx = pinRef(i.subject("victim_rx").name)
+  if hasParam(i, "coupled_length"): req.coupledLength = paramFloat(i, "coupled_length", 0.0)
+  if hasParam(i, "min_eye_height") or hasParam(i, "min_eye_width"): req.eyeBits = 127
   (true, req, "")
 
 proc siKey(ctx: EvalContext, a: Assertion): string =
@@ -32,11 +41,24 @@ proc siDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   var rx: seq[string]
   for r in req.receivers: rx.add $r
   "the native SI engine on net '" & req.net & "' as routed on the board: IBIS driver " &
-    $req.driver & " into " & rx.join(", ") & ", rising and falling edges, every IBIS " &
-    "corner the data supports, worst case kept"
+    $req.driver & " into " & rx.join(", ") & ", rising and falling edges" &
+    (if req.ui > 0: " and the ISI patterns " & isiPatterns.join("/") & " at the UI" else: "") &
+    (if req.ui > 0 and req.eyeBits > 0: ", " & $req.eyeBits & " bits of PRBS7 folded into an eye" else: "") &
+    ", every IBIS corner the data supports, worst case kept"
 
 proc runSi(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   const name = "si.net"
+  # Crosstalk claims: coupling is not extracted from a routed board yet.
+  var batch = batch
+  var rest: seq[Assertion]
+  for a in batch:
+    if a.quantity in siCrosstalkQuantities:
+      result.add notEvaluable(a, name, "crosstalk on a routed board needs coupled-trace " &
+        "extraction, which is not implemented; `verax constraints` derives the minimum " &
+        "spacing to the victim before layout")
+    else: rest.add a
+  if rest.len == 0: return
+  batch = rest
   let (ok, req, why) = siRequest(ctx, batch[0])
   if not ok:
     for a in batch: result.add notEvaluable(a, name, why)
@@ -77,7 +99,7 @@ proc runSi(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
 
 proc registerSiEvaluator*() =
   registerEvaluator(Evaluator(
-    name: "si.net", produces: @siQuantities,
+    name: "si.net", produces: @siQuantities & @siEyeQuantities & @siCrosstalkQuantities,
     needs: {capSiTran}, arity: 1 .. 1, subjectKinds: {skPin},
     binds: @["net", "driver"],
     setupKey: siKey, setupDoc: siDoc, run: runSi))

@@ -7,7 +7,8 @@
 ## - **`Triplet` records presence per corner**: `NA` and `0.0` differ, and
 ##   `get` raises on an absent corner.
 ##
-## Not modelled: `[External Model]`/`[External Circuit]`, `[Node
+## Power-aware keywords transcribed: `[ISSO PU]`, `[ISSO PD]`,
+## `[Composite Current]`. Not modelled: `[External Model]`/`[External Circuit]`, `[Node
 ## Declarations]`, AMS models, EBD/ICM package families. Every keyword
 ## still survives verbatim in `IbisFile.sections`.
 
@@ -52,6 +53,10 @@ type
       ## the min/max corners.
     cFixture*, lFixture*, rDut*, lDut*, cDut*: float
     points*: seq[VtPoint]
+    composite*: seq[VtPoint]
+      ## `[Composite Current]` under this table: amps into the [Pullup
+      ## Reference] terminal (IBIS: positive into the component) against
+      ## the same time axis and fixture. Empty if absent.
 
   RampSpec* = object
     ## `[Ramp]`: 20%-80% dV/dt per edge, plus its load (`R_load`, default
@@ -111,6 +116,10 @@ type
     temperatureRange*, voltageRange*: Triplet
     pullupRef*, pulldownRef*, gndClampRef*, powerClampRef*: Triplet
     pulldown*, pullup*, gndClamp*, powerClamp*: IvTable
+    issoPu*, issoPd*: IvTable
+      ## `[ISSO PU]`/`[ISSO PD]`: effective pullup/pulldown current against
+      ## the reference rail's deviation (`Vtable`; pullup as `Vcc - V`).
+      ## Empty if absent.
     ramp*: RampSpec
     risingWaveforms*, fallingWaveforms*: seq[Waveform]
     modelSpec*: ModelSpec

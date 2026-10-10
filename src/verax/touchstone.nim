@@ -6,8 +6,10 @@
 ## produce a netlist). Toolchain-free, so the whole submodule is in this
 ## hub.
 ##
-## Deferred: binding an `.s2p` to a `Component` (the `sparams` annotation is
-## registered) until an S-parameter model exists to read it.
+## `si/engine/sblock` simulates a 2-port in the SI engine (a template's
+## `channel`). Deferred: binding an `.s2p` to a `Component` on a board (the
+## `sparams` annotation is registered) -- it splits the net in two, which
+## board extraction does not do yet.
 
 import verax/touchstone/types
 import verax/touchstone/parse

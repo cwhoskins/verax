@@ -1,11 +1,12 @@
 ## The linear core of the native transient engine: a `Circuit` of R, L, C,
 ## sources, lossless lines and nonlinear shunt devices; modified nodal
-## analysis stamping; dense LU with partial pivoting (SI nets are tens to
-## low hundreds of nodes -- sparse only if profiling asks).
+## analysis stamping. The solve is `lu` (band LU over an RCM ordering).
 ##
 ## Unknowns, in order: node voltages `1 .. n-1` (node 0 is ground), then one
 ## branch current per voltage source, per inductor, and -- at the DC
-## operating point only -- per line (a lossless line at DC is a wire).
+## operating point only -- per line (a lossless line at DC is a wire; a
+## convolution line is its DC two-port's series branch; a coupled line is
+## two wires; an S-parameter block its `S(0)` pi's series branch).
 ##
 ## Companion models (`h` the step):
 ##
@@ -20,9 +21,11 @@
 ##   only by capacitors or a flat table segment stays solvable.
 
 import ./pwl
+import ./convline
+import ./sblock
 import ../../ibis/behave
 
-export pwl
+export pwl, convline, sblock
 
 type
   Integration* = enum
@@ -62,13 +65,40 @@ type
     z0*, td*: float
     label*: string
 
+  CoupledLine* = object
+    ## A symmetric lossless coupled pair: conductor 1 from `a1` to `b1`,
+    ## conductor 2 from `a2` to `b2`, all referenced to ground. Simulated
+    ## as its two modes (even: `(v1 + v2)/2`, odd: `(v1 - v2)/2`), each a
+    ## Bergeron line with its own impedance and delay.
+    a1*, b1*, a2*, b2*: int
+    zEven*, zOdd*, tdEven*, tdOdd*: float
+    label*: string
+
   NlDevice* = object
-    ## A nonlinear shunt element at `node`: injects
-    ## `sum_k weights[k](t) * curves[k](v)` **into** the node (out of the
-    ## die). An empty weight is the constant 1.
+    ## A nonlinear element at `node`: injects
+    ## `sum_k weights[k](t) * scale[k] * curves[k](x_k)` **into** the node
+    ## (out of the die). An empty weight is the constant 1.
+    ##
+    ## **Rail-referenced curves** (power-aware): when `refs[k] > 0`, curve
+    ## `k` hangs from that rail node -- it is read at `x_k = v(node) -
+    ## (v(ref) - refNominal[k])` (the tables' rail moved by its deviation)
+    ## and its current is drawn **out of** the rail node. Otherwise (`refs`
+    ## empty, or `0`) `x_k = v(node)` and the current comes from ground.
+    ## At most two distinct rail nodes per device.
     node*: int
     curves*: seq[IvCurve]
     weights*: seq[Pwl]
+    refs*: seq[int]
+    refNominal*: seq[float]
+    scale*: seq[float]
+      ## Per-curve factor (power-aware `Ksso`), set by the transient loop
+      ## from the last accepted step; empty = 1.
+    ksso*: seq[IvCurve]
+      ## Per curve: the factor against `Vtable` (`IvCurve.i` = factor);
+      ## empty curve = none.
+    kssoSign*: seq[float]
+      ## `Vtable = kssoSign * (v(ref) - refNominal)`: `-1` for a pullup (the
+      ## rail's droop), `+1` for a pulldown (its rise).
     label*: string
 
   Circuit* = object
@@ -79,13 +109,16 @@ type
     vsources*: seq[VSrc]
     isources*: seq[ISrc]
     lines*: seq[Line]
+    convLines*: seq[ConvLine]
+    coupled*: seq[CoupledLine]
+    sblocks*: seq[SBlock]
     devices*: seq[NlDevice]
 
   Layout* = object
     ## Where each unknown lives in `x`.
     nNodes*: int       ## excluding ground
     zeroR*: seq[int]   ## resistor index -> extra branch, or -1
-    vBase*, lBase*, rBase*, lineBase*: int
+    vBase*, lBase*, rBase*, lineBase*, convBase*, coupledBase*, sblockBase*: int
     size*: int
 
 proc newCircuit*(): Circuit = Circuit(nodeNames: @["0"])
@@ -107,7 +140,10 @@ proc layout*(c: Circuit, dc: bool): Layout =
     else:
       result.zeroR.add -1
   result.lineBase = result.rBase + nz
-  result.size = result.lineBase + (if dc: c.lines.len else: 0)
+  result.convBase = result.lineBase + (if dc: c.lines.len else: 0)
+  result.coupledBase = result.convBase + (if dc: c.convLines.len else: 0)
+  result.sblockBase = result.coupledBase + (if dc: 2 * c.coupled.len else: 0)
+  result.size = result.sblockBase + (if dc: c.sblocks.len else: 0)
 
 type
   System* = object
@@ -156,38 +192,6 @@ proc stampBranch*(s: var System, br, a, b: int, rCoef, rhs: float) =
     s.addA(br, idx(b), -1.0)
   s.addA(br, br, -rCoef)
   s.b[br] += rhs
-
-proc luSolve*(s: System, x: var seq[float]): bool =
-  ## Solve `a x = b` (copies `a`). False when (numerically) singular.
-  let n = s.n
-  var a = s.a
-  var b = s.b
-  var scale = 0.0
-  for v in a: scale = max(scale, abs(v))
-  if scale == 0.0: scale = 1.0
-  for k in 0 ..< n:
-    var p = k
-    var best = abs(a[k * n + k])
-    for r in k + 1 ..< n:
-      let v = abs(a[r * n + k])
-      if v > best: best = v; p = r
-    if best <= 1e-300 or best < scale * 1e-18: return false
-    if p != k:
-      for c in 0 ..< n: swap(a[k * n + c], a[p * n + c])
-      swap(b[k], b[p])
-    let piv = a[k * n + k]
-    for r in k + 1 ..< n:
-      let f = a[r * n + k] / piv
-      if f == 0.0: continue
-      a[r * n + k] = 0.0
-      for c in k + 1 ..< n: a[r * n + c] -= f * a[k * n + c]
-      b[r] -= f * b[k]
-  x.setLen n
-  for k in countdown(n - 1, 0):
-    var acc = b[k]
-    for c in k + 1 ..< n: acc -= a[k * n + c] * x[c]
-    x[k] = acc / a[k * n + k]
-  true
 
 proc nodeV*(x: seq[float], node: int): float {.inline.} =
   if node == 0: 0.0 else: x[node - 1]

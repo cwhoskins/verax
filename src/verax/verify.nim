@@ -1399,6 +1399,16 @@ proc siCriteria*(inst: RoleInstance): Criteria =
     result.maxSettleTime = inst.paramFloat("max_settle_time", NaN)
   elif inst.hasParam("ui"):
     result.maxSettleTime = inst.paramFloat("ui", NaN)
+  if inst.hasParam("ui"):
+    result.ui = inst.paramFloat("ui", NaN)
+  if inst.hasParam("max_crosstalk"):
+    result.maxCrosstalk = inst.paramFloat("max_crosstalk", NaN)
+  if inst.hasParam("min_eye_height"):
+    result.minEyeHeight = inst.paramFloat("min_eye_height", NaN)
+  if inst.hasParam("min_eye_width"):
+    result.minEyeWidth = inst.paramFloat("min_eye_width", NaN)
+  if not result.minEyeHeight.isNaN or not result.minEyeWidth.isNaN:
+    result.eyeBits = 127
 
 proc siConstraints*(d: Design, o: VerifyOptions): int =
   ## `verax constraints`: the routing rules every `si_net` needs, before
@@ -1417,6 +1427,13 @@ proc siConstraints*(d: Design, o: VerifyOptions): int =
     var req = SiNetRequest(net: netName, driver: pinRef(inst.subject("driver").name))
     for p in ["rx", "rx2", "rx3", "rx4"]:
       if inst.hasPart(p): req.receivers.add pinRef(inst.subject(p).name)
+    if inst.hasPart("victim_rx"):
+      req.hasVictim = true
+      req.victimNet = inst.subject("victim").name
+      req.victimDriver = pinRef(inst.subject("victim_driver").name)
+      req.victimRx = pinRef(inst.subject("victim_rx").name)
+    if inst.hasParam("coupled_length"):
+      req.coupledLength = inst.paramFloat("coupled_length", 0.0)
     let st = defaultStackup(if o.stackupLayers > 0: o.stackupLayers else: 4)
     let (ok, why, rep) = deriveSiConstraints(d.netlist, req, siCriteria(inst), st)
     if not ok:
@@ -1427,6 +1444,35 @@ proc siConstraints*(d: Design, o: VerifyOptions): int =
     docs.add renderText(rep)
     json.add renderJson(rep)
     rules.add druRules(rep, netName)
+  for name, inst in d.roles:
+    if inst.role != "diff_pair" or not inst.hasPart("driver"): continue
+    let pNet = inst.subject("p").name
+    let nNet = inst.subject("n").name
+    if o.siNet.len > 0 and o.siNet notin [pNet, nNet]: continue
+    any = true
+    var c = defaultCriteria()
+    c.requireMonotonic = false
+    c.useOvershootLimits = false
+    if inst.hasParam("ui"):
+      c.ui = inst.paramFloat("ui", NaN)
+      c.maxSettleTime = c.ui
+    let req = DiffPairRequest(p: pNet, n: nNet, driver: pinRef(inst.subject("driver").name),
+                              rx: pinRef(inst.subject("rx").name),
+                              zDiff: (if inst.hasParam("z_diff"): inst.paramFloat("z_diff", 100.0) else: 100.0),
+                              skewMax: (if inst.hasParam("skew_intra_max"): inst.paramFloat("skew_intra_max", NaN) else: NaN),
+                              ui: c.ui)
+    let st = defaultStackup(if o.stackupLayers > 0: o.stackupLayers else: 4)
+    let (ok, why, rep) = deriveDiffConstraints(d.netlist, req, c, st)
+    if not ok:
+      failed = true
+      docs.add "SI constraints for pair " & pNet & "/" & nNet & ": not derivable -- " & why & "\n"
+      json.add %*{"net": pNet, "pair": nNet, "error": why}
+      continue
+    docs.add renderText(rep)
+    json.add renderJson(rep)
+    rules.add druRules(rep, pNet)
+    for r in druRules(rep, nNet):   # the N leg's own length and via rules
+      if r.maxSkew.isNaN and r.minClearance.isNaN: rules.add r
   if not any:
     stderr.writeLine "verax: no si_net role" &
       (if o.siNet.len > 0: " on net '" & o.siNet & "'" else: "") & " in this design"

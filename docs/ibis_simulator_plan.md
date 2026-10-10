@@ -12,8 +12,10 @@ taken from the review and what was not is in the decisions log, entry 5.*
 
 ## Implementation status (2026-10-07)
 
-Stages 0-6 are implemented and green (`nimble test`, `nimble verify`);
-stages 7 and 8 are not started. Where the code lives and what it proves:
+Stages 0-8 are implemented and green (`nimble test`); stage 8's item 7
+(IBIS-AMI) is deliberately not, and several stage 8 items stop at the
+template (pre-layout) level -- see "Not done". Where the code lives and
+what it proves:
 
 | Stage | Where | Proven by |
 | --- | --- | --- |
@@ -25,9 +27,19 @@ stages 7 and 8 are not started. Where the code lives and what it proves:
 | 4 measures | `verax/waveform` (moved down from `analysis/measure`), `si/measure` | `test_waveform`, `test_si_measure` |
 | 5 constraints | `si/constrain`, `pcb/formats/kicaddru`, `verax constraints` | `test_si_constrain`, `test_pcb_kicaddru` (`kicad-cli` DRC gate, KiCad 10.0.6) |
 | 6 board + contract | `si/board`, `analysis/analyses/si`, `analysis/evaluators/si`, role `si_net`, `capSiTran`, `--board=` | `test_si_board`, `test_si_contract`, `designs/si_spi.nim` |
+| 7 sweeps, performance, lossy accuracy | `si/sweep` (corner x stimulus x receiver, worst case; ISI patterns; `judge` and `analyzeSiNet` both on it), `si/engine/lu` (band LU over RCM, factor reuse), `si/engine/ratfit` + `si/engine/convline` (recursive convolution), `pcb/impedance.causalLine` | `test_si_sweep`, `test_si_convolution`, `examples/si_bench.nim` |
+| 8.1 crosstalk | `pcb/impedance.coupledModes` (Kirschning-Jansen microstrip, Cohn stripline), `CoupledLine` (modal Bergeron), extra drivers + victim probes, template `partner`, `spacingFor` -> KiCad `clearance`, `si_net` victim parts | `test_si_coupled` (exact modal solution, Kb NEXT, microstrip FEXT, min spacing), `test_pcb_kicaddru` (clearance gate), `test_si_contract` |
+| 8.2 differential pairs | `[Diff Pin]` `tdelay`, `diffPartner`, `prDiffPair` template (`diffR`, `legMismatch`), differential probe vs `Vdiff`, `deriveDiffConstraints` -> KiCad `skew`, `diff_pair` `driver`/`rx` | `test_si_diff`, `test_pcb_kicaddru` (skew gate), `test_si_contract` |
+| 8.3 fixture networks | `ibis/behave.fixtureSeries` + `reconstructNetwork` (L_fixture, R/L/C_dut; probe point a stated choice) | `test_ibis_behave` (Ku/Kd back through a full RK4-generated network, convergence with table resolution) |
+| 8.4 PRBS + eye | `si/eye` (PRBS7..31, `eyeOf`), eye figures in the sweep, criteria, `si_net` `min_eye_height`/`min_eye_width` (measured on a board) | `test_si_eye` (closed-form eye of a ramped NRZ wave, RC channel closing), `test_si_contract` |
+| 8.5 S-parameter channels | `si/engine/sblock` (impulse response by IFFT, wave-form stamp, DC pi from `S(0)`), template `channel` | `test_si_sparams` (vs Bergeron matched and 75 ohm, vs the convolution line lossy, Touchstone round trip) |
+| 8.6 power-aware | `[ISSO PU/PD]`, `[Composite Current]` read; `behave` Ksso + pre-driver current; rail-referenced `NlDevice`; `SiNet.supply`; `si/ssn` | `test_si_ssn` (series circuit on a lifted rail exactly, Ksso exactly, pre-driver extraction exact, bounce scaling with N and L) |
 
 Benchmark (`examples/si_bench.nim`, `-d:release`, i7-13700H): one edge,
-point-to-point 0.74 ms; three-drop daisy chain 2.35 ms (target ~10 ms).
+point-to-point 0.44 ms (0.74 ms at stage 3); three-drop daisy chain 1.11 ms
+(2.35 ms); **3 corners x 3 receivers, both edges + ISI patterns, 10.9 ms**
+(the stage 7 exit); a 0.3 m lossy line 1.67 ms by convolution vs 4.80 ms
+as a ladder. `verax constraints designs/si_spi.nim` 0.31 s (0.66 s).
 
 **Decided while implementing** (each is in the module doc that owns it):
 
@@ -58,12 +70,117 @@ point-to-point 0.74 ms; three-drop daisy chain 2.35 ms (target ~10 ms).
 - *Tolerances* (open decision 3) start at: `Ku`/`Kd` range 0.1, residual 2 %
   of rail span / 2 % of the largest fixture current, conditioning 1e-3.
 
-**Not done:** stage 7 (LU reuse, sparse, recursive convolution), stage 8, the
-optional ngspice oracle and PyBERT cross-checks, the `zout`/slew
+**Decided while implementing stage 7** (each in the module doc that owns it):
+
+- *Profile first.* Dense LU was ~55 % of a constraint run; then
+  `for k, x in seq` deep-copying every device's I/V tables per Newton
+  iteration (`pairs` yields by value) was the next 20 %. Fixed: band LU
+  over a reverse Cuthill-McKee ordering (one code path; a small net is
+  dense at the same cost), the factor reused while the step and every
+  device's conductance are unchanged (~5x fewer factorisations), indexed
+  hot loops, and **no confirming Newton solve when no device changes table
+  segment** (a PWL device is then exactly linear, so the solve is the
+  answer; the KCL check still runs).
+- *`impedance.rlgc` is not causal*, so it cannot be fitted by a stable
+  rational function (fit error > 100 %): its `sqrt(f)` resistance has no
+  internal reactance and a constant `tand` has no dispersion. The
+  convolution line uses **`impedance.causalLine`**: skin effect
+  `Rdc sqrt(1 + jw/w0)` (same DC and high-frequency asymptotes as `rlgc`,
+  within 2 % at 1 GHz), dielectric a Djordjevic-Sarkar wideband Debye model
+  equal to `rlgc`'s `G + jwC` at the reference frequency. Its delay is the
+  dielectric's `eps_inf` asymptote.
+- *Fixed real poles, not vector fitting*: log-spaced, 6 per decade, one
+  decade beyond the sampled band each side; residues by least squares; DC
+  imposed exactly so the operating point is the model's steady state.
+  Errors on the rung-5 line: `Yc` < 1e-7, `H` < 1e-3 of peak. A fit worse
+  than 1 % falls back to the ladder, warned.
+- *Recursive convolution is the default lossy model* (`lmConvolution`):
+  46 uV from the exact constant-RLGC line where the ladder is 32 mV, and
+  ~3x faster. With frequency-dependent RLGC the single-frequency ladder is
+  0.38 V off the exact causal line (its `R(1 GHz)` at DC). `lmLadder` stays
+  for comparison and as the fallback; a line under the lumping threshold is
+  a ladder.
+- *ISI patterns* `0100` and `1011` (an isolated bit from each settled
+  level, and the edge back), each transition measured on its own bit
+  (`measurePattern`). **A pattern is skipped when every single edge settles
+  within its UI** (time-invariance: each bit then starts settled), recorded
+  as an `Assumption`; only a net that rings past a UI pays for it.
+- *Settling is judged against the exact settled level*: the DC point with
+  the driver held at the end of that edge's table. A single edge still
+  ringing at the end of its run is re-run 4x longer (twice at most). Before
+  this, settle time was read around a run's last sample, which on a
+  ringing net was still moving: **`designs/si_spi`'s MOSI settle claims had
+  passed falsely** (3.6 ns reported; its unterminated Y rings at ~690 MHz,
+  Q ~ 100, and settles to 2 % only ~31 ns after the edge, past a 20 ns UI).
+  The demo now runs at 10 MHz (`ui = 100.ns`, user's choice), its header
+  saying why.
+- *`judge` (stage 5) runs on `sweepNet`*, so `verax constraints` and
+  `verax check` measure identically; `Criteria.ui` (from the role's `ui`)
+  adds the patterns. A pattern run lasts its last bit.
+
+**Decided while implementing stage 8** (each in the module doc that owns it):
+
+- *Coupled cross-sections from published closed forms, not the lumped
+  mutual-C estimate.* The old `z0Differential` had one velocity for both
+  modes, so microstrip far-end crosstalk was zero by construction.
+  `coupledModes` is Kirschning-Jansen (static) for microstrip and Cohn
+  for stripline (scaled to the IPC-2141 single line); `z0Differential`
+  now reads it. Constants were checked against qucsator's implementation.
+- *A coupled line is never lumped* (that needs a mutual inductance): its
+  faster mode bounds `h`. *The coupled section is lossless.*
+- *Several conductors, one net object*: `extraDrivers` with a `DriveMode`
+  rather than separate nets; probes are typed (signal / differential /
+  leg / victim) so a victim is never judged on flight time and a leg never
+  on thresholds it does not have.
+- *Spacing is derived on a route that is exactly the parallel run*: at the
+  length rule's limit the aggressor's own flight time fails whatever the
+  gap (found on `si_spi`: "none passes" up to 2 mm).
+- *Crosstalk is pre-layout only*: on a board the claims are
+  `esNotEvaluable` (coupled-trace extraction does not exist), so the demo
+  `si_spi` does not claim it (its `nimble verify` would exit 3).
+- *The fixture network's probe point is a choice*: IBIS shows it only in
+  Figure 18. Default the DUT pin (the dut parasitics exist "if the waveform
+  includes the effects of pin inductance"), `ExtractTolerances.probe`
+  switches, an `Assumption` says which. Implemented in `ibis/behave` (it
+  cannot import `si/`) with the engine's trapezoidal companion models, not
+  the engine itself.
+- *The reconstruction tolerance is unchanged* (open decision 3): a fixture
+  network the tables do not match passes 2 % of the swing with exactly two
+  fixtures (the solve reconstructs by construction); it shows in the
+  coefficients and, with a third fixture, a 250x least-squares residual.
+- *The eye is folded on an offset search*, not aligned by a flight time:
+  the offset absorbs the channel delay; width is capped at one UI and,
+  with thresholds, means every bit past `Vinh`/`Vinl`.
+- *S-parameters by impulse response, not a rational fit*: real-pole
+  fitting cannot follow a channel's resonances; IFFT + cosine taper over
+  the top 20 % + a DC correction onto the main tap, history interpolated
+  like Bergeron's (`h <= dt`). Non-causal energy over 1 % is an issue.
+- *Power-aware semantics from IBIS 7.2*: `Ksso = Isso(Vtable)/Isso(0)`,
+  `Vtable_pu` = the rail's droop, `Vtable_pd` = the ground's rise, updated
+  per step (lagged one step). Pre-driver current = `[Composite Current]`
+  minus the I/V tables' power-terminal current, rail to rail at each
+  transition. `C_comp` stays on the global ground (IBIS's reference unless
+  split).
+- *Engine traps found*: the band-LU pattern must include device-to-rail
+  Jacobian entries (else silently dropped), and Newton's segment damping
+  must damp the rails a device hangs from (a pad on a table knot with a
+  moving rail oscillated at DC).
+
+**Not done:** IBIS-AMI (stage 8.7, by design); the optional ngspice
+oracle and PyBERT cross-checks (PyBERT is not installed here; it would
+cross-check `convline` and `eye`); board-level crosstalk and
+differential pairs (coupled-trace extraction from a routed board), a
+Touchstone part bound to a board component (splits the net), and
+`intra_pair_skew`/`z_diff` evaluated on a board; lossy coupled lines;
+`[Composite Current]` under network fixtures; SSN through a board PDN
+(`analysis` PDN work) and as role claims; the `zout`/slew
 linearisation, `verax layout` writing the `.kicad_dru` beside its board,
 `D_overshoot_*`/`[Model Spec]` limits as role claims, hysteresis
-thresholds, and wiring the `diff.nim` evaluators to the board. Two `pcb`
-read-side gaps found on the way are findings §32.
+thresholds. From stage 7: adaptive (LTE-controlled) steps -- `h` is fixed
+at `min(tr/20, td)` between edges, which is what a long pattern (a PRBS)
+costs; parallel sweeps; board extraction still defaults to ideal lines
+(`BoardNetSpec.lossy`). Two `pcb` read-side gaps found on the way are
+findings §32.
 
 ## What exists today (before implementation)
 
@@ -601,6 +718,8 @@ extraction (stage 6): the template, not a board, is its input.
 
 ### Stage 7: sweeps, performance, lossy accuracy
 
+*Done 2026-10-07; see "Implementation status".*
+
 - Corner × pattern × receiver sweeps with a worst-case report. Stage 5's
   searches are the main load: each answer costs tens to hundreds of
   simulations.
@@ -615,6 +734,9 @@ extraction (stage 6): the template, not a board, is its input.
   convolution parity with the ladder.
 
 ### Stage 8: extensions, roughly by value
+
+*Done 2026-10-07 except item 7; see "Implementation status" for what each
+item covers and what stops at the template.*
 
 1. **Crosstalk:** coupled-line elements from `impedance.z0Differential`
    odd/even modes (modal decomposition into two Bergeron lines).

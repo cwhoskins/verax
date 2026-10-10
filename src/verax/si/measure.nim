@@ -22,8 +22,22 @@
 ##   rang back into the threshold band.
 ## - **Monotonic**: no reversal larger than `hysteresis` inside the band.
 ## - **Settle time**: from the timing reference until the wave stays within
-##   `settleTol` of its final value (fraction of the swing).
+##   `settleTol` (fraction of the swing) of the level it settles to -- the
+##   caller's exact level when given, else the last sample; `NaN` if the
+##   last sample is still outside the band.
 ## - **Threshold margin**: the final level beyond the far threshold.
+## - **Bit patterns** (`measurePattern`): each transition on its own window,
+##   up to the next one. The settle band is around the level the edge
+##   settles to (the caller's: `si/sweep` uses the DC operating point of the
+##   opposite single edge), and the threshold margin is read at
+##   the window's end: inter-symbol interference shows as an edge that has
+##   not crossed for good, or not settled, by the end of its bit.
+## - **Crosstalk** (`measureNoise`): on a quiet victim, the largest
+##   excursion from its quiet level, and the **noise margin** -- held low,
+##   `Vinl - peak`; held high, `trough - Vinh` (negative: a false switch).
+## - **Differential** (`diffWave`): `v(p) - v(n)` measured like a
+##   single-ended edge against `+-Vdiff`, with the swing `+-(rail span)`
+##   as its "rails"; each leg alone is only judged for overshoot.
 
 import std/[math, strutils]
 import ../waveform
@@ -116,20 +130,17 @@ proc timingReference*(d: DriverBehaviour, stim: Stimulus,
     return (NaN, d.model & " never crosses Vmeas " & $tl.vmeas & " V into its timing load", Assumption())
   (tc, "", note(d.model, "timing load (Vref/Rref/Cref) applied at the die, without package"))
 
-proc measure*(r: SiResult, rx: int, d: DriverBehaviour, thresholds: Thresholds,
-              overshoot: OvershootLimits, tRef: float,
-              o = defaultMeasureOptions()): SiMeasures =
-  ## Every figure for receiver `rx` of a single-edge run.
-  let w = r.receivers[rx]
-  let t = r.t
-  let v = w.v
-  result = SiMeasures(receiver: w.label, vinh: thresholds.vinh, vinl: thresholds.vinl,
-                      tRef: tRef, railHigh: d.rails.pullup, railLow: d.rails.pulldown)
-  if r.stimulus.kind != skEdge:
-    result.notes.add "measures are defined on a single-edge run"
-    return
-  let rising = r.stimulus.edge == edRising
-  result.edge = r.stimulus.edge
+proc measureEdge*(t, v: openArray[float], label: string, rising: bool,
+                  railHigh, railLow: float, thresholds: Thresholds,
+                  overshoot: OvershootLimits, start, tRef, settled: float,
+                  o = defaultMeasureOptions()): SiMeasures =
+  ## Every figure of one edge on the samples `t`/`v` (the window). `start`
+  ## is where the edge begins; `settled` the level it settles to (`NaN`:
+  ## the window's last sample, as for a whole single-edge run). The rails
+  ## set overshoot and the settle band (a fraction of their span).
+  result = SiMeasures(receiver: label, vinh: thresholds.vinh, vinl: thresholds.vinl,
+                      tRef: tRef, railHigh: railHigh, railLow: railLow,
+                      edge: (if rising: edRising else: edFalling))
   result.peakHigh = max(v)
   result.peakLow = min(v)
   result.overshoot = result.peakHigh - result.railHigh
@@ -141,11 +152,10 @@ proc measure*(r: SiResult, rx: int, d: DriverBehaviour, thresholds: Thresholds,
     f[] = NaN
   result.monotonic = true
   if not thresholds.present:
-    result.notes.add "no Vinh/Vinl for " & w.label
+    result.notes.add "no Vinh/Vinl for " & label
     return
   let near = if rising: thresholds.vinl else: thresholds.vinh
   let far = if rising: thresholds.vinh else: thresholds.vinl
-  let start = r.stimulus.delay
   let tNear = firstCrossing(t, v, near, rising, start)
   let tFarFirst = firstCrossing(t, v, far, rising, start)
   let tFarLast = lastCrossing(t, v, far, rising)
@@ -154,8 +164,8 @@ proc measure*(r: SiResult, rx: int, d: DriverBehaviour, thresholds: Thresholds,
   else:
     result.flightTimeMin = tNear - tRef
     result.flightTimeMax = tFarLast - tRef
-  if tNear.isNaN: result.notes.add w.label & " never reaches " & $near & " V"
-  if tFarLast.isNaN: result.notes.add w.label & " never settles past " & $far & " V"
+  if tNear.isNaN: result.notes.add label & " never reaches " & $near & " V"
+  if tFarLast.isNaN: result.notes.add label & " never settles past " & $far & " V"
   # Ringback: past the far threshold, the first peak, then the deepest
   # return after it (a wave that just keeps rising has its last sample as
   # the peak and no return).
@@ -176,7 +186,8 @@ proc measure*(r: SiResult, rx: int, d: DriverBehaviour, thresholds: Thresholds,
   if not tNear.isNaN:
     let tEnd = if tFarLast.isNaN: t[^1] else: tFarLast
     var extreme = near
-    for k, tk in t:
+    for k in 0 ..< t.len:
+      let tk = t[k]
       if tk <= tNear or tk > tEnd: continue
       let x = v[k]
       if rising:
@@ -190,11 +201,10 @@ proc measure*(r: SiResult, rx: int, d: DriverBehaviour, thresholds: Thresholds,
           inc result.reversals
           extreme = x
   result.monotonic = result.reversals == 0
-  # Settle and final margin.
-  let final = v[^1]
-  let swing = abs(d.rails.pullup - d.rails.pulldown)
-  # An absolute band (`waveform.settleTime` is relative to the final value,
-  # which is ~0 after a falling edge).
+  # Settle and final margin. An absolute band (`waveform.settleTime` is
+  # relative to the final value, which is ~0 after a falling edge).
+  let final = if settled.isNaN: v[^1] else: settled
+  let swing = abs(railHigh - railLow)
   let band = o.settleTol * swing
   var lastOut = -1
   for k in 0 ..< v.len:
@@ -207,7 +217,114 @@ proc measure*(r: SiResult, rx: int, d: DriverBehaviour, thresholds: Thresholds,
       t[lastOut] + (lvl - v[lastOut]) / (v[lastOut + 1] - v[lastOut]) * (t[lastOut + 1] - t[lastOut])
   let ref0 = if tRef.isNaN: start else: tRef
   result.settleTime = if st.isNaN: NaN else: max(st - ref0, 0.0)
-  result.thresholdMargin = if rising: final - far else: far - final
+  # The level the next sampling sees: the window's end.
+  result.thresholdMargin = if rising: v[^1] - far else: far - v[^1]
+
+proc measure*(r: SiResult, rx: int, d: DriverBehaviour, thresholds: Thresholds,
+              overshoot: OvershootLimits, tRef: float,
+              o = defaultMeasureOptions(), settled = NaN): SiMeasures =
+  ## Every figure for receiver `rx` of a single-edge run. `settled`: the
+  ## level the edge settles to (`si/sweep.settledLevels`); `NaN` settles
+  ## around the run's last sample, which is optimistic if it still rings.
+  let w = r.receivers[rx]
+  if r.stimulus.kind != skEdge:
+    result = SiMeasures(receiver: w.label)
+    result.notes.add "measures are defined on a single-edge run; use measurePattern"
+    return
+  measureEdge(r.t, w.v, w.label, r.stimulus.edge == edRising, d.rails.pullup,
+              d.rails.pulldown, thresholds, overshoot, r.stimulus.delay, tRef, settled, o)
+
+type
+  PatternEdge* = object
+    index*: int
+      ## The bit that starts with this transition.
+    edge*: Edge
+    t0*, t1*: float
+      ## The window: from this transition to the next (or the pattern's
+      ## end).
+    m*: SiMeasures
+
+proc measurePatternWave*(s: Stimulus, t, v: openArray[float], label: string,
+                         railHigh, railLow: float, thresholds: Thresholds,
+                         overshoot: OvershootLimits, tRefOffset, settled: array[Edge, float],
+                         o = defaultMeasureOptions(), inverted = false): seq[PatternEdge] =
+  ## `measurePattern` on any wave of a pattern run (a differential one, an
+  ## inverted leg: `inverted` reads each transition as the opposite edge).
+  if s.kind != skPattern: return
+  var trans: seq[tuple[i: int, t: float, e: Edge]]
+  for i in 1 ..< s.bits.len:
+    if s.bits[i] != s.bits[i - 1]:
+      trans.add (i, s.delay + i.float * s.ui,
+                 (if (s.bits[i] == '1') != inverted: edRising else: edFalling))
+  for j, tr in trans:
+    let tEnd = if j + 1 < trans.len: trans[j + 1].t
+               else: min(t[^1], s.delay + s.bits.len.float * s.ui)
+    var k0 = 0
+    while k0 < t.len - 1 and t[k0 + 1] <= tr.t: inc k0
+    var k1 = k0
+    while k1 < t.len - 1 and t[k1] < tEnd: inc k1
+    if k1 - k0 < 2: continue
+    let tRef = tr.t + tRefOffset[tr.e]
+    let m = measureEdge(t.toOpenArray(k0, k1), v.toOpenArray(k0, k1), label,
+                        tr.e == edRising, railHigh, railLow, thresholds, overshoot, tr.t,
+                        tRef, settled[tr.e], o)
+    result.add PatternEdge(index: tr.i, edge: tr.e, t0: tr.t, t1: tEnd, m: m)
+
+proc measurePattern*(r: SiResult, rx: int, d: DriverBehaviour, thresholds: Thresholds,
+                     overshoot: OvershootLimits, tRefOffset, settled: array[Edge, float],
+                     o = defaultMeasureOptions()): seq[PatternEdge] =
+  ## Every transition of a bit-pattern run, each measured on its own window
+  ## (to the next transition): the ISI view. `tRefOffset[e]` is the timing
+  ## load's crossing after the start of an `e` edge (`NaN`: no flight
+  ## time); `settled[e]` the level an `e` edge settles to (`NaN`: the
+  ## window's end). An edge that has not
+  ## settled, or not crossed for good, by the window's end gets `NaN` there
+  ## -- it did not make it within the bit.
+  let w = r.receivers[rx]
+  measurePatternWave(r.stimulus, r.t, w.v, w.label, d.rails.pullup, d.rails.pulldown,
+                     thresholds, overshoot, tRefOffset, settled, o)
+
+type
+  NoiseMeasures* = object
+    ## Crosstalk on a quiet conductor.
+    probe*: string
+    quiet*: float
+      ## The level it sits at undisturbed, volts.
+    heldHigh*: bool
+    peakHigh*, peakLow*: float
+    noise*: float
+      ## Largest excursion from `quiet`, volts.
+    noiseMargin*: float
+      ## Held low: `Vinl - peakHigh`; held high: `peakLow - Vinh`. `NaN`
+      ## without thresholds (a near-end probe at a driver).
+    tPeak*: float
+      ## When the largest excursion happened.
+
+proc measureNoise*(t, v: openArray[float], probe: string, quiet: float, heldHigh: bool,
+                   thresholds: Thresholds): NoiseMeasures =
+  result = NoiseMeasures(probe: probe, quiet: quiet, heldHigh: heldHigh,
+                         peakHigh: -Inf, peakLow: Inf, noiseMargin: NaN, tPeak: NaN)
+  for k in 0 ..< v.len:
+    result.peakHigh = max(result.peakHigh, v[k])
+    result.peakLow = min(result.peakLow, v[k])
+    let e = abs(v[k] - quiet)
+    if e > result.noise or result.tPeak.isNaN:
+      result.noise = max(result.noise, e)
+      result.tPeak = t[k]
+  if thresholds.present:
+    result.noiseMargin = if heldHigh: result.peakLow - thresholds.vinh
+                         else: thresholds.vinl - result.peakHigh
+
+proc diffWave*(r: SiResult, d: DiffReceiver): seq[float] =
+  ## `v(p) - v(n)` at the two receivers' dies.
+  let p = r.receivers[d.p].v
+  let n = r.receivers[d.n].v
+  result = newSeq[float](p.len)
+  for k in 0 ..< p.len: result[k] = p[k] - n[k]
+
+proc diffThresholds*(d: DiffReceiver): Thresholds =
+  if d.hasVdiff: Thresholds(vinh: d.vdiff, vinl: -d.vdiff, present: true)
+  else: Thresholds()
 
 proc `$`*(m: SiMeasures): string =
   proc f(x: float, unit: string, scale = 1.0): string =

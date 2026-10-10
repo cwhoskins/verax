@@ -150,9 +150,9 @@ suite "Ku/Kd extraction":
     check abs(kuEnd - 1.0) > 0.05 or abs(kdEnd) > 0.05
 
 suite "classification":
-  test "unsupported fixture parasitic: reported, not used":
+  test "a negative fixture parasitic: reported, not used":
     var d = defaultLinearDriver()
-    d.extraFixtureLines = "L_fixture = 2nH\n"
+    d.extraFixtureLines = "L_fixture = -2nH\n"
     let b = driverBehaviour(d.model)
     check b.issues.hasIssue("ibis_waveform_unsupported")
     var named = false
@@ -160,6 +160,23 @@ suite "classification":
       if "L_fixture" in i.message: named = true
     check named
     check b.edges[edRising].source == ksRamp
+
+  test "a fixture network the tables do not match: the least-squares residual says so":
+    # L_fixture declared, but the tables were drawn without it. Two fixtures
+    # would solve exactly (and reconstruct by construction); a third that
+    # least squares cannot absorb exposes it.
+    var d = defaultLinearDriver()
+    d.cComp = 1e-12
+    d.samples = 201
+    d.fixtures.add (100.0, 1.65, 0.0)
+    let honest = driverBehaviour(d.model).edges[edRising]
+    d.extraFixtureLines = "L_fixture = 5nH\nC_dut = 3pF\nL_dut = 3nH\n"
+    let k = driverBehaviour(d.model).edges[edRising]
+    check k.source == ksWaveforms
+    check k.lsResidual > 100 * honest.lsResidual
+    check k.residualV > 10 * honest.residualV
+    # (The reconstruction tolerance, 2 % of the swing, still passes it:
+    # open decision 3 sets those numbers against vendor files.)
 
   test "absent corner without a policy is unsupported, naming the field":
     let m = readIbis(newStringStream(incompleteCornersIbs)).model("drv")
@@ -244,3 +261,61 @@ suite "classification":
   test "rise time of a coefficient series":
     let b = driverBehaviour(defaultLinearDriver().model)
     check abs(b.edges[edRising].riseTime - 0.8e-9) < 1e-15
+
+suite "fixture networks (stage 8.3)":
+  # A full IBIS Figure 18 fixture on both waveforms: C_comp 1 pF, R_dut
+  # 0.2 ohm, L_dut 1 nH, C_dut 1 pF, L_fixture 2 nH, C_fixture 2 pF.
+  proc netDriver(probeAtFixture = false): LinearDriver =
+    result = defaultLinearDriver()
+    result.cComp = 1e-12
+    result.samples = 801
+    result.tEnd = 4e-9
+    result.fixtures = @[(50.0, 0.0, 2e-12), (50.0, 3.3, 2e-12)]
+    result.network = (2e-9, 0.2, 1e-9, 1e-12)
+    result.probeAtFixture = probeAtFixture
+
+  test "Ku/Kd come back from tables taken through the network (at the pin)":
+    let d = netDriver()
+    let b = driverBehaviour(d.model)
+    for e in Edge:
+      let k = b.edges[e]
+      check k.source == ksWaveforms
+      check k.available
+      var worst = 0.0
+      for i, t in k.t:
+        let want = d.kAt(e == edRising, t)
+        worst = max(worst, abs(k.ku[i] - want.ku))
+        worst = max(worst, abs(k.kd[i] - want.kd))
+      checkpoint edgeName(e) & " worst coefficient error " & $worst
+      check worst < 0.02
+    var said = false
+    for a in b.assumptions:
+      if "DUT pin" in $a: said = true
+    check said
+
+  test "the probe point is a stated choice: the fixture node":
+    let d = netDriver(probeAtFixture = true)
+    var tol = defaultTolerances()
+    tol.probe = wpFixture
+    let k = driverBehaviour(d.model, tol = tol).edges[edRising]
+    check k.available
+    var worst = 0.0
+    for i, t in k.t: worst = max(worst, abs(k.ku[i] - d.kAt(true, t).ku))
+    check worst < 0.02
+    # Read at the pin instead, the same table gives other coefficients.
+    let wrong = driverBehaviour(d.model).edges[edRising]
+    var off = 0.0
+    for i, t in wrong.t: off = max(off, abs(wrong.ku[i] - d.kAt(true, t).ku))
+    check off > worst
+
+  test "the package side differentiates the table: error falls as it is refined":
+    proc err(samples: int): float =
+      var d = netDriver()
+      d.samples = samples
+      let k = driverBehaviour(d.model).edges[edRising]
+      for i, t in k.t: result = max(result, abs(k.ku[i] - d.kAt(true, t).ku))
+    let coarse = err(41)     # 100 ps
+    let fine = err(801)      # 5 ps
+    checkpoint "coarse " & $coarse & ", fine " & $fine
+    check coarse < 0.05
+    check fine < coarse / 4

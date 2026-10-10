@@ -16,6 +16,13 @@
 ## - **Explained**: the binding failure mode, and beside it the rule-of-thumb
 ##   figure (critical length `tr / (2 tpd)`, stub resonance
 ##   `1 / (4 td_stub)`).
+## - **Crosstalk** (a template with a `prVictim` partner): the victim's
+##   largest excursion (`maxCrosstalk`) and its noise margin
+##   (`minNoiseMargin`, against its own `Vinh`/`Vinl`) are criteria too, so
+##   sweeping `spSpacing` gives a **minimum spacing** for a coupled length
+##   (KiCad `clearance` between the two nets, `druRules`).
+## - **Differential pairs** (`prDiffPair`): the threshold criteria apply to
+##   `v(p) - v(n)` against `+-Vdiff`; each leg only to overshoot.
 ## - **Identity**: an answer carries the template, line, termination,
 ##   driver, receivers, corners, criteria and assumptions. A bare "max
 ##   length" is never reported.
@@ -23,6 +30,7 @@
 import std/[math, strutils, json]
 import ./simulate
 import ./measure
+import ./sweep
 import ../netlist/annotations
 import ../pcb/formats/kicaddru
 
@@ -45,6 +53,18 @@ type
     maxSettleTime*: float
     edges*: set[Edge]
     edgeDelay*: float
+    ui*: float
+      ## Unit interval, s; positive adds the ISI pattern (`si/sweep`) to
+      ## every point. `NaN`/`0`: single edges only.
+    maxCrosstalk*: float
+      ## Volts of excursion on a quiet victim (receivers and near end);
+      ## `NaN` = none.
+    minNoiseMargin*: float
+      ## A victim receiver's noise margin (needs its `Vinh`/`Vinl`).
+    eyeBits*: int
+      ## With a UI, add this many PRBS7 bits and judge their eye; `0` = none.
+    minEyeHeight*, minEyeWidth*: float
+      ## Volts and seconds; `NaN` = none.
 
   Verdict* = enum
     vPass, vFail, vInvalid
@@ -59,7 +79,8 @@ type
     measures*: seq[SiMeasures]
 
   SweepParam* = enum
-    spLength, spStubLength, spSeriesR, spViaStub
+    spLength, spStubLength, spSeriesR, spViaStub, spSpacing, spCoupledLength,
+    spLegMismatch
 
   Interval* = tuple[lo, hi: float]
 
@@ -85,6 +106,8 @@ type
     templateName*, topology*: string
     line*: string
     termination*: string
+    partner*: string
+      ## A victim or differential partner, and its coupling; empty if none.
     driver*: string
     receivers*: seq[string]
     corners*: seq[Corner]
@@ -95,7 +118,9 @@ proc defaultCriteria*(): Criteria =
   Criteria(maxFlightTime: NaN, minRingbackMargin: 0.0, minThresholdMargin: 0.0,
            useOvershootLimits: true, maxOvershoot: NaN, maxUndershoot: NaN,
            requireMonotonic: true, maxSettleTime: NaN,
-           edges: {edRising, edFalling}, edgeDelay: 0.5e-9)
+           edges: {edRising, edFalling}, edgeDelay: 0.5e-9, ui: NaN,
+           maxCrosstalk: NaN, minNoiseMargin: 0.0, eyeBits: 0, minEyeHeight: NaN,
+           minEyeWidth: NaN)
 
 proc `$`*(c: Criteria): string =
   var parts: seq[string]
@@ -110,72 +135,131 @@ proc `$`*(c: Criteria): string =
   var es: seq[string]
   for e in c.edges: es.add edgeName(e)
   parts.add "edges " & es.join("+")
+  if not c.maxCrosstalk.isNaN: parts.add "crosstalk <= " & $c.maxCrosstalk & " V"
+  parts.add "victim noise margin >= " & $c.minNoiseMargin & " V"
+  if c.ui > 0 and c.eyeBits > 0:
+    var e = $c.eyeBits & " bits of PRBS7"
+    if not c.minEyeHeight.isNaN: e &= ", eye height >= " & $c.minEyeHeight & " V"
+    if not c.minEyeWidth.isNaN: e &= ", eye width >= " & formatFloat(c.minEyeWidth * 1e9, ffDecimal, 3) & " ns"
+    parts.add e
+  if c.ui > 0: parts.add "ISI patterns " & isiPatterns.join("/") & " at UI " & formatFloat(c.ui * 1e9, ffDecimal, 3) & " ns"
   parts.join(", ")
 
 proc f3(x: float): string = formatFloat(x, ffDecimal, 3)
 
+type
+  TimingRefs* = seq[Timing]
+    ## Per template, the driver's timing-load crossings (`sweep.timingOf`).
+    ## They depend on the driver only, so a sweep computes them once.
+
+proc timingRefs*(templates: openArray[SiTemplate], so = defaultSiOptions()): TimingRefs =
+  for t in templates: result.add timingOf(t.driver, so)
+
 proc judge*(templates: openArray[SiTemplate], p: TemplateParams, c: Criteria,
-            so = defaultSiOptions()): PointResult =
-  ## One point at every corner and edge. Unsupported or a solver failure
-  ## makes the point invalid, never a pass and never a fail.
+            so = defaultSiOptions(), refs: TimingRefs = @[]): PointResult =
+  ## One point: every corner x the criteria's stimuli x every receiver, by
+  ## `sweep.sweepNet` -- the same runs and measures `verify` checks a board
+  ## with. Unsupported or a solver failure makes the point invalid, never a
+  ## pass and never a fail. `refs` (from `timingRefs`) saves re-running the
+  ## timing load at every point.
   result.verdict = vPass
-  for t in templates:
+  let refs = if refs.len == templates.len: refs else: timingRefs(templates, so)
+  var corners: seq[SweepCorner]
+  for ti in 0 ..< templates.len:
+    template t: untyped = templates[ti]
     result.corners.add t.driver.corner
-    let net = t.build(p)
-    for e in c.edges:
-      let stim = edgeStimulus(e, c.edgeDelay)
-      let r = simulate(net, stim, so)
-      case r.status
-      of ssUnsupported:
-        result.verdict = vInvalid
-        result.reason = "unsupported: " & r.reason
-        return
-      of ssSolverFailed:
-        result.verdict = vInvalid
-        result.reason = "solver failure: " & r.reason
-        return
-      of ssOk: discard
-      let (tRef, _, _) = timingReference(t.driver, stim, so)
-      for k in 0 ..< r.receivers.len:
-        let rx = net.receivers[k]
-        let m = measure(r, k, t.driver, rx.thresholds, rx.overshoot, tRef)
-        result.measures.add m
-        let at = " at " & cornerName(t.driver.corner) & ", " & m.receiver & " " & edgeName(e)
-        template fail(msg: string) =
-          result.verdict = vFail
-          result.failures.add msg & at
-        if not rx.thresholds.present:
+    corners.add SweepCorner(corner: t.driver.corner, net: t.build(p), timing: refs[ti],
+                            hasTiming: true)
+  var o = defaultSweepOptions()
+  o.sim = so
+  let sw = sweepNet(corners, sweepStimuli(c.ui, c.edgeDelay, c.edges,
+                                          prbsBits = (if c.ui > 0: c.eyeBits else: 0)), o)
+  case sw.status
+  of ssUnsupported:
+    result.verdict = vInvalid
+    result.reason = "unsupported: " & sw.reason
+    return
+  of ssSolverFailed:
+    result.verdict = vInvalid
+    result.reason = "solver failure: " & sw.reason
+    return
+  of ssOk: discard
+  let net0 = corners[0].net
+  for me in sw.measured:
+    let m = me.m
+    let probe = sw.probes[me.probe]
+    template fail(msg: string) =
+      result.verdict = vFail
+      result.failures.add msg & " at " & cornerName(me.corner) & ", " & probe.label & " " & me.run
+    if me.isEye:
+      let e = me.eye
+      if not c.minEyeHeight.isNaN and (e.height.isNaN or e.height < c.minEyeHeight):
+        fail("eye height " & (if e.height.isNaN: "n/a" else: f3(e.height) & " V"))
+      if not c.minEyeWidth.isNaN and e.width < c.minEyeWidth:
+        fail("eye width " & f3(e.width * 1e9) & " ns")
+      continue
+    case me.kind
+    of pkVictim:
+      let n = me.noise
+      if not c.maxCrosstalk.isNaN and n.noise > c.maxCrosstalk:
+        fail("crosstalk " & f3(n.noise) & " V")
+      if probe.index >= 0:
+        if n.noiseMargin.isNaN:
           result.verdict = vInvalid
-          result.reason = m.receiver & " has no Vinh/Vinl"
+          result.reason = probe.label & " (victim) has no Vinh/Vinl for a noise margin"
           return
-        if not c.maxFlightTime.isNaN:
-          if m.flightTimeMax.isNaN:
-            if tRef.isNaN:
-              result.verdict = vInvalid
-              result.reason = "a timing budget needs the driver's Vmeas/Rref/Cref"
-              return
-            fail("never settles past its threshold")
-          elif m.flightTimeMax > c.maxFlightTime:
-            fail("flight time " & f3(m.flightTimeMax * 1e9) & " ns > " & f3(c.maxFlightTime * 1e9) & " ns")
-        if not m.ringbackMargin.isNaN and m.ringbackMargin < c.minRingbackMargin:
-          fail("ringback margin " & f3(m.ringbackMargin) & " V")
-        if m.ringbackMargin.isNaN:
-          fail("never reaches its far threshold")
-        if m.thresholdMargin < c.minThresholdMargin:
-          fail("threshold margin " & f3(m.thresholdMargin) & " V")
-        if c.useOvershootLimits:
-          if not m.overshootHighMargin.isNaN and m.overshootHighMargin < 0:
-            fail("peak " & f3(m.peakHigh) & " V over S_overshoot_high")
-          if not m.overshootLowMargin.isNaN and m.overshootLowMargin < 0:
-            fail("trough " & f3(m.peakLow) & " V under S_overshoot_low")
-        if not c.maxOvershoot.isNaN and m.overshoot > c.maxOvershoot:
-          fail("overshoot " & f3(m.overshoot) & " V")
-        if not c.maxUndershoot.isNaN and m.undershoot > c.maxUndershoot:
-          fail("undershoot " & f3(m.undershoot) & " V")
-        if c.requireMonotonic and not m.monotonic:
-          fail("non-monotonic through the threshold band")
-        if not c.maxSettleTime.isNaN and (m.settleTime.isNaN or m.settleTime > c.maxSettleTime):
-          fail("settle time " & (if m.settleTime.isNaN: "never" else: f3(m.settleTime * 1e9) & " ns"))
+        if n.noiseMargin < c.minNoiseMargin:
+          fail("victim noise margin " & f3(n.noiseMargin) & " V")
+      continue
+    of pkLeg:
+      result.measures.add m
+      if c.useOvershootLimits:
+        if not m.overshootHighMargin.isNaN and m.overshootHighMargin < 0:
+          fail("peak " & f3(m.peakHigh) & " V over S_overshoot_high")
+        if not m.overshootLowMargin.isNaN and m.overshootLowMargin < 0:
+          fail("trough " & f3(m.peakLow) & " V under S_overshoot_low")
+      if not c.maxOvershoot.isNaN and m.overshoot > c.maxOvershoot:
+        fail("overshoot " & f3(m.overshoot) & " V")
+      if not c.maxUndershoot.isNaN and m.undershoot > c.maxUndershoot:
+        fail("undershoot " & f3(m.undershoot) & " V")
+      continue
+    of pkSignal, pkDiff: discard
+    result.measures.add m
+    let present =
+      if me.kind == pkDiff: net0.diffReceivers[probe.index].hasVdiff
+      else: net0.receivers[me.receiver].thresholds.present
+    if not present:
+      result.verdict = vInvalid
+      result.reason = probe.label & (if me.kind == pkDiff: " has no Vdiff" else: " has no Vinh/Vinl")
+      return
+    if not c.maxFlightTime.isNaN:
+      if me.timingWhy.len > 0:
+        result.verdict = vInvalid
+        result.reason = "a timing budget needs the driver's Vmeas/Rref/Cref"
+        return
+      if m.flightTimeMax.isNaN:
+        fail("never settles past its threshold")
+      elif m.flightTimeMax > c.maxFlightTime:
+        fail("flight time " & f3(m.flightTimeMax * 1e9) & " ns > " & f3(c.maxFlightTime * 1e9) & " ns")
+    if not m.ringbackMargin.isNaN and m.ringbackMargin < c.minRingbackMargin:
+      fail("ringback margin " & f3(m.ringbackMargin) & " V")
+    if m.ringbackMargin.isNaN:
+      fail("never reaches its far threshold")
+    if m.thresholdMargin < c.minThresholdMargin:
+      fail("threshold margin " & f3(m.thresholdMargin) & " V")
+    if c.useOvershootLimits:
+      if not m.overshootHighMargin.isNaN and m.overshootHighMargin < 0:
+        fail("peak " & f3(m.peakHigh) & " V over S_overshoot_high")
+      if not m.overshootLowMargin.isNaN and m.overshootLowMargin < 0:
+        fail("trough " & f3(m.peakLow) & " V under S_overshoot_low")
+    if not c.maxOvershoot.isNaN and m.overshoot > c.maxOvershoot:
+      fail("overshoot " & f3(m.overshoot) & " V")
+    if not c.maxUndershoot.isNaN and m.undershoot > c.maxUndershoot:
+      fail("undershoot " & f3(m.undershoot) & " V")
+    if c.requireMonotonic and not m.monotonic:
+      fail("non-monotonic through the threshold band")
+    if not c.maxSettleTime.isNaN and (m.settleTime.isNaN or m.settleTime > c.maxSettleTime):
+      fail("settle time " & (if m.settleTime.isNaN: "never" else: f3(m.settleTime * 1e9) & " ns"))
 
 proc withParam(p: TemplateParams, param: SweepParam, x: float): TemplateParams =
   result = p
@@ -186,6 +270,11 @@ proc withParam(p: TemplateParams, param: SweepParam, x: float): TemplateParams =
   of spViaStub:
     result.viaStub = x
     result.hasViaStub = true
+  of spSpacing:
+    result.spacing = x
+    result.hasSpacing = true
+  of spCoupledLength: result.coupledLength = x
+  of spLegMismatch: result.legMismatch = x
 
 proc sweep*(templates: openArray[SiTemplate], base: TemplateParams,
             param: SweepParam, lo, hi: float, grid: int, c: Criteria,
@@ -194,10 +283,11 @@ proc sweep*(templates: openArray[SiTemplate], base: TemplateParams,
   ## *valid* neighbours.
   result = Sweep(param: param, lo: lo, hi: hi, grid: grid, tolerance: tolerance)
   let templates = @templates   # captured by `boundary`
+  let refs = timingRefs(templates, so)
   let n = max(grid, 2)
   for i in 0 ..< n:
     let x = lo + (hi - lo) * i.float / (n - 1).float
-    result.samples.add (x, judge(templates, base.withParam(param, x), c, so))
+    result.samples.add (x, judge(templates, base.withParam(param, x), c, so, refs))
   proc boundary(a, b: float, aPass: bool): tuple[x: float, failure: string] =
     ## The transition between a valid `a` and a valid `b` of the other
     ## verdict, to `tolerance`. A point that turns invalid mid-bisection
@@ -207,7 +297,7 @@ proc sweep*(templates: openArray[SiTemplate], base: TemplateParams,
     var fails = ""
     while abs(hi - lo) > tolerance:
       let m = 0.5 * (lo + hi)
-      let pr = judge(templates, base.withParam(param, m), c, so)
+      let pr = judge(templates, base.withParam(param, m), c, so, refs)
       if pr.verdict == vInvalid: break
       if (pr.verdict == vPass) == aPass: lo = m
       else:
@@ -251,6 +341,18 @@ proc maxFromStart*(s: Sweep): float =
   ## The top of the passing interval that starts at the sweep's low end
   ## (`NaN` if the low end fails): "how long may it be".
   if s.passing.len > 0 and s.passing[0].lo == s.lo: s.passing[0].hi else: NaN
+
+proc minToEnd*(s: Sweep): float =
+  ## The bottom of the passing interval that reaches the sweep's high end
+  ## (`NaN` if the high end fails): "how far apart must they be".
+  if s.passing.len > 0 and s.passing[^1].hi == s.hi: s.passing[^1].lo else: NaN
+
+proc spacingFor*(templates: openArray[SiTemplate], base: TemplateParams,
+                 lo, hi: float, grid: int, c: Criteria, tolerance: float,
+                 so = defaultSiOptions()): Sweep =
+  ## The edge-to-edge gap to a victim partner that passes, over `lo .. hi`
+  ## (the minimum is `minToEnd`).
+  sweep(templates, base, spSpacing, lo, hi, grid, c, tolerance, so)
 
 # --- trade-off tables --------------------------------------------------------
 
@@ -324,7 +426,16 @@ proc identity*(t: SiTemplate, corners: openArray[Corner], p: TemplateParams,
   var term: seq[string]
   if p.seriesR > 0: term.add "series " & f3(p.seriesR) & " ohm"
   if p.parallelR > 0: term.add "parallel " & f3(p.parallelR) & " ohm to " & f3(p.parallelV) & " V"
+  if p.diffR > 0: term.add "differential " & f3(p.diffR) & " ohm across the receivers"
   result.termination = if term.len == 0: "none" else: term.join(", ")
+  let pt = t.partner
+  if pt.role != prNone:
+    let gap = if p.hasSpacing: p.spacing else: pt.coupled.s
+    result.partner =
+      (if pt.role == prDiffPair: "differential pair with " & pt.name & " (" & pt.driver.model & ")"
+       else: "victim " & pt.name & " held " & (if pt.quietHigh: "high" else: "low") &
+             " (" & pt.driver.model & ") over " & f3(p.coupledLength * 1e3) & " mm") &
+      ", gap " & f3(gap * 1e3) & " mm"
   var src: seq[string]
   for e in Edge: src.add edgeName(e) & " from " & (if t.driver.edges[e].source == ksRamp: "[Ramp]" else: "V/T tables")
   result.driver = t.driver.model & (if t.driver.file.len > 0: " (" & t.driver.file & ")" else: "") &
@@ -351,13 +462,26 @@ type
     termination*: seq[tuple[r: float, s: Sweep]]
     bestSeriesR*: float
     stubs*: seq[StubVerdict]
+    spacing*: Sweep
+      ## Gap to a victim partner (`spSpacing`), when `hasSpacing`.
+    hasSpacing*: bool
+    victimNet*: string
+    coupledLength*: float
+      ## The parallel run `spacing` was derived for, metres.
+    skew*: Sweep
+      ## Differential pair: extra length on one leg (`spLegMismatch`), when
+      ## `hasSkew`.
+    hasSkew*: bool
+    pairNet*: string
+      ## The pair's other leg.
     criticalLength*: float
     stubResonances*: seq[tuple[name: string, hz: float]]
     notes*: seq[string]
 
 proc paramUnit(p: SweepParam): (string, float) =
   case p
-  of spLength, spStubLength, spViaStub: ("mm", 1e3)
+  of spLength, spStubLength, spViaStub, spSpacing, spCoupledLength,
+     spLegMismatch: ("mm", 1e3)
   of spSeriesR: ("ohm", 1.0)
 
 proc intervalsText(s: Sweep): string =
@@ -376,6 +500,7 @@ proc renderText*(r: ConstraintReport): string =
   result.add "  template:    " & id.templateName & " (" & id.topology & ")\n"
   result.add "  line:        " & id.line & "\n"
   result.add "  termination: " & id.termination & "\n"
+  if id.partner.len > 0: result.add "  partner:     " & id.partner & "\n"
   result.add "  driver:      " & id.driver & "\n"
   for rx in id.receivers: result.add "  receiver:    " & rx & "\n"
   var cs: seq[string]
@@ -403,6 +528,18 @@ proc renderText*(r: ConstraintReport): string =
       result.add "    " & (if rr == 0: "none" else: f3(rr) & " ohm") & ": " & intervalsText(s) & "\n"
     if not r.bestSeriesR.isNaN:
       result.add "    best: " & (if r.bestSeriesR == 0: "none" else: f3(r.bestSeriesR) & " ohm") & "\n"
+  if r.hasSpacing:
+    result.add "\n  spacing to " & r.victimNet & " over a " & f3(r.coupledLength * 1e3) &
+      " mm parallel run: " & intervalsText(r.spacing) & "\n"
+    let m = r.spacing.minToEnd
+    result.add "    min spacing: " & (if m.isNaN: "none passes up to " & f3(r.spacing.hi * 1e3) & " mm"
+                                      else: f3(m * 1e3) & " mm") & "\n"
+    if r.spacing.binding.len > 0: result.add "    binding failure: " & r.spacing.binding & "\n"
+  if r.hasSkew:
+    result.add "\n  intra-pair length mismatch with " & r.pairNet & ": " & intervalsText(r.skew) & "\n"
+    let m = r.skew.maxFromStart
+    result.add "    max mismatch: " & (if m.isNaN: "none passes" else: f3(m * 1e3) & " mm") & "\n"
+    if r.skew.binding.len > 0: result.add "    binding failure: " & r.skew.binding & "\n"
   if r.stubs.len > 0:
     result.add "\n  via stubs:\n"
     for v in r.stubs:
@@ -435,7 +572,8 @@ proc renderJson*(r: ConstraintReport): JsonNode =
     "schema": "verax.si_constraints/1",
     "net": r.net,
     "identity": {"template": id.templateName, "topology": id.topology, "line": id.line,
-                 "termination": id.termination, "driver": id.driver,
+                 "termination": id.termination, "partner": id.partner,
+                 "driver": id.driver,
                  "receivers": id.receivers, "corners": corners,
                  "criteria": id.criteria, "assumptions": id.assumptions},
   }
@@ -454,6 +592,12 @@ proc renderJson*(r: ConstraintReport): JsonNode =
     stubs.add %*{"transition": v.name, "stub": jnum(v.actualStub),
                  "max_passing_stub": jnum(v.maxPassingStub), "answer": v.answer}
   result["stubs"] = stubs
+  if r.hasSkew:
+    result["skew"] = %*{"pair": r.pairNet, "max_mismatch": jnum(r.skew.maxFromStart),
+                        "sweep": r.skew.toJson}
+  if r.hasSpacing:
+    result["spacing"] = %*{"victim": r.victimNet, "coupled_length": jnum(r.coupledLength),
+                           "min_spacing": jnum(r.spacing.minToEnd), "sweep": r.spacing.toJson}
   result["notes"] = %r.notes
 
 proc druRules*(r: ConstraintReport, netName: string, baseVias = 0): seq[DruRule] =
@@ -484,3 +628,15 @@ proc druRules*(r: ConstraintReport, netName: string, baseVias = 0): seq[DruRule]
                        maxLength = maxLen, comment = who & capped)
     result.add druRule(netName & " max vias", netCondition(netName),
                        maxViaCount = vias, comment = who)
+  if r.hasSkew and r.pairNet.len > 0:
+    let m = r.skew.maxFromStart
+    if not m.isNaN:
+      result.add druRule(netName & "/" & r.pairNet & " skew", eitherCondition(netName, r.pairNet),
+                         maxSkew = m, comment = who)
+  if r.hasSpacing and r.victimNet.len > 0:
+    let m = r.spacing.minToEnd
+    if not m.isNaN:
+      result.add druRule(netName & "/" & r.victimNet & " spacing",
+                         pairCondition(netName, r.victimNet), minClearance = m,
+                         comment = who & "\nparallel run " & f3(r.coupledLength * 1e3) &
+                           " mm; a longer run needs more")

@@ -1,6 +1,14 @@
 ## `SiNet`: the engine-agnostic graph of one signal-integrity net -- a driver
 ## (behaviour + die node), receivers, and elements (lumped R/L/C, ideal line
-## `(Z0, td)`, lossy line `(RLGC/m, length)`). Data, not a `Netlist`.
+## `(Z0, td)`, lossy line `(RLGC/m, length)`, coupled pair `(Ze, Zo, td_e,
+## td_o)`). Data, not a `Netlist`.
+##
+## **More than one conductor** (stage 8): `driver` is the net the stimulus
+## drives (conductor 0). `extraDrivers` are other conductors' drivers, each
+## with a `DriveMode`: the complement of the stimulus (a differential
+## pair's other leg) or held quiet (a crosstalk victim). Every port names
+## its `conductor`; `diffReceivers` pairs two receivers read as one
+## differential input.
 ##
 ## Built from a **template** (pre-layout, parametric: driver -> series R ->
 ## trunk with `n` vias -> receivers) for constraint derivation and tests;
@@ -23,6 +31,7 @@ import ../ibis/behave
 import ../ibis/attach
 import ../pcb/impedance
 import ../pcb/via
+import ../touchstone/types as tstypes
 import ../netlist/annotations
 
 export behave
@@ -31,6 +40,11 @@ type
   SiElemKind* = enum
     sekResistor, sekInductor, sekCapacitor, sekLine, sekLossyLine,
     sekVoltage   ## ideal DC source, `v(a) - v(b) = value`
+    sekCoupledLine
+      ## Symmetric lossless coupled pair: conductor 1 `a -> b`, conductor 2
+      ## `a2 -> b2`.
+    sekSParams
+      ## A Touchstone 2-port, port 1 at `a`, port 2 at `b`.
 
   SiElement* = object
     kind*: SiElemKind
@@ -44,6 +58,18 @@ type
       ## Ideal line.
     r*, l*, g*, c*, length*: float
       ## Lossy line, per metre, and its length.
+    spec*: LineSpec
+      ## The cross-section, when `hasSpec`: a convolution line then uses its
+      ## frequency-dependent (causal) RLGC; the ladder always uses `r/l/g/c`.
+    hasSpec*: bool
+    fRef*: float
+      ## Where `r/l/g/c` were taken, Hz (`hasSpec` only).
+    a2*, b2*: int
+      ## Coupled line: the second conductor's ends.
+    zEven*, zOdd*, tdEven*, tdOdd*: float
+      ## Coupled line: each mode's impedance (one line, ohms) and delay.
+    sparams*: SParams
+      ## S-parameter block.
 
   PackageRlc* = object
     r*, l*, c*: float
@@ -54,6 +80,39 @@ type
       ## `"U1.7"`.
     dieNode*, pinNode*: int
     pkg*: PackageRlc
+    conductor*: int
+      ## Which conductor (index into `SiNet.conductorNames`; 0 = the driven
+      ## net).
+
+  DriveMode* = enum
+    dmStimulus    ## the stimulus itself (the primary driver)
+    dmInverted    ## its complement: the other leg of a differential pair
+    dmQuietLow    ## held low: a crosstalk victim
+    dmQuietHigh   ## held high
+
+  SiExtraDriver* = object
+    behaviour*: DriverBehaviour
+    port*: SiPort
+    mode*: DriveMode
+    skew*: float
+      ## Seconds added to the stimulus delay (`[Diff Pin]` `tdelay`).
+
+  SiSupply* = object
+    ## Power-aware: the die's own rails, which every driver hangs from
+    ## (`present`). Otherwise the rails are ideal.
+    present*: bool
+    vccDie*, gndDie*: int
+
+  DiffReceiver* = object
+    ## Two receivers read as one differential input `v(p) - v(n)`.
+    label*: string
+    p*, n*: int
+      ## Indices into `receivers`.
+    vdiff*: float
+      ## Differential threshold, volts: switched at `+vdiff`/`-vdiff`.
+    hasVdiff*: bool
+    source*: string
+      ## Where `vdiff` came from.
 
   SiNet* = object
     name*: string
@@ -64,6 +123,11 @@ type
     driverPort*: SiPort
     receivers*: seq[ReceiverBehaviour]
     receiverPorts*: seq[SiPort]
+    extraDrivers*: seq[SiExtraDriver]
+    conductorNames*: seq[string]
+      ## Empty: one conductor, the net itself.
+    diffReceivers*: seq[DiffReceiver]
+    supply*: SiSupply
     unsupported*: seq[string]
       ## Non-empty: this net cannot be simulated (`esNotEvaluable`); each is
       ## the precise limitation.
@@ -108,6 +172,33 @@ proc addLine*(n: var SiNet, a, b: int, z0, td: float, label = "") =
 proc addLossyLine*(n: var SiNet, a, b: int, r, l, g, c, length: float, label = "") =
   n.elements.add SiElement(kind: sekLossyLine, a: a, b: b, r: r, l: l, g: g,
                            c: c, length: length, label: label)
+
+proc addLossyLine*(n: var SiNet, a, b: int, spec: LineSpec, fRef, length: float,
+                   label = "") =
+  ## A lossy line that keeps its cross-section: `r/l/g/c` at `fRef` for the
+  ## ladder, the frequency-dependent RLGC for a convolution line.
+  let q = rlgc(spec, fRef)
+  n.elements.add SiElement(kind: sekLossyLine, a: a, b: b, r: q.r, l: q.l, g: q.g,
+                           c: q.c, length: length, label: label, spec: spec,
+                           hasSpec: true, fRef: fRef)
+
+proc addCoupledLine*(n: var SiNet, a1, b1, a2, b2: int, zEven, zOdd, tdEven, tdOdd: float,
+                     label = "") =
+  n.elements.add SiElement(kind: sekCoupledLine, a: a1, b: b1, a2: a2, b2: b2,
+                           zEven: zEven, zOdd: zOdd, tdEven: tdEven, tdOdd: tdOdd,
+                           label: label)
+
+proc addSParams*(n: var SiNet, a, b: int, sp: SParams, label = "") =
+  n.elements.add SiElement(kind: sekSParams, a: a, b: b, sparams: sp, label: label)
+
+proc conductorCount*(n: SiNet): int = max(1, n.conductorNames.len)
+
+proc conductorMode*(n: SiNet, conductor: int): DriveMode =
+  ## How a conductor is driven (`dmStimulus` for conductor 0, or a
+  ## conductor without a driver of its own).
+  for d in n.extraDrivers:
+    if d.port.conductor == conductor: return d.mode
+  dmStimulus
 
 # --- pins -------------------------------------------------------------------
 
@@ -184,12 +275,56 @@ proc resolvePin*(bindings: openArray[IbisBinding], p: PinRef,
   result.pkg = rlc
   result.ok = true
 
+type
+  DiffPartner* = object
+    ## A pin's `[Diff Pin]` row, read from its side.
+    ok*: bool
+    reason*: string
+    other*: PinRef
+      ## The other leg.
+    inverting*: bool
+      ## `other` is the row's `inv_pin` (so the queried pin is the
+      ## non-inverting one).
+    vdiff*: float
+    hasVdiff*: bool
+    tdelay*: float
+      ## The inverting leg's delay after the non-inverting one, at the
+      ## corner (`0` when not stated).
+    source*: string
+
+proc diffPartner*(bindings: openArray[IbisBinding], p: PinRef, corner = coTyp): DiffPartner =
+  ## The other leg of `p`'s differential pair, from its component's `[Diff
+  ## Pin]`. Not a pair (no row) is a named reason, never a guess.
+  for b in bindings:
+    if b.designator != p.designator: continue
+    let comp = b.file.component(b.componentName)
+    for dp in comp.diffPins:
+      if dp.pin != p.pin and dp.invPin != p.pin: continue
+      let noninv = dp.pin == p.pin
+      result = DiffPartner(ok: true, inverting: noninv,
+                           other: PinRef(designator: p.designator,
+                                         pin: (if noninv: dp.invPin else: dp.pin)),
+                           source: comp.name & " [Diff Pin] " & dp.pin & "/" & dp.invPin)
+      if dp.vdiff.present:
+        result.vdiff = dp.vdiff.value
+        result.hasVdiff = true
+      let td = case corner
+               of coTyp: dp.tdelayTyp
+               of coMin: (if dp.tdelayMin.present: dp.tdelayMin else: dp.tdelayTyp)
+               of coMax: (if dp.tdelayMax.present: dp.tdelayMax else: dp.tdelayTyp)
+      if td.present: result.tdelay = td.value
+      return
+    result.reason = $p & ": IBIS [Component] " & comp.name & " has no [Diff Pin] row for pin " & p.pin
+    return
+  result.reason = $p & ": no IBIS binding for " & p.designator
+
 # --- ports -----------------------------------------------------------------
 
-proc addPort(n: var SiNet, label: string, pkg: PackageRlc, pin = -1): SiPort =
+proc addPort(n: var SiNet, label: string, pkg: PackageRlc, pin = -1,
+             conductor = 0): SiPort =
   ## die -- R_pkg -- L_pkg -- pin, C_pkg at the pin. `pin` reuses an
   ## existing board node as the pin.
-  result = SiPort(label: label, pkg: pkg)
+  result = SiPort(label: label, pkg: pkg, conductor: conductor)
   result.dieNode = n.addNode(label & ":die")
   let mid = n.addNode(label & ":pkg")
   result.pinNode = if pin >= 0: pin else: n.addNode(label & ":pin")
@@ -205,11 +340,21 @@ proc setDriver*(n: var SiNet, label: string, d: DriverBehaviour, pkg: PackageRlc
   n.assumptions.add d.assumptions
   n.assumptions.add d.substitutions
 
+proc addExtraDriver*(n: var SiNet, label: string, d: DriverBehaviour, pkg: PackageRlc,
+                     conductor: int, mode: DriveMode, skew = 0.0, pin = -1): int =
+  ## Another conductor's driver; returns its pin node (`pin` if given).
+  let p = n.addPort(label, pkg, pin, conductor)
+  n.extraDrivers.add SiExtraDriver(behaviour: d, port: p, mode: mode, skew: skew)
+  if not d.supported: n.unsupported.add label & ": " & d.reason
+  n.issues.add d.issues
+  n.assumptions.add d.substitutions
+  p.pinNode
+
 proc addReceiver*(n: var SiNet, label: string, r: ReceiverBehaviour,
-                  pkg: PackageRlc, pin = -1): int =
+                  pkg: PackageRlc, pin = -1, conductor = 0): int =
   ## Returns the receiver's pin node (`pin` if given).
   n.receivers.add r
-  let p = n.addPort(label, pkg, pin)
+  let p = n.addPort(label, pkg, pin, conductor)
   n.receiverPorts.add p
   if not r.supported: n.unsupported.add label & ": " & r.reason
   n.issues.add r.issues
@@ -228,6 +373,11 @@ type
     lossy*: bool
     r*, l*, g*, c*: float
       ## Per metre, at the knee frequency (lossy only).
+    spec*: LineSpec
+    hasSpec*: bool
+      ## The cross-section is kept (from `lineSection`), so a convolution
+      ## line can use its frequency dependence.
+    fKnee*: float
     layer*, reference*: string
 
   TemplateTopology* = enum
@@ -236,6 +386,34 @@ type
   TemplatePort* = object
     label*: string
     pkg*: PackageRlc
+
+  PartnerRole* = enum
+    prNone
+    prVictim     ## a quiet neighbour: crosstalk at its ends
+    prDiffPair   ## the complementary leg: the net is a differential pair
+
+  TemplatePartner* = object
+    ## A second conductor beside the template's trunk (point-to-point only).
+    ## It copies the trunk's termination; over the coupled section the two
+    ## are a coupled pair of `coupled`'s cross-section (gap `s`, or
+    ## `TemplateParams.spacing`), elsewhere each is `SiTemplate.line`.
+    role*: PartnerRole
+    name*: string
+      ## The partner net's name.
+    quietHigh*: bool
+      ## A victim held high (else low).
+    driver*: DriverBehaviour
+    driverPort*: TemplatePort
+    receiver*: ReceiverBehaviour
+    receiverPort*: TemplatePort
+    coupled*: LineSpec
+      ## An edge-coupled geometry.
+    skew*: float
+      ## The partner driver's delay after the stimulus (`[Diff Pin]`
+      ## `tdelay`), seconds.
+    vdiff*: float
+    hasVdiff*: bool
+    vdiffSource*: string
 
   SiTemplate* = object
     ## A parametric net. The free parameters are `TemplateParams`.
@@ -249,6 +427,12 @@ type
     via*: ViaModel
       ## Used when `viaCount > 0`.
     hasVia*: bool
+    partner*: TemplatePartner
+    channel*: SParams
+      ## A Touchstone 2-port (connector, cable, backplane) between the
+      ## trunk and the receiver, when `hasChannel` (point-to-point).
+    hasChannel*: bool
+    channelName*: string
 
   TemplateParams* = object
     length*: float
@@ -265,15 +449,37 @@ type
       ## The via's bottom stub, metres, when `hasViaStub` (a backdrill or
       ## stub-removal question); otherwise the via model's own.
     hasViaStub*: bool
+    spacing*: float
+      ## Edge-to-edge gap to the partner, metres, when `hasSpacing`;
+      ## otherwise the partner cross-section's own `s`.
+    hasSpacing*: bool
+    coupledLength*: float
+      ## How much of the trunk runs beside a victim, from the driver end,
+      ## metres (a differential pair is coupled throughout).
+    diffR*: float
+      ## Differential pair: a termination across the receiver pins, ohms;
+      ## `0` = none.
+    legMismatch*: float
+      ## Differential pair: extra length on the partner leg (an uncoupled
+      ## run before its receiver), metres -- intra-pair skew.
 
 proc templateParams*(length: float, viaCount = 0, seriesR = 0.0,
                      stubLength = 0.0, parallelR = 0.0, parallelV = 0.0,
-                     viaStub = NaN): TemplateParams =
-  ## Constructor; a `NaN` `viaStub` keeps the via model's stub.
+                     viaStub = NaN, spacing = NaN, coupledLength = 0.0,
+                     diffR = 0.0, legMismatch = 0.0): TemplateParams =
+  ## Constructor; a `NaN` `viaStub` keeps the via model's stub, a `NaN`
+  ## `spacing` the partner cross-section's gap.
   TemplateParams(length: length, viaCount: viaCount, seriesR: seriesR,
                  stubLength: stubLength, parallelR: parallelR,
                  parallelV: parallelV, viaStub: viaStub,
-                 hasViaStub: not viaStub.isNaN)
+                 hasViaStub: not viaStub.isNaN, spacing: spacing,
+                 hasSpacing: not spacing.isNaN, coupledLength: coupledLength,
+                 diffR: diffR, legMismatch: legMismatch)
+
+proc withSpacing*(p: TemplateParams, s: float): TemplateParams =
+  result = p
+  result.spacing = s
+  result.hasSpacing = true
 
 proc lineSection*(spec: LineSpec, lossy = false, fKnee = 1e9,
                   layer = "", reference = ""): LineSection =
@@ -283,6 +489,9 @@ proc lineSection*(spec: LineSpec, lossy = false, fKnee = 1e9,
   if lossy:
     let q = rlgc(spec, fKnee)
     result.r = q.r; result.l = q.l; result.g = q.g; result.c = q.c
+    result.spec = spec
+    result.hasSpec = true
+    result.fKnee = fKnee
 
 proc idealLine*(z0, tdPerM: float): LineSection =
   LineSection(z0: z0, tdPerM: tdPerM)
@@ -291,7 +500,9 @@ proc addRun(n: var SiNet, a: int, s: LineSection, length: float, label: string):
   ## A line from `a` of `length`; returns the far node (`a` itself if 0).
   if length <= 0.0: return a
   let b = n.addNode(label)
-  if s.lossy:
+  if s.lossy and s.hasSpec:
+    n.addLossyLine(a, b, s.spec, s.fKnee, length, label)
+  elif s.lossy:
     n.addLossyLine(a, b, s.r, s.l, s.g, s.c, length, label)
   else:
     n.addLine(a, b, s.z0, s.tdPerM * length, label)
@@ -312,6 +523,77 @@ proc addVia(n: var SiNet, a: int, v: ViaModel, label: string): int =
     n.addLine(b, o, v.stubZ0, v.stubTdPerM * v.stubBottom, label & " bottom stub")
   b
 
+const SpeedOfLightSi = 299_792_458.0
+
+proc coupledAssumption*(m: CoupledModes, spec: LineSpec): Assumption =
+  note("coupled section", "lossless, quasi-static even/odd modes (" &
+    (if spec.geometry == lgEdgeCoupledStripline: "Cohn, scaled to the IPC-2141 single line"
+     else: "Kirschning-Jansen") & "): Ze " & formatFloat(m.zEven, ffDecimal, 2) &
+    " ohm, Zo " & formatFloat(m.zOdd, ffDecimal, 2) & " ohm, eps_e " &
+    formatFloat(m.epsEven, ffDecimal, 3) & ", eps_o " & formatFloat(m.epsOdd, ffDecimal, 3))
+
+proc buildPair(t: SiTemplate, p: TemplateParams, n: var SiNet) =
+  ## Point-to-point trunk and its partner, coupled over the first
+  ## `coupledLength` (a differential pair: all of it).
+  let pt = t.partner
+  if t.topology != ttPointToPoint:
+    n.unsupported.add "a coupled partner needs a point-to-point template"
+    return
+  if p.viaCount > 0:
+    n.unsupported.add "vias on a coupled pair are not modelled"
+    return
+  if pt.coupled.geometry notin {lgEdgeCoupledMicrostrip, lgEdgeCoupledStripline}:
+    n.unsupported.add "partner cross-section is not an edge-coupled geometry"
+    return
+  n.conductorNames = @[t.name, pt.name]
+  let lc = if pt.role == prDiffPair: p.length else: clamp(p.coupledLength, 0.0, p.length)
+  var a1 = n.driverPort.pinNode
+  var a2 = n.addExtraDriver(pt.driverPort.label, pt.driver, pt.driverPort.pkg, 1,
+                            (case pt.role
+                             of prDiffPair: dmInverted
+                             else: (if pt.quietHigh: dmQuietHigh else: dmQuietLow)),
+                            pt.skew)
+  if p.seriesR > 0:
+    let r1 = n.addNode("rs")
+    n.addResistor(a1, r1, p.seriesR, "series R")
+    let r2 = n.addNode(pt.name & ":rs")
+    n.addResistor(a2, r2, p.seriesR, pt.name & " series R")
+    a1 = r1
+    a2 = r2
+  if lc > 0:
+    var spec = pt.coupled
+    if p.hasSpacing: spec.s = p.spacing
+    let m = coupledModes(spec)
+    let b1 = n.addNode("coupled")
+    let b2 = n.addNode(pt.name & ":coupled")
+    n.addCoupledLine(a1, b1, a2, b2, m.zEven, m.zOdd,
+                     lc * sqrt(m.epsEven) / SpeedOfLightSi,
+                     lc * sqrt(m.epsOdd) / SpeedOfLightSi, "coupled section")
+    n.assumptions.add coupledAssumption(m, spec)
+    if not m.inRange:
+      n.issues.add newIssue("si_coupled_range", sevWarning,
+        "coupled cross-section (w/h " & formatFloat(spec.w / spec.h1, ffDecimal, 2) &
+        ", s/h " & formatFloat(spec.s / spec.h1, ffDecimal, 2) &
+        ") is outside the closed form's validated range; extrapolated")
+    a1 = b1
+    a2 = b2
+  a1 = n.addRun(a1, t.line, p.length - lc, "trunk")
+  a2 = n.addRun(a2, t.line, p.length - lc + max(p.legMismatch, 0.0), pt.name & ":trunk")
+  discard n.addReceiver(t.receiverPorts[0].label, t.receivers[0], t.receiverPorts[0].pkg, a1)
+  discard n.addReceiver(pt.receiverPort.label, pt.receiver, pt.receiverPort.pkg, a2, 1)
+  if pt.role == prDiffPair and p.diffR > 0:
+    n.addResistor(n.receiverPorts[0].pinNode, n.receiverPorts[1].pinNode, p.diffR,
+                  "differential termination")
+  if pt.role == prDiffPair:
+    n.diffReceivers.add DiffReceiver(label: t.receiverPorts[0].label & "/" & pt.receiverPort.label,
+                                     p: 0, n: 1, vdiff: pt.vdiff, hasVdiff: pt.hasVdiff,
+                                     source: pt.vdiffSource)
+  if p.parallelR > 0:
+    for (pin, tag) in [(n.receiverPorts[0].pinNode, ""), (n.receiverPorts[1].pinNode, pt.name & ":")]:
+      let vt = n.addNode(tag & "vtt")
+      n.addResistor(pin, vt, p.parallelR, tag & "parallel termination")
+      n.addSource(vt, 0, p.parallelV, tag & "termination supply")
+
 proc build*(t: SiTemplate, p: TemplateParams): SiNet =
   ## One instance of the template.
   result = newSiNet(t.name)
@@ -322,6 +604,12 @@ proc build*(t: SiTemplate, p: TemplateParams): SiNet =
     return
   if t.receivers.len == 0:
     result.unsupported.add "no receivers"
+    return
+  if t.hasChannel and (t.topology != ttPointToPoint or t.channel.nPorts != 2):
+    result.unsupported.add "an S-parameter channel needs a point-to-point template and a 2-port file"
+    return
+  if t.partner.role != prNone:
+    t.buildPair(p, result)
     return
   if p.viaCount > 0:
     if not t.hasVia:
@@ -371,6 +659,10 @@ proc build*(t: SiTemplate, p: TemplateParams): SiNet =
                                  t.receiverPorts[ev.rx].pkg, end2)
   case t.topology
   of ttPointToPoint:
+    if t.hasChannel:
+      let o = result.addNode("channel:out")
+      result.addSParams(node, o, t.channel, (if t.channelName.len > 0: t.channelName else: "channel"))
+      node = o
     discard result.addReceiver(t.receiverPorts[0].label, t.receivers[0],
                                t.receiverPorts[0].pkg, node)
   of ttStar:

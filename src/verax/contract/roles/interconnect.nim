@@ -14,6 +14,10 @@ proc diffPairApply*(inst: RoleInstance, nl: Netlist) =
     raise newException(NetlistError,
       "role 'diff_pair' instance '" & inst.name & "': p and n are the same net (" &
       p.name & ")")
+  if inst.hasPart("driver") != inst.hasPart("rx"):
+    raise newException(NetlistError,
+      "role 'diff_pair' instance '" & inst.name & "': name both driver and rx (the " &
+      "P leg's pins; the N leg's come from IBIS [Diff Pin]) or neither")
 
 proc diffPairExpand*(inst: RoleInstance): seq[Assertion] =
   let p = inst.subject("p")
@@ -55,13 +59,31 @@ proc diffPairExpand*(inst: RoleInstance): seq[Assertion] =
 
 const siReceiverParts = ["rx", "rx2", "rx3", "rx4"]
 
+const siVictimParts* = ["victim", "victim_driver", "victim_rx"]
+
 proc siNetApply*(inst: RoleInstance, nl: Netlist) =
-  ## Validates at attach time: the driver is not also a receiver.
+  ## Validates at attach time: the driver is not also a receiver, and a
+  ## crosstalk victim is named whole (its net, driver and receiver) or not
+  ## at all.
   let d = inst.subject("driver")
   for p in siReceiverParts:
     if inst.hasPart(p) and inst.subject(p).name == d.name:
       raise newException(NetlistError,
         "role 'si_net' instance '" & inst.name & "': " & p & " is the driver (" & d.name & ")")
+  var n = 0
+  for p in siVictimParts:
+    if inst.hasPart(p): inc n
+  if n != 0 and n != siVictimParts.len:
+    raise newException(NetlistError,
+      "role 'si_net' instance '" & inst.name & "': a victim needs all of victim, " &
+      "victim_driver and victim_rx")
+  if (hasParam(inst, "min_eye_height") or hasParam(inst, "min_eye_width")) and
+     not hasParam(inst, "ui"):
+    raise newException(NetlistError,
+      "role 'si_net' instance '" & inst.name & "': an eye claim needs `ui` (the bit rate)")
+  if n > 0 and inst.subject("victim").name == inst.subject("net").name:
+    raise newException(NetlistError,
+      "role 'si_net' instance '" & inst.name & "': the victim is the net itself")
 
 proc siNetExpand*(inst: RoleInstance): seq[Assertion] =
   ## Per receiver: the threshold and ringback margins always (the
@@ -121,6 +143,44 @@ proc siNetExpand*(inst: RoleInstance): seq[Assertion] =
         rationale: "an edge must settle within the unit interval or the " &
                    "next bit starts from the previous one's ringing",
         origin: inst.name)
+  for p in siReceiverParts:
+    if not inst.hasPart(p): continue
+    let rx = inst.subject(p)
+    if hasParam(inst, "min_eye_height"):
+      result.add Assertion(
+        id: assertionId(inst, p & ".eye_height"),
+        subjects: @[rx], quantity: "si_eye_height_v",
+        expect: atLeast(paramFloat(inst, "min_eye_height", 0.0)), unit: "V",
+        severity: sevError,
+        rationale: "a PRBS7 stream at the UI must leave the receiver this much " &
+                   "vertical opening between its worst one and worst zero",
+        origin: inst.name)
+    if hasParam(inst, "min_eye_width"):
+      result.add Assertion(
+        id: assertionId(inst, p & ".eye_width"),
+        subjects: @[rx], quantity: "si_eye_width",
+        expect: atLeast(paramFloat(inst, "min_eye_width", 0.0)), unit: "s",
+        severity: sevError,
+        rationale: "every bit of a PRBS7 stream must sit beyond the receiver's " &
+                   "own Vinh/Vinl for this long: the sampling window",
+        origin: inst.name)
+  if inst.hasPart("victim_rx"):
+    let v = inst.subject("victim_rx")
+    result.add Assertion(
+      id: assertionId(inst, "victim.noise_margin"),
+      subjects: @[v], quantity: "si_noise_margin_v",
+      expect: atLeast(0.0), unit: "V", severity: sevError,
+      rationale: "crosstalk from this net must not push the quiet victim's " &
+                 "receiver past its own Vinl/Vinh (IBIS): a false edge",
+      origin: inst.name)
+    if hasParam(inst, "max_crosstalk"):
+      result.add Assertion(
+        id: assertionId(inst, "victim.crosstalk"),
+        subjects: @[v], quantity: "si_crosstalk_v",
+        expect: atMost(paramFloat(inst, "max_crosstalk", 0.0)), unit: "V",
+        severity: sevError,
+        rationale: "the noise budget this net may put on its neighbour",
+        origin: inst.name)
 
 proc registerInterconnectRoles*() =
   registerRole(RoleDef(
@@ -129,6 +189,11 @@ proc registerInterconnectRoles*() =
     parts: @[
       RolePart(name: "p", kind: skNet, doc: "the positive leg"),
       RolePart(name: "n", kind: skNet, doc: "the negative leg"),
+      RolePart(name: "driver", kind: skPin, optional: true,
+               doc: "the P leg's driving pin (IBIS; its [Diff Pin] row names the N " &
+                    "pin): lets `verax constraints` derive the pair's routing rules"),
+      RolePart(name: "rx", kind: skPin, optional: true,
+               doc: "the P leg's receiving pin (IBIS, with a [Diff Pin] row)"),
     ],
     params: @[
       AnnDef(key: "z_diff", kind: akFloat, unit: "ohm", scopes: {asNet},
@@ -139,6 +204,9 @@ proc registerInterconnectRoles*() =
       AnnDef(key: "skew_intra_max", kind: akFloat, unit: "s", scopes: {asNet},
              doc: "most P-to-N propagation-delay difference this pair may " &
                   "carry; unclaimed unless stated"),
+      AnnDef(key: "ui", kind: akFloat, unit: "s", scopes: {asNet},
+             doc: "unit interval: with driver/rx, `verax constraints` requires " &
+                  "the differential edge to settle within it"),
     ],
     apply: diffPairApply,
     expand: diffPairExpand))
@@ -155,6 +223,13 @@ proc registerInterconnectRoles*() =
       RolePart(name: "rx2", kind: skPin, optional: true, doc: "a second receiver"),
       RolePart(name: "rx3", kind: skPin, optional: true, doc: "a third receiver"),
       RolePart(name: "rx4", kind: skPin, optional: true, doc: "a fourth receiver"),
+      RolePart(name: "victim", kind: skNet, optional: true,
+               doc: "a quiet neighbour this net couples into (crosstalk); with " &
+                    "victim_driver and victim_rx"),
+      RolePart(name: "victim_driver", kind: skPin, optional: true,
+               doc: "the victim's driver, held low"),
+      RolePart(name: "victim_rx", kind: skPin, optional: true,
+               doc: "the victim's receiver"),
     ],
     params: @[
       AnnDef(key: "max_flight_time", kind: akFloat, unit: "s", scopes: {asNet},
@@ -170,6 +245,18 @@ proc registerInterconnectRoles*() =
              doc: "unit interval: each edge must settle within it"),
       AnnDef(key: "max_settle_time", kind: akFloat, unit: "s", scopes: {asNet},
              doc: "settling limit, overriding `ui` for the settle claim"),
+      AnnDef(key: "max_crosstalk", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "most excursion this net may cause on the victim; unclaimed " &
+                  "unless stated (the victim's noise margin is always claimed)"),
+      AnnDef(key: "min_eye_height", kind: akFloat, unit: "V", scopes: {asNet},
+             doc: "least eye height of a 127-bit PRBS7 at `ui` (needs `ui`); " &
+                  "unclaimed unless stated"),
+      AnnDef(key: "min_eye_width", kind: akFloat, unit: "s", scopes: {asNet},
+             doc: "least eye width (every bit past its threshold) of a 127-bit " &
+                  "PRBS7 at `ui` (needs `ui`); unclaimed unless stated"),
+      AnnDef(key: "coupled_length", kind: akFloat, unit: "m", scopes: {asNet},
+             doc: "the parallel run beside the victim that `verax constraints` " &
+                  "derives a minimum spacing for"),
     ],
     apply: siNetApply,
     expand: siNetExpand))

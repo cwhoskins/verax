@@ -132,3 +132,178 @@ suite "--board and verax constraints":
     check abs(c.maxSettleTime - 2e-8) < 1e-20
     check not c.requireMonotonic
     check c.maxOvershoot.isNaN
+
+suite "crosstalk victim (stage 8)":
+  proc victimDesign(params: seq[(string, string)]): Design =
+    result = spiDesign()
+    discard result.addRole("si_net", "sck_x",
+      [("net", netS("SCK")), ("driver", pinS("U1.1")), ("rx", pinS("U2.1")),
+       ("victim", netS("MOSI")), ("victim_driver", pinS("U1.2")),
+       ("victim_rx", pinS("U2.2"))], params)
+
+  test "a victim adds its noise-margin claim, and a budget when stated":
+    let d = victimDesign(@[("max_crosstalk", "0.2"), ("coupled_length", "0.04")])
+    var qs: seq[string]
+    for a in expandInstance(d.roles["sck_x"]): qs.add a.quantity
+    check "si_noise_margin_v" in qs and "si_crosstalk_v" in qs
+    check abs(siCriteria(d.roles["sck_x"]).maxCrosstalk - 0.2) < 1e-12
+
+  test "a victim is named whole or not at all":
+    let d = spiDesign()
+    expect NetlistError:
+      discard d.addRole("si_net", "half",
+        [("net", netS("SCK")), ("driver", pinS("U1.1")), ("rx", pinS("U2.1")),
+         ("victim", netS("MOSI"))], @[])
+
+  test "on a board the crosstalk claims are not evaluable, and say why":
+    let d = victimDesign(@[("max_crosstalk", "0.2")])
+    let rep = readiness(d, allCapabilities, board())
+    var seen = 0
+    for r in rep.results:
+      if r.assertion.quantity in ["si_noise_margin_v", "si_crosstalk_v"]:
+        inc seen
+        check r.status == esNotEvaluable
+        check "verax constraints" in r.reason
+    check seen == 2
+
+  test "verax constraints derives a minimum spacing and a KiCad clearance":
+    let d = victimDesign(@[("max_crosstalk", "0.1"), ("coupled_length", "0.04")])
+    var o = parseVerifyArgs(["--si-constraints", "--net=SCK"])
+    let dir = getTempDir() / "verax_si_xtalk"
+    createDir(dir)
+    o.siOut = dir / "out.txt"
+    o.siDru = dir / "out.kicad_dru"
+    discard siConstraints(d, o)
+    let txt = readFile(o.siOut)
+    check "spacing to MOSI over a 40.000 mm parallel run" in txt
+    check "min spacing:" in txt
+    let dru = readFile(o.siDru)
+    check "(constraint clearance (min " in dru
+    check "A.NetName == 'SCK' && B.NetName == 'MOSI'" in dru
+
+suite "differential pair constraints (stage 8)":
+  test "diff_pair with IBIS pins: max length and max mismatch, as KiCad rules":
+    let dir = getTempDir() / "verax_si_diff"
+    createDir(dir)
+    let drvIbs = """
+[IBIS Ver] 3.2
+[File Name] tx.ibs
+[File Rev] 1.0
+[Component] TX
+Manufacturer verax tests
+[Package]
+R_pkg 0.2 NA NA
+L_pkg 1nH NA NA
+C_pkg 0.3pF NA NA
+[Pin] signal_name model_name
+1 D_P tx
+2 D_N tx
+3 GND GND
+[Diff Pin] inv_pin vdiff tdelay_typ tdelay_min tdelay_max
+1 2 NA 0 NA NA
+[Model] tx
+Model_type Output
+C_comp 1p NA NA
+Vmeas = 1.65
+Rref = 50
+[Voltage Range] 3.3 NA NA
+[Pulldown]
+-3.3 -0.066 NA NA
+ 6.6  0.132 NA NA
+[Pullup]
+-3.3  0.066 NA NA
+ 6.6 -0.132 NA NA
+[Ramp]
+dV/dt_r 1.98/0.5n NA NA
+dV/dt_f 1.98/0.5n NA NA
+[End Model]
+[End]
+"""
+    let rxIbs = """
+[IBIS Ver] 3.2
+[File Name] rx.ibs
+[File Rev] 1.0
+[Component] RX
+Manufacturer verax tests
+[Package]
+R_pkg 0.2 NA NA
+L_pkg 1nH NA NA
+C_pkg 0.3pF NA NA
+[Pin] signal_name model_name
+1 D_P rx
+2 D_N rx
+3 GND GND
+[Diff Pin] inv_pin vdiff tdelay_typ tdelay_min tdelay_max
+1 2 0.2 NA NA NA
+[Model] rx
+Model_type Input
+C_comp 1p NA NA
+[Voltage Range] 3.3 NA NA
+[End Model]
+[End]
+"""
+    writeFile(dir / "tx.ibs", drvIbs)
+    writeFile(dir / "rx.ibs", rxIbs)
+    let nl = newNetlist("pair")
+    let gnd = addNet(nl, newNet("GND", ntGround))
+    let dp = addNet(nl, newNet("D_P", ntSignal))
+    let dn = addNet(nl, newNet("D_N", ntSignal))
+    for (des, file) in [("U1", "tx.ibs"), ("U2", "rx.ibs")]:
+      let c = addComponent(nl, newComponent(des, kind = "ic"))
+      discard connect(c, "1", dp)
+      discard connect(c, "2", dn)
+      discard connect(c, "3", gnd, ptGround)
+      c.attrs["ibis_file"] = dir / file
+    let r = addComponent(nl, newComponent("R1", kind = "resistor"))
+    r.attrs["value"] = "100"
+    discard connect(r, "1", dp)
+    discard connect(r, "2", dn)
+    let d = newDesign(nl)
+    discard d.addRole("diff_pair", "usb",
+      [("p", netS("D_P")), ("n", netS("D_N")), ("driver", pinS("U1.1")), ("rx", pinS("U2.1"))],
+      @[("skew_intra_max", "5e-12")])
+    var o = parseVerifyArgs(["--si-constraints"])
+    o.siOut = dir / "out.txt"
+    o.siDru = dir / "out.kicad_dru"
+    check siConstraints(d, o) == 0
+    let txt = readFile(o.siOut)
+    checkpoint txt
+    check "partner:     differential pair with D_N" in txt
+    check "differential termination 100.0 ohm" in txt
+    check "max mismatch:" in txt
+    check "skew budget 5.0 ps" in txt
+    let dru = readFile(o.siDru)
+    check "(constraint skew (max " in dru
+    check "D_N max length" in dru
+
+  test "driver without rx is refused at attach time":
+    let d = spiDesign()
+    expect NetlistError:
+      discard d.addRole("diff_pair", "half",
+        [("p", netS("SCK")), ("n", netS("MOSI")), ("driver", pinS("U1.1"))], @[])
+
+suite "eye claims (stage 8)":
+  test "min_eye_height / min_eye_width: measured on the board from a PRBS7 run":
+    var d = spiDesign(params = @[])
+    discard d.addRole("si_net", "sck_eye",
+      [("net", netS("SCK")), ("driver", pinS("U1.1")), ("rx", pinS("U2.1"))],
+      @[("ui", "1e-8"), ("min_eye_height", "2.0"), ("min_eye_width", "1e-7")])
+    let r = readiness(d, allCapabilities, board())
+    var seen = 0
+    for res in r.results:
+      case res.assertion.quantity
+      of "si_eye_height_v":
+        inc seen
+        check res.status == esPass
+      of "si_eye_width":
+        inc seen
+        check res.status == esFail      # wider than the UI: cannot pass
+      else: discard
+    check seen == 2
+
+  test "an eye claim without a UI is refused at attach time":
+    let d = spiDesign(params = @[])
+    expect NetlistError:
+      discard d.addRole("si_net", "bad",
+        [("net", netS("SCK")), ("driver", pinS("U1.1")), ("rx", pinS("U2.1"))],
+        @[("min_eye_height", "1.0")])

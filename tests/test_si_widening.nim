@@ -128,11 +128,14 @@ suite "lossy ladder (rung 5)":
     let t = tmpl(d, ttPointToPoint, 1, sec)
     t.build(TemplateParams(length: length, parallelR: 50.0))
 
+  var lad = defaultSiOptions()
+  lad.lossyModel = lmLadder
+
   test "doubling the section count changes the answer by < 1 %":
     let d = thevenin()
     let n = net(d)
-    let r1 = simulate(n, edgeStimulus(edRising))
-    var o = defaultSiOptions()
+    let r1 = simulate(n, edgeStimulus(edRising), lad)
+    var o = lad
     o.ladderMultiplier = 2.0
     o.tStop = r1.t[^1]
     let r2 = simulate(n, edgeStimulus(edRising), o)
@@ -150,8 +153,9 @@ suite "lossy ladder (rung 5)":
     # integral of H * X.
     let d = thevenin()
     let ui = 10e-9
-    let r = simulate(net(d), patternStimulus("010", ui))
+    let r = simulate(net(d), patternStimulus("010", ui), lad)
     check r.status == ssOk
+    check r.ladders.len == 1
     let z = complex(sec.r, 0.0)
     proc response(tq: float): float =
       let T = d.tEdge

@@ -30,6 +30,16 @@ type
     withWaveforms*: bool
     modelSpec*: string            ## raw `[Model Spec]` body, or ""
     extraModelLines*: string      ## raw `[Model]` subparameter lines
+    network*: tuple[lf, rdut, ldut, cdut: float]
+      ## A full IBIS fixture network on every waveform (all positive, with
+      ## `cComp` and each fixture's `c` positive too), integrated as ODEs.
+    probeAtFixture*: bool
+      ## Tabulate the fixture node instead of the DUT pin.
+    preDriverPulse*: tuple[amp, t0, width: float]
+      ## With `amp != 0`, every waveform gets a `[Composite Current]`: the
+      ## pullup's own current plus this triangular pulse (the pre-driver).
+    extraModelTables*: string
+      ## Raw keyword blocks inside the `[Model]` (`[ISSO PD]` ...).
 
 proc defaultLinearDriver*(): LinearDriver =
   LinearDriver(name: "lin_drv", modelType: "Output", vcc: 3.3, rpu: 25.0,
@@ -39,6 +49,13 @@ proc defaultLinearDriver*(): LinearDriver =
                withRamp: true, withWaveforms: true)
 
 proc num(x: float): string = formatFloat(x, ffScientific, 12)
+
+proc preDriverAt*(d: LinearDriver, t: float): float =
+  ## The synthetic pre-driver pulse: a triangle of `amp` peaking mid-width.
+  let p = d.preDriverPulse
+  if p.amp == 0 or p.width <= 0: return 0.0
+  let x = (t - p.t0) / p.width
+  if x <= 0 or x >= 1: 0.0 else: p.amp * (1.0 - abs(2.0 * x - 1.0))
 
 proc kAt*(d: LinearDriver, rising: bool, t: float): tuple[ku, kd: float] =
   ## The coefficients the waveforms were generated from.
@@ -69,6 +86,40 @@ proc waveformPoints*(d: LinearDriver, rising: bool,
                      fx: tuple[r, v, c: float]): seq[tuple[t, v: float]] =
   ## The V/T table for one fixture. With capacitance, RK4 over 2000 sub-steps
   ## per sample, from the DC point at `t = 0`.
+  if d.network.lf > 0:
+    # State (vd, iL, vp, iF, vf): die, die -> pin, pin, pin -> fixture,
+    # fixture node. DC start: vd from the algebraic solve into Rf + R_dut.
+    let nw = d.network
+    proc deriv(t: float, s: array[5, float]): array[5, float] =
+      let (ku, kd) = d.kAt(rising, t)
+      result[0] = (d.bufCurrent(ku, kd, s[0]) - s[1]) / d.cComp
+      result[1] = (s[0] - s[2] - nw.rdut * s[1]) / nw.ldut
+      result[2] = (s[1] - s[3]) / nw.cdut
+      result[3] = (s[2] - s[4]) / nw.lf
+      result[4] = (s[3] - (s[4] - fx.v) / fx.r) / fx.c
+    let vd0 = d.padVoltage(rising, (fx.r + nw.rdut, fx.v, 0.0), 0.0)
+    let i0 = (vd0 - fx.v) / (fx.r + nw.rdut)
+    let vp0 = vd0 - nw.rdut * i0
+    var s = [vd0, i0, vp0, i0, vp0]
+    var t = 0.0
+    result.add (0.0, (if d.probeAtFixture: s[4] else: s[2]))
+    let dtS = d.tEnd / (d.samples - 1).float
+    const sub = 400
+    for k in 1 ..< d.samples:
+      let h = dtS / sub.float
+      for _ in 0 ..< sub:
+        let k1 = deriv(t, s)
+        var s2, s3, s4: array[5, float]
+        for q in 0 ..< 5: s2[q] = s[q] + h / 2 * k1[q]
+        let k2 = deriv(t + h / 2, s2)
+        for q in 0 ..< 5: s3[q] = s[q] + h / 2 * k2[q]
+        let k3 = deriv(t + h / 2, s3)
+        for q in 0 ..< 5: s4[q] = s[q] + h * k3[q]
+        let k4 = deriv(t + h, s4)
+        for q in 0 ..< 5: s[q] += h / 6 * (k1[q] + 2 * k2[q] + 2 * k3[q] + k4[q])
+        t += h
+      result.add (dtS * k.float, (if d.probeAtFixture: s[4] else: s[2]))
+    return
   let ctot = d.cComp + fx.c
   for k in 0 ..< d.samples:
     let t = d.tEnd * k.float / (d.samples - 1).float
@@ -111,6 +162,7 @@ proc toIbs*(d: LinearDriver): string =
   m.add "[Voltage Range] " & num(vcc) & " NA NA\n"
   if d.modelSpec.len > 0:
     m.add "[Model Spec]\n" & d.modelSpec
+  m.add d.extraModelTables
   # IBIS currents are *into* the device; table voltages keep each table's
   # reference (pullup/power clamp relative to the rail).
   let gcLeak = proc(v: float): float =
@@ -144,9 +196,20 @@ proc toIbs*(d: LinearDriver): string =
         m.add "R_fixture = " & num(fx.r) & "\n"
         m.add "V_fixture = " & num(fx.v) & "\n"
         if fx.c != 0.0: m.add "C_fixture = " & num(fx.c) & "\n"
+        if d.network.lf > 0:
+          m.add "L_fixture = " & num(d.network.lf) & "\n"
+          m.add "R_dut = " & num(d.network.rdut) & "\n"
+          m.add "L_dut = " & num(d.network.ldut) & "\n"
+          m.add "C_dut = " & num(d.network.cdut) & "\n"
         m.add d.extraFixtureLines
-        for (t, v) in d.waveformPoints(rising, fx):
+        let pts = d.waveformPoints(rising, fx)
+        for (t, v) in pts:
           m.add num(t) & "  " & num(v) & "  NA  NA\n"
+        if d.preDriverPulse.amp != 0:
+          m.add "[Composite Current]\n"
+          for (t, v) in pts:
+            let (ku, _) = d.kAt(rising, t)
+            m.add num(t) & "  " & num(ku * (d.vcc - v) / d.rpu + d.preDriverAt(t)) & "  NA  NA\n"
   result = "[IBIS Ver] 3.2\n[File Name] synthetic.ibs\n[File Rev] 1.0\n"
   result.add "[Component] LINDEV\nManufacturer verax tests\n"
   result.add "[Package]\nR_pkg 0.2 NA NA\nL_pkg 2nH NA NA\nC_pkg 0.5pF NA NA\n"

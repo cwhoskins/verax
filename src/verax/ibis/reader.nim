@@ -212,9 +212,14 @@ proc parseDiffPins(sec: IbisSection): seq[DiffPin] =
       raise newException(IbisError,
         "line " & $n & ": [Diff Pin] row has fewer than 2 columns: " & text)
     var dp = DiffPin(pin: tk[0], invPin: tk[1])
-    if tk.len > 2 and not isNA(tk[2]):
-      var v: float
-      if parseIbisNumber(tk[2], v): dp.vdiff = ModelParam(present: true, value: v)
+    template col(k: int, dst: ModelParam) =
+      if tk.len > k and not isNA(tk[k]):
+        var v: float
+        if parseIbisNumber(tk[k], v): dst = ModelParam(present: true, value: v)
+    col(2, dp.vdiff)
+    col(3, dp.tdelayTyp)
+    col(4, dp.tdelayMin)
+    col(5, dp.tdelayMax)
     result.add dp
 
 proc parseModel(sec: IbisSection): IbisModel =
@@ -246,7 +251,9 @@ proc parseModel(sec: IbisSection): IbisModel =
     of "vref": scalar(result.vref)
     of "c_comp": result.cComp = parseTriplet(tk, 1)
     else: discard
+  var prev = ""
   for ch in sec.children:
+    defer: prev = ch.keyword
     case ch.keyword
     of "pulldown": result.pulldown = parseIv(ch)
     of "pullup": result.pullup = parseIv(ch)
@@ -259,8 +266,25 @@ proc parseModel(sec: IbisSection): IbisModel =
     of "temperature_range": result.temperatureRange = parseTriplet(tokens(ch.args))
     of "voltage_range": result.voltageRange = parseTriplet(tokens(ch.args))
     of "ramp": result.ramp = parseRamp(ch)
-    of "rising_waveform": result.risingWaveforms.add parseWaveform(ch)
-    of "falling_waveform": result.fallingWaveforms.add parseWaveform(ch)
+    of "rising_waveform":
+      result.risingWaveforms.add parseWaveform(ch)
+    of "falling_waveform":
+      result.fallingWaveforms.add parseWaveform(ch)
+    of "composite_current":
+      # Under the waveform table it follows.
+      var pts: seq[VtPoint]
+      for (n, text) in ch.body:
+        let tk = tokens(text)
+        var t: float
+        if tk.len > 0 and parseIbisNumber(tk[0], t):
+          pts.add VtPoint(t: t, v: parseTriplet(tk, 1))
+      if prev == "rising_waveform": result.risingWaveforms[^1].composite = pts
+      elif prev == "falling_waveform": result.fallingWaveforms[^1].composite = pts
+      else:
+        raise newException(IbisError, "line " & $ch.line &
+          ": [Composite Current] does not follow a [Rising Waveform] or [Falling Waveform]")
+    of "isso_pu": result.issoPu = parseIv(ch)
+    of "isso_pd": result.issoPd = parseIv(ch)
     of "model_spec": result.modelSpec = parseModelSpec(ch)
     of "receiver_thresholds": result.receiverThresholds = parseReceiverThresholds(ch)
     else: discard
