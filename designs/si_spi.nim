@@ -14,6 +14,13 @@
 ## so the numbers are easy to reason about; real vendor files drop in the
 ## same way.
 ##
+## The bus runs at 10 MHz (`ui = 100.ns`). At 50 MHz (`ui = 20.ns`) MOSI
+## fails its settle claims on this board: the unterminated Y to the two
+## flashes rings at ~690 MHz, +-0.2 V, and is within 2 % of its level only
+## ~31 ns after the edge (the exact settle check of the plan's stage 7).
+## A source resistor on MOSI, or one flash, would fix it; SCK
+## (point-to-point) settles in ~4 ns either way.
+##
 ## With no `--board=` given this design passes its own board, so `nimble
 ## verify` checks the routed result. `verax constraints` ignores the board
 ## and derives the routing rules (max length, vias, termination, stubs)
@@ -63,9 +70,9 @@ let d = design("si_spi"):
     pin "-", gnd, kind = ptGround
 
   role "si_net", sck_si, net = sck, driver = U1.pins["1"], rx = U2.pins["1"],
-    max_flight_time = 1.5.ns, ui = 20.ns
+    max_flight_time = 1.5.ns, ui = 100.ns
   role "si_net", mosi_si, net = mosi, driver = U1.pins["2"], rx = U2.pins["2"],
-    rx2 = U3.pins["2"], max_flight_time = 1.5.ns, ui = 20.ns
+    rx2 = U3.pins["2"], max_flight_time = 1.5.ns, ui = 100.ns
 
 var args = commandLineParams()
 var hasBoard = false
