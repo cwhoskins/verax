@@ -151,6 +151,16 @@ const builtinAnnotations* = [
     doc: "The [Model Selector] choice for this part's selector pins (one " &
          "[Model] name, e.g. a drive strength). Without it a selector pin " &
          "on an SI net is unevaluable, never a guess."),
+  AnnDef(key: "ibis_mate_file", kind: akString, scopes: {asComponent},
+    doc: "On a connector: path to the IBIS (.ibs) file modelling what is " &
+         "plugged into it -- the off-board far end (a USB host, a cable's " &
+         "other device), its `[Pin]` names matching the connector's pins. " &
+         "Not `ibis_file`: a connector has no buffers of its own. Read by " &
+         "the SI evaluator and `verax constraints`."),
+  AnnDef(key: "ibis_mate_component", kind: akString, scopes: {asComponent},
+    doc: "As `ibis_component`, for `ibis_mate_file`."),
+  AnnDef(key: "ibis_mate_model", kind: akString, scopes: {asComponent},
+    doc: "As `ibis_model`, for `ibis_mate_file`."),
   AnnDef(key: "zin", kind: akFloat, unit: "ohm", scopes: {asComponent, asPin},
     doc: "Impedance this pin presents to the net it sits on. Overrides the " &
          "per-pin-kind default spice/models substitutes for a part that " &

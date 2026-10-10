@@ -235,11 +235,13 @@ proc resolvePin*(bindings: openArray[IbisBinding], p: PinRef,
   let b = bindings[found]
   result.file = b.file.fileName
   let comp = b.file.component(b.componentName)
+  let ip = b.ibisPin(p.pin)
   var pe: PinEntry
   try:
-    pe = comp.pin(p.pin)
+    pe = comp.pin(ip)
   except IbisError:
-    result.reason = $p & ": IBIS [Component] " & comp.name & " has no pin " & p.pin
+    result.reason = $p & ": IBIS [Component] " & comp.name & " has no pin " & p.pin &
+      " (by pin name or signal_name)"
     return
   if pe.model.toUpperAscii in ["POWER", "GND", "NC"]:
     result.reason = $p & " is " & pe.model & " in IBIS, not a buffer"
@@ -268,7 +270,7 @@ proc resolvePin*(bindings: openArray[IbisBinding], p: PinRef,
     result.reason = $p & ": no [Model] named '" & modelName & "'"
     return
   result.model = b.file.model(modelName)
-  let (okPkg, rlc, why) = packageFor(comp, p.pin, corner)
+  let (okPkg, rlc, why) = packageFor(comp, ip, corner)
   if not okPkg:
     result.reason = $p & ": " & why
     return
@@ -298,12 +300,13 @@ proc diffPartner*(bindings: openArray[IbisBinding], p: PinRef, corner = coTyp): 
   for b in bindings:
     if b.designator != p.designator: continue
     let comp = b.file.component(b.componentName)
+    let ip = b.ibisPin(p.pin)
     for dp in comp.diffPins:
-      if dp.pin != p.pin and dp.invPin != p.pin: continue
-      let noninv = dp.pin == p.pin
+      if dp.pin != ip and dp.invPin != ip: continue
+      let noninv = dp.pin == ip
       result = DiffPartner(ok: true, inverting: noninv,
                            other: PinRef(designator: p.designator,
-                                         pin: (if noninv: dp.invPin else: dp.pin)),
+                                         pin: b.netlistPin(if noninv: dp.invPin else: dp.pin)),
                            source: comp.name & " [Diff Pin] " & dp.pin & "/" & dp.invPin)
       if dp.vdiff.present:
         result.vdiff = dp.vdiff.value

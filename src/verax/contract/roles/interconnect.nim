@@ -18,6 +18,14 @@ proc diffPairApply*(inst: RoleInstance, nl: Netlist) =
     raise newException(NetlistError,
       "role 'diff_pair' instance '" & inst.name & "': name both driver and rx (the " &
       "P leg's pins; the N leg's come from IBIS [Diff Pin]) or neither")
+  for (n, leg) in [("driver_n", "driver"), ("rx_n", "rx")]:
+    if inst.hasPart(n) and not inst.hasPart(leg):
+      raise newException(NetlistError,
+        "role 'diff_pair' instance '" & inst.name & "': " & n & " needs " & leg)
+    if inst.hasPart(n) and inst.subject(n).name == inst.subject(leg).name:
+      raise newException(NetlistError,
+        "role 'diff_pair' instance '" & inst.name & "': " & n & " is " & leg &
+        " (" & inst.subject(n).name & ")")
 
 proc diffPairExpand*(inst: RoleInstance): seq[Assertion] =
   let p = inst.subject("p")
@@ -193,7 +201,14 @@ proc registerInterconnectRoles*() =
                doc: "the P leg's driving pin (IBIS; its [Diff Pin] row names the N " &
                     "pin): lets `verax constraints` derive the pair's routing rules"),
       RolePart(name: "rx", kind: skPin, optional: true,
-               doc: "the P leg's receiving pin (IBIS, with a [Diff Pin] row)"),
+               doc: "the P leg's receiving pin (IBIS, with a [Diff Pin] row unless " &
+                    "rx_n is named)"),
+      RolePart(name: "driver_n", kind: skPin, optional: true,
+               doc: "the N leg's driving pin, for an IBIS file with no [Diff Pin] " &
+                    "row (a pseudo-differential pair, e.g. USB full-speed): driven " &
+                    "as the inverse of driver"),
+      RolePart(name: "rx_n", kind: skPin, optional: true,
+               doc: "the N leg's receiving pin, for an IBIS file with no [Diff Pin] row"),
     ],
     params: @[
       AnnDef(key: "z_diff", kind: akFloat, unit: "ohm", scopes: {asNet},

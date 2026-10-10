@@ -143,6 +143,18 @@ is what is left.
    instead and `analyzeOscillation` takes ten times that density; nobody has
    checked what the third one costs.
 
+74. **`verax constraints`' critical-length rule of thumb uses the wrong
+   edge.** `deriveSiConstraints`/`deriveDiffConstraints` feed
+   `KSeries.riseTime` to `criticalLength`, but `riseTime` is the 10-90 % of
+   the *faster* `Ku`/`Kd` coefficient -- documented as the edge the time step
+   must resolve, not the pad's edge. A break-before-make vendor buffer
+   exposes it: ST's `io8usb_ft_phy_fs_3v3` (STM32H563, found wiring
+   `designs/datalogger`'s USB pair) turns `Kd` off in ~0.3 ns and ramps `Ku`
+   over ~20 ns ([Ramp]: 20-80 % in 9.7 ns), so the rule of thumb reads
+   24.7 mm against a simulated limit past 300 mm and prints "disagrees by
+   more than 3x". The simulation is unaffected. Fix: take the rule's edge
+   from the pad (the `[Ramp]`, or the timing-load run's 10-90 %).
+
 ---
 
 ## Feature gaps

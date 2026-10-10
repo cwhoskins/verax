@@ -1456,11 +1456,17 @@ proc siConstraints*(d: Design, o: VerifyOptions): int =
     if inst.hasParam("ui"):
       c.ui = inst.paramFloat("ui", NaN)
       c.maxSettleTime = c.ui
-    let req = DiffPairRequest(p: pNet, n: nNet, driver: pinRef(inst.subject("driver").name),
+    var req = DiffPairRequest(p: pNet, n: nNet, driver: pinRef(inst.subject("driver").name),
                               rx: pinRef(inst.subject("rx").name),
                               zDiff: (if inst.hasParam("z_diff"): inst.paramFloat("z_diff", 100.0) else: 100.0),
                               skewMax: (if inst.hasParam("skew_intra_max"): inst.paramFloat("skew_intra_max", NaN) else: NaN),
                               ui: c.ui)
+    if inst.hasPart("driver_n"):
+      req.driverN = pinRef(inst.subject("driver_n").name)
+      req.hasDriverN = true
+    if inst.hasPart("rx_n"):
+      req.rxN = pinRef(inst.subject("rx_n").name)
+      req.hasRxN = true
     let st = defaultStackup(if o.stackupLayers > 0: o.stackupLayers else: 4)
     let (ok, why, rep) = deriveDiffConstraints(d.netlist, req, c, st)
     if not ok:

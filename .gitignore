@@ -60,6 +60,12 @@ nimcache/
 !/designs/datalogger/lib/
 /designs/datalogger/lib/*
 !/designs/datalogger/lib/*.nim
+# `designs/datalogger/ibis/` holds the USB host's synthetic stand-in model
+# (written here from the USB 2.0 spec, not a vendor's file). The STM32's own
+# vendor `.ibs` is licensed and stays out, under `designs/lib/stm32/`.
+!/designs/datalogger/ibis/
+/designs/datalogger/ibis/*
+!/designs/datalogger/ibis/*.ibs
 # `designs/si_spi/` holds the SI demo's synthetic IBIS models and its
 # hand-written board -- data, not build output.
 !/designs/si_spi/

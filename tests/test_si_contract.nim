@@ -98,13 +98,15 @@ suite "evaluator":
     check count(r.results, esPass) == 6
 
   test "unsupported input is not evaluable and names the problem":
-    # U3 bound to the [Component] whose pin 1 it lacks.
-    let r = readiness(spiDesign(u3Component = "DEMO_FLASH"), allCapabilities, board())
+    # U3 bound to a [Component] its file does not have. (Binding it to
+    # `DEMO_FLASH`, whose pin 1 U3 lacks, is fine: a part may declare
+    # fewer pins than its file describes.)
+    let r = readiness(spiDesign(u3Component = "NO_SUCH_PART"), allCapabilities, board())
     var mosi = 0
     for res in r.results:
       if res.assertion.origin == "mosi_si":
         check res.status == esNotEvaluable
-        check "pin '1'" in res.reason
+        check "NO_SUCH_PART" in res.reason
         inc mosi
       else:
         check res.status == esPass
@@ -275,6 +277,115 @@ C_comp 1p NA NA
     let dru = readFile(o.siDru)
     check "(constraint skew (max " in dru
     check "D_N max length" in dru
+
+  test "a pseudo-differential pair: N leg named by the role, series R read, vendor pin names":
+    # The driver's file numbers its package pins and has no [Diff Pin] (USB
+    # full-speed: two single-ended buffers in opposition); the part names
+    # its pins by signal. Each driver pin reaches the pair through 27 ohm.
+    let dir = getTempDir() / "verax_si_pseudo"
+    createDir(dir)
+    writeFile(dir / "tx.ibs", """
+[IBIS Ver] 3.2
+[File Name] tx.ibs
+[File Rev] 1.0
+[Component] TX
+Manufacturer verax tests
+[Package]
+R_pkg 0.2 NA NA
+L_pkg 1nH NA NA
+C_pkg 0.3pF NA NA
+[Pin] signal_name model_name
+11 D_P tx
+12 D_N tx
+13 VDD POWER
+14 GND GND
+[Model] tx
+Model_type Output
+C_comp 1p NA NA
+Vmeas = 1.65
+Rref = 50
+[Voltage Range] 3.3 NA NA
+[Pulldown]
+-3.3 -0.33 NA NA
+ 6.6  0.66 NA NA
+[Pullup]
+-3.3  0.33 NA NA
+ 6.6 -0.66 NA NA
+[Ramp]
+dV/dt_r 1.98/4n NA NA
+dV/dt_f 1.98/4n NA NA
+[End Model]
+[End]
+""")
+    writeFile(dir / "rx.ibs", """
+[IBIS Ver] 3.2
+[File Name] rx.ibs
+[File Rev] 1.0
+[Component] RX
+Manufacturer verax tests
+[Package]
+R_pkg 0 NA NA
+L_pkg 0 NA NA
+C_pkg 0 NA NA
+[Pin] signal_name model_name
+DP DP rx
+DM DM rx
+[Diff Pin] inv_pin vdiff tdelay_typ tdelay_min tdelay_max
+DP DM 0.2 NA NA NA
+[Model] rx
+Model_type Input
+C_comp 10p NA NA
+[Voltage Range] 3.3 NA NA
+[End Model]
+[End]
+""")
+    proc build(rxN = ""): (Design, VerifyOptions) =
+      let nl = newNetlist("pseudo")
+      discard addNet(nl, newNet("GND", ntGround))
+      let tp = addNet(nl, newNet("TX_P", ntSignal))
+      let tn = addNet(nl, newNet("TX_N", ntSignal))
+      let dp = addNet(nl, newNet("D_P", ntSignal))
+      let dn = addNet(nl, newNet("D_N", ntSignal))
+      let u1 = addComponent(nl, newComponent("U1", kind = "ic"))
+      discard connect(u1, "D_P", tp)
+      discard connect(u1, "D_N", tn)
+      u1.attrs["ibis_file"] = dir / "tx.ibs"
+      let j1 = addComponent(nl, newComponent("J1", kind = "connector"))
+      discard connect(j1, "DP", dp)
+      discard connect(j1, "DM", dn)
+      discard connect(j1, "DP2", addNet(nl, newNet("SPARE", ntSignal)))
+      j1.attrs["ibis_mate_file"] = dir / "rx.ibs"
+      for (des, a, b) in [("R1", tp, dp), ("R2", tn, dn)]:
+        let r = addComponent(nl, newComponent(des, kind = "resistor"))
+        r.attrs["value"] = "27"
+        discard connect(r, "1", a)
+        discard connect(r, "2", b)
+      let d = newDesign(nl)
+      var parts = @[("p", netS("D_P")), ("n", netS("D_N")), ("driver", pinS("U1.D_P")),
+                    ("driver_n", pinS("U1.D_N")), ("rx", pinS("J1.DP"))]
+      if rxN.len > 0: parts.add ("rx_n", pinS(rxN))
+      discard d.addRole("diff_pair", "usb", parts, @[("ui", "83.33e-9")])
+      var o = parseVerifyArgs(["--si-constraints"])
+      o.siOut = dir / "out.txt"
+      (d, o)
+    let (d, o) = build()
+    check siConstraints(d, o) == 0
+    let txt = readFile(o.siOut)
+    checkpoint txt
+    check "partner:     differential pair with D_N" in txt
+    check "termination: series 27.000 ohm" in txt
+    check "series termination 27.0 ohm at the driver on each leg" in txt
+    check "J1.DP" in txt
+    # rx_n disagreeing with the receiver's own [Diff Pin] is refused, named.
+    let (d2, o2) = build(rxN = "J1.DP2")
+    check siConstraints(d2, o2) != 0
+    check "the role names J1.DP2" in readFile(o2.siOut)
+
+  test "driver_n without driver is refused at attach time":
+    let d = spiDesign()
+    expect NetlistError:
+      discard d.addRole("diff_pair", "half",
+        [("p", netS("SCK")), ("n", netS("MOSI")), ("driver_n", pinS("U1.2"))], @[])
 
   test "driver without rx is refused at attach time":
     let d = spiDesign()

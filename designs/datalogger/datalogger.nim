@@ -50,11 +50,32 @@
 ## header explains why the real STM32H563 cannot carry the
 ## `dummy_mcu`/`DONE`/`PASS` pattern `designs/i2c_eeprom.nim` uses.
 ##
+## **USB signal integrity, before layout.** The `usb` pair carries an
+## explicit `diff_pair` role naming its IBIS ends: U1's `PA12`/`PA11` (ST's
+## own model, the full-speed USB PHY at 3.3 V -- see `lib/mcu.nim`) driving,
+## and the host behind `Xusbc.J1` receiving (`ibis/usb_fs_host.ibs`, a
+## stand-in built from the USB 2.0 spec's limits, bound with
+## `ibis_mate_file` below). ST's file has no `[Diff Pin]` -- full-speed USB
+## is two single-ended buffers driven in opposition -- so the role names the
+## N leg's driver outright (`driver_n`). `verax constraints` derives the
+## pair's routing rules from them, simulating the 27 ohm `R_DP`/`R_DM`
+## inside `Xmcu` as series termination:
+##
+##   verax constraints designs/datalogger/datalogger.nim --dru=datalogger.kicad_dru
+##
+## None of this adds a claim to `verax check`: the pair has no board yet
+## (and board-level pair extraction does not exist), so its routing rules
+## are derived, not measured. No `z_diff`: it would be a claim nothing can
+## check (see `usb` below), so the template sizes the pair for its default
+## 100 ohm, not USB's 90 -- a full-speed edge (4-20 ns) on a board this size
+## does not tell the two apart. The cable is not modelled.
+##
 ## **Deliberately not stated.** No `footprint` annotation on any part, so
 ## `verax layout` reports every placement as `footprint_unresolved` -- Stage 1
 ## of the board-to-PCB plan this design exists to start, and deliberately not
 ## this file's job.
 
+import std/os
 import verax/contract/dsl
 import verax/verify
 import verax/spice/boundary
@@ -247,6 +268,15 @@ let d = design("datalogger"):
 
   # --- claims ---------------------------------------------------------
 
+  # The USB pair's IBIS ends, for `verax constraints` (see the header).
+  # Named `usb`, like the `iface`, so this replaces the bare `diff_pair` the
+  # interface would imply rather than adding a second one beside it -- the
+  # same trick as `bus`/`"i2c"`. `ui`: full-speed, 12 Mb/s.
+  role "diff_pair", usb, p = usb["p"], n = usb["n"],
+       driver = Xmcu.innerPin("U1", "PA12"), driver_n = Xmcu.innerPin("U1", "PA11"),
+       rx = Xusbc.innerPin("J1", "DP"),
+       ui = 83.33.ns
+
   role "power_rail", input, rail = vbus, voltage = 5.0.V, band = 5.pct
 
   role "power_rail", sys, rail = vdd, voltage = buckCfg.voltage, band = 3.pct,
@@ -292,6 +322,9 @@ driveConnector(findComponent(d.netlist, "Xusbc.J1"),
                {"VBUS": driveSource(5.0.V, rout = 100.mohm, lout = 2.uH),
                 "CC1": driveSource(5.0.V, rout = rpFor(advertise)),
                 "CC2": driveSource(5.0.V, rout = rpFor(advertise))})
+# And what the USB pins see on the far side, for SI: a full-speed host.
+setAnnotation(findComponent(d.netlist, "Xusbc.J1"), "ibis_mate_file",
+              currentSourcePath().parentDir / "ibis" / "usb_fs_host.ibs")
 driveConnector(findComponent(d.netlist, "J2"),
                {"AIN": driveSource(0.5.V, rout = 1.0.kohm)})
 

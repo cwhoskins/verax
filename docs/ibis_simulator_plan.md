@@ -166,6 +166,15 @@ as a ladder. `verax constraints designs/si_spi.nim` 0.31 s (0.66 s).
   must damp the rails a device hangs from (a pad on a table knot with a
   moving rail oscillated at DC).
 
+**Since (2026-10-09, `designs/datalogger`'s USB pair against ST's real
+STM32H563 file):** `bindIbis` matches netlist pins by `[Pin]` name, else
+`signal_name`, and accepts a part declaring a subset of the file's pins
+(refusing only a file matching none); `diff_pair` takes `driver_n`/`rx_n`
+for files with no `[Diff Pin]` (pseudo-differential, e.g. USB full-speed);
+`deriveDiffConstraints` reads a series resistor between each driver pin and
+its leg, through instance boundaries; a connector's far end binds with
+`ibis_mate_file`/`_component`/`_model`. Found on the way: findings §74.
+
 **Not done:** IBIS-AMI (stage 8.7, by design); the optional ngspice
 oracle and PyBERT cross-checks (PyBERT is not installed here; it would
 cross-check `convline` and `eye`); board-level crosstalk and

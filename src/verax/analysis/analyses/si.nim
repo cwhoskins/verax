@@ -9,12 +9,14 @@
 ##   stack-up, the same pass criteria, and the routing rules that pass.
 ##
 ## IBIS models come from each part's `ibis_file` / `ibis_component` /
-## `ibis_model` annotations. Knows nothing of contracts.
+## `ibis_model` annotations -- on a connector, `ibis_mate_*`: what is
+## plugged into it. Knows nothing of contracts.
 
-import std/[tables, strutils, math, os]
+import std/[tables, strutils, math, os, sequtils]
 import ../../netlist/types
 import ../../netlist/graph
 import ../../netlist/formats/spice as spiceFormat
+import ../../spice/boundary
 import ../../ibis/reader
 import ../../ibis/types as ibtypes
 import ../../ibis/attach
@@ -87,9 +89,22 @@ proc ibisSetup*(nl: Netlist, designators: openArray[string]): IbisSetup =
     if c == nil:
       result.problems.add "no part " & des & " in the design"
       continue
-    let path = c.attrs.getOrDefault("ibis_file")
+    # A part's own buffers (`ibis_file`), or, on a connector, what is
+    # plugged into it (`ibis_mate_file`): two facts, two keys.
+    let own = c.attrs.getOrDefault("ibis_file")
+    let mate = c.attrs.getOrDefault("ibis_mate_file")
+    if own.len > 0 and mate.len > 0:
+      result.problems.add des & " has both `ibis_file` and `ibis_mate_file`"
+      continue
+    if mate.len > 0 and not isConnector(c):
+      result.problems.add des & " has `ibis_mate_file` but is kind '" & c.kind &
+        "', not a connector"
+      continue
+    let pre = if mate.len > 0: "ibis_mate_" else: "ibis_"
+    let path = if mate.len > 0: mate else: own
     if path.len == 0:
-      result.problems.add des & " has no `ibis_file` annotation"
+      result.problems.add des & (if isConnector(c): " (a connector) has no `ibis_mate_file` annotation"
+                                 else: " has no `ibis_file` annotation")
       continue
     var f: IbisFile
     try:
@@ -100,11 +115,11 @@ proc ibisSetup*(nl: Netlist, designators: openArray[string]): IbisSetup =
       result.problems.add des & ": " & e.msg
       continue
     try:
-      result.bindings.add bindIbis(nl, des, f, c.attrs.getOrDefault("ibis_component"))
+      result.bindings.add bindIbis(nl, des, f, c.attrs.getOrDefault(pre & "component"))
     except IbisError as e:
       result.problems.add des & ": " & e.msg
       continue
-    let sel = c.attrs.getOrDefault("ibis_model")
+    let sel = c.attrs.getOrDefault(pre & "model")
     if sel.len > 0: result.selections[des] = sel
 
 proc designators(req: SiNetRequest): seq[string] =
@@ -324,7 +339,13 @@ type
     p*, n*: string
       ## The two nets.
     driver*, rx*: PinRef
-      ## The P leg's driver and receiver; the N leg's come from `[Diff Pin]`.
+      ## The P leg's driver and receiver; the N leg's come from `[Diff Pin]`
+      ## unless named below.
+    driverN*, rxN*: PinRef
+    hasDriverN*, hasRxN*: bool
+      ## The N leg's driver/receiver, named outright: for an IBIS file with
+      ## no `[Diff Pin]` (a pseudo-differential pair such as USB full-speed,
+      ## two single-ended buffers driven in opposition).
     zDiff*: float
       ## Target differential impedance, ohms (sets the template's gap).
     skewMax*: float
@@ -343,6 +364,46 @@ proc diffTermination(nl: Netlist, p, n: string): float =
       var v: float
       if parseSpiceMagnitude(c.attrs.getOrDefault("value"), v): r = v
   r
+
+proc legPartner(bindings: openArray[IbisBinding], p: PinRef, explicitN: PinRef,
+                hasExplicit: bool, corner: ibtypes.Corner): DiffPartner =
+  ## The N leg of `p`: `[Diff Pin]`, else the role's named pin. Both present
+  ## must agree (the file's `vdiff`/`tdelay` then still apply).
+  let fromFile = diffPartner(bindings, p, corner)
+  if not hasExplicit: return fromFile
+  if fromFile.ok:
+    if fromFile.other != explicitN:
+      return DiffPartner(reason: $p & ": IBIS " & fromFile.source & " pairs it with " &
+        $fromFile.other & ", the role names " & $explicitN)
+    return fromFile
+  DiffPartner(ok: true, other: explicitN, inverting: true,
+              source: "the role's N-leg pin " & $explicitN & " (no [Diff Pin] row)")
+
+proc seriesROnLeg(nl: Netlist, pin: PinRef, pairNet: string): tuple[r: float, note: string] =
+  ## A two-pin resistor between `pin`'s own net and the pair net, through
+  ## any instance boundary (`hierNetGroup`): its value, else `0` with a
+  ## note saying why. A pin straight on the pair has no series R.
+  let c = nl.findComponent(pin.designator)
+  let pn = nl.findNet(pairNet)
+  if c == nil or pn == nil or not c.pins.hasKey(pin.pin) or c.pins[pin.pin].net == nil:
+    return (0.0, $pin & ": its net or the pair net " & pairNet & " was not found")
+  let pairGroup = hierNetGroup(pn)
+  let own = c.pins[pin.pin].net
+  if own in pairGroup: return (0.0, "")
+  for g in hierNetGroup(own):
+    for pp in g.pins:
+      let r = pp.component
+      if r == nil or r.kind != "resistor" or r.pins.len != 2: continue
+      for _, other in r.pins:
+        if other == pp or other.net == nil: continue
+        var hit = false
+        for o in hierNetGroup(other.net):
+          if o in pairGroup: hit = true
+        if not hit: continue
+        var v: float
+        if parseSpiceMagnitude(r.attrs.getOrDefault("value"), v): return (v, "")
+        return (0.0, $pin & ": series resistor " & r.designator & " has no readable value")
+  (0.0, $pin & " is on net " & own.name & ", not the pair, and no resistor joins them")
 
 proc pairGap(line: LineSpec, zDiff: float): tuple[spec: LineSpec, z: float] =
   ## The edge-coupled microstrip on `line`'s dielectric, gap equal to width
@@ -366,7 +427,10 @@ proc deriveDiffConstraints*(nl: Netlist, req: DiffPairRequest, c: Criteria,
   ## length of the coupled pair, and the max length mismatch between its
   ## legs (KiCad `skew`) -- simulated with the role's criteria, and from the
   ## role's skew budget over the single line's delay, whichever is tighter.
-  let setup = ibisSetup(nl, [req.driver.designator, req.rx.designator])
+  var des = @[req.driver.designator, req.rx.designator]
+  if req.hasDriverN: des.add req.driverN.designator
+  if req.hasRxN: des.add req.rxN.designator
+  let setup = ibisSetup(nl, des.deduplicate)
   if setup.problems.len > 0:
     return (false, setup.problems.join("; "), ConstraintReport())
   let (pair, zd) = pairGap(st.line, req.zDiff)
@@ -376,8 +440,8 @@ proc deriveDiffConstraints*(nl: Netlist, req: DiffPairRequest, c: Criteria,
   for corner in [ibtypes.coTyp, ibtypes.coMin, ibtypes.coMax]:
     let dP = resolvePin(setup.bindings, req.driver, setup.selections, corner)
     let rP = resolvePin(setup.bindings, req.rx, setup.selections, corner)
-    let dPair = diffPartner(setup.bindings, req.driver, corner)
-    let rPair = diffPartner(setup.bindings, req.rx, corner)
+    let dPair = legPartner(setup.bindings, req.driver, req.driverN, req.hasDriverN, corner)
+    let rPair = legPartner(setup.bindings, req.rx, req.rxN, req.hasRxN, corner)
     var why = ""
     if not dP.ok: why = dP.reason
     elif not rP.ok: why = rP.reason
@@ -425,7 +489,16 @@ proc deriveDiffConstraints*(nl: Netlist, req: DiffPairRequest, c: Criteria,
                                 vdiff: vdiff, hasVdiff: not vdiff.isNaN, vdiffSource: vsrc)
     templates.add t
     corners.add corner
-  var base = templateParams(0.0, diffR = rxTerm)
+  # Series termination at the driver: a resistor between each driver pin's
+  # net and its leg (the template puts one value on both legs).
+  let rsP = seriesROnLeg(nl, req.driver, req.p)
+  var rsN = (r: 0.0, note: "")
+  var nDriver = req.driverN
+  if not req.hasDriverN:
+    let dp = diffPartner(setup.bindings, req.driver, coTyp)
+    if dp.ok: nDriver = dp.other
+  if nDriver.designator.len > 0: rsN = seriesROnLeg(nl, nDriver, req.n)
+  var base = templateParams(0.0, seriesR = rsP.r, diffR = rxTerm)
   var r = ConstraintReport(net: req.p, identity: identity(templates[0], corners, base, c),
                            hasLength: true, bestSeriesR: NaN, pairNet: req.n)
   for a in st.notes: r.identity.assumptions.add $a
@@ -435,6 +508,14 @@ proc deriveDiffConstraints*(nl: Netlist, req: DiffPairRequest, c: Criteria,
   r.identity.assumptions.add (if rxTerm > 0: "differential termination " &
     formatFloat(rxTerm, ffDecimal, 1) & " ohm across the pair (from the netlist)"
     else: "no differential termination found across the pair")
+  if rsP.r > 0 or rsN.r > 0:
+    r.identity.assumptions.add "series termination " & formatFloat(rsP.r, ffDecimal, 1) &
+      " ohm at the driver on each leg (from the netlist)"
+    if abs(rsP.r - rsN.r) > 1e-9:
+      r.notes.add "the legs' series resistors differ (P " & formatFloat(rsP.r, ffDecimal, 1) &
+        " ohm, N " & formatFloat(rsN.r, ffDecimal, 1) & " ohm); simulated with P's on both"
+  for note in [rsP.note, rsN.note]:
+    if note.len > 0: r.notes.add note
   r.length = sweep(templates, base, spLength, 0.0, maxLength, grid, c, tolerance)
   let tr = templates[0].driver.edges[edRising].riseTime
   r.criticalLength = criticalLength(tr, templates[0].line.tdPerM)

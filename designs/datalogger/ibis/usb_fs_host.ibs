@@ -1,0 +1,45 @@
+| A USB 2.0 full-speed host's receiving port, as seen from a device's
+| receptacle: a stand-in (synthetic, linear tables) built from the USB 2.0
+| specification's limits, not from any vendor's file. The host itself is
+| off-board and unknown, so its own model is the spec's envelope.
+|
+|   C_comp      CIN, transceiver input capacitance: <= 20 pF (USB 2.0
+|               table 7-7). typ 10 pF, min 5 pF, max 20 pF.
+|   Vinl/Vinh   the single-ended receiver thresholds, 0.8 V / 2.0 V.
+|   [Diff Pin]  the differential receiver's sensitivity, 200 mV (VDI).
+|   [GND Clamp] the host's 15 kohm D+/D- pull-down (RPD, 14.25..24.8 k),
+|               linear: min = 24.8 k, max = 14.25 k.
+|
+| The cable between the receptacle and the host is not modelled: what this
+| file sits behind is the board's own trace, which is what a board's
+| routing rules are about.
+[IBIS Ver] 4.2
+[File Name] usb_fs_host.ibs
+[File Rev] 1.0
+[Component] USB_FS_HOST
+[Manufacturer] verax (synthetic, USB 2.0 spec limits)
+[Package]
+| variable typ min max
+R_pkg 0 NA NA
+L_pkg 0 NA NA
+C_pkg 0 NA NA
+[Pin] signal_name model_name
+DP  DP  usb_fs_rx
+DM  DM  usb_fs_rx
+GND GND GND
+[Diff Pin] inv_pin vdiff tdelay_typ tdelay_min tdelay_max
+DP DM 200mV NA NA NA
+[Model] usb_fs_rx
+Model_type Input
+| variable typ min max
+C_comp 10pF 5pF 20pF
+Vinl = 0.8
+Vinh = 2.0
+[Voltage Range] 3.3V 3.0V 3.6V
+[GND Clamp]
+| voltage  I(typ)      I(min)       I(max)
+ -3.3      -220.0uA    -133.06uA    -231.58uA
+  0.0       0.0         0.0          0.0
+  6.6       440.0uA     266.13uA     463.16uA
+[End Model]
+[End]

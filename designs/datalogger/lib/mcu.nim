@@ -53,8 +53,17 @@
 ## and was already wired internally to `R_NRST`/`C_NRST`; `datalogger.nim`'s
 ## J-Link header wires its `nRESET` line to that same net a plain reset
 ## button would.
+##
+## **U1 carries ST's own IBIS model** (`stm32Ibis`), for the USB pair's
+## signal integrity (`datalogger.nim`'s `diff_pair` role, read by `verax
+## constraints`). The file is ST's, licensed, and not committed: unzip
+## `stm32h562_563_573_lqfp144.ibs` from ST's STM32H5 IBIS package into
+## `designs/lib/stm32/`. Without it `verax constraints` says so and `verax
+## check` is unaffected. Its `[Pin]` rows are package pin numbers (`103`);
+## U1's pins bind by the rows' `signal_name` (`PA11`). `PA11`/`PA12` are a
+## `[Model Selector]`; `ibis_model` picks the full-speed USB PHY at 3.3 V.
 
-import std/tables
+import std/[os, tables]
 import verax/contract/dsl
 import verax/netlist/formats/spice as spiceFormat
 import verax/netlist/interfaces/std
@@ -62,6 +71,11 @@ import verax/netlist/graph
 
 import ../../lib/stm32h563
 import ../../lib/crystal
+
+const stm32Ibis* = currentSourcePath().parentDir / ".." / ".." / "lib" / "stm32" /
+                   "stm32h562_563_573_lqfp144.ibs"
+  ## ST's IBIS file for the LQFP-144 STM32H562/563/573 (U1 is the
+  ## `STM32H563ZIT6`, the non-SMPS part).
 
 proc tagDiffPairMember(n: Net, ifaceName, signal: string) =
   ## Marks a *pre-existing* net as a `diff_pair` interface member, the exact
@@ -138,6 +152,9 @@ proc mcuSheet*(xtal = hse8MHz(), boardCurrentMa = 150.0): Netlist =
       pin "PA15", jtag["tdi"],   kind = ptInput,  function = "JTAG.tdi"
       pin "PB3",  jtag["tdo"],   kind = ptOutput, function = "JTAG.tdo"
       pin "PB4",  jtag["ntrst"], kind = ptInput,  function = "JTAG.ntrst"
+      spec:
+        ibis_file = stm32Ibis
+        ibis_model = "io8usb_ft_phy_fs_3v3"
 
     component R_NRST, kind = "resistor", value = "10k":
       pin "1", VDD,  kind = ptPassive
