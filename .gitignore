@@ -72,6 +72,11 @@ nimcache/
 /designs/si_spi/*
 !/designs/si_spi/*.ibs
 !/designs/si_spi/*.kicad_pcb
+# `designs/rf_trx/` holds the gain block's synthetic Touchstone file (the
+# `sparams` annotation points at it) -- data, not build output.
+!/designs/rf_trx/
+/designs/rf_trx/*
+!/designs/rf_trx/*.s2p
 /templates/*
 !/templates/*.nim
 

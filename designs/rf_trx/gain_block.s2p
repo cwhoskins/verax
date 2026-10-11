@@ -1,0 +1,12 @@
+! Illustrative 50 ohm MMIC gain block, biased at Vd = 4.0 V, Id = 50 mA.
+! Synthetic: shaped like the class (a Darlington pair, gain rolling off
+! with frequency, ~-15 dB match), not measured from any particular part.
+! Columns: freq  S11(dB ang)  S21(dB ang)  S12(dB ang)  S22(dB ang)
+# GHz S DB R 50
+0.5   -16.0  -170.0   16.2   160.0   -21.0    10.0   -15.0  -160.0
+1.0   -15.5   175.0   15.8   140.0   -20.5     5.0   -15.0  -170.0
+1.5   -15.0   160.0   15.4   120.0   -20.0     0.0   -14.5   178.0
+2.0   -14.5   145.0   15.0   100.0   -19.5    -5.0   -14.0   165.0
+2.5   -14.0   130.0   14.5    80.0   -19.0   -10.0   -13.5   152.0
+3.0   -13.0   115.0   14.0    60.0   -18.5   -15.0   -13.0   140.0
+4.0   -11.5    90.0   12.8    20.0   -18.0   -25.0   -12.0   115.0

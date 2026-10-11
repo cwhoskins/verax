@@ -2621,3 +2621,31 @@ real test of the diff (a report compared against itself has nothing to say).
 Both landed together, as planned: §48 alone would have made the tool
 CI-native with no margin in the document at all, and §49's arithmetic alone
 would have had nowhere machine-readable to write its answer.
+
+## 80. The datalogger's analog channel was biased into its top rail
+
+Found 2026-10-09 by the first large-signal claims on
+`designs/datalogger/datalogger.nim` (the `adc_driver` role in
+`designs/datalogger/lib/analog.nim`). The sheet AC-coupled `AIN` onto a
+VDD/2 bias at the op-amp's non-inverting input and returned the gain leg
+(`RG`) to true ground -- so the stage's gain of 2 applied to the 1.65 V bias
+too, and the output sat at 3.30 V, the rail. Driven at 0.5 V the output
+reached a 3.30 V ceiling and a 1.82 V floor with -6.05 dB of compressed gain;
+`dc_voltage(aout)` read 3.30 V against the input's 1.65 V.
+
+Every claim the design already made passed: phase margin, `gain_max_db`,
+both band edges. All four are `.ac`, which linearises about the operating
+point, and the macromodel's rail clamp is not in the linear model -- so a
+stage that could not pass a signal read as a correct gain-2 amplifier. The
+sheet's own header argued the opposite ("the feedback network never sees the
+bias at all").
+
+**Fix.** `RG` became a series RC (`opamp_stages.seriesRCNetwork`, through
+the new `acCoupledNonInvertingGain`): gain 2 in band, unity at DC, with the
+corner a tenth of the input coupling's. `aout` now sits at 1.65 V, a 0.75 V
+drive swings 0.15 V .. 3.15 V with 6.02 dB of gain, and
+`REQ-DL-AOUT-BIAS-001` pins the operating point directly. Returning `RG` to
+the bias divider instead was tried and rejected: sharing `biasNetwork`'s
+reference between the gain leg and the input's bias resistor closes a second,
+positive feedback path the loop-gain break cannot open, and `opamp_stage`'s
+phase margin stopped being measurable (loop gain read 28 dB, not 94).

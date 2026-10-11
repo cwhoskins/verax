@@ -274,6 +274,18 @@ let d = design("adj_regulator"):
        vinFrom = 8.0.V, vinTo = 20.0.V, vinStep = 0.1.V,
        maxLineReg = 0.25
 
+  # The same sweep, stated the way the datasheet states it: per volt of
+  # input. `linear_regulator` claims the total movement across a range,
+  # which is the board's question; `source_sweep` can also claim the slope,
+  # which is the part's -- and the one a reader can hold against the LM317's
+  # 0.01 %/V typical and 0.04 %/V maximum without knowing what range this
+  # board was swept over. Twice the typical, comfortably inside the maximum
+  # (measured 0.0107 %/V). Same source, range, step and nominal, so it shares
+  # the role's `.dc` rather than running its own.
+  role "source_sweep", reg5_line, source = V1, output = v5rail,
+       input = vboard, vFrom = 8.0.V, vTo = 20.0.V, vStep = 0.1.V,
+       nominal = 5.0.V, maxLineRegPerV = 0.02
+
   # The 12 V rail, and one claim only -- the **worst point across a band**
   # rather than a figure at one frequency. It is here because a rejection
   # number without a band is close to meaningless and this rail shows why:

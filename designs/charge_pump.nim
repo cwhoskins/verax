@@ -188,4 +188,23 @@ let d = design("charge_pump"):
   # "what does VOUT settle to" and turns out to *set the answer* to "what is
   # still moving on it". The claim is stated against the circuit as authored.
 
+  # And what that spike means for whatever hangs on VOUT, which sees the
+  # instantaneous rail and not its average. Take the gate-drive use from the
+  # header: a 10 V-max gate on one side and a driver that wants at least 9 V
+  # to fully enhance on the other. `settled_v` says where the rail sits and
+  # `ripple_pp` how far it moves in total; neither says which way, and a
+  # 403 mV spike split evenly about 9.52 V and one sitting entirely on top
+  # of it are the same peak-to-peak. The extremes over the same window are
+  # the claims that tell them apart -- bare `require`s with the role's own
+  # conditions, so they land on the same run.
+  require settled_min(vout) >= 9.0.V, t_settle = 20.0.ms, t_window = 100.0.us,
+          id = "REQ-CP-FLOOR-001",
+          because = "the least gate drive the load is specified to switch " &
+                    "fully at; the downward edge spike is the instant it " &
+                    "is closest to losing it"
+  require settled_max(vout) <= 10.0.V, t_settle = 20.0.ms, t_window = 100.0.us,
+          id = "REQ-CP-CEIL-001",
+          because = "the gate's absolute maximum; an edge spike a few " &
+                    "nanoseconds wide still counts against it"
+
 quit(verifyMain(d))

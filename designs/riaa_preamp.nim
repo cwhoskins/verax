@@ -139,4 +139,24 @@ let d = design("riaa_preamp"):
   role "channel_match", stereo, a = roleRef("left"), b = roleRef("right"),
        fFrom = 20.Hz, fTo = 20.kHz, maxGainDelta = 0.5.dB
 
+  # The same two stages asked two more things, which take a second instance
+  # because each changes what the first one's sweep would be.
+  #
+  # `atF` pins the gain delta to 1 kHz, the frequency a phono stage's gain is
+  # quoted at and the one a balance control is set by ear against. 0.1 dB
+  # rather than 0.5: the worst point over the band can sit at an edge where
+  # a capacitor's tolerance dominates, but at the reference frequency the two
+  # channels are two copies of one resistor ratio.
+  #
+  # `maxEdgeRatio` compares the two channels' -3 dB corners, and the low
+  # corner is not inside 20 Hz .. 20 kHz at all: RG/CG put the stage back to
+  # unity gain below 3.4 Hz and CIN/RB roll the input off below 1.6 Hz, which
+  # is the subsonic filter a turntable's rumble needs. Hence a sweep from
+  # 0.5 Hz -- a corner outside the swept band is reported as not measured,
+  # not as a pass. 5% is what one channel's 10% CG drifting against the
+  # other's would move it by halfway, so a mismatched electrolytic fails it.
+  role "channel_match", stereo1k, a = roleRef("left"), b = roleRef("right"),
+       fFrom = 0.5.Hz, fTo = 100.kHz, atF = 1.kHz, maxGainDelta = 0.1.dB,
+       maxEdgeRatio = 1.05
+
 quit(verifyMain(d))

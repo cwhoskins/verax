@@ -148,6 +148,31 @@ proc parallelRCNetwork*(r: Ohms, corner: Hertz, parts = defaultPolicy()): Feedba
       discard connect(cx, "2", b, ptPassive)
       applyChoice(cx, cc))
 
+proc seriesRCNetwork*(r: Ohms, corner: Hertz, parts = defaultPolicy()): FeedbackNetwork =
+  ## `r` in series with a capacitor sized from `corner`: `r` in band, open
+  ## at DC. On a non-inverting stage's RG it takes the stage to unity gain
+  ## at DC while leaving the in-band gain alone -- so a bias sitting on the
+  ## input comes out as itself rather than multiplied by the gain, which is
+  ## what a single-supply stage needs (`datalogger/lib/analog.nim`). `dcValue`
+  ## is infinite because that is the resistance a capacitor presents at DC.
+  let c = Farads(1.0 / (2.0 * PI * float(r) * float(corner)))
+  let rc = parts.resistor(ResRequest(value: r, use: ruPrecision))
+  let cc = parts.capacitor(CapRequest(value: c, use: cuCoupling))
+  FeedbackNetwork(
+    dcValue: Ohms(Inf),
+    build: proc(nl: Netlist, prefix: string, a, b: Net) =
+      let mid = addNet(nl, Net(name: prefix & "_mid", kind: ntSignal))
+      let rr = addComponent(nl, Component(designator: prefix, kind: "resistor"))
+      rr.attrs["value"] = spiceValue(float(r))
+      discard connect(rr, "1", a, ptPassive)
+      discard connect(rr, "2", mid, ptPassive)
+      applyChoice(rr, rc)
+      let cx = addComponent(nl, Component(designator: prefix & "C", kind: "capacitor"))
+      cx.attrs["value"] = spiceValue(float(c))
+      discard connect(cx, "1", mid, ptPassive)
+      discard connect(cx, "2", b, ptPassive)
+      applyChoice(cx, cc))
+
 proc resistorTeeNetwork*(ratio: Ohms, r2 = 10.kohm, r3 = 1.kohm,
                          parts = defaultPolicy()): FeedbackNetwork =
   ## a --r1-- mid --r2-- b, mid --r3-- ground. Backs out r1 so that
@@ -201,6 +226,18 @@ proc defaultNonInvertingGain*(rfNominal = 100.kohm): NonInvertingGainFn =
   result = proc(gain: float, parts: PartPolicy): NonInvertingLegs =
     let rgF = float(rfNominal) / (gain - 1.0)
     (rf: resistorNetwork(rfNominal, parts), rg: resistorNetwork(Ohms(rgF), parts))
+
+proc acCoupledNonInvertingGain*(rfNominal = 100.kohm,
+                                corner = 0.16.Hz): NonInvertingGainFn =
+  ## `gain = 1 + Rf/Rg` in band and unity at DC: RG is a `seriesRCNetwork`
+  ## whose capacitor opens below `corner`. For a single-supply stage whose
+  ## input is biased at mid-rail -- with a plain RG to ground the bias comes
+  ## out multiplied by the gain. Put `corner` well under the input coupling's
+  ## own, so the two high-pass poles do not stack into the passband.
+  result = proc(gain: float, parts: PartPolicy): NonInvertingLegs =
+    let rgF = float(rfNominal) / (gain - 1.0)
+    (rf: resistorNetwork(rfNominal, parts),
+     rg: seriesRCNetwork(Ohms(rgF), corner, parts))
 
 proc defaultInvertingGain*(rinNominal = 10.kohm): InvertingGainFn =
   ## The textbook `gain = -Rf/Rin`, both legs plain resistors.

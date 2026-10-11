@@ -205,16 +205,25 @@ let d = design("datalogger"):
   # comfortably inside the 3 mA VOL floor (2.75 mA at 3.3 V, against
   # 2.2 mA at the old 1.5k) while pushing the corner back above 1 MHz.
 
+  # `part_use` says what each of these four is *for*, which a BOM reviewer
+  # cannot read off a value: the pull-ups are general-purpose (any 1% 0402
+  # will do), but the 47 pF parts set the bus's RC corner with the pull-ups
+  # -- a timing use, which is why they are C0G and why substituting an X7R
+  # "because it is cheaper" would be caught as a policy change rather than
+  # passing as an equivalent. Parts a sheet sizes through `parts.*Request`
+  # get this written for them by `applyChoice`; these four are hand-authored.
   component R_SDA, kind = "resistor", value = "1.2k":
     pin "1", vdd, kind = ptPassive
     pin "2", bus["sda"], kind = ptPassive
     spec:
       tolerance = 1.pct
+      part_use = "general"
   component R_SCL, kind = "resistor", value = "1.2k":
     pin "1", vdd, kind = ptPassive
     pin "2", bus["scl"], kind = ptPassive
     spec:
       tolerance = 1.pct
+      part_use = "general"
   component C_SDA, kind = "capacitor", value = "47p":
     pin "1", bus["sda"], kind = ptPassive
     pin "2", gnd, kind = ptPassive
@@ -222,6 +231,7 @@ let d = design("datalogger"):
       package = "0402"
       dielectric = "C0G"
       voltage_rating = 16.0.V
+      part_use = "timing"
   component C_SCL, kind = "capacitor", value = "47p":
     pin "1", bus["scl"], kind = ptPassive
     pin "2", gnd, kind = ptPassive
@@ -229,6 +239,7 @@ let d = design("datalogger"):
       package = "0402"
       dielectric = "C0G"
       voltage_rating = 16.0.V
+      part_use = "timing"
 
   # --- EEPROM sheet ---------------------------------------------------------
 
@@ -256,6 +267,9 @@ let d = design("datalogger"):
   # one, and a J-Link left floating there refuses to talk to the board at
   # all. Every physical GND pin (4/6/8/10/12/14/16/18/20) collapses onto one
   # logical `GND` pin, same as `usbc_sink.usbCSink`'s `J1`.
+  # Fitted for bring-up, not for production: `dnp` keeps the header's line
+  # on the BOM -- the footprint is on the board and the decision is visible
+  # -- but marks it not populated at assembly. A debug board build flips it.
   component J3, kind = "connector", description = "ARM-JTAG-20":
     pin "VTREF",  vdd,          kind = ptPower
     pin "NTRST",  jtag["ntrst"], kind = ptInput
@@ -265,6 +279,21 @@ let d = design("datalogger"):
     pin "TDO",    jtag["tdo"],   kind = ptPassive
     pin "NRESET", nrst,          kind = ptInOut
     pin "GND",    gnd,          kind = ptGround
+    spec:
+      dnp = true
+
+  # Bring-up test points on the system rail and the ADC input: bare copper
+  # pads, nothing to buy, so `bom_exclude` leaves them off the BOM entirely
+  # (unlike `dnp`, which keeps a line). They stay in the netlist so layout
+  # places them and the schematic shows where to probe.
+  component TP1, kind = "test_point", description = "VDD test pad":
+    pin "1", vdd, kind = ptPassive
+    spec:
+      bom_exclude = true
+  component TP2, kind = "test_point", description = "AOUT test pad":
+    pin "1", aout, kind = ptPassive
+    spec:
+      bom_exclude = true
 
   # --- claims ---------------------------------------------------------
 
@@ -302,6 +331,118 @@ let d = design("datalogger"):
        minGain = 5.0.dB, maxGain = 7.0.dB,
        fLoMax = 10.0.Hz, fHiMin = 5.0.MHz
 
+  # What the ADC needs from the stage, which neither role above asks. A
+  # user-defined role (`lib/analog.nim`) because none of these quantities has
+  # a built-in role -- each needs the `opamp`/`input` binding a bare
+  # `require` cannot carry.
+  #
+  # The large-signal half is the reason it exists. Driven at 0.75 V, a
+  # full-scale input, the output has to swing 0.15 V .. 3.15 V around
+  # mid-rail without touching either rail and without compressing. Those
+  # claims found that this stage used to be biased *into* the top rail --
+  # see `lib/analog.nim`'s header -- with every small-signal claim above
+  # passing. `dc_voltage(aout)` below pins the fix directly.
+  #
+  # The numbers come from the ADC. 12 bits wants the loop to hold gain error
+  # to half an LSB: 1/T < 2^-13, so T >= 78.3 dB at DC (measured 94.1). A
+  # 640 ns acquisition window wants the stage settled to that same half LSB
+  # in time: ln(2^13) = 9.0 time constants of 1/(2 pi fc), so fc >= 2.24 MHz
+  # (measured 10.0 MHz -- the OPA320's 20 MHz GBW over a noise gain of 2).
+  # The unity-gain frequency caps the bandwidth the stage hands its own
+  # 7 nV/rtHz to the sampler over: integrated to 30 MHz that is 1/8 LSB.
+  role "adc_driver", adc, opamp = Xanalog.innerComponent("Xamp", "U1"),
+       input = ain, output = aout,
+       bits = 12, tAcq = 640.ns, maxUnity = 30.MHz,
+       bandLo = 10.Hz, bandHi = 5.MHz,
+       driveV = 0.75.V, driveF = 1.kHz, gain = 6.02.dB,
+       outMin = 0.1.V, outMax = 3.2.V
+
+  require dc_voltage(aout) == 1.649.V, band = 2.pct,
+          id = "REQ-DL-AOUT-BIAS-001",
+          because = "the stage's output has to sit mid-rail to swing both " &
+                    "ways into the ADC; RG's series capacitor is what gives " &
+                    "the input bias unity gain, and without it this reads " &
+                    "3.3 V -- the top rail"
+
+  # The input connector has no DC path into the supply. `C_IN` is the only
+  # thing between them: `vin` reaches VDD through the bias divider, so a
+  # sensor with a DC offset at J2 (or a fault onto it) would otherwise drive
+  # the rail through 100 k.
+  require dc_path_exists(ain, vdd) == 0.0,
+          id = "REQ-DL-AIN-ISO-001",
+          because = "C_IN must block DC between the input connector and the " &
+                    "rail; a short across it is a path into VDD"
+
+  # --- the PDN beyond its worst point ---------------------------------------
+  #
+  # `power_rail` claims the impedance's maximum over the band. The shape
+  # around it is the rest of the story, and every number here is the buck's
+  # five 10 uF 0805s (derated to 7.86 uF each at 3.3 V, 15 mohm and 1 nH
+  # apiece) doing what their datasheets say. One sweep answers all of them.
+  #
+  # The series resonance: 39 uF against 0.2 nH of parallel ESL is 1.8 MHz
+  # (measured 1.78), where the bank bottoms out at its parallel ESR,
+  # 3 mohm. It belongs just above the 1 MHz switching frequency, where the
+  # ripple current lives -- and it must stay damped: ESR is the only thing
+  # setting how deep the notch is and how high the peaks beside it are, and a
+  # bank under a milliohm rings.
+  require z_min(vdd) >= 1.mohm, f_from = 100.kHz, f_to = 10.MHz,
+          id = "REQ-DL-PDN-ZMIN-001",
+          because = "an undamped series resonance makes sharp antiresonances " &
+                    "beside it; the bank's ESR is what keeps them low"
+  require f_z_min(vdd) >= 1.MHz, f_from = 100.kHz, f_to = 10.MHz,
+          id = "REQ-DL-PDN-FZMIN-LO-001",
+          because = "the bank's lowest impedance belongs at or above the 1 MHz " &
+                    "switching frequency, over the ripple current"
+  require f_z_min(vdd) <= 3.MHz, f_from = 100.kHz, f_to = 10.MHz,
+          id = "REQ-DL-PDN-FZMIN-HI-001",
+          because = "past 3 MHz the notch has left the switching harmonics " &
+                    "that matter -- fewer bulk caps, or smaller ones, than " &
+                    "this board was sized with"
+
+  # The worst point in band is its low edge (measured 112 kHz), where the
+  # bank's capacitance is running out and the converter's loop takes over.
+  # If it moves up the band, the bank has grown an in-band antiresonance.
+  require f_z_max_in_band(vdd) <= 200.kHz, f_from = 100.kHz, f_to = 10.MHz,
+          id = "REQ-DL-PDN-FZMAX-001",
+          because = "the impedance maximum belongs at the low band edge, where " &
+                    "the loop hands over to the bank; anywhere higher is a " &
+                    "resonance inside the band"
+
+  # The antiresonance is the buck's own output filter: L1 against the bank,
+  # 1/(2 pi sqrt(L C)), measured at 17.8 kHz and 3.25 ohm with the loop cut
+  # away (the PDN sweep isolates the rail). It must sit two decades below the
+  # switching frequency for the filter to attenuate the ripple, and inside
+  # the loop's bandwidth, which is what holds it down in the real circuit.
+  require f_antiresonance(vdd) <= 50.kHz, f_from = 100.kHz, f_to = 10.MHz,
+          id = "REQ-DL-PDN-FANTI-001",
+          because = "the output LC pole must sit far below 1 MHz to filter the " &
+                    "ripple, and inside the loop's bandwidth to be corrected"
+  require z_antiresonance(vdd) <= 5.ohm, f_from = 100.kHz, f_to = 10.MHz,
+          id = "REQ-DL-PDN-ZANTI-001",
+          because = "with the loop open, only the bank's ESR damps the LC " &
+                    "pole; a higher peak means less loss than this was " &
+                    "budgeted against and more for the loop to correct"
+
+  # A canary: the number of capacitors the sweep found on the rail. Inside
+  # the band the five bulk caps dominate so completely that a sheet could
+  # lose its local decoupling in a refactor and every impedance claim would
+  # still pass. Adding decoupling is fine; losing it is not.
+  require cap_count(vdd) >= 18.0, f_from = 100.kHz, f_to = 10.MHz,
+          id = "REQ-DL-PDN-CAPS-001",
+          because = "every sheet's local decoupling is still on the rail -- " &
+                    "the band claims cannot see a missing 100 nF"
+
+  # Parts past their own derating ceilings, counted across each rail. Every
+  # capacitor that states a `voltage_rating` is checked against the family
+  # ceiling (the X7Rs at 3.3 V on 10 V and 16 V parts are well inside it).
+  require parts_over_derating(vdd) == 0.0,
+          id = "REQ-DL-DERATE-VDD-001",
+          because = "no part on the 3.3 V rail runs past its derating ceiling"
+  require parts_over_derating(vbus) == 0.0,
+          id = "REQ-DL-DERATE-VBUS-001",
+          because = "no part on VBUS runs past its derating ceiling at 5 V"
+
   require dc_voltage(ccsns) == ccTarget, band = 3.pct,
           id = "REQ-DL-CCSNS-001",
           because = "the source's own Rp against this board's fixed 5.1k Rd " &
@@ -313,6 +454,16 @@ let d = design("datalogger"):
 # `switchingRegulatorRole` knows and this file does not have to.
 switchingRegulatorRole(d, "Xbuck", "buck", buckCfg, findNet(d.netlist, "vdd"),
                         tSettle = 300.0.us, tWindow = 20.0.us)
+
+# The orderable parts inside generic sheets. A sheet built around a part's
+# *spec* (a Type-C sink, a non-inverting stage) does not choose who makes it
+# or in which package -- that is this board's procurement decision, so it is
+# stated here, against the instance path, rather than in `designs/lib/`.
+setAnnotation(findComponent(d.netlist, "Xusbc.J1"), "mpn", "USB4105-GF-A")
+setAnnotation(findComponent(d.netlist, "Xusbc.J1"), "manufacturer", "GCT")
+setAnnotation(findComponent(d.netlist, "Xanalog.Xamp.U1"), "mpn", "OPA320AIDBVR")
+setAnnotation(findComponent(d.netlist, "Xanalog.Xamp.U1"), "manufacturer",
+              "Texas Instruments")
 
 # What is plugged into each connector. The source's own CC pull-up
 # (`rpFor(advertise)`) is what actually makes the advertisement -- without

@@ -124,3 +124,25 @@ suite "eye of a simulated channel":
     for f in p.failures:
       if "eye width" in f: named = true
     check named
+
+  test "a sweep judges the eye only at its intervals' ends, to the same boundary":
+    # Series R slows the RC edge, so the eye narrows as it grows (findings §75).
+    var c = defaultCriteria()
+    c.ui = 6e-9
+    c.eyeBits = 127
+    c.minEyeWidth = 2.5e-9
+    let s = sweep([t], templateParams(0.02), spSeriesR, 0.0, 150.0, 6, c, 1.0)
+    checkpoint $s.passing & " binding: " & s.binding
+    check s.passing.len == 1
+    check s.passing[0].lo == 0.0
+    let top = s.passing[0].hi
+    check top > 0.0 and top < 150.0
+    check "eye width" in s.binding
+    proc at(r: float): Verdict =
+      var p = templateParams(0.02)
+      p.seriesR = r
+      judge([t], p, c).verdict
+    check at(top - 1.0) == vPass
+    check at(top + 1.0) == vFail
+    check "eye is judged at each passing interval" in
+      identity(t, [coTyp], templateParams(0.02), c).assumptions.join("\n")

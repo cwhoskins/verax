@@ -155,6 +155,12 @@ proc mcuSheet*(xtal = hse8MHz(), boardCurrentMa = 150.0): Netlist =
       spec:
         ibis_file = stm32Ibis
         ibis_model = "io8usb_ft_phy_fs_3v3"
+        # The orderable part: `partNumber` here happens to be ST's full
+        # MPN already, but a BOM resolver trusts only `mpn` (and the
+        # manufacturer that makes it unique) and flags `partNumber` as
+        # unverified.
+        mpn = "STM32H563ZIT6"
+        manufacturer = "STMicroelectronics"
 
     component R_NRST, kind = "resistor", value = "10k":
       pin "1", VDD,  kind = ptPassive

@@ -278,6 +278,13 @@ let d = design("lt8640a_buck"):
        voltage = 4.962.V, band = 2.pct, tRun = 8.0.ms,
        maxRiseTime = 5.0.ms, maxOvershoot = 2.0,
 
+       # Settling is the end of the same ramp: the rail enters its 2% band
+       # at the top of the 5.1 ms the arithmetic predicts (measured 5.01 ms)
+       # and stays there, because the loop takes over from the soft start
+       # without overshooting. 7 ms leaves the same room for CSS's 10% and
+       # the spread of the 1.9 uA as the rise-time claim does.
+       maxSettleTime = 7.0.ms,
+
        # The settled window, shared by every steady-state claim below.
        tSettle = 300.0.us, tWindow = 20.0.us,
 
@@ -381,13 +388,84 @@ let d = design("lt8640a_buck"):
        # the loop actually takes.
        #
        # `stepPoints` is 2000 across a 40 us recovery window, which is again
-       # the 20 ns step the other settled runs use. `tHold` is left
-       # unstated, so the load stays on and there is no release edge to
-       # measure an overshoot at; that halves the run.
+       # the 20 ns step the other settled runs use.
        iFrom = 0.0.A, iTo = 1.0.A, tEdge = 1.0.us,
        tStepAt = 300.0.us, tRecover = 40.0.us, stepPoints = 2000,
        stepBand = 0.001,
-       maxDroop = 150.mV, maxRecover = 30.us
+       maxDroop = 150.mV, maxRecover = 30.us,
+
+       # The same droop twice more, in the two forms a *load* states its
+       # tolerance in. As a fraction of the rail: 3% is what is left of a
+       # 5% supply tolerance once the setpoint's own 2% is spent (measured
+       # 0.43%). And as an absolute floor: 4.75 V is the bottom of a 5 V
+       # +-5% part's supply range, and it is stated absolutely because an
+       # undervoltage threshold does not move when the setpoint does.
+       maxDroopPct = 3.0, minStepV = 4.75.V,
+
+       # And the other edge. `tHold` releases the 1 A after 60 us -- past
+       # the 27 us the arrival takes to recover -- so the rail sees the load
+       # leave as well as arrive: the edge where inductor current that has
+       # nowhere to go piles into COUT. Measured 14.2 mV; the budget is the
+       # droop's.
+       tHold = 60.0.us, maxStepOvershoot = 150.mV
+
+  # The rest of the step run, through bare `require`s. Every condition is
+  # the role's own, so these land on the step the role already simulates
+  # rather than costing a second run; the setup key is the conditions.
+  require step_v_max(vout) <= 5.25.V,
+          step_from = 0.0.A, step_to = 1.0.A, step_edge = 1.0.us,
+          step_at = 300.0.us, step_hold = 60.0.us, step_recover = 40.0.us,
+          step_points = 2000.0, step_band = 0.001,
+          id = "REQ-BUCK-STEPMAX-001",
+          because = "the top of a 5 V +-5% load's supply range, as an " &
+                    "absolute for the same reason the floor is one: an " &
+                    "absolute-maximum rating does not move with the setpoint"
+  # The release edge's overshoot against the arrival edge's droop, as a
+  # *relative* bound so both are read off the one run. A buck's inductor
+  # slews at (Vin - Vout)/L when the load arrives and at only Vout/L when it
+  # leaves, so a converter limited by its inductor recovers worse from a
+  # release than from an arrival. This one is limited by its loop instead --
+  # 14.2 mV against 21.2 mV, both edges set by how fast the loop moves the
+  # peak-current command -- and a release that overtakes the arrival means
+  # the inductor has become the limit: a bigger L or a smaller COUT fitted.
+  require step_overshoot_pct(vout) <= 1.0 * step_droop_pct(vout),
+          step_from = 0.0.A, step_to = 1.0.A, step_edge = 1.0.us,
+          step_at = 300.0.us, step_hold = 60.0.us, step_recover = 40.0.us,
+          step_points = 2000.0, step_band = 0.001,
+          id = "REQ-BUCK-STEPOS-001",
+          because = "a release that rings harder than the arrival means " &
+                    "the inductor's Vout/L slew, not the loop, now sets " &
+                    "the recovery -- the board has drifted off the loop " &
+                    "this step was budgeted against"
+
+  # L1 as a *part* rather than as the converter's sense element. The
+  # converter role reads L1 for what the regulator delivers; this one asks
+  # whether the inductor somebody bought survives it. RMS is what heats a
+  # winding, and the 6.5 A `current_rating` is a 40 degC rise -- 85% of it
+  # is about 72% of the copper loss and a rise near 29 degC, which is where
+  # a part on a board this dense wants to sit (measured 76%). `iRmsMax` is
+  # the board's own figure rather than the part's: the SW-to-VOUT copper
+  # is sized for 5.5 A, and it says so here so a heavier load is caught
+  # even if somebody fits a bigger inductor.
+  role "current_path", inductor, part = L1,
+       tSettle = 300.0.us, tWindow = 20.0.us,
+       iRmsMax = 5.5.A, maxRmsDerating = 0.85
+
+  require i_min(L1) >= 4.0.A, t_settle = 300.0.us, t_window = 20.0.us,
+          id = "REQ-BUCK-VALLEY-001",
+          because = "the valley of the inductor current is the average " &
+                    "less half the ripple, 4.5 A here; below 4 A the ripple " &
+                    "has passed 2 A, which at this duty cycle means L1 has " &
+                    "lost more than half its inductance -- the signature of " &
+                    "a core going into saturation, long before it reaches " &
+                    "discontinuous conduction"
+  require i_max(L1) <= 7.0.A, t_settle = 300.0.us, t_window = 20.0.us,
+          id = "REQ-BUCK-ILIM-001",
+          because = "the switching model's cycle-by-cycle limit is 7 A of " &
+                    "peak inductor current; a standing peak at or past it " &
+                    "means the loop is in current limit and every other " &
+                    "steady-state number here describes the limit, not the " &
+                    "regulator"
 
 # Attach the behavioural model. After the block, because it sets
 # `simReplace` on the real part rather than replacing it -- everything above

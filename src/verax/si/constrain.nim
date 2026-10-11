@@ -91,6 +91,7 @@ type
     tolerance*: float
       ## Bisection resolution, in the parameter's unit.
     samples*: seq[tuple[x: float, p: PointResult]]
+      ## The grid's verdicts -- without the eye when `sweep` defers it.
     passing*: seq[Interval]
     gaps*: seq[Interval]
       ## Ranges next to invalid samples: unexamined, not failing.
@@ -276,19 +277,35 @@ proc withParam(p: TemplateParams, param: SweepParam, x: float): TemplateParams =
   of spCoupledLength: result.coupledLength = x
   of spLegMismatch: result.legMismatch = x
 
+proc eyeJudged*(c: Criteria): bool =
+  ## Whether the criteria judge an eye (a PRBS run with a minimum on it).
+  c.ui > 0 and c.eyeBits > 0 and not (c.minEyeHeight.isNaN and c.minEyeWidth.isNaN)
+
 proc sweep*(templates: openArray[SiTemplate], base: TemplateParams,
             param: SweepParam, lo, hi: float, grid: int, c: Criteria,
             tolerance: float, so = defaultSiOptions()): Sweep =
   ## Coarse grid, then bisection of every pass/fail transition between two
   ## *valid* neighbours.
+  ##
+  ## An eye (`eyeJudged`) is not judged at every point: one PRBS7 run is
+  ## `eyeBits` UI of transient per corner, and a sweep judges dozens of
+  ## points (findings §75). The grid and its bisections use the criteria
+  ## without the PRBS run (`samples` hold those verdicts); then each
+  ## passing interval is judged in full at its two ends, and a failing end
+  ## is bisected against a passing one (or the middle, when both fail). That
+  ## assumes the eye does not close and reopen inside an interval whose
+  ## edges pass -- `identity` states it.
   result = Sweep(param: param, lo: lo, hi: hi, grid: grid, tolerance: tolerance)
   let templates = @templates   # captured by `boundary`
   let refs = timingRefs(templates, so)
+  let deferEye = c.eyeJudged
+  var ce = c
+  if deferEye: ce.eyeBits = 0
   let n = max(grid, 2)
   for i in 0 ..< n:
     let x = lo + (hi - lo) * i.float / (n - 1).float
-    result.samples.add (x, judge(templates, base.withParam(param, x), c, so, refs))
-  proc boundary(a, b: float, aPass: bool): tuple[x: float, failure: string] =
+    result.samples.add (x, judge(templates, base.withParam(param, x), ce, so, refs))
+  proc boundary(a, b: float, aPass: bool, cr: Criteria): tuple[x: float, failure: string] =
     ## The transition between a valid `a` and a valid `b` of the other
     ## verdict, to `tolerance`. A point that turns invalid mid-bisection
     ## stops it at the last bracket (reported as a gap by the caller).
@@ -297,7 +314,7 @@ proc sweep*(templates: openArray[SiTemplate], base: TemplateParams,
     var fails = ""
     while abs(hi - lo) > tolerance:
       let m = 0.5 * (lo + hi)
-      let pr = judge(templates, base.withParam(param, m), c, so, refs)
+      let pr = judge(templates, base.withParam(param, m), cr, so, refs)
       if pr.verdict == vInvalid: break
       if (pr.verdict == vPass) == aPass: lo = m
       else:
@@ -314,11 +331,11 @@ proc sweep*(templates: openArray[SiTemplate], base: TemplateParams,
       if open.isNaN:
         open =
           if i == 0: s[0].x
-          elif prev == vFail: boundary(s[i - 1].x, s[i].x, false).x
+          elif prev == vFail: boundary(s[i - 1].x, s[i].x, false, ce).x
           else: s[i].x
     of vFail:
       if not open.isNaN:
-        let (bx, why) = boundary(s[i - 1].x, s[i].x, true)
+        let (bx, why) = boundary(s[i - 1].x, s[i].x, true, ce)
         result.passing.add (open, bx)
         if result.binding.len == 0:
           result.binding = if why.len > 0: why else: s[i].p.failures[0]
@@ -336,6 +353,43 @@ proc sweep*(templates: openArray[SiTemplate], base: TemplateParams,
       else:
         result.gaps.add (a, b)
   if not open.isNaN: result.passing.add (open, s[^1].x)
+  if not deferEye: return
+  # The eye, judged per edge-passing interval. An end that came out of a
+  # bisection lies within `tolerance / 2` of its passing bracket, so the full
+  # judgement is taken that far inside, where the edge criteria pass.
+  var refined: seq[Interval]
+  var binding = ""
+  for k, iv in result.passing:
+    let inset = min(0.5 * tolerance, 0.5 * (iv.hi - iv.lo))
+    let a = iv.lo + (if iv.lo == lo: 0.0 else: inset)
+    let b = iv.hi - (if iv.hi == hi: 0.0 else: inset)
+    let pa = judge(templates, base.withParam(param, a), c, so, refs)
+    let pb = if b == a: pa else: judge(templates, base.withParam(param, b), c, so, refs)
+    if pa.verdict == vInvalid or pb.verdict == vInvalid:
+      result.gaps.add iv       # the eye run could not be judged: unexamined
+      continue
+    let aOk = pa.verdict == vPass
+    let bOk = pb.verdict == vPass
+    var why = ""
+    if aOk and bOk:
+      refined.add iv
+    elif aOk:
+      let (x, f) = boundary(a, b, true, c)
+      refined.add (iv.lo, x)
+      why = if f.len > 0: f else: pb.failures[0]
+    elif bOk:
+      refined.add (boundary(a, b, false, c).x, iv.hi)
+      why = pa.failures[0]
+    else:
+      why = pb.failures[0]
+      let m = 0.5 * (a + b)
+      let pm = if abs(b - a) > tolerance: judge(templates, base.withParam(param, m), c, so, refs)
+               else: pb
+      if pm.verdict == vPass:
+        refined.add (boundary(a, m, false, c).x, boundary(m, b, true, c).x)
+    if k == 0 and why.len > 0: binding = why
+  result.passing = refined
+  if binding.len > 0: result.binding = binding
 
 proc maxFromStart*(s: Sweep): float =
   ## The top of the passing interval that starts at the sweep's low end
@@ -447,6 +501,10 @@ proc identity*(t: SiTemplate, corners: openArray[Corner], p: TemplateParams,
   let net = t.build(p)
   for a in net.assumptions: result.assumptions.add $a
   result.assumptions.add "line Z0/delay are closed-form quasi-static (pcb/impedance)"
+  if c.eyeJudged:
+    result.assumptions.add "the eye is judged at each passing interval's ends (bisected " &
+      "where one fails), not at every grid point: it is assumed not to close and reopen " &
+      "inside an interval whose edges pass"
   result.assumptions.add "derived for this template: a real route with an extra via, branch or " &
     "reference change invalidates the rule; check the routed board (stage 6)"
 

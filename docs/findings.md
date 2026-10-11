@@ -155,6 +155,57 @@ is what is left.
    more than 3x". The simulation is unaffected. Fix: take the rule's edge
    from the pad (the `[Ramp]`, or the timing-load run's 10-90 %).
 
+75. **An eye claim makes `verax constraints` impractically slow** (2026-10-09).
+   `designs/si_spi.nim` derives its rules in ~8 s; adding `min_eye_height`/
+   `min_eye_width` to MOSI's `si_net` (which `verax check` evaluates in 7 s
+   on the routed board) made `verax constraints` run past 10 minutes before
+   it was killed. `si/constrain.judge` passes `eyeBits = 127` into every
+   grid and bisection point of every sweep (length, vias, termination,
+   stubs), so each point simulates 127 UI of PRBS7 -- at a 100 ns UI, 12.7 us
+   of transient per corner per point. Fix candidates: judge the eye only at
+   the sweep's final boundary points, or bisect on the edge criteria and
+   re-check the eye once per interval. The design keeps the eye claim; its
+   header still advertises the `constraints` command.
+
+76. **A bare `require` on a percent quantity cannot state its unit**
+   (2026-10-09). `verify.claimLint` warns `claim_unit_unstated` for any
+   claim with no unit on a measurement that has one, and there is no
+   `verax/units` constructor for `%` -- so `require step_overshoot_pct(v)
+   <= 3.0` (or `overshoot_pct`, `line_reg_pct`, `thd_pct` ...) always warns,
+   and fails under `--strict`, however correctly it is written. Roles are
+   unaffected (they set `unit: "%"` themselves). `designs/lt8640a_buck.nim`
+   claims `step_overshoot_pct` as a relative bound instead, which the lint
+   skips. Fix: a `Percent` unit type, or a `unit = "%"` key on `require`.
+
+77. **`gain_margin_db` is unreachable on every op-amp here** (2026-10-09).
+   The macromodel (`spice/models/opamp`) is single-pole, so a loop's phase
+   reaches -180 degrees only if the feedback network adds two more lags,
+   and no design's does: `minGainMargin` on `ts808_drive`'s `opamp_stage`
+   came back *not measured* ("a one- or two-pole loop never gets there").
+   A loop that never crosses -180 genuinely has infinite gain margin, so
+   the answer is honest -- but no claim on it can ever be checked. Fix: a
+   second-pole annotation (`f_pole2`) on the op-amp, which real parts'
+   phase margin at unity gain implies.
+
+78. **A supply-rejection claim cannot bind a connector's bench drive**
+   (2026-10-09). `psrr_tone`/`psrr_ac` inject ripple in series with the
+   role's `source`, which must be a `voltage_source` in the design. A board
+   fed through a connector (`driveConnector`) has none until
+   `buildConnectorBoundary` creates `V_EXT_<net>` at simulation time, so
+   `designs/datalogger` -- USB-C in -- cannot claim `psrr_db`,
+   `f_psrr_min`, `in_ripple_v` or `out_ripple_v` on its buck (and the same
+   binding blocks its inrush and load-step claims; see its header). Fix:
+   let `source` name a driven connector pin and resolve it to the boundary
+   source after `applySimReplacements`.
+
+79. **`dc_path_exists` cannot take a net inside an instance** (2026-10-09).
+   `require dc_path_exists(ain, Xanalog.innerNet("vin")) == 0` is
+   *not evaluable* ("takes two nets that both exist in this design"): the
+   static evaluator resolves subjects against the top-level netlist, while
+   the `.op` evaluators accept the same `innerNet` subject because they
+   flatten first. `designs/datalogger` claims `dc_path_exists(ain, vdd)`
+   instead, which crosses the same capacitor.
+
 ---
 
 ## Feature gaps

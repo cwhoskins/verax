@@ -115,9 +115,17 @@ let d = design("divider_net"):
   # the supply from zero measures the *slope*, which is the ratio itself --
   # the same number the two `instance` lines stated, and still nothing
   # compared against a component value.
+  #
+  # XV's tap also carries the limits of what it feeds. Assume an ADC with a
+  # 2.5 V full scale and an input that must not be pulled below ground:
+  # across the whole 0-10 V supply range the tap has to stay between the two,
+  # and the slope claim cannot say that -- it is a ratio and holds for any
+  # offset. The ceiling is the 1% the ratio is allowed and no more, and the
+  # whole excursion together has to fit inside the ADC's span.
   role "source_sweep", "vdiv_line", source = V1, output = tapv,
        vFrom = 0.0.V, vTo = 10.0.V,
-       ratio = 25.pct, band = 1.pct
+       ratio = 25.pct, band = 1.pct,
+       minOut = -10.mV, maxOut = 2.525.V, maxDelta = 2.525.V
   role "source_sweep", "ndiv_line", source = V1, output = tapn,
        vFrom = 0.0.V, vTo = 10.0.V,
        ratio = 25.pct, band = 1.pct
@@ -132,9 +140,20 @@ let d = design("divider_net"):
   # The load is a swept current sink the analysis injects at the node; there
   # is nothing here to bind it to, because a test load is not a part anybody
   # solders.
+  #
+  # The same sweep also says what that impedance *costs* whatever reads the
+  # tap. 10 uA out of 18.75 k is 187.5 mV, 7.5% of the 2.5 V tap, and that
+  # is the figure an ADC's input current has to be budgeted against -- so
+  # XV's sweep claims it four ways: as load regulation, as an absolute sag,
+  # as a floor at the heaviest load, and as an impedance ceiling for a
+  # replacement network that need not hit 18.75 k exactly but may not be
+  # worse. The ceiling at no load is the 2.5 V the line sweep already pins,
+  # which here says the injected sink only ever pulls down.
   role "load_sweep", "vdiv_load", output = tapv,
        iFrom = 0.0.A, iTo = 10.uA,
-       zOut = 18.75.kohm, band = 1.pct
+       zOut = 18.75.kohm, band = 1.pct,
+       maxLoadReg = 8.0, maxDelta = 200.mV, minOut = 2.29.V,
+       maxOut = 2.525.V, maxZOut = 20.kohm
   role "load_sweep", "ndiv_load", output = tapn,
        iFrom = 0.0.A, iTo = 10.uA,
        zOut = 18.75.kohm, band = 1.pct
