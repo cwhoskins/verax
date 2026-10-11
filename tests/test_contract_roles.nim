@@ -57,7 +57,7 @@ test "a power_rail writes its voltage where existing consumers already look":
                     {"voltage": "3.3"})
   let v = railVoltage(d.netlist.nets["vdd"])
   check v.has
-  check abs(v.value - 3.3) < 1e-12
+  check abs(float(v.value) - 3.3) < 1e-12
   check validateAnnotations(d.netlist).len == 0
 
 test "a power_rail expands to a nominal-voltage assertion":

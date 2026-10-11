@@ -80,8 +80,12 @@ proc valueUnit(f: PartFamily): string =
   of pfInductor: "H"
   else: ""
 
-proc canon(x: float): string =
-  if x.isNaN: "-" else: formatFloat(x, ffScientific, 6)
+proc canon(x: Option[float]): string =
+  ## Unchanged from the `NaN` era (`-` for unstated), so lockfiles written
+  ## before still match.
+  if x.isNone: "-" else: formatFloat(x.get, ffScientific, 6)
+
+proc canon(x: Stated[float]): string = canon(x.asOption)
 
 proc signatureOf*(i: BomItem): string =
   ## The lockfile key: the requirement, never the designator (generated
@@ -100,13 +104,14 @@ proc pct(x: float): string =
 
 proc describe(i: BomItem): string =
   ## `22 nF ±5 % C0G 0402 ≥50 V`, for a message.
-  var parts = @[eng(i.value, valueUnit(i.family))]
-  if not i.tolerance.isNaN: parts.add "±" & pct(i.tolerance)
+  var parts = @[if i.value.isSome: eng(i.value.get, valueUnit(i.family))
+                else: "(no value)"]
+  if i.tolerance.has: parts.add "±" & pct(i.tolerance.value)
   if i.dielectric.len > 0: parts.add i.dielectric
   parts.add(if i.caseCode.len > 0: i.caseCode else: "(no case code)")
-  if not i.voltageRating.isNaN: parts.add ">=" & eng(i.voltageRating, "V")
-  if not i.powerRating.isNaN: parts.add ">=" & eng(i.powerRating, "W")
-  if not i.currentRating.isNaN: parts.add ">=" & eng(i.currentRating, "A")
+  if i.voltageRating.has: parts.add ">=" & eng(i.voltageRating.value, "V")
+  if i.powerRating.has: parts.add ">=" & eng(i.powerRating.value, "W")
+  if i.currentRating.has: parts.add ">=" & eng(i.currentRating.value, "A")
   parts.add familyWord(i.family)
   parts.join(" ")
 
@@ -114,24 +119,26 @@ proc queryOf*(i: BomItem): PartQuery =
   ## The search for an item's requirement. The nominal may sit within the
   ## item's tolerance; `fitsBand` then requires the whole band to.
   result = newPartQuery(i.family, i.value, i.caseCode)
-  result.valueTolerance = i.tolerance
-  result.maxTolerance = i.tolerance
-  result.minVoltage = i.voltageRating
-  result.minPower = i.powerRating
-  result.minCurrent = i.currentRating
+  result.valueTolerance = i.tolerance.asOption
+  result.maxTolerance = i.tolerance.asOption
+  result.minVoltage = i.voltageRating.asOption
+  result.minPower = i.powerRating.asOption
+  result.minCurrent = i.currentRating.asOption
   result.dielectric = i.dielectric
 
 proc fitsBand(c: Candidate, i: BomItem): bool =
   ## A candidate's whole band (nominal +/- tolerance) inside the item's: a
   ## 9.76 k 1 % part fits a 10 k 5 % requirement, a 9.76 k 5 % doesn't. No
   ## stated tolerance means an exact nominal (enforced by `matches`).
-  if i.tolerance.isNaN: return true
-  let ct = if c.tolerance.isNaN: 0.0 else: c.tolerance
-  abs(c.value - i.value) + ct * abs(c.value) <=
-    i.tolerance * abs(i.value) * (1 + 1e-9)
+  if not i.tolerance.has: return true
+  if c.value.isNone or i.value.isNone: return false
+  let (cv, iv) = (c.value.get, i.value.get)
+  let ct = c.tolerance.get(0.0)
+  abs(cv - iv) + ct * abs(cv) <= i.tolerance.value * abs(iv) * (1 + 1e-9)
 
 proc isExact(c: Candidate, i: BomItem): bool =
-  abs(c.value - i.value) <= 1e-9 * abs(i.value)
+  c.value.isSome and i.value.isSome and
+    abs(c.value.get - i.value.get) <= 1e-9 * abs(i.value.get)
 
 # --- ranking -----------------------------------------------------------------
 
@@ -156,7 +163,8 @@ proc rank(cands: var seq[Candidate], i: BomItem, preferred: seq[string]) =
     if result != 0: return
     result = cmp(not isExact(a, i), not isExact(b, i))
     if result != 0: return
-    result = cmp(b.avail.stock, a.avail.stock)
+    # Unknown stock sorts last.
+    result = cmp(b.avail.stock.get(-1), a.avail.stock.get(-1))
     if result != 0: return
     result = cmp(a.mpn.toLowerAscii, b.mpn.toLowerAscii)
     if result != 0: return
@@ -188,23 +196,23 @@ proc checkSpec(r: Resolution, c: Candidate) =
   ## An MPN-bought part against what the design states; only facts both
   ## sides state are compared.
   let i = r.item
-  if not i.family.isParametric or i.value.isNaN: return
+  if not i.family.isParametric or i.value.isNone: return
   var why: seq[string]
   if c.family != i.family:
     why.add "it is a " & familyWord(c.family) & ", not a " & familyWord(i.family)
-  elif not c.value.isNaN and not isExact(c, i) and not fitsBand(c, i):
-    why.add "its value is " & eng(c.value, valueUnit(i.family)) & ", not " &
-      eng(i.value, valueUnit(i.family))
+  elif c.value.isSome and not isExact(c, i) and not fitsBand(c, i):
+    why.add "its value is " & eng(c.value.get, valueUnit(i.family)) & ", not " &
+      eng(i.value.get, valueUnit(i.family))
   if i.caseCode.len > 0 and c.caseCode.len > 0 and
       cmpIgnoreCase(i.caseCode, c.caseCode) != 0:
     why.add "its case code is " & c.caseCode & ", not " & i.caseCode
   if i.dielectric.len > 0 and c.dielectric.len > 0 and
       cmpIgnoreCase(i.dielectric, c.dielectric) != 0:
     why.add "its dielectric is " & c.dielectric & ", not " & i.dielectric
-  template under(have, want: float, unit, what: string) =
-    if not want.isNaN and not have.isNaN and have < want:
-      why.add "its " & what & " is " & eng(have, unit) & ", under " &
-        eng(want, unit)
+  template under(have: Option[float], want: Stated[float], unit, what: string) =
+    if want.has and have.isSome and have.get < want.value:
+      why.add "its " & what & " is " & eng(have.get, unit) & ", under " &
+        eng(want.value, unit)
   under(c.voltageRating, i.voltageRating, "V", "voltage rating")
   under(c.powerRating, i.powerRating, "W", "power rating")
   under(c.currentRating, i.currentRating, "A", "current rating")
@@ -258,7 +266,7 @@ proc bySearch(r: Resolution, opts: ResolveOptions) =
     r.add(KindBomNonstandardFootprint, sevWarning, stated & ", so no part " &
       "is searched for that might not fit its land pattern. State its " &
       "package (e.g. \"0402\") or its mpn.")
-  if i.caseCode.len == 0 or i.value.isNaN:
+  if i.caseCode.len == 0 or i.value.isNone:
     r.add(KindBomMpnRequired, unresolvedSeverity(i), "cannot be searched " &
       "for and states no mpn.")
     return
@@ -344,8 +352,8 @@ proc resolve*(items: seq[BomItem], opts = defaultResolveOptions()): BomResult =
       let c = r.chosen
       # Print a parsed value through `eng`, not the raw `3.000000000e-06`.
       let shown =
-        if i.family.isParametric and not i.value.isNaN:
-          eng(i.value, valueUnit(i.family))
+        if i.family.isParametric and i.value.isSome:
+          eng(i.value.get, valueUnit(i.family))
         else: i.valueText
       line = BomLine(key: k, value: shown, footprint: i.footprint,
                      partNumber: i.partNumber,
@@ -372,12 +380,12 @@ proc resolve*(items: seq[BomItem], opts = defaultResolveOptions()): BomResult =
     for line in result.lines:
       if line.doNotPopulate: continue
       let c = line.resolutions[0].chosen
-      if c == nil or c.avail.stock < 0: continue
+      if c == nil or c.avail.stock.isNone: continue
       let want = float(line.quantity) * opts.stockFactor
-      if float(c.avail.stock) < want:
+      if float(c.avail.stock.get) < want:
         result.issues.add newIssue(KindBomLowStock, sevInfo,
           line.designators.join(",") & ": " & c.manufacturer & " " & c.mpn &
-          " has " & $c.avail.stock & " in stock (" & c.source & "), under " &
+          " has " & $c.avail.stock.get & " in stock (" & c.source & "), under " &
           $want.int & " (" & $line.quantity & " used x " &
           $opts.stockFactor & ").")
 

@@ -79,7 +79,7 @@ proc powerRank(sd: SymbolDef, comp: Component, angle: float): array[4, int] =
     elif isRailForOrientation(p.net):
       let voltage = railVoltage(p.net)
       if voltage.has:
-        if voltage.value <= 0.0:
+        if float(voltage.value) <= 0.0:
           if slot.y <= 0.0: inc result[1]   # negative/zero rail points down
         elif slot.y >= 0.0:
           inc result[2]                     # positive rail points up

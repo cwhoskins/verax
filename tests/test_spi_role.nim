@@ -60,7 +60,7 @@ suite "the spi role":
       {"sclk": net("sclk"), "mosi": net("mosi"), "miso": net("miso"),
        "cs": net("cs")}, {"frequency": "1000000"})
     for a in d.expandAll():
-      check a.condition.getOrDefault("frequency") == "1000000"
+      check a.condition.getOrDefault("spi.frequency") == "1000000"
 
 # --- the per-chip-select fan-out ------------------------------------------
 

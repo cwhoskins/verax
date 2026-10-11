@@ -25,7 +25,8 @@
 ## an unsupported model all make the net unsupported (`esNotEvaluable`),
 ## naming the pin -- never a guess.
 
-import std/[tables, strutils, math, algorithm]
+import std/[tables, strutils, math, algorithm, options]
+export options
 import ../ibis/types
 import ../ibis/behave
 import ../ibis/attach
@@ -98,9 +99,8 @@ type
       ## Seconds added to the stimulus delay (`[Diff Pin]` `tdelay`).
 
   SiSupply* = object
-    ## Power-aware: the die's own rails, which every driver hangs from
-    ## (`present`). Otherwise the rails are ideal.
-    present*: bool
+    ## Power-aware: the die's own rails, which every driver hangs from.
+    ## `SiNet.supply` is `none` when the rails are ideal.
     vccDie*, gndDie*: int
 
   DiffReceiver* = object
@@ -108,9 +108,9 @@ type
     label*: string
     p*, n*: int
       ## Indices into `receivers`.
-    vdiff*: float
-      ## Differential threshold, volts: switched at `+vdiff`/`-vdiff`.
-    hasVdiff*: bool
+    vdiff*: Option[float]
+      ## Differential threshold, volts: switched at `+vdiff`/`-vdiff`;
+      ## `none` when nothing states one.
     source*: string
       ## Where `vdiff` came from.
 
@@ -127,7 +127,7 @@ type
     conductorNames*: seq[string]
       ## Empty: one conductor, the net itself.
     diffReceivers*: seq[DiffReceiver]
-    supply*: SiSupply
+    supply*: Option[SiSupply]
     unsupported*: seq[string]
       ## Non-empty: this net cannot be simulated (`esNotEvaluable`); each is
       ## the precise limitation.
@@ -287,8 +287,7 @@ type
     inverting*: bool
       ## `other` is the row's `inv_pin` (so the queried pin is the
       ## non-inverting one).
-    vdiff*: float
-    hasVdiff*: bool
+    vdiff*: Option[float]
     tdelay*: float
       ## The inverting leg's delay after the non-inverting one, at the
       ## corner (`0` when not stated).
@@ -309,8 +308,7 @@ proc diffPartner*(bindings: openArray[IbisBinding], p: PinRef, corner = coTyp): 
                                          pin: b.netlistPin(if noninv: dp.invPin else: dp.pin)),
                            source: comp.name & " [Diff Pin] " & dp.pin & "/" & dp.invPin)
       if dp.vdiff.present:
-        result.vdiff = dp.vdiff.value
-        result.hasVdiff = true
+        result.vdiff = some(dp.vdiff.value)
       let td = case corner
                of coTyp: dp.tdelayTyp
                of coMin: (if dp.tdelayMin.present: dp.tdelayMin else: dp.tdelayTyp)
@@ -414,8 +412,7 @@ type
     skew*: float
       ## The partner driver's delay after the stimulus (`[Diff Pin]`
       ## `tdelay`), seconds.
-    vdiff*: float
-    hasVdiff*: bool
+    vdiff*: Option[float]
     vdiffSource*: string
 
   SiTemplate* = object
@@ -589,7 +586,7 @@ proc buildPair(t: SiTemplate, p: TemplateParams, n: var SiNet) =
                   "differential termination")
   if pt.role == prDiffPair:
     n.diffReceivers.add DiffReceiver(label: t.receiverPorts[0].label & "/" & pt.receiverPort.label,
-                                     p: 0, n: 1, vdiff: pt.vdiff, hasVdiff: pt.hasVdiff,
+                                     p: 0, n: 1, vdiff: pt.vdiff,
                                      source: pt.vdiffSource)
   if p.parallelR > 0:
     for (pin, tag) in [(n.receiverPorts[0].pinNode, ""), (n.receiverPorts[1].pinNode, pt.name & ":")]:

@@ -4,6 +4,7 @@
 ## needing both would be refused on a host offering either alone. The
 ## quantity names differ too (a band's worst point vs one tone).
 
+import std/tables
 import ./common
 import ../analyses/psrr
 
@@ -36,6 +37,9 @@ proc psrrParts(d: Design, a: Assertion): tuple[src, inp, outp, reason: string] =
       "part"
 
 proc psrrSpecOf(a: Assertion): PsrrSpec =
+  ## One spec for both adapters; each reads only its own conditions (the
+  ## other's stay at the default), so the spec key never splits a run on a
+  ## condition that run doesn't use.
   result = defaultPsrrSpec()
   measurementOnly(result)
   result.fStart = conditionFloat(a, "f_from", 0.0)
@@ -47,23 +51,13 @@ proc psrrSpecOf(a: Assertion): PsrrSpec =
   result.periods = int(conditionFloat(a, "ripple_periods", 0.0))
   result.samplesPerPeriod = int(conditionFloat(a, "ripple_points", 0.0))
 
-proc psrrToneKey(ctx: EvalContext, a: Assertion): string =
-  let d = ctx.design
-  let p = psrrParts(d, a)
-  # The amplitude joins the key: `.tran` isn't linear.
-  p.src & "|" & p.inp & "|" & p.outp & "|" &
-    $conditionFloat(a, "ripple_f", 0.0) & "|" &
-    $conditionFloat(a, "ripple_v", 0.0) & "|" &
-    $conditionFloat(a, "t_settle", 0.0) & "|" &
-    $conditionFloat(a, "ripple_periods", 0.0) & "|" &
-    $conditionFloat(a, "ripple_points", 0.0)
-
-proc psrrAcKey(ctx: EvalContext, a: Assertion): string =
-  let d = ctx.design
-  let p = psrrParts(d, a)
-  # No amplitude: `.ac` is linear, so it can't change the answer.
-  p.src & "|" & p.inp & "|" & p.outp & "|" &
-    $conditionFloat(a, "f_from", 0.0) & "|" & $conditionFloat(a, "f_to", 0.0)
+proc psrrKey(ctx: EvalContext, a: Assertion): string =
+  ## The three nodes and the whole spec. For `.tran` that includes the
+  ## amplitude (not linear); for `.ac` it includes `at_f`, without which two
+  ## point frequencies shared one run and the second was answered at the
+  ## first's frequency.
+  let p = psrrParts(ctx.design, a)
+  p.src & "|" & p.inp & "|" & p.outp & "|" & specKey(psrrSpecOf(a))
 
 proc psrrToneDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
@@ -127,10 +121,15 @@ proc registerPsrrEvaluators*() =
     name: "spice.psrr_tone", produces: @psrrToneQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
     binds: @["source", "input"],
-    setupKey: psrrToneKey, setupDoc: psrrToneDoc, run: runPsrrTone))
+    conditions: @["ripple_f", "ripple_v", "t_settle", "ripple_periods",
+                  "ripple_points"],
+    units: {"psrr_db": "dB", "in_ripple_v": "V", "out_ripple_v": "V"}.toTable,
+    setupKey: psrrKey, setupDoc: psrrToneDoc, run: runPsrrTone))
 
   registerEvaluator(Evaluator(
     name: "spice.psrr_ac", produces: @psrrAcQuantities,
     needs: {capSpiceAc}, arity: 1 .. 1, subjectKinds: {skNet},
     binds: @["source", "input"],
-    setupKey: psrrAcKey, setupDoc: psrrAcDoc, run: runPsrrAc))
+    conditions: @["f_from", "f_to", "at_f"],
+    units: {"psrr_min_db": "dB", "f_psrr_min": "Hz", "psrr_at_f": "dB"}.toTable,
+    setupKey: psrrKey, setupDoc: psrrAcDoc, run: runPsrrAc))

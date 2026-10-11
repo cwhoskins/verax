@@ -17,8 +17,9 @@ import std/tables
 import ./units
 import ./geometry
 import ../netlist/types as nltypes
+import ../stated as statedmod
 
-export units, geometry
+export units, geometry, statedmod
 export nltypes.Netlist, nltypes.Net, nltypes.Component, nltypes.Pin
 
 type
@@ -94,8 +95,9 @@ type
       ## e.g. `"F.Cu"`, `"dielectric 1"`.
     thickness*: Nm
     material*: StackMaterial
-    copperWeight*: float
-      ## oz/ft^2. `0` means unknown.
+    copperWeight*: Stated[float]
+      ## oz/ft^2, with where it came from (a generated stack-up's 1 oz is
+      ## `annDefaulted`).
     attrs*: OrderedTable[string, string]
 
   Stackup* = ref object
@@ -193,8 +195,9 @@ type
     at*: Point
     drillDia*: Nm
       ## As-drilled diameter, or slot width when `isSlot`.
-    finishedDia*: Nm
-      ## After plating. `0` means unknown.
+    finishedDia*: Stated[Nm]
+      ## After plating. KiCad's drill *is* the finished size for a plated
+      ## hole, so its reader states it `annImported`; unstated otherwise.
     isSlot*: bool
     slotEnd*: Point
     fromLayer*: PcbLayer
@@ -228,8 +231,8 @@ type
     courtyard*: Polygon
     bodyBox*: Box
       ## ODB++ `PKG` bounding box, else derived from the courtyard.
-    height*: Nm
-      ## ODB++ `.comp_height`. `0` means unknown.
+    height*: Stated[Nm]
+      ## ODB++ `.comp_height`; unstated when the source doesn't say.
     lands*: OrderedTable[string, seq[Copper]]
       ## Pin name -> its copper, which may span several layers.
     sections*: OrderedTable[string, Component]

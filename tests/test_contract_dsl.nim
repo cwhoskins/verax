@@ -43,7 +43,7 @@ test "a design carries a netlist, its roles and its requirements":
 
 test "spec blocks inside a design work exactly as in a plain netlist":
   let d = board()
-  check abs(railVoltage(d.netlist.nets["vdd"]).value - 3.3) < 1e-12
+  check abs(float(railVoltage(d.netlist.nets["vdd"]).value) - 3.3) < 1e-12
   check package(d.netlist.components["U1"]).value == "QFN32"
   check validateAnnotations(d.netlist).len == 0
 

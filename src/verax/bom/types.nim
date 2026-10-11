@@ -2,13 +2,14 @@
 ## collection), `Candidate` (from a catalogue), and `Resolution`s rolled up
 ## into `BomLine`s in a `BomResult` (from the resolver).
 
-import std/[math, strutils, tables]
+import std/[math, options, strutils, tables]
 
 import ../netlist/types
 import ../netlist/annotations
 import ../netlist/issue
+import ../stated as statedmod
 
-export Assumption, Issue
+export Assumption, Issue, options, statedmod
 
 type
   PartFamily* = enum
@@ -35,12 +36,14 @@ type
       ## key.
     kind*: string
     family*: PartFamily
-    value*: float
-      ## SI base units; `NaN` when not parametric or `value` didn't parse.
+    value*: Option[float]
+      ## SI base units; `none` when not parametric or `value` didn't parse.
     valueText*: string
       ## The raw `value` attr (a model name for a non-passive).
-    tolerance*, voltageRating*, powerRating*, currentRating*, isat*: float
-      ## `NaN` when neither the part nor a `bom:` default states it.
+    tolerance*, voltageRating*, powerRating*, currentRating*, isat*: Stated[float]
+      ## With where each came from: the part's own annotation keeps its
+      ## provenance (authored, or derived by a `parts` policy), a `bom:`
+      ## default is `annDefaulted`. Unstated when neither says.
     dielectric*, package*, footprint*, caseCode*: string
     use*: string
       ## `part_use`, when stated.
@@ -60,16 +63,16 @@ type
       ## What collection found wrong with what this part states.
 
   Availability* = object
-    stock*: int
-      ## Units on hand; `-1` when unknown (never triggers low stock).
-    moq*: int
-      ## Minimum order quantity; `-1` when the source does not say.
+    stock*: Option[int]
+      ## Units on hand; `none` when unknown (never triggers low stock).
+    moq*: Option[int]
+      ## Minimum order quantity; `none` when the source does not say.
     lifecycle*: string
       ## `"active"`, `"nrnd"`, `"obsolete"`, or `""` when unknown.
 
   Candidate* = ref object
-    ## One orderable part from a `CatalogSource`. Unstated floats are `NaN`,
-    ## so an unknown rating never passes a minimum.
+    ## One orderable part from a `CatalogSource`. Unstated numbers are
+    ## `none`, so an unknown rating never passes a minimum.
     mpn*, manufacturer*: string
     family*: PartFamily
       ## `pfResistor`..`pfFerrite` or `pfOther`; never `pfNotAPart`.
@@ -77,9 +80,9 @@ type
     package*: string
     caseCode*: string
       ## Imperial chip case code or `""` (found by MPN only).
-    value*, tolerance*: float
+    value*, tolerance*: Option[float]
       ## SI base units, and a fraction (0.01 is 1 %).
-    voltageRating*, powerRating*, currentRating*: float
+    voltageRating*, powerRating*, currentRating*: Option[float]
     dielectric*: string
     avail*: Availability
     source*: string
@@ -141,7 +144,11 @@ type
 proc isParametric*(f: PartFamily): bool =
   f in {pfResistor, pfCapacitor, pfInductor, pfFerrite}
 
-proc hasValue*(i: BomItem): bool = not i.value.isNaN
+proc hasValue*(i: BomItem): bool = i.value.isSome
+
+proc asOption*(s: Stated[float]): Option[float] =
+  ## A requirement as a query sees it: present or not, provenance dropped.
+  if s.has: some(s.value) else: none(float)
 
 proc effectiveMpn*(i: BomItem): string =
   ## The MPN ordered by when nothing resolved: `mpn`, else `partNumber` (the
@@ -149,7 +156,8 @@ proc effectiveMpn*(i: BomItem): string =
   if i.mpn.len > 0: i.mpn else: i.partNumber.strip
 
 proc unknownAvailability*(): Availability =
-  Availability(stock: -1, moq: -1, lifecycle: "")
+  ## Every field unknown -- also what `Availability()` is.
+  Availability()
 
 proc copyCandidate*(c: Candidate): Candidate =
   ## A caller-owned copy, so callers can never edit the catalogue.

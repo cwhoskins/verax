@@ -3,6 +3,13 @@ import std/[json, math, sequtils, strutils, unittest]
 import verax/bom
 import verax/bom/sources/local
 
+proc opt(x: float): Option[float] =
+  ## Fixture shorthand: `NaN` is unstated.
+  if x.isNaN: none(float) else: some(x)
+proc st(x: float): Stated[float] =
+  if x.isNaN: absent(float) else: stated(x)
+
+
 const FixturePath = "tests/fixtures/catalog.json"
 
 proc item(family: PartFamily, value: float, caseCode: string,
@@ -10,9 +17,8 @@ proc item(family: PartFamily, value: float, caseCode: string,
   BomItem(designators: @[designator], members: @[designator],
           kind: (if family == pfResistor: "resistor"
                  elif family == pfCapacitor: "capacitor" else: "opamp"),
-          family: family, value: value, valueText: $value,
-          tolerance: tolerance, voltageRating: NaN, powerRating: NaN,
-          currentRating: NaN, isat: NaN, caseCode: caseCode, quantity: 1)
+          family: family, value: opt(value), valueText: $value,
+          tolerance: st(tolerance), caseCode: caseCode, quantity: 1)
 
 proc board(): BomResult =
   ## Two 10k resistors on one line, a DNP 100n, an op-amp with no MPN, an

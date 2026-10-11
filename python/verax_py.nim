@@ -690,7 +690,9 @@ proc pyEvalRun(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult]
 proc vxRegisterEvaluator(name: string, produces: seq[string], runFn: PyObject,
                          needs: seq[string] = @[], arityMin: int = 1,
                          arityMax: int = -1, subjectKinds: seq[string] = @[],
-                         binds: seq[string] = @[])
+                         binds: seq[string] = @[],
+                         conditions: seq[string] = @[],
+                         units: Table[string, string] = initTable[string, string]())
     {.exportpy: "register_evaluator".} =
   ## `contract/evaluate.registerEvaluator`, over a `run` that is a Python
   ## callable. `arityMax < 0` means unbounded (`int.high`) -- nimpy has no
@@ -698,6 +700,7 @@ proc vxRegisterEvaluator(name: string, produces: seq[string], runFn: PyObject,
   ## unambiguously as "no upper bound" for an arity, which is never negative.
   pyEvaluatorRuns[name] = runFn
   var ev = Evaluator(name: name, produces: produces, run: pyEvalRun, binds: binds,
+                     conditions: conditions, units: units,
                      arity: arityMin .. (if arityMax < 0: int.high else: arityMax))
   for n in needs: ev.needs.incl parseCapabilityStr(n)
   for k in subjectKinds: ev.subjectKinds.incl parseSubjectKindStr(k)

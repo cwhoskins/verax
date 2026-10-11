@@ -681,3 +681,22 @@ test "a regulator that states no rating reports derating as unchecked":
            maxOutputDerating = 0.9
     let rs = evaluate(d, allCapabilities)
     check resultFor(rs, "reg.i_out_derating").status == esNotEvaluated
+
+test "psrr_at_f claims at different frequencies are different .ac runs":
+  # The run reads `at_f` from the batch's first claim, so a setup key without
+  # it answered every point claim on a rail at the first one's frequency.
+  let d = design("psrr_points"):
+    net vdd, kind = ntPower
+    net gnd, kind = ntGround, name = "0"
+    component V1, kind = "voltage_source", value = "DC 5":
+      pin "+", vdd, kind = ptPower
+      pin "-", gnd, kind = ptGround
+    require psrr_at_f(vdd) >= 20.dB, at_f = 1.kHz, id = "AT_1K"
+    require psrr_at_f(vdd) >= 20.dB, at_f = 10.kHz, id = "AT_10K"
+    require psrr_min_db(vdd) >= 20.dB, id = "BAND"
+  var steps = 0
+  for s in plan(d, allCapabilities).steps:
+    if s.evaluator == "spice.psrr_ac":
+      inc steps
+      check s.assertions.len == 1
+  check steps == 3

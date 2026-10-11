@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `verax` is a proprietary-licensed Nim library for describing a circuit, stating what it must do, and checking that by simulation.
 
-Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, `netlist` <- `schematic`, `netlist`/`parts` <- `bom`, `pcb` <- `fem`, `netlist`/`pcb` <- `ibis`, `ibis`/`pcb` <- `si` <- `analysis` (no `si` -> `spice` edge). **Nothing depends backwards** — when a type is needed by two siblings it moves down, and when a module needs two siblings it moves up.
+Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, `netlist` <- `schematic`, `netlist` <- `bom`, `netlist` <- `parts`, `pcb` <- `fem`, `netlist`/`pcb` <- `ibis`, `touchstone` <- `pcb`, `ibis`/`pcb`/`touchstone` <- `si` <- `analysis` (no `si` -> `spice` edge, no `spice` -> `schematic` edge — `run_archive.nim` joins those two from above). **Nothing depends backwards** — when a type is needed by two siblings it moves down, and when a module needs two siblings it moves up.
 
 | Submodule | What it is |
 | --- | --- |
@@ -35,8 +35,9 @@ Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `net
 | `ibis/` | IBIS `.ibs` reader, plus `behave`: a model interpreted as data (absolute curves, `Ku`/`Kd`). |
 | `si/` | Native SI transient engine: one net (IBIS driver, package, lines, vias, receivers) simulated, measured, and its routing constraints derived. No ngspice. |
 | `fem/` | Field-solver interface skeleton (no backend yet). |
+| `touchstone/` | Touchstone `.sNp` reader and S-parameter/dB conversions; root-level, used by `pcb/tline` and `si`. |
 
-`units.nim`/`eng.nim`/`waveform.nim` sit below everything, `verify.nim` above everything, `cli.nim` is the binary. `src/verax.nim` is deliberately **not** a re-export hub — import submodules by path (`import verax/netlist`). `namedBin["verax/cli"] = "verax"` builds the binary from `cli.nim` so `import verax` doesn't drag in the simulator.
+`units.nim`/`stated.nim`/`eng.nim`/`waveform.nim` and `touchstone/` (S-parameter files) sit below everything, `run_archive.nim` joins `spice` to `schematic` for the run archive, `verify.nim` above everything, `cli.nim` is the binary. `src/verax.nim` is deliberately **not** a re-export hub — import submodules by path (`import verax/netlist`). `namedBin["verax/cli"] = "verax"` builds the binary from `cli.nim` so `import verax` doesn't drag in the simulator.
 
 No dependencies beyond the Nim stdlib (`nim >= 2.2.10`). The MCP server is a **separate package** under `mcp/` because a nimble dependency can only be opt-in per package.
 

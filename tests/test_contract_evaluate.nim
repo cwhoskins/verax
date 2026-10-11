@@ -472,6 +472,21 @@ test "a predicate runs its proc over the dependency values in order":
   let r = resultFor(evaluate(d), "P")
   check r.status == esPass
   check "predicate held" in r.reason
+  # The values it judged, named, so a verdict says how far off it was.
+  checkpoint r.reason
+  check "x = 10" in r.reason and "y = 100" in r.reason
+
+test "a failing predicate shows the values it judged":
+  let d = design("predfail"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    require pred(x = rel_a(a), y = rel_b(b), id = "P") do (x, y: float) -> bool:
+      x > y
+  let r = resultFor(evaluate(d), "P")
+  check r.status == esFail
+  checkpoint r.reason
+  check "predicate did not hold" in r.reason
+  check "x = 10" in r.reason and "y = 100" in r.reason
 
 test "a predicate whose dependency cannot be made names that dependency":
   let d = design("predbad"):

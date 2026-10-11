@@ -207,6 +207,20 @@ proc hierName*(parts: varargs[string]): string =
     if result.len > 0: result.add hierSep
     result.add part
 
+proc leafComponents*(nl: Netlist): seq[tuple[c: Component, path: string]] =
+  ## Every leaf component under `nl` with its hierarchical path
+  ## (`hierName("X1", "U1")`), walking instances rather than flattening, in
+  ## netlist order. An instance contributes its contents, never itself. The
+  ## one definition of "a placed/bought part" shared by `pcb/assemble` and
+  ## `bom/collect`.
+  proc walk(n: Netlist, prefix: string,
+            res: var seq[tuple[c: Component, path: string]]) =
+    for _, c in n.components:
+      let p = hierName(prefix, c.designator)
+      if c.subNetlist != nil: walk(c.subNetlist, p, res)
+      else: res.add (c, p)
+  walk(nl, "", result)
+
 proc findNet*(nl: Netlist, path: string): Net =
   ## A net by flat name, or by a `hierSep` path into `children`; `nil` when
   ## absent. The flat key is tried first, so one call works before and after

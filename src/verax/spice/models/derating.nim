@@ -78,7 +78,7 @@ proc dcAcrossCapacitor(cap: Component,
     if a == nil or b == nil: continue
     if not isGround(a): continue
     let v = annotations.railVoltage(b)
-    if v.has: return abs(v.value)
+    if v.has: return abs(float(v.value))
   0.0
 
 proc derateCapacitor*(cap: Component, d: DeratingDefaults,
@@ -109,9 +109,9 @@ proc derateCapacitor*(cap: Component, d: DeratingDefaults,
   if not d.byDielectric.hasKey(dielectric.toUpperAscii): return
   let curve = d.byDielectric[dielectric.toUpperAscii]
 
-  let ratedAnn = annotations.annotationFloat(cap, "voltage_rating")
+  let ratedAnn = annotations.voltageRating(cap)
   let rated =
-    if ratedAnn.has and ratedAnn.value > 0.0: ratedAnn.value
+    if ratedAnn.has and float(ratedAnn.value) > 0.0: float(ratedAnn.value)
     else: working * d.assumeRatingFactor
   if rated <= 0.0: return
 
@@ -126,7 +126,7 @@ proc derateCapacitor*(cap: Component, d: DeratingDefaults,
       d.assumeDielectric & " for a ceramic that states none. C0G/NP0 does " &
       "not bias-derate at all, so stating it is the difference between " &
       eng(nominal, "F") & " and " & eng(nominal * frac, "F") & " here")
-  if not (ratedAnn.has and ratedAnn.value > 0.0):
+  if not (ratedAnn.has and float(ratedAnn.value) > 0.0):
     result.add assumption(cap.designator, "voltage_rating", rated, "V",
       annDefaulted,
       "assumed as " & $d.assumeRatingFactor & "x the " & eng(working, "V") &

@@ -20,27 +20,15 @@ const
   KindBomAnnotationUnparseable* = "bom_annotation_unparseable"
   KindBomPackageDnpConflict* = "bom_package_dnp_conflict"
 
-proc collectLeaves(nl: Netlist, prefix: string,
-                   res: var seq[tuple[c: Component, path: string]]) =
-  ## Every leaf component with its hierarchical path, walking instances (a
-  ## local copy of `pcb/assemble.collectLeaves`; `bom/` can't import `pcb/`).
-  for _, c in nl.components:
-    let p = hierName(prefix, c.designator)
-    if c.subNetlist != nil:
-      collectLeaves(c.subNetlist, p, res)
-    else:
-      res.add (c, p)
-
-proc floatOf(item: BomItem, c: Component, path, key: string): float =
-  ## A stated float annotation, or `NaN` when absent or unparseable
-  ## (`readiness` already reports the latter).
+proc floatOf(item: BomItem, c: Component, path, key: string): Stated[float] =
+  ## A stated float annotation with its provenance, or unstated when absent
+  ## or unparseable (`readiness` already reports the latter).
   try:
-    let v = annotationFloat(c, key)
-    if v.has: v.value else: NaN
+    annotationFloat(c, key)
   except NetlistError as e:
     item.issues.add newIssue(KindBomAnnotationUnparseable, sevWarning,
       path & ": " & e.msg & " -- read as unstated.", components = @[c])
-    NaN
+    absent(float)
 
 proc fill(item: BomItem, c: Component, path: string) =
   ## The first member stating a field wins (sections describe one part).
@@ -49,7 +37,7 @@ proc fill(item: BomItem, c: Component, path: string) =
       let v = annotation(c, key)
       if v.has: item.field = v.value
   template firstFloat(field: untyped, key: string) =
-    if item.field.isNaN: item.field = floatOf(item, c, path, key)
+    if not item.field.has: item.field = floatOf(item, c, path, key)
   if item.valueText.len == 0: item.valueText = c.attrs.getOrDefault("value")
   firstFloat(tolerance, "tolerance")
   firstFloat(voltageRating, "voltage_rating")
@@ -68,18 +56,16 @@ proc fill(item: BomItem, c: Component, path: string) =
     item.generated = true
 
 proc newItem(c: Component): BomItem =
-  BomItem(kind: c.kind, family: familyOf(c.kind), value: NaN,
-          tolerance: NaN, voltageRating: NaN, powerRating: NaN,
-          currentRating: NaN, isat: NaN, quantity: 1)
+  BomItem(kind: c.kind, family: familyOf(c.kind), quantity: 1)
 
 proc applyDefaults(item: BomItem, d: BomDefaults) =
   ## Fills only unstated fields, only for parametric families; a part's own
   ## `spec:` always wins.
   if not item.family.isParametric: return
   let who = item.designators[0]
-  if item.tolerance.isNaN and float(d.tolerance) > 0.0:
-    item.tolerance = float(d.tolerance)
-    item.assumptions.add assumption(who, "tolerance", item.tolerance, "",
+  if not item.tolerance.has and d.tolerance.isSome:
+    item.tolerance = stated(float(d.tolerance.get), annDefaulted)
+    item.assumptions.add assumption(who, "tolerance", item.tolerance.value, "",
       annDefaulted, "from the bom: default (the part states no tolerance)")
   if item.family == pfCapacitor and item.dielectric.len == 0 and
       d.dielectric.len > 0:
@@ -106,7 +92,7 @@ proc parseValue(item: BomItem) =
   if not item.family.isParametric: return
   var v: float
   if parseSpiceMagnitude(item.valueText, v):
-    item.value = v
+    item.value = some(v)
   else:
     let why =
       if item.valueText.strip().len == 0: "states no value"
@@ -121,8 +107,7 @@ proc collect*(nl: Netlist): seq[BomItem] =
   ## One `BomItem` per physical part, in netlist order. `pfNotAPart` kinds
   ## are omitted; `bom_exclude` parts are kept with `excluded = true`.
   ## Defaults come from the first member's netlist (most specific wins).
-  var leaves: seq[tuple[c: Component, path: string]]
-  collectLeaves(nl, "", leaves)
+  let leaves = leafComponents(nl)
   var byPkg: Table[string, BomItem]
   var dnpSeen: Table[string, tuple[yes, no: int]]
   for (c, path) in leaves:

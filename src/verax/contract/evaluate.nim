@@ -13,7 +13,7 @@
 ## `analysis/evaluators/contract_eval` through the same path as static ones,
 ## so user evaluators are first-class.
 
-import std/[algorithm, math, options, sets, strutils, tables]
+import std/[algorithm, math, options, sets, strutils, tables, typetraits]
 import ../netlist/types
 import ../netlist/annotations
 import ../eng
@@ -111,6 +111,20 @@ type
       ## `require` reach this?" is answerable without running. Non-empty
       ## means reachable only through a role (`overshoot_pct(vdd)` names the
       ## rail, not its regulator).
+    conditions*: seq[string]
+      ## Every bare condition key the run reads. `plan` refuses a claim
+      ## carrying a bare key its evaluator doesn't list (`at_f` on a
+      ## `z_max_in_band` claim would otherwise be silently ignored), naming
+      ## the ones it does read. Empty means it reads none. Each must be a
+      ## registered condition (`registerCondition`); dotted keys are never
+      ## checked.
+    units*: Table[string, string]
+      ## Quantity -> the unit it is measured in (`"ohm"`, `"Hz"`, `""` for a
+      ## count or ratio). Lets `plan` refuse a claim stated in the wrong unit
+      ## before anything runs, and `claimLint` flag a unitless claim against
+      ## a unitful quantity even when it wasn't run. A quantity left out is
+      ## undeclared: checked only after the run, against what was measured.
+      ## `verdict` refuses a measurement whose unit disagrees with this.
     setupKey*: SetupKeyProc
     setupDoc*: SetupDocProc
       ## Renders the run for a reader (`"an .ac sweep of net 'vdd', 1 A
@@ -196,6 +210,19 @@ proc registerEvaluator*(ev: Evaluator) =
   if it.subjectKinds == {}:
     it.subjectKinds = {skNet, skComponent, skPin, skClass, skDesign}
 
+  for k in it.conditions:
+    if '.' in k: continue
+    if not isConditionKey(k):
+      raise newException(NetlistError,
+        "evaluator '" & it.name & "' reads condition '" & k & "', which is " &
+        "not registered -- `registerCondition` it first, so a claim can " &
+        "carry it")
+  for q in it.units.keys:
+    if q notin it.produces:
+      raise newException(NetlistError,
+        "evaluator '" & it.name & "' declares a unit for '" & q &
+        "', which it does not produce")
+
   for q in it.produces:
     let owner = quantityIndex.getOrDefault(q)
     if owner.len > 0 and owner != it.name:
@@ -216,6 +243,18 @@ proc evaluatorFor*(quantity: string): Option[Evaluator] =
   some(evaluatorRegistry[name])
 
 proc isEvaluable*(quantity: string): bool = quantityIndex.hasKey(quantity)
+
+proc declaredUnit*(quantity: string): Option[string] =
+  ## The unit the producing evaluator declares for `quantity`, or `none`
+  ## when nothing produces it or its producer doesn't say.
+  let ev = evaluatorFor(quantity)
+  if ev.isNone or not ev.get.units.hasKey(quantity): return none(string)
+  some(ev.get.units[quantity])
+
+proc conditionsRead*(quantity: string): seq[string] =
+  ## The bare condition keys a claim on `quantity` may carry.
+  let ev = evaluatorFor(quantity)
+  if ev.isSome: result = ev.get.conditions
 
 proc registeredEvaluators*(): seq[string] =
   for k in evaluatorRegistry.keys: result.add k
@@ -271,9 +310,13 @@ proc conditionOf*(a: Assertion, key: string): Option[string] =
   some(a.condition[key])
 
 proc conditionFloat*(a: Assertion, key: string, fallback: float): float =
+  ## The condition as a number, or `fallback` when it is **absent**. A
+  ## present but malformed value raises rather than reading as the default:
+  ## `plan` already refuses such a claim (`conditionProblem`), so this only
+  ## fires for a caller that skipped planning, and `runStep` turns it into a
+  ## not-evaluated result naming the value.
   if not a.condition.hasKey(key): return fallback
-  try: parseAnnFloat(key, a.condition[key])
-  except CatchableError: fallback
+  parseAnnFloat(key, a.condition[key])
 
 proc netSubject*(d: Design, a: Assertion, index = 0): Option[Net] =
   ## The `index`-th subject as a live net, when it is one and it exists.
@@ -310,6 +353,23 @@ proc verdict*(a: Assertion, value: float, unit: string, evaluator: string,
   ##
   ## Both still carry the analysis's assumptions and issues: the issue
   ## usually explains the `NaN`, which this generic `reason` can't.
+  # The producer's own declaration is checked first: a measurement in a unit
+  # its evaluator doesn't declare is an internal inconsistency, and comparing
+  # it would trust whichever of the two is wrong.
+  if evaluatorRegistry.hasKey(evaluator):
+    let ev = evaluatorRegistry[evaluator]
+    if ev.units.hasKey(a.quantity) and
+       cmpIgnoreCase(ev.units[a.quantity], unit) != 0:
+      result = notEvaluated(a, evaluator,
+        "internal: evaluator '" & evaluator & "' declares " & a.quantity &
+        " in " & (if ev.units[a.quantity].len > 0: ev.units[a.quantity]
+                  else: "no unit") &
+        " but measured it in " & (if unit.len > 0: unit else: "no unit") &
+        " -- the declaration or the analysis is wrong, so neither is trusted")
+      result.assumptions = assumptions
+      result.issues = issues
+      return
+
   if not unitsAgree(a.unit, unit):
     result = notEvaluable(a, evaluator,
       "unit mismatch: the assertion is stated in " & a.unit &
@@ -353,18 +413,100 @@ proc hiddenId(serial: int, role: string): string =
   ## separator plus a counter.
   hiddenIdPrefix & $serial & "\x1f" & role
 
+# --- setup keys ---------------------------------------------------------
+
+proc specKeyPart[T](v: T): string =
+  # Containers first: `Table`, `OrderedTable` and `Option` are objects too,
+  # and their fields are not their content.
+  when T is Table | OrderedTable:
+    # Content, not insertion order: two specs holding the same entries are
+    # the same setup.
+    var parts: seq[string]
+    for k, x in v.pairs: parts.add specKeyPart(k) & ":" & specKeyPart(x)
+    parts.sort()
+    result = "{" & parts.join(",") & "}"
+  elif T is seq | array:
+    var parts: seq[string]
+    for x in v: parts.add specKeyPart(x)
+    result = "[" & parts.join(",") & "]"
+  elif T is Option:
+    result = if v.isSome: "some(" & specKeyPart(v.get) & ")" else: "none"
+  elif T is string:
+    result = v.escape()
+  elif T is object | tuple:
+    result = "("
+    for name, f in v.fieldPairs:
+      result.add name & "=" & specKeyPart(f) & ";"
+    result.add ")"
+  elif T is distinct:
+    result = specKeyPart(distinctBase(T)(v))
+  else:
+    # A ref, ptr or proc field has no `$` and fails to compile here: a run's
+    # inputs must be plain data to be keyed.
+    result = $v
+
+proc specKey*[T: object](spec: T): string =
+  ## Every field of the spec a run is built from, in declaration order.
+  ## A setup key built from this can't drift from the run: a field the run
+  ## reads is a field the key sees, by construction (the `psrr_ac` bug was a
+  ## hand-written key that missed one). Build the spec with the same proc the
+  ## run uses, from the claim alone -- nothing solved at run time (an
+  ## operating point) belongs in it.
+  specKeyPart(spec)
+
+# --- planning (continued) ------------------------------------------------
+
 proc routePlain(ctx: EvalContext, p: var Plan,
-                stepIndex: var Table[string, int], a: Assertion) =
+                stepIndex: var Table[string, int], a: Assertion,
+                shared = initHashSet[string]()) =
   ## Routes one plain measurement request. Hidden requests use this path
   ## too, so they group with authored claims sharing evaluator and setup.
+  ## `shared` holds the bare conditions another request of the same
+  ## authored claim reads: the DSL stamps trailing conditions on every
+  ## dependency, so a key read by one dependency is dropped from the others
+  ## rather than refused.
   let d = ctx.design
   let allowed = ctx.allowed
+  var a = a
   let evOpt = evaluatorFor(a.quantity)
   if evOpt.isNone:
     p.rejected.add Rejection(assertion: a, status: esNotEvaluable,
       reason: "no evaluator produces '" & a.quantity & "'")
     return
   let ev = evOpt.get
+
+  let condBad = conditionProblem(a)
+  if condBad.len > 0:
+    p.rejected.add Rejection(assertion: a, status: esNotEvaluable,
+      evaluator: ev.name, reason: condBad)
+    return
+
+  var unread: seq[string]
+  for k in a.condition.keys:
+    if '.' in k or k in ev.conditions: continue
+    if k in shared: unread.add k   # read by a sibling request; drop here
+    else:
+      p.rejected.add Rejection(assertion: a, status: esNotEvaluable,
+        evaluator: ev.name,
+        reason: "'" & a.quantity & "' is measured by " & ev.name &
+                ", which does not read condition '" & k & "'" &
+                (if ev.conditions.len > 0:
+                   " -- it reads " & ev.conditions.join(", ")
+                 else: " -- it reads no conditions") &
+                ". Stating it would change nothing while reading as if it " &
+                "had; drop it, or namespace it ('mine." & k &
+                "') if it is a note")
+      return
+  for k in unread: a.condition.del k
+
+  if a.unit.len > 0 and ev.units.hasKey(a.quantity):
+    let u = ev.units[a.quantity]
+    if u.len > 0 and cmpIgnoreCase(u, a.unit) != 0:
+      p.rejected.add Rejection(assertion: a, status: esNotEvaluable,
+        evaluator: ev.name,
+        reason: "unit mismatch: the assertion is stated in " & a.unit &
+                " but " & a.quantity & " is measured in " & u)
+      return
 
   if a.subjects.len notin ev.arity:
     p.rejected.add Rejection(assertion: a, status: esNotEvaluable,
@@ -400,6 +542,11 @@ proc routePlain(ctx: EvalContext, p: var Plan,
     p.steps.add PlanStep(evaluator: ev.name, key: key, needs: ev.needs)
   p.steps[stepIndex[slot]].assertions.add a
 
+proc sharedConditions(quantities: seq[string]): HashSet[string] =
+  ## Conditions read by any of a claim's requests; see `routePlain`.
+  for q in quantities:
+    for k in conditionsRead(q): result.incl k
+
 proc plan*(ctx: EvalContext): Plan =
   ## Routes every assertion (authored and role-expanded) to an evaluator,
   ## one step per `(evaluator, setup key)`. Relative and predicate claims
@@ -415,12 +562,13 @@ proc plan*(ctx: EvalContext): Plan =
     of ekNominal, ekMin, ekMax, ekRange:
       routePlain(ctx, result, stepIndex, a)
     of ekRelative:
+      let shared = sharedConditions(@[a.quantity, a.expect.reference.quantity])
       let primId = hiddenId(serial, "primary"); inc serial
       result.hidden.incl primId
       var prim = a
       prim.id = primId
       prim.expect = atLeast(-Inf)
-      routePlain(ctx, result, stepIndex, prim)
+      routePlain(ctx, result, stepIndex, prim, shared)
 
       let depId = hiddenId(serial, "reference"); inc serial
       result.hidden.incl depId
@@ -429,11 +577,14 @@ proc plan*(ctx: EvalContext): Plan =
         quantity: reference.quantity, expect: atLeast(-Inf), unit: "",
         severity: a.severity, rationale: "", origin: a.origin)
       for k, v in reference.condition: dep.condition[k] = v
-      routePlain(ctx, result, stepIndex, dep)
+      routePlain(ctx, result, stepIndex, dep, shared)
 
       result.resolves.add ResolveStep(assertion: a, primary: primId,
         deps: @[(name: "reference", request: depId)])
     of ekPredicate:
+      var quantities: seq[string]
+      for d in a.expect.deps: quantities.add d.measurement.quantity
+      let shared = sharedConditions(quantities)
       var reqs: seq[tuple[name, request: string]]
       for d in a.expect.deps:
         let depId = hiddenId(serial, "dep." & d.name); inc serial
@@ -442,7 +593,7 @@ proc plan*(ctx: EvalContext): Plan =
           quantity: d.measurement.quantity, expect: atLeast(-Inf), unit: "",
           severity: a.severity, rationale: "", origin: a.origin)
         for k, v in d.measurement.condition: req.condition[k] = v
-        routePlain(ctx, result, stepIndex, req)
+        routePlain(ctx, result, stepIndex, req, shared)
         reqs.add (name: d.name, request: depId)
       result.resolves.add ResolveStep(assertion: a, primary: "", deps: reqs)
 
@@ -465,8 +616,11 @@ proc explainPlan*(p: Plan): string =
   lines.add "plan: " & $p.steps.len & " step(s), " &
             $assertionCount(p) & " assertion(s)"
   for s in p.steps:
+    # Spec-derived keys are long; the head (topology first) is what a reader
+    # needs, and `describeStep` says what the run is.
+    let key = if s.key.len > 60: s.key[0 ..< 57] & "..." else: s.key
     lines.add "  " & s.evaluator & " [" & capLabel(s.needs) & "]" &
-              (if s.key.len > 0: " on " & s.key else: "") &
+              (if key.len > 0: " on " & key else: "") &
               " -- " & $s.assertions.len & " request(s)"
     for a in s.assertions:
       if a.id in p.hidden: continue
@@ -600,12 +754,14 @@ proc relativeResult(a: Assertion, prim, dep: AssertionResult): AssertionResult =
 proc predicateResult(a: Assertion,
                      deps: seq[tuple[name: string, r: AssertionResult]]): AssertionResult =
   ## Fold one predicate claim: gather dependency values in order, run the
-  ## proc, report whether it held.
+  ## proc, report whether it held -- and the values it was handed, so a
+  ## verdict says how far off it was (findings §81).
   var values: seq[float]
   var assumptions: seq[Assumption]
   var issues: seq[Issue]
   var evaluator = ""
   var unit = ""
+  var shown: seq[string]
 
   for (name, r) in deps:
     if r.status notin {esPass, esFail}:
@@ -616,6 +772,7 @@ proc predicateResult(a: Assertion,
       result.issues = r.issues
       return
     values.add r.value
+    shown.add name & " = " & eng(r.value, r.unit)
     assumptions.add r.assumptions
     issues.add r.issues
     if evaluator.len == 0: evaluator = r.evaluator
@@ -632,7 +789,8 @@ proc predicateResult(a: Assertion,
 
   result = AssertionResult(assertion: a, status: (if ok: esPass else: esFail),
     value: NaN, unit: unit, evaluator: evaluator,
-    reason: (if ok: "predicate held" else: "predicate did not hold"),
+    reason: (if ok: "predicate held" else: "predicate did not hold") &
+      " (" & shown.join(", ") & ")",
     assumptions: assumptions, issues: issues)
 
 proc resolveHidden*(p: Plan, batches: seq[seq[AssertionResult]]): seq[AssertionResult] =

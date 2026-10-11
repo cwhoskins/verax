@@ -532,9 +532,9 @@ proc adjustableRegulator*(part: AdjRegulator, vin, vout: Volts, iLoad: Amps,
   # supply. `working` is stated for both -- unlike a filter's bypass
   # capacitors, this builder does know what is across them.
   let coutChoice = parts.capacitor(
-    CapRequest(value: 10.uF, use: cuBulk, working: vout))
+    CapRequest(value: 10.uF, use: cuBulk, working: some(vout)))
   let cinChoice = parts.capacitor(
-    CapRequest(value: 100.nF, use: cuDecoupling, working: vin))
+    CapRequest(value: 100.nF, use: cuDecoupling, working: some(vin)))
 
   result = subckt("ADJREG", [VIN, VOUT, GND]):
     net GND,  kind = ntGround, name = "0"

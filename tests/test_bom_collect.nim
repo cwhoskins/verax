@@ -29,8 +29,8 @@ test "a bare magnitude value is read in SI base units":
       pin "1", a
       pin "2", gnd
   let items = collect(nl)
-  check itemFor(items, "R1").value == 10000.0
-  check abs(itemFor(items, "R2").value - 2200.0) < 1e-9
+  check itemFor(items, "R1").value == some(10000.0)
+  check abs(itemFor(items, "R2").value.get - 2200.0) < 1e-9
   check itemFor(items, "R1").issues.len == 0
 
 test "an RKM value is refused and reported, read as neither 2200 nor 2000":
@@ -40,7 +40,7 @@ test "an RKM value is refused and reported, read as neither 2200 nor 2000":
       pin "1", a
       pin "2", a
   let r = itemFor(collect(nl), "R1")
-  check r.value.isNaN
+  check r.value.isNone
   check r.valueText == "2k2"
   check KindBomValueUnparseable in kinds(r)
   check r.issues[0].severity == sevWarning
@@ -56,7 +56,7 @@ test "a non-passive's value is a model name and is never parsed":
       pin "K", k
   let d = itemFor(collect(nl), "D1")
   check d.family == pfOther
-  check d.value.isNaN
+  check d.value.isNone
   check d.valueText == "1N4148"
   check d.issues.len == 0
 
@@ -218,16 +218,16 @@ test "stated fields are read, and a part's own spec beats every default":
       pin "1", a
       pin "2", a
   let c = itemFor(collect(nl), "C1")
-  check abs(c.tolerance - 0.01) < 1e-12
+  check abs(c.tolerance.value - 0.01) < 1e-12
   check c.dielectric == "C0G"
-  check c.voltageRating == 50.0
+  check c.voltageRating.value == 50.0
   check c.caseCode == "0402"
   check c.package == ""          # a footprint was stated, so no default package
   check c.mpn == "GRM1555C1H223JA01D"
   check c.manufacturer == "Murata"
   check c.use == "timing"
   check c.assumptions.len == 0
-  check c.powerRating.isNaN
+  check not c.powerRating.has
 
 test "an absent tolerance takes the board default and records an Assumption":
   let nl = netlist("b"):
@@ -240,7 +240,8 @@ test "an absent tolerance takes the board default and records an Assumption":
       pin "1", a
       pin "2", a
   let c = itemFor(collect(nl), "C1")
-  check abs(c.tolerance - 0.05) < 1e-12
+  check abs(c.tolerance.value - 0.05) < 1e-12
+  check c.tolerance.source == annDefaulted
   check c.dielectric == "X7R"
   check c.package == "0603"
   check c.caseCode == "0603"
@@ -260,7 +261,7 @@ test "defaults never reach a non-parametric part":
     component U1, kind = "mcu":
       pin "1", a
   let u = itemFor(collect(nl), "U1")
-  check u.tolerance.isNaN
+  check not u.tolerance.has
   check u.assumptions.len == 0
 
 test "each part takes the defaults of the netlist it lives in":
@@ -283,7 +284,7 @@ test "each part takes the defaults of the netlist it lives in":
   let items = collect(top)
   let inner = itemFor(items, "X1.C1")
   check inner.dielectric == "C0G"
-  check abs(inner.tolerance - 0.10) < 1e-12   # inherited from the board
+  check abs(inner.tolerance.value - 0.10) < 1e-12   # inherited from the board
   check itemFor(items, "C2").dielectric == "X7R"
 
 test "a generated designator is marked":
@@ -293,3 +294,17 @@ test "a generated designator is marked":
   setRawAnnotation(r, "value", "1k")
   discard connect(r, "1", a, ptPassive)
   check collect(nl)[0].generated
+
+test "a rating keeps where it came from (design review R5)":
+  # A `parts` policy writes derived ratings; the BoM must not present them
+  # as the designer's own statement.
+  let nl = newNetlist("prov")
+  let c = addComponent(nl, newComponent("C1", kind = "capacitor"))
+  setRawAnnotation(c, "value", "1e-7")
+  setAnnotation(c, "package", "0402")
+  setAnnotation(c, "voltage_rating", 16.V, annDerived)
+  setAnnotation(c, "tolerance", 10.pct)
+  let it = itemFor(collect(nl), "C1")
+  check it.voltageRating.source == annDerived
+  check it.tolerance.source == annAuthored
+  check not it.powerRating.has

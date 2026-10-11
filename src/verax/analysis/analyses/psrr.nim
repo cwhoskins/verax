@@ -36,6 +36,7 @@
 import std/[math, strutils, tables]
 
 import ../../netlist/types
+import ../../units
 import ../../netlist/graph
 import ../../netlist/kinds
 import ../../netlist/formats/spice as spiceFormat
@@ -183,8 +184,8 @@ proc injectRipple(work: Netlist, source, value: string): string =
   probe.source.attrs["value"] = value
   # An ideal series source: the default impedance would sit between the
   # ripple and the supply.
-  probe.source.attrs["rout"] = "0"
-  probe.source.attrs["lout"] = "0"
+  setAnnotation(probe.source, "rout", 0.0.ohm, annDerived)
+  setAnnotation(probe.source, "lout", 0.0.H, annDerived)
   desig
 
 proc netOr(work: Netlist, name, what: string): Net =

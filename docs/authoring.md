@@ -374,7 +374,12 @@ complete, so build the parts conditionally and state the claims after.
 
 **`require <quantity>(<subjects>) <op> <value>`** — `==`, `>=`, `<=`, with
 optional `id = "..."`, `because = "..."`, and condition keys such as
-`f_from` / `f_to` / `at_t`. Run `verax quantities` for what can be measured.
+`f_from` / `f_to` / `at_f` / `t_settle`. A misspelled condition key is
+refused at plan time (naming the nearest real one), never ignored, and so
+is a real key the quantity's evaluator doesn't read (`at_f` on `z_min`). A
+claim stated in a unit other than the quantity's (`require z_min(vdd) <=
+50.mV`) is refused before anything runs. Run `verax quantities` for what can
+be measured, in which unit, and under which conditions.
 
 Most quantities take one subject. A few take two — `gain_delta_max_db(left,
 right)` is one channel *versus* another — and `require q(a, b) <= x` spells

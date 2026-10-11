@@ -9,7 +9,7 @@
 ## failing witness, and room for bench results later. A quantity nothing
 ## produces shows up as unevaluable immediately.
 
-import std/[math, sets, strutils, tables]
+import std/[editdistance, math, sets, strutils, tables]
 import ../netlist/issue
 import ../netlist/annotations
 import ../eng
@@ -89,7 +89,9 @@ type
     quantity*: string
       ## An analysis `Measurement` name -- `dc_voltage`, `bw_3db`, `z_min`.
     condition*: OrderedTable[string, string]
-      ## Under what circumstances: `"f_from"`/`"f_to"`, `"at_t"`, `"temp"`.
+      ## Under what circumstances: `"f_from"`/`"f_to"`, `"t_settle"`, ...
+      ## Bare keys must be registered (`registerCondition`); `plan` refuses
+      ## an unknown one rather than let the evaluator ignore it.
     expect*: Expectation
     unit*: string
     severity*: Severity
@@ -232,17 +234,109 @@ proc `$`*(a: Assertion): string =
 # The claim broken into parts -- what's measured, under what circumstances,
 # what interval is accepted -- so tables and sentences can place each.
 
-const conditionUnits = {
-  "f_from": "Hz", "f_to": "Hz", "at_f": "Hz", "drive_f": "Hz",
-  "at_t": "s", "settle_t": "s",
-  "drive_v": "V", "temp": "degC",
-  # Units for load-step and ripple-tone conditions.
-  "step_from": "A", "step_to": "A",
-  "step_edge": "s", "step_at": "s", "step_hold": "s", "step_recover": "s",
-  "step_band": "",
-  "ripple_f": "Hz", "ripple_v": "V",
-  "t_settle": "s", "t_window": "s", "t_run": "s"
-}.toTable
+# --- the condition vocabulary --------------------------------------------
+#
+# Conditions are the inputs that most directly change what gets simulated,
+# so a misspelled one (`f_form`) must not be silently ignored while the
+# evaluator falls back to its default. As with annotations: a **bare key must
+# be registered**, a dotted key is owned by whoever wrote it and never
+# validated. `plan` refuses a claim carrying an unknown bare key or a value
+# that doesn't parse (`conditionProblem`).
+
+type
+  ConditionKind* = enum
+    cdFloat   ## a plain SI number (`parseAnnFloat`): no SPICE suffixes
+    cdText    ## a word, optionally from `allowed`
+
+  ConditionDef* = object
+    key*: string
+    kind*: ConditionKind
+    unit*: string
+      ## SI unit for rendering; "" for dimensionless or caller-dependent.
+    allowed*: seq[string]
+      ## `cdText` only; empty means any word.
+    doc*: string
+
+proc cond(key: string, unit, doc: string): ConditionDef =
+  ConditionDef(key: key, kind: cdFloat, unit: unit, doc: doc)
+
+let builtinConditions = [
+  cond("f_from", "Hz", "lower edge of a swept or judged band"),
+  cond("f_to", "Hz", "upper edge of a swept or judged band"),
+  cond("at_f", "Hz", "the single frequency a point figure is read at"),
+  cond("drive_v", "V", "large-signal drive amplitude"),
+  cond("drive_f", "Hz", "large-signal drive frequency"),
+  cond("kick_v", "V", "oscillator start-up kick amplitude"),
+  cond("t_settle", "s", "time before a settled-measurement window opens"),
+  cond("t_window", "s", "length of the settled-measurement window"),
+  cond("t_run", "s", "start-up transient length"),
+  cond("step_from", "A", "load-step current before the edge"),
+  cond("step_to", "A", "load-step current after the edge"),
+  cond("step_edge", "s", "load-step edge time"),
+  cond("step_at", "s", "when the load step happens"),
+  cond("step_hold", "s", "how long the stepped load is held (0: no release)"),
+  cond("step_recover", "s", "how long recovery is watched for"),
+  cond("step_points", "", "load-step sample count"),
+  cond("step_band", "", "recovery band, as a fraction of the settled level"),
+  cond("ripple_f", "Hz", "injected ripple frequency"),
+  cond("ripple_v", "V", "injected ripple amplitude"),
+  cond("ripple_periods", "", "ripple periods measured"),
+  cond("ripple_points", "", "samples per ripple period"),
+  cond("sweep_from", "", "DC sweep start (volts for a source, amps for a load)"),
+  cond("sweep_to", "", "DC sweep end"),
+  cond("sweep_step", "", "DC sweep increment"),
+  cond("v_nominal", "V", "the nominal line voltage percentages refer to"),
+  ConditionDef(key: "sweep", kind: cdText, allowed: @["source", "load"],
+               doc: "which DC sweep: an existing source, or an injected load"),
+]
+
+var conditionRegistry: OrderedTable[string, ConditionDef]
+for d in builtinConditions: conditionRegistry[d.key] = d
+
+proc registerCondition*(def: ConditionDef) =
+  ## Adds (or replaces) a bare condition key, for an evaluator that reads
+  ## one the built-ins don't. A dotted key needs no registration.
+  if def.key.len == 0 or '.' in def.key:
+    raise newException(ValueError,
+      "a registered condition key must be bare and non-empty: '" & def.key & "'")
+  conditionRegistry[def.key] = def
+
+proc isConditionKey*(key: string): bool = conditionRegistry.hasKey(key)
+
+proc conditionDef*(key: string): ConditionDef =
+  if not conditionRegistry.hasKey(key):
+    raise newException(KeyError, "no such condition: " & key)
+  conditionRegistry[key]
+
+proc registeredConditions*(): seq[string] =
+  for k in conditionRegistry.keys: result.add k
+
+proc conditionProblem*(a: Assertion): string =
+  ## Why this claim's conditions can't be trusted, or "". An unknown bare
+  ## key, a number that isn't a plain SI value, or a word outside `allowed`.
+  for k, v in a.condition:
+    if '.' in k: continue
+    if not conditionRegistry.hasKey(k):
+      var best = ""
+      var bestD = high(int)
+      for known in conditionRegistry.keys:
+        let d = editDistance(k, known)
+        if d < bestD: (best, bestD) = (known, d)
+      result = "unknown condition '" & k & "'"
+      if bestD <= 2: result &= " -- did you mean '" & best & "'?"
+      result &= " A misspelled condition would be ignored and the " &
+                "evaluator's default used; namespace it ('mine." & k &
+                "') if it is your own note"
+      return
+    let def = conditionRegistry[k]
+    case def.kind
+    of cdFloat:
+      try: discard parseAnnFloat(k, v)
+      except CatchableError as e: return "condition " & e.msg
+    of cdText:
+      if def.allowed.len > 0 and v notin def.allowed:
+        return "condition '" & k & "' = " & v.escape() & " is not one of " &
+               def.allowed.join(", ")
 
 proc conditionText*(a: Assertion): string =
   ## The claim's circumstances in words (`over 100 kHz .. 100 MHz`, not
@@ -252,7 +346,9 @@ proc conditionText*(a: Assertion): string =
   var used: HashSet[string]
 
   proc num(key: string): string =
-    eng(parseFloat(a.condition[key]), conditionUnits.getOrDefault(key, ""))
+    let unit = if conditionRegistry.hasKey(key): conditionRegistry[key].unit
+               else: ""
+    eng(parseFloat(a.condition[key]), unit)
 
   if a.condition.hasKey("f_from") and a.condition.hasKey("f_to"):
     parts.add "over " & num("f_from") & " .. " & num("f_to")
@@ -267,8 +363,6 @@ proc conditionText*(a: Assertion): string =
     if k in used: continue
     case k
     of "at_f": parts.add "at " & num(k)
-    of "at_t": parts.add "at t = " & num(k)
-    of "temp": parts.add "at " & num(k)
     else: parts.add k & " = " & prettyValue(v)
   parts.join(", ")
 

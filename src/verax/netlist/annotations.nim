@@ -19,8 +19,9 @@ import ./types
 import ./issue
 import ../eng
 import ../units
+import ../stated as statedmod
 
-export issue
+export issue, statedmod
 
 type
   AnnKind* = enum
@@ -50,22 +51,12 @@ type
     allowed*: seq[string]
       ## `akEnum` only.
 
-  AnnSource* = enum
-    annAbsent     ## not present
-    annAuthored   ## stated by the designer
-    annImported   ## read from a design file
-    annDefaulted  ## invented from a defaults table by a consumer
-    annDerived    ## inferred from the graph
-
-  AnnValue*[T] = object
-    source*: AnnSource
-    value*: T
+  AnnValue*[T] = Stated[T]
+    ## An annotation read: the value and where it came from. `Stated` under
+    ## the name every consumer already uses.
 
 const srcPrefix = "ann.src."
   ## Provenance marker namespace, written only for non-`annAuthored` values.
-
-proc has*[T](v: AnnValue[T]): bool {.inline.} =
-  v.source != annAbsent
 
 type
   Assumption* = object
@@ -634,7 +625,12 @@ proc setRawAnnotation*[E](e: E, key, text: string) =
   ## Stores text with no validation: the DSL's permissive `key = value`
   ## path, and readers passing foreign keys through. A proc so callers
   ## needn't import `std/tables`.
+  ##
+  ## A raw write is **authored** by definition, so it clears any provenance
+  ## marker a previous `setAnnotation(..., annDefaulted)` left: otherwise
+  ## the new text would keep reporting the old value's origin.
   e.attrs[key] = text
+  e.attrs.del(srcPrefix & key)
 
 proc setAnnotation*[E](e: E, key: string, v: string, source = annAuthored) =
   ## Validates the text against the key's declared type before storing,
@@ -678,12 +674,44 @@ proc setAnnotation*[E](e: E, key: string, v: Quantity, source = annAuthored) =
 
 # --- named accessors for the keys with real consumers ------------------
 
-proc railVoltage*(n: Net): AnnValue[float] = annotationFloat(n, "voltage")
+# --- typed reads ---------------------------------------------------------
+#
+# Storage stays text (so annotations survive clone/flatten/isolate); the
+# *read* surface carries the unit type one hop further, so a consumer gets
+# `Ohms`, not a bare float it must remember the unit of. A registered
+# float key with a named accessor below is read **only** through it in
+# `spice/` and `analysis/` (a test greps for raw reads).
+
+proc annotationAs*[E; Q: Quantity](e: E, key: string, _: typedesc[Q]): AnnValue[Q] =
+  ## A registered float key read as its unit type. Raises when the key's
+  ## registered unit isn't `Q`'s -- a programming error, caught the first
+  ## time the accessor runs rather than by a wrong number later.
+  if not isNamespaced(key) and isRegistered(key):
+    let want = registry[key].unit
+    let got = unitOf(Q(0.0))
+    if want != got:
+      raise newException(NetlistError,
+        "annotation '" & key & "' is in " & (if want.len > 0: want else: "no unit") &
+        ", not " & (if got.len > 0: got else: "no unit"))
+  let f = annotationFloat(e, key)
+  if not f.has: return AnnValue[Q](source: annAbsent)
+  AnnValue[Q](source: f.source, value: Q(f.value))
+
+proc railVoltage*(n: Net): AnnValue[Volts] = annotationAs(n, "voltage", Volts)
 proc setRailVoltage*(n: Net, v: Volts, source = annAuthored) =
   setAnnotation(n, "voltage", v, source)
 
-proc esr*(c: Component): AnnValue[float] = annotationFloat(c, "esr")
-proc esl*(c: Component): AnnValue[float] = annotationFloat(c, "esl")
+proc esr*(c: Component): AnnValue[Ohms] = annotationAs(c, "esr", Ohms)
+proc esl*(c: Component): AnnValue[Henries] = annotationAs(c, "esl", Henries)
+proc dcVoltage*(c: Component): AnnValue[Volts] =
+  ## A source's or regulator's stated output (`voltage` on a component).
+  annotationAs(c, "voltage", Volts)
+proc voltageRating*(c: Component): AnnValue[Volts] =
+  annotationAs(c, "voltage_rating", Volts)
+proc currentRating*(c: Component): AnnValue[Amps] =
+  annotationAs(c, "current_rating", Amps)
+proc powerRating*(c: Component): AnnValue[Watts] =
+  annotationAs(c, "power_rating", Watts)
 proc package*(c: Component): AnnValue[string] = annotation(c, "package")
 proc footprint*(c: Component): AnnValue[string] = annotation(c, "footprint")
 proc deviceValue*(c: Component): AnnValue[string] = annotation(c, "value")
@@ -699,7 +727,19 @@ proc bomExclude*(c: Component): AnnValue[bool] = annotationBool(c, "bom_exclude"
 proc checkEntity[E](e: E, label: string, net: Net, comp: Component,
                     pin: Pin, issues: var seq[Issue]) =
   for key, raw in e.attrs:
-    if key.startsWith(srcPrefix): continue
+    if key.startsWith(srcPrefix):
+      # A marker whose key is gone was written by something that removed the
+      # value behind `setAnnotation`'s back; the next write of that key
+      # would inherit a provenance it never had.
+      let owned = key[srcPrefix.len .. ^1]
+      if not e.attrs.hasKey(owned):
+        issues.add newIssue("annotation_orphan_provenance", sevWarning,
+          label & " carries a provenance marker for '" & owned & "' (" &
+          raw & ") but no '" & owned & "' value. Something removed the " &
+          "value directly from `attrs`; remove the marker with it.",
+          net = net, pins = (if pin != nil: @[pin] else: @[]),
+          components = (if comp != nil: @[comp] else: @[]))
+      continue
     if isNamespaced(key): continue
     if not isRegistered(key):
       issues.add newIssue("unknown_annotation", sevWarning,

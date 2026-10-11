@@ -66,7 +66,9 @@ proc spiExpand*(inst: RoleInstance): seq[Assertion] =
   ## one instance per member first, so each claim concerns one chip select.
   ## `inst.member` says which (`0` for the first or only).
   var cond: OrderedTable[string, string]
-  if hasParam(inst, "frequency"): cond["frequency"] = inst.params["frequency"]
+  # Dotted: a record of the bus clock for readers, which no static
+  # evaluator reads -- a bare key would be refused as unread.
+  if hasParam(inst, "frequency"): cond["spi.frequency"] = inst.params["frequency"]
 
   if inst.member == 0:
     # Claimed once per bus: SCLK/MOSI/MISO are shared by every member.

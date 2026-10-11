@@ -28,24 +28,24 @@ test "a row's fields land on the candidate in SI base units and fractions":
   let c = loadCatalog(FixturePath).lookup("GRM155R71C104KA88D")
   check c != nil
   check c.family == pfCapacitor
-  check c.value == 1e-7
-  check c.tolerance == 0.1
+  check c.value == some(1e-7)
+  check c.tolerance == some(0.1)
   check c.dielectric == "X7R"
-  check c.voltageRating == 16.0
+  check c.voltageRating == some(16.0)
   check c.caseCode == "0402"
-  check c.avail.stock == 5_000_000
+  check c.avail.stock == some(5_000_000)
   check c.avail.lifecycle == "active"
 
 test "an unstated rating, stock or moq is unknown, never zero":
   let c = loadCatalog(FixturePath).lookup("GRM155R71H103KA88D")
-  check c.voltageRating.isNaN
-  check c.powerRating.isNaN
-  check c.avail.stock == -1
-  check c.avail.moq == -1
+  check c.voltageRating.isNone
+  check c.powerRating.isNone
+  check c.avail.stock.isNone
+  check c.avail.moq.isNone
   check c.avail.lifecycle == ""
 
 test "a stated stock of zero stays zero":
-  check loadCatalog(FixturePath).lookup("MAX232CPE").avail.stock == 0
+  check loadCatalog(FixturePath).lookup("MAX232CPE").avail.stock == some(0)
 
 test "a bare imperial package fills the case code; a non-chip one does not":
   let cat = loadCatalog(FixturePath)
@@ -143,20 +143,20 @@ test "the case code is required and must match":
 
 test "an unknown value matches nothing":
   check loadCatalog(FixturePath).search(
-    newPartQuery(pfResistor, NaN, "0402")).len == 0
+    newPartQuery(pfResistor, none(float), "0402")).len == 0
 
 test "a value tolerance admits a nearby nominal":
   let cat = loadCatalog(FixturePath)
   var q = newPartQuery(pfResistor, 10e3, "0402")
-  q.valueTolerance = 0.03
+  q.valueTolerance = some(0.03)
   check "RC0402FR-079K76L" in cat.search(q).mpns
-  q.valueTolerance = 0.02
+  q.valueTolerance = some(0.02)
   check "RC0402FR-079K76L" notin cat.search(q).mpns
 
 test "maxTolerance rejects a looser part":
   let cat = loadCatalog(FixturePath)
   var q = newPartQuery(pfResistor, 10e3, "0402")
-  q.maxTolerance = 0.01
+  q.maxTolerance = some(0.01)
   check "RC0402JR-0710KL" notin cat.search(q).mpns
   check cat.search(q).len == 3
 
@@ -164,10 +164,10 @@ test "a stated minimum rating rejects a lower or unknown rating":
   let cat = loadCatalog(FixturePath)
   var q = newPartQuery(pfCapacitor, 1e-8, "0402")
   check cat.search(q).mpns == @["GRM155R71H103KA88D"]
-  q.minVoltage = 6.3
+  q.minVoltage = some(6.3)
   check cat.search(q).len == 0      # its voltage rating is unknown
   var p = newPartQuery(pfResistor, 10e3, "0402")
-  p.minPower = 0.1
+  p.minPower = some(0.1)
   check cat.search(p).mpns == @["ERJ-2RKF1002X"]
 
 test "a dielectric must match, ignoring case":
@@ -194,8 +194,8 @@ test "limit caps the result":
 test "search hands out copies, so a caller cannot edit the catalogue":
   let cat = loadCatalog(FixturePath)
   let q = newPartQuery(pfResistor, 4700, "0402")
-  cat.search(q)[0].avail.stock = 1
-  check cat.search(q)[0].avail.stock == 1_000_000
+  cat.search(q)[0].avail.stock = some(1)
+  check cat.search(q)[0].avail.stock == some(1_000_000)
 
 # --- lookup ---------------------------------------------------------------------
 

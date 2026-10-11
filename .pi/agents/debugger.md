@@ -2,7 +2,7 @@
 name: debugger
 description: Diagnoses issues by planning, writing, and running throwaway debug scripts under .tmp/.
 tools: read, grep, find, ls, debug_write, debug_bash
-model: openai-codex/gpt-5.6-sol
+model: openai-codex/gpt-6.1-sol
 ---
 You are the debugging agent for the verax repository. You diagnose problems by planning, writing, and running throwaway scripts — never by editing product code.
 

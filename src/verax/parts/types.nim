@@ -10,9 +10,11 @@
 ## `PartPolicy` is proc-valued so runtime-built policies (a parts database,
 ## project derating rules) behave identically to built-ins.
 
-import std/strutils
+import std/[options, strutils]
 
 import ../units
+
+export options
 
 type
   CapUse* = enum
@@ -35,32 +37,38 @@ type
     ## What a module knows about a capacitor it needs.
     value*: Farads
     use*: CapUse
-    working*: Volts
-      ## The DC voltage the module expects across it; zero means unknown
-      ## (e.g. a coupling cap in an unbiased stage).
+    working*: Option[Volts]
+      ## The DC voltage the module expects across it; `none` when it doesn't
+      ## know (a coupling cap in an unbiased stage). `some(0.V)` is a real
+      ## statement: no bias.
 
   ResRequest* = object
     value*: Ohms
     use*: ResUse
-    dissipating*: Watts
+    dissipating*: Option[Watts]
+      ## `none` when the module doesn't know.
 
   IndRequest* = object
     value*: Henries
     use*: IndUse
-    carrying*: Amps
+    carrying*: Option[Amps]
+      ## Peak current; `none` when the module doesn't know.
 
   Choice* = object
     ## What the board decided. Every field lands on the component as a
     ## registered annotation.
     package*: string
     dielectric*: string
-    voltageRating*: Volts
-    currentRating*: Amps
-    isat*: Amps
-    powerRating*: Watts
-    tolerance*: Fraction
-    esr*: Ohms
-    esl*: Henries
+    voltageRating*: Option[Volts]
+    currentRating*: Option[Amps]
+    isat*: Option[Amps]
+    powerRating*: Option[Watts]
+    tolerance*: Option[Fraction]
+    esr*: Option[Ohms]
+    esl*: Option[Henries]
+      ## `none` is "the policy says nothing"; `some(0.ohm)` is a real 0 ohm
+      ## ESR. (These were zero-means-unknown floats, which made a stated
+      ## zero impossible to write.)
     partNumber*: string
     use*: string
       ## What the part is *for* (`partUseName`), matching the `part_use`

@@ -27,14 +27,14 @@
 ## `attrs` underneath are permissive. `bomDefaultKeys` is the one list both
 ## sides read.
 
-import std/[strutils, tables]
+import std/[options, strutils, tables]
 
 import ./types
 import ./graph
 import ./issue
 import ../units
 
-export issue
+export issue, options
 
 const
   bomToleranceKey* = "bom.tolerance"
@@ -55,10 +55,10 @@ const
 
 type
   BomDefaults* = object
-    tolerance*: Fraction          ## default part tolerance when a part states none
+    tolerance*: Option[Fraction]  ## default part tolerance when a part states none
     dielectric*: string           ## default ceramic class for a cap that states none
     series*: string                ## "exact" | "e12" | "e24" | "e96"
-    derating*: float               ## voltage derating factor
+    derating*: Option[float]       ## voltage derating factor
     resistorPackage*: string       ## default case size, per family
     capacitorPackage*: string
     inductorPackage*: string
@@ -86,13 +86,13 @@ proc statedBom(nl: Netlist, key: string): tuple[found: bool, text: string] =
 
 proc bomDefaults*(nl: Netlist): BomDefaults =
   ## The procurement defaults for parts in `nl`, each field from the nearest
-  ## netlist stating it. Absent or unparseable reads as the zero value (pure
+  ## netlist stating it. Absent or unparseable reads as `none` / "" (pure
   ## and total); an unparseable value doesn't fall through to a parent's --
   ## `validateBomDefaults` reports it.
   var (ok, t) = statedBom(nl, bomToleranceKey)
   if ok:
     let (parsed, v) = parseBomFloat(t)
-    if parsed: result.tolerance = Fraction(v)
+    if parsed: result.tolerance = some(Fraction(v))
   (ok, t) = statedBom(nl, bomDielectricKey)
   if ok: result.dielectric = t
   (ok, t) = statedBom(nl, bomSeriesKey)
@@ -100,7 +100,7 @@ proc bomDefaults*(nl: Netlist): BomDefaults =
   (ok, t) = statedBom(nl, bomDeratingKey)
   if ok:
     let (parsed, v) = parseBomFloat(t)
-    if parsed: result.derating = v
+    if parsed: result.derating = some(v)
   (ok, t) = statedBom(nl, bomResistorPackageKey)
   if ok: result.resistorPackage = t
   (ok, t) = statedBom(nl, bomCapacitorPackageKey)

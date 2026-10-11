@@ -17,7 +17,8 @@ Answers questions *about* a netlist, from graph walks to full simulation. Depend
 - **One producer per quantity** (`registerEvaluator` enforces it). Hence `spice.transient` doesn't declare `final_v` (`spice.startup` does), and `spice.dc_sweep` serves both sweeps, chosen by a `sweep` condition.
 - **Setup keys carry everything that changes the run**: swept range, step magnitude, `step_band`, band, `at_f`.
 - **Signs**: a branch-current sign is a deck convention; rating figures are magnitudes. Channel order is authoring order; match figures are magnitudes/ratios ≥ 1.
-- Attrs read by analyses: `Net.attrs["voltage"]`, `Component.attrs["esr"/"esl"/"package"]`.
+- Annotations read by analyses go through the typed accessors (`railVoltage`, `esr`, `esl`, `voltageRating`, `currentRating`, `powerRating`, `dcVoltage` → `AnnValue[Volts/Ohms/…]`; `annotationAs(e, key, T)` for others). A test (`test_netlist_annotations`) fails on a raw `attrs["<float key>"]` read in `spice/` or `analysis/`.
+- **An adapter's setup key is `topology & specKey(xSpecOf(a))`**, with the same `xSpecOf` building the run's spec; declare `conditions` and `units` on the `Evaluator` (see `contract/CLAUDE.md`).
 
 ## Modules
 

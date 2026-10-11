@@ -1,5 +1,6 @@
 ## `spice.transient` -- what a node settled to (settling and ripple), via `.tran`.
 
+import std/tables
 import ./common
 import ../analyses/transient
 
@@ -11,11 +12,15 @@ const transientQuantities = ["settled_v", "ripple_pp",
 proc measurementOnly(spec: var TransientSpec) =
   spec.settleTol = 0.0       ## explicitly gated on `> 0`
 
+proc transientSpecOf(a: Assertion): TransientSpec =
+  result = defaultTransientSpec()
+  measurementOnly(result)
+  let (tSettle, tWindow) = transientWindow(a)
+  result.tSettle = tSettle
+  result.tWindow = tWindow
+
 proc transientKey(ctx: EvalContext, a: Assertion): string =
-  let d = ctx.design
-  # The window is setup, so it joins the key.
-  subjectNet(d, a) & "|" & $conditionFloat(a, "t_settle", 0.0) &
-                     "|" & $conditionFloat(a, "t_window", 0.0)
+  subjectNet(ctx.design, a) & "|" & specKey(transientSpecOf(a))
 
 proc transientDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
@@ -37,11 +42,7 @@ proc runTransient(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult]
   if rail.len == 0:
     return failBatch(batch, name, "no net subject to measure")
 
-  var spec = defaultTransientSpec()
-  measurementOnly(spec)
-  let (tSettle, tWindow) = transientWindow(batch[0])
-  spec.tSettle = tSettle
-  spec.tWindow = tWindow
+  let spec = transientSpecOf(batch[0])
 
   var rep: AnalysisReport
   try:
@@ -55,4 +56,7 @@ proc registerTransientEvaluator*() =
   registerEvaluator(Evaluator(
     name: "spice.transient", produces: @transientQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
+    conditions: @["t_settle", "t_window"],
+    units: {"settled_v": "V", "ripple_pp": "V", "settled_min": "V",
+            "settled_max": "V"}.toTable,
     setupKey: transientKey, setupDoc: transientDoc, run: runTransient))

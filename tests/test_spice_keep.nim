@@ -9,6 +9,7 @@ import std/[math, os, sequtils, strutils, tables, tempfiles, unittest]
 import verax/netlist
 import verax/schematic
 import verax/spice/ngspice
+import verax/run_archive  # installs the per-run schematic writer
 
 let haveNgspice = findExe("ngspice").len > 0
 

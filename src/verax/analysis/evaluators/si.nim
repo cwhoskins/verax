@@ -11,6 +11,7 @@ import ./common
 import ../analyses/si
 import ../../pcb/types as pcbtypes
 import ../../si/simulate as sisim
+import ../../si/sweep as sisweep
 import ../../contract/roles/core as rolecore
 
 proc siRequest(ctx: EvalContext, a: Assertion): tuple[ok: bool, req: SiNetRequest, why: string] =
@@ -97,9 +98,18 @@ proc runSi(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
       continue
     result.add harvest(a, chk.reports[k], name)
 
+proc siUnits(): Table[string, string] =
+  ## From the engine's own figure units, so the declaration can't drift.
+  for i, q in siQuantities: result[q] = figureUnit[SiFigure(i)]
+  result[siEyeQuantities[0]] = figureUnit[sfEyeHeight]
+  result[siEyeQuantities[1]] = figureUnit[sfEyeWidth]
+  result[siCrosstalkQuantities[0]] = figureUnit[sfCrosstalk]
+  result[siCrosstalkQuantities[1]] = figureUnit[sfNoiseMargin]
+
 proc registerSiEvaluator*() =
   registerEvaluator(Evaluator(
     name: "si.net", produces: @siQuantities & @siEyeQuantities & @siCrosstalkQuantities,
     needs: {capSiTran}, arity: 1 .. 1, subjectKinds: {skPin},
     binds: @["net", "driver"],
+    units: siUnits(),
     setupKey: siKey, setupDoc: siDoc, run: runSi))

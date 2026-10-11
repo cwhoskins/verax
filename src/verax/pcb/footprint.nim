@@ -52,8 +52,8 @@ type
       ## falls back to `bodyBox`, then a fixed pitch).
     bodyBox*: Box
       ## Footprint-local bounding box of the body (`*.Fab`).
-    height*: Nm
-      ## `0` means unknown (`.kicad_mod` doesn't state it).
+    height*: Stated[Nm]
+      ## Unstated for a `.kicad_mod` (it doesn't say).
     graphics*: seq[tuple[layer: string, shape: Shape]]
       ## Silk / fab / courtyard, footprint-local (untransformed).
     source*: string

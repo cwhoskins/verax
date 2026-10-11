@@ -33,6 +33,7 @@ import ./netlist/pinmux
 import ./netlist/layouthints
 import ./netlist/traversal
 import ./schematic
+import ./run_archive
 import ./analysis/io_check
 import ./analysis/evaluators/contract_eval
 import ./pcb/units
@@ -184,20 +185,28 @@ proc label(a: Assertion): string =
   if a.id.len > 0: a.id else: a.quantity
 
 proc claimLint*(results: seq[AssertionResult]): seq[Issue] =
-  ## Claims with no stated unit where the measurement has one. `unitsAgree`
+  ## Claims with no stated unit where the quantity has one. `unitsAgree`
   ## treats "" as unchecked, so `overshoot_pct <= 5.pct` compares 5.0 (in
-  ## "%") with 0.05 and is wrong by 100 with no mismatch reported. Detected
-  ## after the fact because `Evaluator` doesn't declare result units.
+  ## "%") with 0.05 and is wrong by 100 with no mismatch reported. The unit
+  ## is the producer's **declared** one (`Evaluator.units`), so a claim is
+  ## flagged whether or not it ran; for an evaluator that declares none, the
+  ## unit actually measured.
   for r in results:
-    if r.status notin {esPass, esFail}: continue
     if r.assertion.expect.kind in {ekRelative, ekPredicate}: continue
-    if r.assertion.unit.len > 0 or r.unit.len == 0: continue
+    if r.assertion.unit.len > 0: continue
+    let declared = declaredUnit(r.assertion.quantity)
+    let unit =
+      if declared.isSome: declared.get
+      elif r.status in {esPass, esFail}: r.unit
+      else: ""
+    if unit.len == 0: continue
     result.add newIssue("claim_unit_unstated", sevWarning,
       "claim '" & label(r.assertion) & "' states no unit, but " &
-      r.assertion.quantity & " is measured in " & r.unit &
-      ". The comparison went ahead unchecked. If the limit came from a " &
-      "Fraction literal such as 5.pct, it is 0.05 where the measurement is " &
-      "5.0 -- a factor of a hundred.")
+      r.assertion.quantity & " is measured in " & unit &
+      ". The comparison " & (if r.status in {esPass, esFail}: "went ahead"
+                             else: "would go ahead") & " unchecked. If the " &
+      "limit came from a Fraction literal such as 5.pct, it is 0.05 where " &
+      "the measurement is 5.0 -- a factor of a hundred.")
 
 proc previewRole*(def: RoleDef,
                   params: openArray[(string, string)] = []): seq[Assertion] =
@@ -1297,11 +1306,22 @@ proc describeQuantities*(): string =
         if ev.get.arity.a == ev.get.arity.b: "   " & $ev.get.arity.a & " subjects"
         elif ev.get.arity.b == int.high: "   " & $ev.get.arity.a & "+ subjects"
         else: "   " & $ev.get.arity.a & ".." & $ev.get.arity.b & " subjects"
-    L.add "  " & q.alignLeft(w + 2) & ev.get.name.alignLeft(24) &
-          ("[" & capLabel(ev.get.needs) & "]").alignLeft(10) & reach & subjTag
+    let unit = if ev.get.units.hasKey(q):
+                 (if ev.get.units[q].len > 0: ev.get.units[q] else: "-")
+               else: "?"
+    var condTag = ""
+    if ev.get.conditions.len > 0:
+      condTag = "   conditions: " & ev.get.conditions.join(", ")
+    L.add "  " & q.alignLeft(w + 2) & unit.alignLeft(6) &
+          ev.get.name.alignLeft(24) &
+          ("[" & capLabel(ev.get.needs) & "]").alignLeft(10) & reach & subjTag &
+          condTag
 
   L.add ""
   L.add "A quantity not listed here cannot be checked by anything in this build."
+  L.add "The second column is the unit it is measured in (`-` for a count or"
+  L.add "ratio, `?` where its evaluator declares none). `conditions:` lists the"
+  L.add "only bare conditions a claim on it may carry."
   L.add ""
   L.add "`require` marks a quantity a bare `require` reaches: its subjects are all"
   L.add "its evaluator needs. `role:` marks one a role must expand, and names the"

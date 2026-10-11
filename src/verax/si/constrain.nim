@@ -227,7 +227,7 @@ proc judge*(templates: openArray[SiTemplate], p: TemplateParams, c: Criteria,
     of pkSignal, pkDiff: discard
     result.measures.add m
     let present =
-      if me.kind == pkDiff: net0.diffReceivers[probe.index].hasVdiff
+      if me.kind == pkDiff: net0.diffReceivers[probe.index].vdiff.isSome
       else: net0.receivers[me.receiver].thresholds.present
     if not present:
       result.verdict = vInvalid

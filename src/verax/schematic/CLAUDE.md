@@ -1,6 +1,6 @@
 # `schematic` submodule
 
-Turns a `Netlist` into a renderer-neutral **scene**, written as self-contained SVG and JSON. Depends **only on `netlist`**. A visualizer, not an EDA tool: heuristic placement, no DRC, no round trip; the bar is "readable enough to eyeball" (`docs/netlist-converter-research.md`). Consumers above it: `spice/ngspice` (per-run `runNNN.svg/.json`) and `verify` (`render.keepFullSchematic` → `runFULL.*`).
+Turns a `Netlist` into a renderer-neutral **scene**, written as self-contained SVG and JSON. Depends **only on `netlist`**. A visualizer, not an EDA tool: heuristic placement, no DRC, no round trip; the bar is "readable enough to eyeball" (`docs/netlist-converter-research.md`). Consumers above it: `run_archive` (per-run `runNNN.svg/.json`, installed into `spice/ngspice`'s hook — `spice` does not import this module) and `verify` (`render.keepFullSchematic` → `runFULL.*`).
 
 ## Global invariants
 

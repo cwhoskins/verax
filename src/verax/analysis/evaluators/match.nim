@@ -7,7 +7,7 @@
 ## `.ac` sweeps where two would do (sharing curves between steps would need
 ## a result cache).
 
-import std/strutils
+import std/[strutils, tables]
 import ./common
 import ../analyses/opamp
 import ../analyses/match
@@ -55,15 +55,6 @@ proc channelMatchSetup(d: Design, a: Assertion):
   if rB.len > 0: return ("", "", "", "", "", "", rB)
   (ampA, inA, outA, ampB, inB, outB, "")
 
-proc channelMatchKey(ctx: EvalContext, a: Assertion): string =
-  ## Both channels' topology, band and frequency; a different band is a
-  ## different pair of sweeps.
-  let s = channelMatchSetup(ctx.design, a)
-  s.ampA & "|" & s.inA & "|" & s.outA & "|" &
-  s.ampB & "|" & s.inB & "|" & s.outB & "|" &
-  $conditionFloat(a, "f_from", 0.0) & "|" & $conditionFloat(a, "f_to", 0.0) &
-  "|" & $conditionFloat(a, "at_f", 0.0)
-
 proc channelMatchSpecOf(a: Assertion): ChannelMatchSpec =
   result = defaultChannelMatchSpec()
   # Measurement-only, so the per-channel analysis's own limits don't
@@ -75,6 +66,13 @@ proc channelMatchSpecOf(a: Assertion): ChannelMatchSpec =
   if f0 > 0.0: result.opamp.fStart = f0
   if f1 > 0.0: result.opamp.fStop = f1
   result.gainAtFreq = conditionFloat(a, "at_f", 0.0)
+
+proc channelMatchKey(ctx: EvalContext, a: Assertion): string =
+  ## Both channels' topology and the whole spec; a different band is a
+  ## different pair of sweeps.
+  let s = channelMatchSetup(ctx.design, a)
+  s.ampA & "|" & s.inA & "|" & s.outA & "|" &
+  s.ampB & "|" & s.inB & "|" & s.outB & "|" & specKey(channelMatchSpecOf(a))
 
 proc channelMatchDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let s = channelMatchSetup(ctx.design, batch[0])
@@ -113,4 +111,7 @@ proc registerChannelMatchEvaluator*() =
     name: "spice.channel_match", produces: @channelMatchQuantities,
     needs: {capSpiceAc}, arity: 2 .. 2, subjectKinds: {skClass},
     binds: @["opamp", "input", "output"],
+    conditions: @["f_from", "f_to", "at_f"],
+    units: {"gain_delta_max_db": "dB", "f_gain_delta_max": "Hz",
+            "gain_delta_at_f": "dB", "f_lo_ratio": "", "f_hi_ratio": ""}.toTable,
     setupKey: channelMatchKey, setupDoc: channelMatchDoc, run: runChannelMatch))

@@ -323,7 +323,7 @@ proc diffWave*(r: SiResult, d: DiffReceiver): seq[float] =
   for k in 0 ..< p.len: result[k] = p[k] - n[k]
 
 proc diffThresholds*(d: DiffReceiver): Thresholds =
-  if d.hasVdiff: Thresholds(vinh: d.vdiff, vinl: -d.vdiff, present: true)
+  if d.vdiff.isSome: Thresholds(vinh: d.vdiff.get, vinl: -d.vdiff.get, present: true)
   else: Thresholds()
 
 proc `$`*(m: SiMeasures): string =

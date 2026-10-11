@@ -12,6 +12,7 @@ import ../../netlist/graph
 import ../../netlist/kinds
 import ../../netlist/interfaces
 import ../../netlist/annotations
+import ../../units
 import ../../netlist/formats/spice as spiceFormat
 import ../evaluate
 
@@ -117,14 +118,14 @@ proc runPullupSinkCurrent(ctx: EvalContext, batch: seq[Assertion]): seq[Assertio
         if pin.net != nil and pin.net != net and isRail(pin.net):
           railNet = pin.net
       let v = if railNet != nil: railVoltage(railNet)
-              else: default(AnnValue[float])
+              else: absent(Volts)
       if not magnitudeOf(r, ohms) or ohms <= 0.0:
         unreadable.add r.designator & " (no readable resistance)"
       elif not v.has:
         unreadable.add r.designator & " (rail '" &
           (if railNet != nil: railNet.name else: "?") & "' states no voltage)"
       else:
-        total += max(v.value - i2cVol, 0.0) / ohms
+        total += max(float(v.value) - i2cVol, 0.0) / ohms
 
     if unreadable.len > 0:
       result.add notEvaluable(a, name,
@@ -400,6 +401,7 @@ proc registerStaticEvaluators*() =
   registerEvaluator(Evaluator(
     name: "static.pullup_count",
     produces: @["pullup_count"],
+    units: {"pullup_count": ""}.toTable,
     needs: {capStatic},
     arity: 1 .. 1,
     subjectKinds: {skNet},
@@ -409,6 +411,7 @@ proc registerStaticEvaluators*() =
   registerEvaluator(Evaluator(
     name: "static.rc_corner",
     produces: @["rc_corner"],
+    units: {"rc_corner": "Hz"}.toTable,
     needs: {capStatic},
     arity: 1 .. 1,
     subjectKinds: {skNet},
@@ -418,6 +421,7 @@ proc registerStaticEvaluators*() =
   registerEvaluator(Evaluator(
     name: "static.pullup_sink_current",
     produces: @["pullup_sink_current"],
+    units: {"pullup_sink_current": "A"}.toTable,
     needs: {capStatic},
     arity: 1 .. 1,
     subjectKinds: {skNet},
@@ -427,6 +431,7 @@ proc registerStaticEvaluators*() =
   registerEvaluator(Evaluator(
     name: "static.dc_isolation",
     produces: @["dc_path_exists"],
+    units: {"dc_path_exists": ""}.toTable,
     needs: {capStatic},
     arity: 2 .. 2,
     subjectKinds: {skNet},
@@ -436,6 +441,7 @@ proc registerStaticEvaluators*() =
   registerEvaluator(Evaluator(
     name: "static.controller_count",
     produces: @["controller_count"],
+    units: {"controller_count": ""}.toTable,
     needs: {capStatic},
     arity: 1 .. 1,
     subjectKinds: {skNet},
@@ -448,6 +454,7 @@ proc registerStaticEvaluators*() =
   registerEvaluator(Evaluator(
     name: "static.miso_driver_count",
     produces: @["miso_driver_count"],
+    units: {"miso_driver_count": ""}.toTable,
     needs: {capStatic},
     arity: 2 .. 2,
     subjectKinds: {skNet},

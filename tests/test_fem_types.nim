@@ -1,4 +1,4 @@
-import std/[tables, unittest]
+import std/[strutils, tables, unittest]
 
 import verax/fem
 
@@ -14,11 +14,26 @@ test "addRegion refuses an unregistered material or a degenerate z-extent":
   var p = newFemProblem("x", pkThermalSteady)
   expect FemError:
     p.addRegion(Region(name: "r", material: "copper", zLow: 0.0, zHigh: 1e-3))
-  p.addMaterial(Material(name: "copper", kThermal: 385.0))
+  p.addMaterial(Material(name: "copper", kThermal: stated(385.0)))
   expect FemError:
     p.addRegion(Region(name: "r", material: "copper", zLow: 1e-3, zHigh: 1e-3))
   p.addRegion(Region(name: "r", material: "copper", zLow: 0.0, zHigh: 1e-3))
   check p.regions.len == 1
+
+test "a stated zero conductivity is an insulator, not an unstated one":
+  var p = newFemProblem("es", pkElectrostatic)
+  p.addMaterial(Material(name: "air", sigma: stated(0.0)))
+  p.addMaterial(Material(name: "mystery"))
+  p.addRegion(Region(name: "a", material: "air", zLow: 0.0, zHigh: 1e-3))
+  p.addRegion(Region(name: "m", material: "mystery", zLow: 0.0, zHigh: 1e-3))
+  let w = p.validate()
+  check w.len == 1
+  check "'mystery'" in w[0]
+
+test "textbook defaults are reported as assumed":
+  let s = defaultExtrudeSpec()
+  check "epsR = 4.5" in s.dielectric.assumedConstants
+  check Material(name: "x", epsR: stated(4.0)).assumedConstants.len == 0
 
 test "validate returns warnings, it does not raise":
   var p = newFemProblem("fw", pkFullWave)      # no frequencies, no regions

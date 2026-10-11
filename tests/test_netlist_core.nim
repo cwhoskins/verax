@@ -119,3 +119,17 @@ test "shared global net resolves to the identical object across instances":
 
   check x1.pins["GND"].hierNet == x2.pins["GND"].hierNet
   check x1.pins["GND"].hierNet == sharedGnd
+
+test "leafComponents walks instances to leaves with hierarchical paths":
+  var globals: OrderedTable[string, Net]
+  let child = newNetlist("CHILD")
+  let a = addNet(child, newNet("a"))
+  addPort(child, "a", a)
+  discard connect(addComponent(child, newComponent("R1", kind = "resistor")), "1", a)
+  let top = newNetlist("TOP")
+  let n = addNet(top, newNet("n"))
+  discard connect(addComponent(top, newComponent("C1", kind = "capacitor")), "1", n)
+  discard instantiate(top, "X1", child, @[n], globals)
+  var paths: seq[string]
+  for (c, path) in leafComponents(top): paths.add path
+  check paths == @["C1", "X1.R1"]

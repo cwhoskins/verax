@@ -12,23 +12,24 @@ import ./types
 
 type
   PartQuery* = object
-    ## A parametric search. Every float left `NaN` is "no requirement".
+    ## A parametric search. Every requirement left `none` is "no
+    ## requirement", so a default-constructed query asks for nothing extra.
     family*: PartFamily
-    value*: float
-      ## Wanted value, SI base units. `NaN` matches nothing.
-    valueTolerance*: float
-      ## Allowed deviation of the nominal, as a fraction; `NaN` or 0 means
+    value*: Option[float]
+      ## Wanted value, SI base units. `none` matches nothing.
+    valueTolerance*: Option[float]
+      ## Allowed deviation of the nominal, as a fraction; `none` or 0 means
       ## exact.
     caseCode*: string
       ## Required; `""` matches nothing (`classify.caseCodeOf` found no
       ## searchable case code).
-    minVoltage*, minPower*, minCurrent*: float
+    minVoltage*, minPower*, minCurrent*: Option[float]
       ## When a minimum is stated, a candidate with that rating unknown is
       ## rejected.
     dielectric*: string
       ## `""` for any; else must match (case-insensitive). An unstated
       ## dielectric is rejected.
-    maxTolerance*: float
+    maxTolerance*: Option[float]
       ## The loosest acceptable tolerance; an unknown tolerance is rejected.
     manufacturers*: seq[string]
       ## Preferred manufacturers: a hint for narrowing, **never a filter**
@@ -44,34 +45,35 @@ type
       ## `nil` => no lookups. A `nil` result means "don't know this part",
       ## never an exception. `manufacturer = ""` matches any.
 
+proc newPartQuery*(family: PartFamily, value: Option[float], caseCode: string):
+    PartQuery =
+  ## A query with every optional requirement unstated.
+  PartQuery(family: family, value: value, caseCode: caseCode)
+
 proc newPartQuery*(family: PartFamily, value: float, caseCode: string):
     PartQuery =
-  ## A query with every optional requirement unstated (`NaN`); a
-  ## default-constructed `PartQuery` would have `0.0`.
-  PartQuery(family: family, value: value, valueTolerance: NaN,
-            caseCode: caseCode, minVoltage: NaN, minPower: NaN,
-            minCurrent: NaN, maxTolerance: NaN)
+  newPartQuery(family, some(value), caseCode)
 
-proc atLeast(have, want: float): bool =
-  want.isNaN or (not have.isNaN and have >= want)
+proc atLeast(have, want: Option[float]): bool =
+  want.isNone or (have.isSome and have.get >= want.get)
 
 proc matches*(c: Candidate, q: PartQuery): bool =
   ## Whether `c` meets every requirement `q` states -- the one definition
   ## of a match.
   if c.family != q.family or not q.family.isParametric: return false
-  if q.caseCode.len == 0 or q.value.isNaN or c.value.isNaN: return false
+  if q.caseCode.len == 0 or q.value.isNone or c.value.isNone: return false
   if cmpIgnoreCase(c.caseCode, q.caseCode) != 0: return false
   let tol =
-    if q.valueTolerance.isNaN or q.valueTolerance <= 0: 1e-9
-    else: q.valueTolerance
-  if abs(c.value - q.value) > tol * abs(q.value): return false
+    if q.valueTolerance.isNone or q.valueTolerance.get <= 0: 1e-9
+    else: q.valueTolerance.get
+  if abs(c.value.get - q.value.get) > tol * abs(q.value.get): return false
   if not atLeast(c.voltageRating, q.minVoltage): return false
   if not atLeast(c.powerRating, q.minPower): return false
   if not atLeast(c.currentRating, q.minCurrent): return false
   if q.dielectric.len > 0 and cmpIgnoreCase(c.dielectric, q.dielectric) != 0:
     return false
-  if not q.maxTolerance.isNaN and
-      (c.tolerance.isNaN or c.tolerance > q.maxTolerance):
+  if q.maxTolerance.isSome and
+      (c.tolerance.isNone or c.tolerance.get > q.maxTolerance.get):
     return false
   true
 
@@ -94,8 +96,8 @@ proc catalogSources*(): seq[string] =
   for s in registry: result.add s.name
 
 proc foldAvailability(into: var Availability, other: Availability) =
-  if into.stock < 0: into.stock = other.stock
-  if into.moq < 0: into.moq = other.moq
+  if into.stock.isNone: into.stock = other.stock
+  if into.moq.isNone: into.moq = other.moq
   if into.lifecycle.len == 0: into.lifecycle = other.lifecycle
 
 proc searchAll*(q: PartQuery): seq[Candidate] =

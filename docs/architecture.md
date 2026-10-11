@@ -60,7 +60,7 @@ back-edges: nothing below ever learns about anything above it.
                              |   \________|___________|________/ | \
                              |                          ibis/ <-/   \-> fem/
                              |                            (over pcb + netlist)
-                    units.nim   eng.nim   waveform.nim   (below everything)
+                    units.nim   eng.nim   waveform.nim   touchstone/   (below everything)
 ```
 
 `ibis/` (reads a vendor `.ibs` buffer model and interprets it as a
@@ -118,6 +118,8 @@ drag in `osproc` and the whole analysis tree.
 | `ibis/` | reading what a vendor says a buffer does (`.ibs`: I/V curves, edge rates, package RLC) and interpreting it as data (`behave`: absolute curves, `Ku`/`Kd`) | how that behaviour gets simulated, or whether a design meets it |
 | `si/` | simulating one net as an SI problem on a native engine, measuring it, and deriving the routing rules that pass | what claim the number is for, or which design it came from |
 | `fem/` | stating a field problem over a board and running it through an external solver | what question the field answers |
+| `touchstone/` | reading a Touchstone `.sNp` file and the S-parameter/dB conversions (used by `pcb/tline` and `si/`) | what the network is part of |
+| `run_archive.nim` | installing the schematic writer into `spice/ngspice`'s run-archive hook, so `spice/` needs no edge to `schematic/` | — |
 | `verify.nim` | joining the last two, and rendering | — |
 
 Two of those are worth stating plainly because it is easy to assume otherwise:

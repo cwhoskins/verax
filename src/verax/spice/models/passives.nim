@@ -47,7 +47,7 @@ proc expandResistiveParts*(nl: Netlist, d = defaultResistiveStandIn()):
 
     if part.kind == "fuse":
       # `value` is a current rating, never ohms.
-      if not annotations.annotationFloat(part, "current_rating").has and
+      if not annotations.currentRating(part).has and
          part.attrs.hasKey("value"):
         var amps: float
         if spiceFormat.parseSpiceMagnitude(part.attrs["value"], amps) and

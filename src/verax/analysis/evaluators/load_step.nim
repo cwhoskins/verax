@@ -1,5 +1,6 @@
 ## `spice.load_step` -- a pulsed load and the rail's response, via `.tran`.
 
+import std/tables
 import ./common
 import ../analyses/transient
 
@@ -14,19 +15,6 @@ proc measurementOnly(spec: var LoadStepSpec) =
   ## Nothing to disable yet; kept so a future limit field isn't forgotten.
   discard spec
 
-proc loadStepKey(ctx: EvalContext, a: Assertion): string =
-  let d = ctx.design
-  # Everything that changes the run joins the key, the step magnitude above
-  # all (1 A and 3 A are different questions).
-  subjectNet(d, a) & "|" & $conditionFloat(a, "step_from", 0.0) &
-    "|" & $conditionFloat(a, "step_to", 0.0) &
-    "|" & $conditionFloat(a, "step_edge", 0.0) &
-    "|" & $conditionFloat(a, "step_at", 0.0) &
-    "|" & $conditionFloat(a, "step_hold", 0.0) &
-    "|" & $conditionFloat(a, "step_recover", 0.0) &
-    "|" & $conditionFloat(a, "step_points", 0.0) &
-    "|" & $conditionFloat(a, "step_band", 0.0)
-
 proc loadStepSpecOf(a: Assertion): LoadStepSpec =
   result = defaultLoadStepSpec()
   measurementOnly(result)
@@ -38,6 +26,11 @@ proc loadStepSpecOf(a: Assertion): LoadStepSpec =
   result.tRecover = conditionFloat(a, "step_recover", 0.0)
   result.windowSamples = int(conditionFloat(a, "step_points", 0.0))
   result.settleTol = conditionFloat(a, "step_band", 0.0)
+
+proc loadStepKey(ctx: EvalContext, a: Assertion): string =
+  # The whole spec, the step magnitude above all (1 A and 3 A are different
+  # questions).
+  subjectNet(ctx.design, a) & "|" & specKey(loadStepSpecOf(a))
 
 proc loadStepDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
@@ -87,4 +80,9 @@ proc registerLoadStepEvaluator*() =
   registerEvaluator(Evaluator(
     name: "spice.load_step", produces: @loadStepQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
+    conditions: @["step_from", "step_to", "step_edge", "step_at", "step_hold",
+                  "step_recover", "step_points", "step_band"],
+    units: {"step_droop_v": "V", "step_droop_pct": "%",
+            "step_overshoot_v": "V", "step_overshoot_pct": "%",
+            "step_recover_s": "s", "step_v_min": "V", "step_v_max": "V"}.toTable,
     setupKey: loadStepKey, setupDoc: loadStepDoc, run: runLoadStep))

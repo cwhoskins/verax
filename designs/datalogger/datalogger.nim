@@ -75,7 +75,7 @@
 ## of the board-to-PCB plan this design exists to start, and deliberately not
 ## this file's job.
 
-import std/os
+import std/[os, math]
 import verax/contract/dsl
 import verax/verify
 import verax/spice/boundary
@@ -102,6 +102,13 @@ const
     ## `ccsns`'s claimed voltage below and `usbCSink`'s own VBUS bulk sizing
     ## with it -- see `../lib/usbc_sink.nim`'s header for why the
     ## board's own `Rd` never changes.
+
+  adcFullScale = 4095
+    ## The STM32H563's 12-bit ADC: its largest code.
+  adcVrefAssumed = 3.3
+    ## The reference firmware decodes ADC codes against, volts. VREF+ is
+    ## VDD on this board; the buck's actual 3.298 V is not what firmware
+    ## assumes.
 
 let ccTarget = ccSenseTarget(advertise)
   ## Bound to a `let` rather than inlined into the `require` below:
@@ -187,7 +194,7 @@ let d = design("datalogger"):
   # tag on the MCU sheet rather than an exposed interface (see `lib/mcu.nim`).
   instance Xmcu, mcuSheet(boardCurrentMa = 150.0),
     {"VDD": vdd, "GND": gnd, "i2c_sda": bus["sda"], "i2c_scl": bus["scl"],
-     "DP": usb["p"], "DM": usb["n"], "AIN": aout, "NRST": nrst,
+     "DP": usb["p"], "DM": usb["n"], "AIN": aout, "CCSNS": ccsns, "NRST": nrst,
      "jtag_tck": jtag["tck"], "jtag_tms": jtag["tms"], "jtag_tdi": jtag["tdi"],
      "jtag_tdo": jtag["tdo"], "jtag_ntrst": jtag["ntrst"]}
 
@@ -448,6 +455,24 @@ let d = design("datalogger"):
           because = "the source's own Rp against this board's fixed 5.1k Rd " &
                     "is the only thing that tells the MCU what current the " &
                     "port actually offers"
+
+  # What firmware will make of that voltage. The ADC converts against its
+  # reference -- VDD on this board -- but firmware turns the code back into
+  # volts with the nominal 3.3 V, so the CC voltage it decides on is
+  # `cc * 3.3 / vdd`, quantised to 12 bits. That reading, not `ccsns`
+  # itself, has to land in the Type-C spec's detection window for the
+  # advertisement (`ccDetectWindow`), or the board misreads what the port
+  # offers. A ratio of two measurements: a predicate, not a bound.
+  require pred(cc = dc_voltage(ccsns), v = dc_voltage(vdd),
+               id = "REQ-DL-CCSNS-ADC-001",
+               because = "firmware's 12-bit CC reading, decoded against a " &
+                         "nominal 3.3 V reference, must fall in the Type-C " &
+                         "detection window for the advertised current") do (
+                 cc, v: float) -> bool:
+    let code = round(cc / v * float(adcFullScale))
+    let decoded = code * adcVrefAssumed / float(adcFullScale)
+    let w = ccDetectWindow(advertise)
+    decoded >= float(w.lo) and decoded <= float(w.hi)
 
 # The buck's `switching_regulator` role. After the block, like `useLt8640a`
 # used to be: the role names `Xbuck`'s own internal `U1`/`L1`/`sw`, which

@@ -24,7 +24,7 @@ proc regulatorModel*(nl: Netlist, c: Component, gnd: Net): BehavioralResult =
       "name reads as an output -- it has " & names.join(", ") & ". Rename one " &
       "to OUT, or give the part a simReplace; it was left unmodelled.")])
 
-  let v = annotationFloat(c, "voltage")
+  let v = dcVoltage(c)
   if not v.has:
     return (false, @[note(c.designator & " (" & c.kind & ") carries a path " &
       "from its input to its output that nothing can simulate, and states no " &
@@ -45,11 +45,11 @@ proc regulatorModel*(nl: Netlist, c: Component, gnd: Net): BehavioralResult =
     kind = "voltage_source"))
   discard connect(src, "+", outNet, ptPower)
   discard connect(src, "-", gnd, ptGround)
-  src.attrs["value"] = "DC " & spiceValue(v.value)
+  src.attrs["value"] = "DC " & spiceValue(float(v.value))
 
   result.handled = true
   result.notes.add note(c.designator & " modelled as an ideal " &
-    eng(v.value, "V") & " source at its stated output: no load regulation, " &
+    eng(float(v.value), "V") & " source at its stated output: no load regulation, " &
     "no dropout, no current limit and no start-up ramp. A rail that is " &
     "wrong here is wrong; one that is right here may still misbehave for " &
     "reasons this cannot see.")

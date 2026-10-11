@@ -1,6 +1,6 @@
 ## `spice.current_path` -- device branch currents, via `.tran`.
 
-import std/[math, strutils]
+import std/[math, strutils, tables]
 import ./common
 import ../../netlist/graph
 import ../analyses/transient
@@ -19,11 +19,17 @@ const currentQuantities = ["i_peak", "i_rms", "i_avg", "i_pp",
   ## overstates `i_out_derating`'s reach; a bare `require` gets a message
   ## naming the missing binding.
 
+proc currentSpecOf(a: Assertion): TransientSpec =
+  result = defaultTransientSpec()
+  result.settleTol = 0.0
+  let (tSettle, tWindow) = transientWindow(a)
+  result.tSettle = tSettle
+  result.tWindow = tWindow
+
 proc currentKey(ctx: EvalContext, a: Assertion): string =
   ## **Not keyed by part**: one `.tran` answers every part, so the setup is
-  ## the window alone (keying by part would re-simulate per part).
-  $conditionFloat(a, "t_settle", 0.0) & "|" &
-  $conditionFloat(a, "t_window", 0.0)
+  ## the spec alone (keying by part would re-simulate per part).
+  specKey(currentSpecOf(a))
 
 proc currentParts(ctx: EvalContext, batch: seq[Assertion]): seq[string] =
   for a in batch:
@@ -97,8 +103,9 @@ proc harvestOutputDerating(d: Design, a: Assertion, rep: AnalysisReport,
     result.issues = rep.issues
     return
 
-  let rating = annotationFloat(reg, "current_rating")
-  let frac = if rating.has and rating.value > 0.0: rms / rating.value else: NaN
+  let rating = currentRating(reg)
+  let frac = if rating.has and float(rating.value) > 0.0: rms / float(rating.value)
+             else: NaN
   result = verdict(a, frac, "", evaluator, rep.assumptions, rep.issues)
   if frac.isNaN:
     result.reason = "'" & regName & "' states no `current_rating`, so how " &
@@ -106,7 +113,7 @@ proc harvestOutputDerating(d: Design, a: Assertion, rep: AnalysisReport,
       "is not a question this design has answered yet"
   else:
     result.reason &= " of " & regName & "'s stated " &
-      eng(rating.value, "A") & ", measured through " & part
+      eng(float(rating.value), "A") & ", measured through " & part
 
 proc runCurrent(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   let d = ctx.design
@@ -120,11 +127,7 @@ proc runCurrent(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
         "the `current_path` role, or write `require i_peak(L1) <= ...`")
     return
 
-  var spec = defaultTransientSpec()
-  spec.settleTol = 0.0
-  let (tSettle, tWindow) = transientWindow(batch[0])
-  spec.tSettle = tSettle
-  spec.tWindow = tWindow
+  let spec = currentSpecOf(batch[0])
 
   var rep: AnalysisReport
   try:
@@ -149,4 +152,8 @@ proc registerCurrentEvaluator*() =
   registerEvaluator(Evaluator(
     name: "spice.current_path", produces: @currentQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skComponent},
+    conditions: @["t_settle", "t_window"],
+    units: {"i_peak": "A", "i_rms": "A", "i_avg": "A", "i_pp": "A",
+            "i_min": "A", "i_max": "A", "i_peak_derating": "",
+            "i_rms_derating": "", "i_out_derating": ""}.toTable,
     setupKey: currentKey, setupDoc: currentDoc, run: runCurrent))

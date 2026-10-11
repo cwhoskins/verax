@@ -2649,3 +2649,40 @@ the bias divider instead was tried and rejected: sharing `biasNetwork`'s
 reference between the gain leg and the input's bias resistor closes a second,
 positive feedback path the loop-gain break cannot open, and `opamp_stage`'s
 phase margin stopped being measurable (loop gain read 28 dB, not 94).
+
+## 75. An eye claim made `verax constraints` impractically slow
+
+Found 2026-10-09 adding `min_eye_height`/`min_eye_width` to MOSI's `si_net`
+in `designs/si_spi.nim`: rule derivation went from ~8 s to past 10 minutes
+before it was killed. `si/constrain.judge` ran the 127-bit PRBS7 at every
+grid and bisection point of every sweep (length, four via counts, four
+terminations, stubs) -- 12.7 us of transient per corner per point at a
+100 ns UI, roughly 6 s each.
+
+**Fix.** `constrain.sweep` now defers the eye when the criteria judge one
+(`eyeJudged`): the grid and its bisections run without the PRBS pattern,
+then each passing interval is judged in full at its two ends (taken
+`tolerance / 2` inside a bisected end, where the edge criteria pass), and
+a failing end is bisected against a passing one -- or against the middle
+when both fail. That assumes the eye does not close and reopen inside an
+interval whose edges pass; `identity` lists it among the answer's
+assumptions. `si_spi` now derives in ~2.5 min: two full judgements per
+sweep, none bisected since every interval's top is bound by flight time.
+`tests/test_si_eye.nim` checks a sweep's eye-bound boundary against direct
+judgements either side of it.
+
+## 81. A predicate's report hid the values it judged
+
+Found 2026-10-10 writing `designs/datalogger`'s first predicate claim,
+`REQ-DL-CCSNS-ADC-001` (`pred(cc = dc_voltage(ccsns), v = dc_voltage(vdd))`):
+pass or fail, the report said only `predicate held` / `predicate did not
+hold`, so how far off a failing reading was took re-claiming each
+dependency on its own.
+
+**Fix.** `contract/evaluate.predicateResult` appends each dependency's
+measured value, by its name in the claim, to the reason --
+`predicate held (cc = 1.67 V, v = 3.30 V)`. `verify.renderClaim` already
+prints a predicate's reason in place of a `measured` value, and the JSON
+report carries it, so both show the values. `tests/test_contract_evaluate.nim`
+checks them on a passing and a failing predicate.
+

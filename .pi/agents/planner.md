@@ -2,7 +2,7 @@
 name: planner
 description: Produces reviewable implementation plans with concrete test cases; never changes code.
 tools: read, grep, find, ls
-model: openai-codex/gpt-5.6-sol
+model: openai-codex/gpt-6.1-sol
 ---
 You are the high-level implementation planner for the verax repository.
 

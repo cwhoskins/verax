@@ -250,8 +250,8 @@ proc simulate*(net: SiNet, stim: Stimulus, o = defaultSiOptions()): SiResult =
         "lossy line as a " & $n & "-section RLGC ladder, RLGC taken at one frequency")
   # Buffers.
   let dp = net.driverPort
-  let vccDie = if net.supply.present: net.supply.vccDie else: 0
-  let gndDie = if net.supply.present: net.supply.gndDie else: 0
+  let vccDie = if net.supply.isSome: net.supply.get.vccDie else: 0
+  let gndDie = if net.supply.isSome: net.supply.get.gndDie else: 0
   c.devices.add driverDevice(net.driver, dp.dieNode, dw.ku, dw.kd, dp.label, vccDie, gndDie)
   let dCap = c.capacitors.len
   c.capacitors.add Cap(a: dp.dieNode, b: 0, c: net.driver.cComp, label: dp.label & " C_comp")
@@ -270,7 +270,7 @@ proc simulate*(net: SiNet, stim: Stimulus, o = defaultSiOptions()): SiResult =
                          label: x.port.label & " C_comp")
   # Pre-driver current (power-aware): every switching driver's, rail to
   # rail, from each transition it makes.
-  if net.supply.present:
+  if net.supply.isSome:
     var pieces: seq[tuple[t0: float, w: tuple[t, i: seq[float]]]]
     proc addFor(d: DriverBehaviour, s: Stimulus) =
       for (t0, e) in transitionsOf(s):

@@ -90,7 +90,7 @@ proc buildStackup(pcb: Pcb, copperLayerCount: int): seq[Assumption] =
   for i, l in cu:
     let e = newStackEntry(seCopper, l.name, CopperWeight)
     e.layer = l
-    e.copperWeight = 1.0   # 1 oz/ft^2, the ~35 um this entry states
+    e.copperWeight = stated(1.0, annDefaulted)   # 1 oz/ft^2, the ~35 um this entry states
     discard addStackEntry(pcb, e)
     if i < cu.high:
       let d = newStackEntry(seDielectric, "dielectric " & $(i + 1), dielectricEach)
@@ -125,20 +125,8 @@ type
     packaged: bool
     defName: string
 
-proc collectLeaves(nl: Netlist, prefix: string,
-                   res: var seq[tuple[c: Component, path: string]]) =
-  ## Every leaf component under `nl`, walking instances rather than
-  ## flattening (a private copy of the walk, to avoid a dependency).
-  for _, c in nl.components:
-    let p = nlgraph.hierName(prefix, c.designator)
-    if c.subNetlist != nil:
-      collectLeaves(c.subNetlist, p, res)
-    else:
-      res.add (c, p)
-
 proc buildPhysicalParts(nl: Netlist): seq[PhysicalPart] =
-  var leaves: seq[tuple[c: Component, path: string]]
-  collectLeaves(nl, "", leaves)
+  let leaves = nlgraph.leafComponents(nl)
   var byPkg: OrderedTable[string, int]
   for (c, path) in leaves:
     let r = packageRef(c)

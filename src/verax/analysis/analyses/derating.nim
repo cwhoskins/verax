@@ -124,7 +124,8 @@ proc analyzeDerating*(nl: Netlist, spec = defaultDeratingSpec()): AnalysisReport
     if va.classify == fcNan or vb.classify == fcNan: continue
     let across = abs(va - vb)
 
-    let vr = annotationFloat(c, "voltage_rating")
+    let vrAnn = voltageRating(c)
+    let vr = AnnValue[float](source: vrAnn.source, value: float(vrAnn.value))
     if vr.has and vr.value > 0.0:
       inc rated
       let frac = across / vr.value
@@ -144,7 +145,8 @@ proc analyzeDerating*(nl: Netlist, spec = defaultDeratingSpec()): AnalysisReport
            else: "."),
           components = @[c])
 
-    let pr = annotationFloat(c, "power_rating")
+    let prAnn = powerRating(c)
+    let pr = AnnValue[float](source: prAnn.source, value: float(prAnn.value))
     if pr.has and pr.value > 0.0 and c.kind == "resistor":
       var r: float
       if c.attrs.hasKey("value") and

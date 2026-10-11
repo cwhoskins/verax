@@ -59,6 +59,15 @@ proc ccSenseTarget*(c: UsbCCurrent, vbus = 5.0.V, rd = 5.1.kohm): Volts =
   let rpF = float(rpFor(c))
   Volts(float(vbus) * rdF / (rdF + rpF))
 
+proc ccDetectWindow*(c: UsbCCurrent): tuple[lo, hi: Volts] =
+  ## The CC voltage range in which a sink must recognise the advertisement
+  ## `c` -- the USB Type-C specification's `vRd-USB`/`vRd-1.5`/`vRd-3.0`
+  ## (Table 4-36). Firmware decodes the CC-sense ADC reading against these.
+  case c
+  of usbDefault: (0.25.V, 0.61.V)
+  of usb1500mA:  (0.70.V, 1.16.V)
+  of usb3000mA:  (1.31.V, 2.04.V)
+
 proc usbCSink*(advertisedCurrent = usb3000mA): Netlist =
   let bulk = max(1.0e-6, float(advertisedAmps(advertisedCurrent)) * 1.0e-6)
     ## ~1 uF per amp of expected draw, floored at 1 uF so the default

@@ -2,6 +2,7 @@
 ## both (one producer per quantity); the `sweep` condition, carried in the
 ## setup key, picks which runs.
 
+import std/tables
 import ./common
 import ../analyses/dcsweep
 
@@ -16,17 +17,6 @@ proc sweepKind(a: Assertion): string =
   let s = conditionOf(a, "sweep")
   if s.isNone: "" else: s.get
 
-proc dcSweepKey(ctx: EvalContext, a: Assertion): string =
-  let d = ctx.design
-  # Source, node and range all join the key (answers are differences across
-  # the range).
-  sweepKind(a) & "|" & bindingName(d, a, "source") & "|" &
-  bindingName(d, a, "input") & "|" & subjectNet(d, a) & "|" &
-  $conditionFloat(a, "sweep_from", 0.0) & "|" &
-  $conditionFloat(a, "sweep_to", 0.0) & "|" &
-  $conditionFloat(a, "sweep_step", 0.0) & "|" &
-  $conditionFloat(a, "v_nominal", 0.0)
-
 proc dcSweepSpecOf(ctx: EvalContext, a: Assertion): DcSweepSpec =
   result = defaultDcSweepSpec()
   result.fromVal = conditionFloat(a, "sweep_from", 0.0)
@@ -34,6 +24,13 @@ proc dcSweepSpecOf(ctx: EvalContext, a: Assertion): DcSweepSpec =
   result.step = conditionFloat(a, "sweep_step", 0.0)
   result.nominal = conditionFloat(a, "v_nominal", 0.0)
   result.inputNet = bindingName(ctx.design, a, "input")
+
+proc dcSweepKey(ctx: EvalContext, a: Assertion): string =
+  let d = ctx.design
+  # Which sweep, of what, at which node, plus the whole spec (answers are
+  # differences across the range).
+  sweepKind(a) & "|" & bindingName(d, a, "source") & "|" & subjectNet(d, a) &
+    "|" & specKey(dcSweepSpecOf(ctx, a))
 
 proc dcSweepDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
@@ -114,4 +111,8 @@ proc registerDcSweepEvaluator*() =
     name: "spice.dc_sweep", produces: @dcSweepQuantities,
     needs: {capSpiceDc}, arity: 1 .. 1, subjectKinds: {skNet},
     binds: @["source"],
+    conditions: @["sweep", "sweep_from", "sweep_to", "sweep_step", "v_nominal"],
+    units: {"dc_out_min": "V", "dc_out_max": "V", "dc_out_delta": "V",
+            "dc_transfer": "", "line_reg_pct": "%", "line_reg_pct_per_v": "%/V",
+            "dropout_v": "V", "load_reg_pct": "%", "z_out_dc": "ohm"}.toTable,
     setupKey: dcSweepKey, setupDoc: dcSweepDoc, run: runDcSweep))

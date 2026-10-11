@@ -457,18 +457,18 @@ proc deriveDiffConstraints*(nl: Netlist, req: DiffPairRequest, c: Criteria,
       if corner == coTyp: return (false, why, ConstraintReport())
       continue
     # Vdiff: the receiver's [Diff Pin], else its [Receiver Thresholds].
-    var vdiff = NaN
+    var vdiff = none(float)
     var vsrc = ""
-    if rPair.hasVdiff:
+    if rPair.vdiff.isSome:
       vdiff = rPair.vdiff
       vsrc = rPair.source
     else:
       let rt = rP.model.receiverThresholds
       if rt.vdiffDc.present:
-        vdiff = rt.vdiffDc.value
+        vdiff = some(rt.vdiffDc.value)
         vsrc = rP.model.name & " [Receiver Thresholds] Vdiff_dc"
       elif rt.vdiffAc.present:
-        vdiff = rt.vdiffAc.value
+        vdiff = some(rt.vdiffAc.value)
         vsrc = rP.model.name & " [Receiver Thresholds] Vdiff_ac"
     var single = pair
     single.geometry = lgMicrostrip
@@ -486,7 +486,7 @@ proc deriveDiffConstraints*(nl: Netlist, req: DiffPairRequest, c: Criteria,
                                 receiverPort: TemplatePort(label: $rPair.other, pkg: rN.pkg),
                                 coupled: pair,
                                 skew: (if dPair.inverting: dPair.tdelay else: -dPair.tdelay),
-                                vdiff: vdiff, hasVdiff: not vdiff.isNaN, vdiffSource: vsrc)
+                                vdiff: vdiff, vdiffSource: vsrc)
     templates.add t
     corners.add corner
   # Series termination at the driver: a resistor between each driver pin's

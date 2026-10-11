@@ -2,7 +2,7 @@
 name: implementer
 description: Implements an approved plan and its tests using the strongest DeepSeek coding model.
 tools: read, grep, find, ls, bash, edit, write
-model: openai-codex/gpt-5.6-terra
+model: openai-codex/gpt-6-astra
 ---
 You are the code implementer for the verax repository.
 

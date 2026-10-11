@@ -48,7 +48,7 @@ suite "[Diff Pin]":
     let p = diffPartner([b], PinRef(designator: "U1", pin: "1"))
     check p.ok and p.inverting and p.other.pin == "4"
     check abs(p.tdelay - 50e-12) < 1e-18
-    check not p.hasVdiff
+    check p.vdiff.isNone
     let n = diffPartner([b], PinRef(designator: "U1", pin: "4"), coMax)
     check n.ok and not n.inverting and n.other.pin == "1"
     check abs(n.tdelay - 80e-12) < 1e-18
@@ -74,7 +74,7 @@ proc pairTemplate(vdiff = 0.2): SiTemplate =
   result.partner = TemplatePartner(role: prDiffPair, name: "D_N", driver: drv,
                                    driverPort: TemplatePort(label: "U1.4"), receiver: rxB(),
                                    receiverPort: TemplatePort(label: "U2.4"), coupled: pairSpec,
-                                   vdiff: vdiff, hasVdiff: true, vdiffSource: "test")
+                                   vdiff: some(vdiff), vdiffSource: "test")
 
 suite "differential pair":
   let t = pairTemplate()
@@ -126,7 +126,7 @@ suite "differential pair":
                   defaultCriteria())
     check p.verdict == vPass
     var t2 = pairTemplate()
-    t2.partner.hasVdiff = false
+    t2.partner.vdiff = none(float)
     let q = judge([t2], templateParams(0.1, diffR = 100.0), defaultCriteria())
     check q.verdict == vInvalid
     check "Vdiff" in q.reason

@@ -5,6 +5,13 @@ import verax/netlist/annotations
 import verax/bom
 import verax/bom/sources/local
 
+proc opt(x: float): Option[float] =
+  ## Fixture shorthand: `NaN` is unstated.
+  if x.isNaN: none(float) else: some(x)
+proc st(x: float): Stated[float] =
+  if x.isNaN: absent(float) else: stated(x)
+
+
 const FixturePath = "tests/fixtures/catalog.json"
 
 proc useFixture() =
@@ -13,9 +20,8 @@ proc useFixture() =
 
 proc resistor(designator: string, value: float, tolerance = 0.05): BomItem =
   BomItem(designators: @[designator], members: @[designator],
-          kind: "resistor", family: pfResistor, value: value,
-          tolerance: tolerance, voltageRating: NaN, powerRating: NaN,
-          currentRating: NaN, isat: NaN, caseCode: "0402", quantity: 1)
+          kind: "resistor", family: pfResistor, value: opt(value),
+          tolerance: st(tolerance), caseCode: "0402", quantity: 1)
 
 proc relock(r: BomResult): ResolveOptions =
   result = defaultResolveOptions()
@@ -31,9 +37,7 @@ const Better = """{"schema": "verax.catalog/1", "parts": [
 test "the JSON report reads back as a lock keyed on each searched part's signature":
   useFixture()
   var u1 = BomItem(designators: @["U1"], members: @["U1"], kind: "opamp",
-                   family: pfOther, value: NaN, tolerance: NaN,
-                   voltageRating: NaN, powerRating: NaN, currentRating: NaN,
-                   isat: NaN, mpn: "LM358DR", quantity: 1)
+                   family: pfOther, mpn: "LM358DR", quantity: 1)
   let r = resolve(@[resistor("R1", 10e3), resistor("R2", 10e3), u1])
   let lock = parseLock(renderJson(r))
   check lock.len == 1                     # one requirement; U1 is bought by MPN

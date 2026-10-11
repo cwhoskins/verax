@@ -5,7 +5,6 @@
 import std/[complex, streams, osproc, os, strutils, tables, tempfiles, times]
 import ../netlist/types
 import ../netlist/formats/spice as spiceFormat
-import ../schematic
 import ./backend
 import ./xspice/cmpath
 import ./xspice/instance
@@ -112,13 +111,26 @@ proc parseRawfile(path: string): SimResult =
         inc i
     inc pointIdx
 
+type
+  RunPictureWriter* = proc (nl: Netlist, base: string) {.nimcall.}
+    ## Draws the derived netlist of one run into the archive as
+    ## `<base>.svg`/`<base>.json`. A hook rather than an import so `spice`
+    ## doesn't link the schematic layout engine: `verax/run_archive`
+    ## installs the schematic writer, and `verify` imports that.
+
+var runPictureWriter: RunPictureWriter
+
+proc setRunPictureWriter*(w: RunPictureWriter) =
+  ## Installs (or, with `nil`, removes) the per-run picture writer.
+  runPictureWriter = w
+
 proc keepSchematic(nl: Netlist, dir, slot: string) =
-  ## Writes an SVG and schematic-scene JSON of the derived netlist into the
-  ## run archive, when one is kept. A pure function of the netlist, so it
-  ## can't change what's simulated; best effort, never fails a run.
-  if dir.len == 0: return
+  ## Draws the derived netlist into the run archive, when one is kept and a
+  ## writer is installed. A pure function of the netlist, so it can't change
+  ## what's simulated; best effort, never fails a run.
+  if dir.len == 0 or runPictureWriter == nil: return
   try:
-    writeScenePair(layout(nl, archiveLayoutOptions()), dir / slot)
+    runPictureWriter(nl, dir / slot)
   except CatchableError:
     discard
 

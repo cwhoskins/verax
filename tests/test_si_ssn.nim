@@ -97,7 +97,7 @@ suite "simultaneous switching":
             pkgSignal: PackageRlc(r: 0.1, l: 1e-9, c: 0.3e-12),
             powerPins: 1, groundPins: 1,
             pkgPower: PackageRlc(r: 0.05, l: lGnd), pkgGround: PackageRlc(r: 0.05, l: lGnd),
-            supply: NaN)
+            supply: none(float))
 
   let falling = [edgeStimulus(edFalling, 0.5e-9)]
 

@@ -40,13 +40,18 @@ type
 proc metres(a: Nm): float {.inline.} = toMetres(a)
   ## Local alias for `pcb/units.toMetres`.
 
+proc tb(x: float): Stated[float] = stated(x, annDefaulted)
+  ## A textbook constant: a default, so `assumedConstants` reports it.
+
 proc defaultExtrudeSpec*(): ExtrudeSpec =
   ## Copper and FR-4 with textbook constants.
   ExtrudeSpec(
-    conductor: Material(name: "copper", sigma: 5.8e7, epsR: 1.0, muR: 1.0,
-                        kThermal: 385.0, rhoDensity: 8960.0, cpHeat: 385.0),
-    dielectric: Material(name: "FR4", epsR: 4.5, muR: 1.0, lossTangent: 0.02,
-                         kThermal: 0.3, rhoDensity: 1850.0, cpHeat: 1200.0),
+    conductor: Material(name: "copper", sigma: tb(5.8e7), epsR: tb(1.0),
+                        muR: tb(1.0), kThermal: tb(385.0),
+                        rhoDensity: tb(8960.0), cpHeat: tb(385.0)),
+    dielectric: Material(name: "FR4", epsR: tb(4.5), muR: tb(1.0),
+                         lossTangent: tb(0.02), kThermal: tb(0.3),
+                         rhoDensity: tb(1850.0), cpHeat: tb(1200.0)),
     padding: 5e-3)
 
 proc zBands(pcb: Pcb): Table[string, ZBand] =

@@ -155,18 +155,6 @@ is what is left.
    more than 3x". The simulation is unaffected. Fix: take the rule's edge
    from the pad (the `[Ramp]`, or the timing-load run's 10-90 %).
 
-75. **An eye claim makes `verax constraints` impractically slow** (2026-10-09).
-   `designs/si_spi.nim` derives its rules in ~8 s; adding `min_eye_height`/
-   `min_eye_width` to MOSI's `si_net` (which `verax check` evaluates in 7 s
-   on the routed board) made `verax constraints` run past 10 minutes before
-   it was killed. `si/constrain.judge` passes `eyeBits = 127` into every
-   grid and bisection point of every sweep (length, vias, termination,
-   stubs), so each point simulates 127 UI of PRBS7 -- at a 100 ns UI, 12.7 us
-   of transient per corner per point. Fix candidates: judge the eye only at
-   the sweep's final boundary points, or bisect on the edge criteria and
-   re-check the eye once per interval. The design keeps the eye claim; its
-   header still advertises the `constraints` command.
-
 76. **A bare `require` on a percent quantity cannot state its unit**
    (2026-10-09). `verify.claimLint` warns `claim_unit_unstated` for any
    claim with no unit on a measurement that has one, and there is no

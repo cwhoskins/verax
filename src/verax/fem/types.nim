@@ -12,8 +12,9 @@
 
 import std/[tables, sequtils]
 import ../netlist/types as nltypes
+import ../stated as statedmod
 
-export nltypes.Net
+export nltypes.Net, statedmod
 
 type
   FemError* = object of CatchableError
@@ -30,18 +31,21 @@ type
 
   Material* = object
     name*: string
-    epsR*, muR*: float
-      ## Relative permittivity / permeability; 0 means unset (a `Pcb`
-      ## builder fills vacuum where the stackup is silent).
-    sigma*: float
-      ## Electrical conductivity, S/m.
-    kThermal*: float
+    epsR*, muR*: Stated[float]
+      ## Relative permittivity / permeability.
+    sigma*: Stated[float]
+      ## Electrical conductivity, S/m. **`stated(0.0)` is an insulator**,
+      ## unstated is "nobody said" -- the reason these are `Stated` and not
+      ## zero-means-unknown floats.
+    kThermal*: Stated[float]
       ## Thermal conductivity, W/(m*K).
-    rhoDensity*: float
+    rhoDensity*: Stated[float]
       ## Mass density, kg/m^3 -- transient thermal only.
-    cpHeat*: float
+    cpHeat*: Stated[float]
       ## Specific heat capacity, J/(kg*K) -- transient thermal only.
-    lossTangent*: float
+    lossTangent*: Stated[float]
+      ## Each constant carries its source: a textbook default
+      ## (`annDefaulted`) is an assumption a result rests on.
     attrs*: OrderedTable[string, string]
 
   Region* = object
@@ -159,9 +163,16 @@ proc validate*(p: FemProblem): seq[string] =
   for r in p.regions:
     if r.material.len == 0: continue
     let m = p.materials[r.material]
-    if p.kind.isThermal and m.kThermal == 0.0:
+    if p.kind.isThermal and not m.kThermal.has:
       result.add "region '" & r.name & "' material '" & m.name &
-        "' has no thermal conductivity"
-    if p.kind.isElectromagnetic and m.epsR == 0.0 and m.sigma == 0.0:
+        "' states no thermal conductivity"
+    if p.kind.isElectromagnetic and not m.epsR.has and not m.sigma.has:
       result.add "region '" & r.name & "' material '" & m.name &
-        "' has neither permittivity nor conductivity"
+        "' states neither permittivity nor conductivity"
+
+proc assumedConstants*(m: Material): seq[string] =
+  ## The constants of `m` taken from a defaults table rather than stated,
+  ## for a report's assumptions.
+  for name, v in m.fieldPairs:
+    when v is Stated[float]:
+      if v.source == annDefaulted: result.add name & " = " & $v.value

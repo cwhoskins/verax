@@ -12,6 +12,7 @@ import verax/netlist
 import verax/netlist/formats/spice
 import verax/schematic
 import verax/spice/ngspice
+import verax/run_archive  # installs the per-run schematic writer
 
 import designs/lib/riaa
 

@@ -44,7 +44,7 @@ proc twoLayerBoard(): Pcb =
   setNet(track, vout)
 
   let hole = newHole(hkVia, pt(mm(2.0), mm(10.0)), mm(0.3))
-  hole.finishedDia = mm(0.25)
+  hole.finishedDia = stated(mm(0.25))
   setSpan(hole, top, bot)
   hole.net = vout
   discard addHole(result, hole)
@@ -163,7 +163,7 @@ test "a hole propagates its net to the pads attached to it":
   check hole.pads.len == 1
   check hole.pads[0].net.name == "VOUT"
   check hole.pads[0].hole == hole
-  check hole.finishedDia == mm(0.25)
+  check hole.finishedDia.get == mm(0.25)
 
 test "stack-up records physical order, thickness and dielectric material":
   let pcb = twoLayerBoard()

@@ -1,5 +1,6 @@
 ## `spice.startup` -- rail ramp-up and inrush, via `.tran`.
 
+import std/tables
 import ./common
 import ../../netlist/graph
 import ../../spice/transform
@@ -12,11 +13,15 @@ proc measurementOnly(spec: var StartupSpec) =
   spec.overshootLimit = Inf  ## a `>` test
   spec.currentLimit = 0.0    ## explicitly gated on `> 0`
 
+proc startupSpecOf(a: Assertion): StartupSpec =
+  result = defaultStartupSpec()
+  measurementOnly(result)
+  result.tStop = conditionFloat(a, "t_run", 0.0)
+
 proc startupKey(ctx: EvalContext, a: Assertion): string =
   let d = ctx.design
-  # `t_run` is setup, so it joins the key.
-  bindingName(d, a, "regulator") & "|" & subjectNet(d, a) & "|" &
-    $conditionFloat(a, "t_run", 0.0)
+  bindingName(d, a, "regulator") & "|" & bindingName(d, a, "output") & "|" &
+    subjectNet(d, a) & "|" & specKey(startupSpecOf(a))
 
 proc startupDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
@@ -45,7 +50,7 @@ proc startupDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   if measured.len > 0 and measured != driven:
     result &= ", measured at net '" & measured &
               "' on the far side of the filter"
-  let tRun = conditionFloat(batch[0], "t_run", 0.0)
+  let tRun = startupSpecOf(batch[0]).tStop
   if tRun > 0.0:
     result &= ", run for " & eng(tRun, "s")
   if sr == nil:
@@ -71,9 +76,7 @@ proc runStartup(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   if driven.len == 0:
     return failBatch(batch, name, "no output net to measure")
 
-  var spec = defaultStartupSpec()
-  measurementOnly(spec)
-  spec.tStop = conditionFloat(a0, "t_run", 0.0)
+  let spec = startupSpecOf(a0)
 
   var rep: AnalysisReport
   try:
@@ -87,4 +90,7 @@ proc registerStartupEvaluator*() =
     name: "spice.startup", produces: @startupQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
     binds: @["regulator", "output"],
+    conditions: @["t_run"],
+    units: {"final_v": "V", "overshoot_pct": "%", "rise_time_10_90": "s",
+            "settle_time": "s", "inrush_peak": "A", "t_inrush_peak": "s"}.toTable,
     setupKey: startupKey, setupDoc: startupDoc, run: runStartup))

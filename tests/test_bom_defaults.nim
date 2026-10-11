@@ -28,21 +28,21 @@ test "a bom: block round-trips through bomDefaults":
       manufacturers = ["TDK", "Murata"]
     net gnd, kind = ntGround, name = "0"
   let d = bomDefaults(nl)
-  check float(d.tolerance) == 0.05
+  check float(d.tolerance.get) == 0.05
   check d.dielectric == "X7R"
   check d.series == "e24"
-  check d.derating == 1.5
+  check d.derating == some(1.5)
   check d.resistorPackage == "0603"
   check d.capacitorPackage == "0805"
   check d.inductorPackage == "1210"
   check d.manufacturers == @["TDK", "Murata"]
 
-test "a netlist that states no bom: block reads back the zero value":
+test "a netlist that states no bom: block reads back nothing stated":
   let d = bomDefaults(board())
-  check float(d.tolerance) == 0.0
+  check d.tolerance.isNone
   check d.dielectric == ""
   check d.series == ""
-  check d.derating == 0.0
+  check d.derating.isNone
   check d.resistorPackage == ""
   check d.capacitorPackage == ""
   check d.inductorPackage == ""
@@ -59,10 +59,10 @@ test "each runtime setter round-trips on its own":
   setBomInductorPackage(nl, "1206")
   setBomManufacturers(nl, ["Yageo", "Vishay"])
   let d = bomDefaults(nl)
-  check float(d.tolerance) == 0.01
+  check float(d.tolerance.get) == 0.01
   check d.dielectric == "C0G"
   check d.series == "e12"
-  check d.derating == 2.0
+  check d.derating == some(2.0)
   check d.resistorPackage == "0402"
   check d.capacitorPackage == "0603"
   check d.inductorPackage == "1206"
@@ -78,7 +78,7 @@ test "defaults survive clone":
   let copy = clone(nl, globals)
   let d = bomDefaults(copy)
   check d.series == "e96"
-  check d.derating == 1.5
+  check d.derating == some(1.5)
 
 test "defaults survive instantiate":
   let templ = newNetlist("channel")
@@ -112,7 +112,7 @@ test "a child with no bom: block inherits every field from its parent":
   setBomTolerance(nl, 5.pct)
   let child = newNetlist("channel")
   addChild(nl, "XA", child)
-  check float(bomDefaults(child).tolerance) == 0.05
+  check float(bomDefaults(child).tolerance.get) == 0.05
 
 test "a child's stated field beats its parent's; unstated fields still inherit":
   let filt = filterSheet()

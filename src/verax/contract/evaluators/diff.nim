@@ -153,6 +153,7 @@ proc registerDiffEvaluators*() =
   registerEvaluator(Evaluator(
     name: "diff.pair_symmetry",
     produces: @["diff_pair_symmetry"],
+    units: {"diff_pair_symmetry": ""}.toTable,
     needs: {capStatic},
     arity: 2 .. 2,
     subjectKinds: {skNet},
@@ -162,6 +163,7 @@ proc registerDiffEvaluators*() =
   registerEvaluator(Evaluator(
     name: "diff.intra_pair_skew",
     produces: @["intra_pair_skew"],
+    units: {"intra_pair_skew": "s"}.toTable,
     needs: {capStatic},
     arity: 2 .. 2,
     subjectKinds: {skNet},
@@ -170,6 +172,7 @@ proc registerDiffEvaluators*() =
   registerEvaluator(Evaluator(
     name: "diff.z_diff",
     produces: @["z_diff"],
+    units: {"z_diff": "ohm"}.toTable,
     needs: {capStatic},
     arity: 2 .. 2,
     subjectKinds: {skNet},
@@ -178,6 +181,7 @@ proc registerDiffEvaluators*() =
   registerEvaluator(Evaluator(
     name: "diff.inter_pair_skew",
     produces: @["inter_pair_skew"],
+    units: {"inter_pair_skew": "s"}.toTable,
     needs: {capStatic},
     arity: 2 .. high(int),
     subjectKinds: {skNet},

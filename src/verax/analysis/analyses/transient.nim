@@ -21,6 +21,7 @@
 import std/[math, strutils, tables]
 
 import ../../netlist/types
+import ../../units
 import ../../netlist/graph
 import ../../netlist/formats/spice as spiceFormat
 import ../../spice/transform
@@ -405,10 +406,11 @@ proc analyzeCurrent*(nl: Netlist, parts: openArray[string],
 
     # `NaN` where the part states no rating: unchosen, not infinite headroom.
     let c = findComponent(nl, part)
-    let isat = if c == nil: AnnValue[float](source: annAbsent)
-               else: annotationFloat(c, "isat")
-    let icont = if c == nil: AnnValue[float](source: annAbsent)
-                else: annotationFloat(c, "current_rating")
+    let isatAnn = if c == nil: absent(Amps)
+                  else: annotationAs(c, "isat", Amps)
+    let icontAnn = if c == nil: absent(Amps) else: currentRating(c)
+    let isat = AnnValue[float](source: isatAnn.source, value: float(isatAnn.value))
+    let icont = AnnValue[float](source: icontAnn.source, value: float(icontAnn.value))
     result.add "i_peak_derating",
       (if isat.has and isat.value > 0.0: peak / isat.value else: NaN),
       "", at = part

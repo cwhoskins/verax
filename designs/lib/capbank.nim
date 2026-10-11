@@ -191,12 +191,13 @@ proc capBank*(target: Farads, working: Volts, spec = capBankSpec()): CapBank =
   let frac = biasFraction(spec.dielectric, working, rated)
   let needNominal = float(target) / frac
 
-  let cMax = float(maxCeramicCapacitance(spec.maxPackage, rated))
-  if cMax <= 0.0:
+  let cMaxOpt = maxCeramicCapacitance(spec.maxPackage, rated)
+  if cMaxOpt.isNone:
     raise newException(ValueError,
       "capBank: '" & spec.maxPackage & "' is not a case size this module " &
       "knows (see `parts.ceramicLadder`) -- state a recognised `maxPackage`")
 
+  let cMax = float(cMaxOpt.get)
   var n = max(spec.minCount, int(ceil(needNominal / cMax)))
   var per = 0.0
   while true:

@@ -16,16 +16,16 @@ proc applyChoice*(c: Component, ch: Choice, source = annDerived) =
   if ch.package.len > 0: setAnnotation(c, "package", ch.package, source)
   if ch.dielectric.len > 0: setAnnotation(c, "dielectric", ch.dielectric, source)
   if ch.partNumber.len > 0 and c.partNumber.len == 0: c.partNumber = ch.partNumber
-  if float(ch.voltageRating) > 0.0:
-    setAnnotation(c, "voltage_rating", ch.voltageRating, source)
-  if float(ch.currentRating) > 0.0:
-    setAnnotation(c, "current_rating", ch.currentRating, source)
-  if float(ch.isat) > 0.0: setAnnotation(c, "isat", ch.isat, source)
-  if float(ch.powerRating) > 0.0:
-    setAnnotation(c, "power_rating", ch.powerRating, source)
-  if float(ch.tolerance) > 0.0: setAnnotation(c, "tolerance", ch.tolerance, source)
-  if float(ch.esr) > 0.0: setAnnotation(c, "esr", ch.esr, source)
-  if float(ch.esl) > 0.0: setAnnotation(c, "esl", ch.esl, source)
+  if ch.voltageRating.isSome:
+    setAnnotation(c, "voltage_rating", ch.voltageRating.get, source)
+  if ch.currentRating.isSome:
+    setAnnotation(c, "current_rating", ch.currentRating.get, source)
+  if ch.isat.isSome: setAnnotation(c, "isat", ch.isat.get, source)
+  if ch.powerRating.isSome:
+    setAnnotation(c, "power_rating", ch.powerRating.get, source)
+  if ch.tolerance.isSome: setAnnotation(c, "tolerance", ch.tolerance.get, source)
+  if ch.esr.isSome: setAnnotation(c, "esr", ch.esr.get, source)
+  if ch.esl.isSome: setAnnotation(c, "esl", ch.esl.get, source)
   if ch.use.len > 0: setAnnotation(c, "part_use", ch.use, source)
 
 proc choiceNotes*(designator: string, ch: Choice): seq[Assumption] =

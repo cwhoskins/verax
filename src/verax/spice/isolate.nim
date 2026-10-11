@@ -68,7 +68,7 @@ proc nominalVoltage(spec: IsolationSpec, net: Net): tuple[v: float, known: bool]
     return (spec.railVoltages[net.name], true)
   let ann = annotations.railVoltage(net)
   if ann.has:
-    return (ann.value, true)
+    return (float(ann.value), true)
   (0.0, false)
 
 proc uniqueDesignator(nl: Netlist, base: string): string =

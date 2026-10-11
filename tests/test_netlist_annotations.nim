@@ -1,4 +1,4 @@
-import std/[strutils, tables, unittest]
+import std/[os, strutils, tables, unittest]
 
 import verax/netlist
 import verax/netlist/annotations
@@ -60,7 +60,7 @@ test "a unit literal and a bare SI number store identically":
   setAnnotation(a.components["C1"], "esr", 20.mohm)
   setAnnotation(b.components["C1"], "esr", 0.02)
   check a.components["C1"].attrs["esr"] == b.components["C1"].attrs["esr"]
-  check abs(esr(a.components["C1"]).value - 0.02) < 1e-15
+  check abs(float(esr(a.components["C1"]).value) - 0.02) < 1e-15
 
 test "a SPICE magnitude suffix is rejected, not silently interpreted":
   let nl = board()
@@ -100,7 +100,7 @@ test "provenance distinguishes authored from imported and defaulted":
 
   setAnnotation(c, "esl", 1.nH, source = annImported)
   check esl(c).source == annImported
-  check abs(esl(c).value - 1e-9) < 1e-18
+  check abs(float(esl(c).value) - 1e-9) < 1e-18
 
   setAnnotation(c, "package", "0402", source = annDerived)
   check package(c).source == annDerived
@@ -123,9 +123,9 @@ test "annotations survive a clone, which is why they live in attrs":
   setRailVoltage(nl.nets["vdd"], 3.3.V)
   var globals: OrderedTable[string, Net]
   let copy = clone(nl, globals)
-  check abs(esr(copy.components["C1"]).value - 0.02) < 1e-15
+  check abs(float(esr(copy.components["C1"]).value) - 0.02) < 1e-15
   check esr(copy.components["C1"]).source == annImported
-  check abs(railVoltage(copy.nets["vdd"]).value - 3.3) < 1e-12
+  check abs(float(railVoltage(copy.nets["vdd"]).value) - 3.3) < 1e-12
 
 # --- validation --------------------------------------------------------
 
@@ -264,3 +264,69 @@ test "dnp and bom_exclude are true/false keys":
   var kinds: seq[string]
   for i in validateAnnotations(nl): kinds.add i.kind
   check "annotation_unparseable" in kinds
+
+# --- typed reads and the provenance side door (design review R1.3/R1.4) ---
+
+test "typed accessors carry the unit type":
+  let nl = newNetlist("t")
+  let c = nl.addComponent(newComponent("C1", kind = "capacitor"))
+  setAnnotation(c, "esr", 20.mohm)
+  setAnnotation(c, "voltage_rating", 16.V)
+  let e: AnnValue[Ohms] = esr(c)
+  check e.has and abs(float(e.value) - 0.02) < 1e-15
+  check float(voltageRating(c).value) == 16.0
+  check not currentRating(c).has
+
+test "a typed read in the wrong unit is a programming error":
+  let nl = newNetlist("t")
+  let c = nl.addComponent(newComponent("C1", kind = "capacitor"))
+  setAnnotation(c, "esr", 20.mohm)
+  expect NetlistError:
+    discard annotationAs(c, "esr", Volts)
+
+test "a raw write clears a stale provenance marker":
+  let nl = newNetlist("t")
+  let c = nl.addComponent(newComponent("C1", kind = "capacitor"))
+  setAnnotation(c, "esr", 20.mohm, annDefaulted)
+  check esr(c).source == annDefaulted
+  setRawAnnotation(c, "esr", "0.05")
+  check esr(c).source == annAuthored
+
+test "a provenance marker whose value is gone is reported":
+  let nl = newNetlist("t")
+  let c = nl.addComponent(newComponent("C1", kind = "capacitor"))
+  setAnnotation(c, "esr", 20.mohm, annDefaulted)
+  c.attrs.del("esr")
+  var kinds: seq[string]
+  for i in validateAnnotations(nl): kinds.add i.kind
+  check "annotation_orphan_provenance" in kinds
+
+test "spice/ and analysis/ read registered float keys only through accessors":
+  # A raw `attrs["esr"]` read re-parses text and drops provenance; a key
+  # with a typed accessor must not be read as a bare `annotationFloat`.
+  const typed = ["esr", "esl", "voltage", "voltage_rating", "current_rating",
+                 "power_rating"]
+  var floatKeys: seq[string]
+  for k in registeredKeys():
+    if annDef(k).kind in {akFloat, akInt}: floatKeys.add k
+  var offenders: seq[string]
+  let root = currentSourcePath().parentDir.parentDir / "src" / "verax"
+  for sub in ["spice", "analysis"]:
+    for f in walkDirRec(root / sub):
+      if not f.endsWith(".nim"): continue
+      var n = 0
+      for line in lines(f):
+        inc n
+        let code = line.split("##")[0].split("#")[0]
+        for k in floatKeys:
+          for form in ["attrs[\"" & k & "\"]", "attrs.getOrDefault(\"" & k & "\"",
+                       "attrs.hasKey(\"" & k & "\")"]:
+            # Writes (`attrs["k"] = ...`) are stand-in construction, not reads.
+            let at = code.find(form)
+            if at >= 0 and not code[at + form.len .. ^1].strip.startsWith("= "):
+              offenders.add f & ":" & $n
+        for k in typed:
+          if ("annotationFloat(") in code and ("\"" & k & "\")") in code:
+            offenders.add f & ":" & $n
+  checkpoint offenders.join("\n")
+  check offenders.len == 0

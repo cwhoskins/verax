@@ -6,6 +6,13 @@ import verax/bom
 import verax/bom/sources/local
 import verax/units
 
+proc opt(x: float): Option[float] =
+  ## Fixture shorthand: `NaN` is unstated.
+  if x.isNaN: none(float) else: some(x)
+proc st(x: float): Stated[float] =
+  if x.isNaN: absent(float) else: stated(x)
+
+
 const FixturePath = "tests/fixtures/catalog.json"
 
 proc item(family: PartFamily, value: float, caseCode: string,
@@ -17,8 +24,7 @@ proc item(family: PartFamily, value: float, caseCode: string,
                  of pfInductor: "inductor"
                  of pfFerrite: "ferrite_bead"
                  else: "opamp"),
-          family: family, value: value, tolerance: tolerance,
-          voltageRating: NaN, powerRating: NaN, currentRating: NaN, isat: NaN,
+          family: family, value: opt(value), tolerance: st(tolerance),
           caseCode: caseCode, quantity: 1)
 
 proc other(designator: string, mpn = "", partNumber = ""): BomItem =
@@ -71,7 +77,7 @@ test "an unstated tolerance asks for the exact value at any tolerance":
 test "a stated rating rejects a part under it, and few matches is uncommon":
   useFixture()
   var i = item(pfResistor, 10e3, "0402", tolerance = 0.01)
-  i.powerRating = 0.1
+  i.powerRating = st(0.1)
   let r = resolveItem(i)
   check r.chosen.mpn == "ERJ-2RKF1002X"
   check r.candidates == 1
@@ -86,7 +92,7 @@ test "the uncommon-part check can be turned off":
   opts.minCandidates = 0
   var i = item(pfCapacitor, 22e-9, "0402", tolerance = 0.05, designator = "C1")
   i.dielectric = "C0G"
-  i.voltageRating = 50
+  i.voltageRating = st(50)
   let r = resolveItem(i, opts)
   check r.chosen.mpn == "GRM1555C1H223JA01D"
   check KindBomUncommonPart notin r.kinds
@@ -176,7 +182,7 @@ test "an mpn that contradicts the stated spec is a warning naming why":
   check m.severity == sevWarning
   check "case code is 0603, not 0402" in m.message
   var c = item(pfCapacitor, 100e-9, "0402", designator = "C1")
-  c.voltageRating = 25
+  c.voltageRating = st(25)
   c.mpn = "GRM155R71C104KA88D"
   check "voltage rating is 16.0 V, under 25.0 V" in
     resolveItem(c).issueOf(KindBomMpnSpecMismatch).message

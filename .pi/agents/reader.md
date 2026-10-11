@@ -2,7 +2,7 @@
 name: reader
 description: Read-only, low-cost code reconnaissance and focused code-section summaries.
 tools: read, grep, find, ls
-model: openai-codex/gpt-5.6-luna
+model: openai-codex/gpt-6-luna
 ---
 You are a strictly read-only code reader for the verax repository.
 

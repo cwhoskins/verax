@@ -9,10 +9,10 @@ proc mpns(cs: seq[Candidate]): seq[string] =
   for c in cs: result.add c.mpn
 
 proc part(mpn, mfr: string, stock = -1, lifecycle = ""): Candidate =
-  Candidate(mpn: mpn, manufacturer: mfr, family: pfResistor, value: 1000,
-            tolerance: NaN, voltageRating: NaN, powerRating: NaN,
-            currentRating: NaN, caseCode: "0402",
-            avail: Availability(stock: stock, moq: -1, lifecycle: lifecycle))
+  Candidate(mpn: mpn, manufacturer: mfr, family: pfResistor, value: some(1000.0),
+            caseCode: "0402",
+            avail: Availability(stock: (if stock < 0: none(int) else: some(stock)),
+                                lifecycle: lifecycle))
 
 proc fixed(name: string, parts: seq[Candidate]): CatalogSource =
   proc search(q: PartQuery): seq[Candidate] =
@@ -53,7 +53,7 @@ test "a later source fills only availability the first left unknown":
   registerCatalogSource(fixed("b", @[part("R1", "Acme", 500, "obsolete")]))
   let got = searchAll(q1k)
   check got.len == 1
-  check got[0].avail.stock == 500
+  check got[0].avail.stock == some(500)
   check got[0].avail.lifecycle == "active"
 
 test "folding stock never edits a source's own record":
@@ -62,7 +62,7 @@ test "folding stock never edits a source's own record":
   registerCatalogSource(fixed("a", @[first]))
   registerCatalogSource(fixed("b", @[part("R1", "Acme", 500)]))
   discard searchAll(q1k)
-  check first.avail.stock == -1
+  check first.avail.stock.isNone
 
 test "a nil search or lookup is skipped rather than crashing":
   clearCatalogSources()
@@ -75,7 +75,7 @@ test "lookupAll returns the first source that knows the part":
   clearCatalogSources()
   registerCatalogSource(fixed("a", @[part("R1", "Acme", 1)]))
   registerCatalogSource(fixed("b", @[part("R1", "Acme", 2)]))
-  check lookupAll("R1").avail.stock == 1
+  check lookupAll("R1").avail.stock == some(1)
   check lookupAll("R9") == nil
 
 test "a catalogue file registers as a source and answers through the registry":

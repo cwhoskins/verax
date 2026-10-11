@@ -259,4 +259,4 @@ test "annotations and role membership survive isolation, rename included":
   check frag.components["V_vdd"].attrs["value"].startsWith("DC 3.3")
 
   # Component annotations survive too.
-  check abs(esr(frag.components["C1"]).value - 0.02) < 1e-15
+  check abs(float(esr(frag.components["C1"]).value) - 0.02) < 1e-15

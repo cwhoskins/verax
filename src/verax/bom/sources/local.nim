@@ -66,26 +66,26 @@ proc readPart(row: JsonNode, family: PartFamily, c: Candidate,
       return ""
     n.getStr.strip
 
-  proc num(key: string, positive = true): float =
-    if not row.hasKey(key): return NaN
+  proc num(key: string, positive = true): Option[float] =
+    if not row.hasKey(key): return none(float)
     let n = row[key]
     if n.kind notin {JInt, JFloat}:
       bad key & " must be a number in SI base units, got " &
         (if n.kind == JString: "the string " & n.getStr.escape else: $n.kind)
-      return NaN
-    result = n.getFloat
-    if result.classify in {fcNan, fcInf, fcNegInf} or
-        (positive and result <= 0):
-      bad key & " must be a positive finite number, got " & $result
-      return NaN
+      return none(float)
+    let x = n.getFloat
+    if x.classify in {fcNan, fcInf, fcNegInf} or (positive and x <= 0):
+      bad key & " must be a positive finite number, got " & $x
+      return none(float)
+    some(x)
 
-  proc count(key: string, minimum: int): int =
-    if not row.hasKey(key): return -1
+  proc count(key: string, minimum: int): Option[int] =
+    if not row.hasKey(key): return none(int)
     let n = row[key]
     if n.kind != JInt or n.getBiggestInt < minimum:
       bad key & " must be an integer >= " & $minimum & ", got " & $n
-      return -1
-    n.getBiggestInt.int
+      return none(int)
+    some(n.getBiggestInt.int)
 
   c.description = str("description")
   c.datasheet = str("datasheet")
@@ -99,8 +99,8 @@ proc readPart(row: JsonNode, family: PartFamily, c: Candidate,
   c.avail = Availability(stock: count("stock", 0), moq: count("moq", 1),
                          lifecycle: str("lifecycle").toLowerAscii)
 
-  if not c.tolerance.isNaN and c.tolerance >= 1:
-    bad "tolerance is a fraction (0.01 is 1 %), got " & $c.tolerance
+  if c.tolerance.isSome and c.tolerance.get >= 1:
+    bad "tolerance is a fraction (0.01 is 1 %), got " & $c.tolerance.get
   if c.avail.lifecycle.len > 0 and c.avail.lifecycle notin Lifecycles:
     bad "lifecycle must be one of " & Lifecycles.join(", ") & ", got " &
       c.avail.lifecycle.escape
@@ -114,7 +114,7 @@ proc readPart(row: JsonNode, family: PartFamily, c: Candidate,
     c.caseCode = caseCodeOf("", c.package)
 
   if family.isParametric:
-    if c.value.isNaN and not row.hasKey("value"):
+    if c.value.isNone and not row.hasKey("value"):
       bad "a " & familyName(family) & " must state value"
   else:
     for key in ["value", "tolerance", "dielectric", "caseCode"]:
@@ -168,10 +168,7 @@ proc parseCatalog*(text: string, origin = "<string>"): Catalog =
         proc bad(msg: string) = problems.add at & ": " & msg
         for k, _ in row:
           if k notin partFields: bad "unknown field " & k.escape
-        let c = Candidate(source: "local", value: NaN, tolerance: NaN,
-                          voltageRating: NaN, powerRating: NaN,
-                          currentRating: NaN,
-                          avail: unknownAvailability())
+        let c = Candidate(source: "local", avail: unknownAvailability())
         for key in ["mpn", "manufacturer"]:
           let n = row{key}
           if n == nil or n.kind != JString or n.getStr.strip.len == 0:

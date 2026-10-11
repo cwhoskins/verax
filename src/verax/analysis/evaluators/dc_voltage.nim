@@ -1,6 +1,6 @@
 ## `spice.dc_voltage` -- node voltages read off the shared `.op`.
 
-import std/[math, strutils]
+import std/[math, strutils, tables]
 import ./common
 
 const dcVoltageQuantities = ["dc_voltage"]
@@ -51,4 +51,5 @@ proc registerDcVoltageEvaluator*() =
   registerEvaluator(Evaluator(
     name: "spice.dc_voltage", produces: @dcVoltageQuantities,
     needs: {capSpiceOp}, arity: 1 .. 1, subjectKinds: {skNet},
+    units: {"dc_voltage": "V"}.toTable,
     setupKey: opKey, setupDoc: opDoc, run: runDcVoltage))

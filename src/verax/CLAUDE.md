@@ -1,6 +1,14 @@
 # Package-root modules
 
-`units.nim`, `eng.nim` and `waveform.nim` sit *below* every submodule (several need them, none may own them). `verify.nim` sits *above* every submodule (it needs `contract` and `analysis` together, and neither may depend on it). `cli.nim` is the binary.
+`units.nim`, `stated.nim`, `eng.nim`, `waveform.nim` and `touchstone/` sit *below* every submodule that uses them (several need them, none may own them). `verify.nim` sits *above* every submodule (it needs `contract` and `analysis` together, and neither may depend on it). `run_archive.nim` sits above `spice` and `schematic`. `cli.nim` is the binary.
+
+## `touchstone/`
+
+`SParams` (single reference `z0`, row-major complex matrices per frequency), a reader normalising the 2-port order, and dB conversions kept as **two named pairs** (voltage-ratio 20·log, power-ratio 10·log) — never one generic helper. Used by `pcb/tline` and `si`. Per-port reference impedances (Touchstone v2) are unsupported.
+
+## `run_archive.nim`
+
+Importing it installs `spice/ngspice`'s `RunPictureWriter` hook so `$VERAX_KEEP_RUNS` gets a `runNNN.svg`/`.json` of each derived netlist. It exists so `spice` never imports `schematic` (which would link the layout engine into every simulation). `verify` imports it; anything else that wants archive pictures must too — without it the deck/raw/log are still archived, only the picture is skipped.
 
 ## `units.nim`
 
@@ -11,6 +19,10 @@ Typed quantities (`Volts`/`Ohms`/`Farads`/…/`Fraction`, plus `Degrees`, `Decib
 - `Celsius` carries both absolute temperatures and differences (the key it's stated under distinguishes them), is rendered without SI prefixes, and has no kelvin constructor (`20.K` would be ambiguous between a rise and an absolute).
 - `Fraction`'s unit string is `""` — see `claimLint` below.
 - Disjoint from `pcb/units.nim` (board geometry, `Nm`/`Deg`).
+
+## `stated.nim`
+
+`Stated[T]{source: AnnSource, value}` — the one idiom for "not stated". `netlist`'s `AnnValue[T]` is this type. Rules: **`NaN` means only "measured, and the feature was not there"** (no anti-resonance, no dropout); zero is never "unknown" where zero is physical; plain presence with no provenance is `std/options.Option`, `Stated` is for a value whose origin a report shows (`fem.Material` constants, `bom.BomItem` ratings, `pcb` `copperWeight`/`finishedDia`/`height`). `has`, `get` (raises when absent), `get(fallback)`, `stated(v, source)`, `absent(T)`. Modules re-export it as `import ../stated as statedmod; export statedmod` — a bare `export stated` resolves to the proc, not the module. IBIS's per-corner `present` flags are deliberately kept (format-faithful).
 
 ## `eng.nim`
 
@@ -31,7 +43,7 @@ The runner: checks a `Design` and renders one *readiness report*.
 - `--format=text|json|junit`. `renderJson` (`verax.readiness/1`) is hand-built; every float goes through `jnum` so `NaN`/`Inf` become `null`. `results[]` is authoritative and references `checks[]` by index. **Nothing else may write to stdout during `readiness`** or `--format=json | jq` breaks. JUnit maps not-evaluated/not-evaluable to `<skipped>` with the reason as message.
 - Margins: `contract/evaluate.marginOf` computes, `verify.marginText` words it — don't re-derive `Expectation.bounds` arithmetic here.
 - `--baseline=<path>` diffs against a prior JSON report; a missing/unparseable baseline is a usage error (`exitCompile`), never silently skipped. A unit change is reported as incomparable, never differenced.
-- `didYouMean` ranks quantities by edit distance for an unknown quantity. `claimLint` flags a unitless claim against a quantity with a unit (e.g. `<= 5.pct` vs a measurement in percent is off by 100×) — a stopgap until `Evaluator` declares units.
+- `didYouMean` ranks quantities by edit distance for an unknown quantity. `claimLint` flags a unitless claim against a quantity with a unit (e.g. `<= 5.pct` vs a measurement in percent is off by 100×), using the producer's declared `Evaluator.units` (so unrun claims are flagged too), else the measured unit. `verax quantities` shows each quantity's unit and the conditions it accepts.
 - **Catalog** (`describeRoles`/`describeRole`/`describeQuantities`/`describeAnnotations`) returns strings because both the CLI and MCP server use them. Reachability is *computed* by `claimingRoles()` — expanding every role with all params stated, then each param alone, because a param can *redirect* a claim (`gain_stage.atF`). Role params are stated as the placeholder `"1"`: a string-valued mode parameter therefore selects no branch and hides claims (see `contract/CLAUDE.md`). An expander that raises yields nothing rather than breaking `verax roles`.
 - With `$VERAX_KEEP_RUNS` set it calls `schematic/render.keepFullSchematic` (best-effort; the picture code lives in `schematic/`). `$VERAX_SCHEMATIC_LAYOUT`/`--schematic-layout` only accepts `constrained-layered` and never affects simulation.
 - **`--board=<file>`** reads a KiCad board and hands it to `readiness(d, allowed, board)`, which stores it in the eval context's scratch (findings §18). **`--si-constraints`** (what `verax constraints` forwards) derives SI routing rules for every `si_net` and stops; `siCriteria` turns the role's claims into the criteria so one statement of intent drives both.

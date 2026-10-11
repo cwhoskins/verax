@@ -267,7 +267,7 @@ proc readVia(pcb: Pcb, doc: KicadDoc, d: SexpDoc, node: int32) =
   if d.child(node, "blind") >= 0: viaKind = vkBlind
   if d.child(node, "micro") >= 0: viaKind = vkMicro
   var h = newHole(hkVia, at, drillDia)
-  h.finishedDia = drillDia
+  h.finishedDia = stated(drillDia, annImported)
   h.viaKind = viaKind
   discard addHole(pcb, h)
   setSpan(h, fromLayer, toLayer)

@@ -139,9 +139,22 @@ proc renderCsv*(r: BomResult): string =
 proc jnum(x: float): JsonNode =
   if x.isNaN or x == Inf or x == -Inf: newJNull() else: newJFloat(x)
 
-proc jint(n: int): JsonNode =
-  ## Unknown stock and MOQ are `-1` in memory and `null` on the wire.
-  if n < 0: newJNull() else: newJInt(n)
+proc jnum(x: Option[float]): JsonNode =
+  if x.isSome: jnum(x.get) else: newJNull()
+
+proc jnum(x: Stated[float]): JsonNode = jnum(x.asOption)
+
+proc jint(n: Option[int]): JsonNode =
+  ## Unknown stock and MOQ are `none` in memory and `null` on the wire.
+  if n.isSome: newJInt(n.get) else: newJNull()
+
+proc sourceWord(s: AnnSource): string =
+  case s
+  of annAbsent: "unstated"
+  of annAuthored: "authored"
+  of annImported: "imported"
+  of annDefaulted: "defaulted"
+  of annDerived: "derived"
 
 proc jstrs(xs: seq[string]): JsonNode =
   result = newJArray()
@@ -181,6 +194,14 @@ proc partJson(x: Resolution): JsonNode =
   req["voltage_rating"] = jnum(i.voltageRating)
   req["power_rating"] = jnum(i.powerRating)
   req["current_rating"] = jnum(i.currentRating)
+  # Where each rating came from: a `parts` policy's derived rating or a
+  # `bom:` default is not the same commitment as a designer's.
+  var prov = newJObject()
+  for (k, v) in [("tolerance", i.tolerance), ("voltage_rating", i.voltageRating),
+                 ("power_rating", i.powerRating),
+                 ("current_rating", i.currentRating)]:
+    if v.has: prov[k] = newJString(sourceWord(v.source))
+  req["sources"] = prov
   req["dielectric"] = newJString(i.dielectric)
   req["case_code"] = newJString(i.caseCode)
   req["footprint"] = newJString(i.footprint)

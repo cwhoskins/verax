@@ -41,7 +41,7 @@ proc controlRailFor(ctrlNet: Net, d: SwitchModel): float =
   ## The control logic swing for the threshold. Control nets rarely state a
   ## voltage, so state `vt` for non-3.3 V logic.
   let r = railVoltage(ctrlNet)
-  if r.has and r.value > 0.0: r.value else: d.controlRail
+  if r.has and float(r.value) > 0.0: float(r.value) else: d.controlRail
 
 proc expandSwitches*(nl: Netlist, d = defaultSwitchModel()): seq[Assumption] =
   ## Rewrites every two-terminal `switch`/`relay`/`load_switch` without its
@@ -178,7 +178,7 @@ proc muxModel*(nl: Netlist, c: Component, gnd: Net): BehavioralResult =
 
   let rail = (block:
     let r = railVoltage(comPin.net)
-    if r.has and r.value > 0.0: r.value else: d.controlRail)
+    if r.has and float(r.value) > 0.0: float(r.value) else: d.controlRail)
   let vt = rail * 0.5
   let vs = max(rail * 0.05, 0.02)
 

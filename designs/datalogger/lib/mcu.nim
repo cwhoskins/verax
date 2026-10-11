@@ -106,7 +106,7 @@ proc mcuSheet*(xtal = hse8MHz(), boardCurrentMa = 150.0): Netlist =
   ## exists here to measure it.
   let vddZin = spiceValue(3.3 / (boardCurrentMa / 1000.0))
 
-  result = subckt("MCU", [VDD, GND, i2c.controller, DP, DM, AIN, NRST, jtag.target]):
+  result = subckt("MCU", [VDD, GND, i2c.controller, DP, DM, AIN, CCSNS, NRST, jtag.target]):
     net GND, kind = ntGround, name = "0"
     net VDD, kind = ntPower
     # `i2c`/`jtag` are declared interfaces exposed straight as this sheet's
@@ -124,6 +124,7 @@ proc mcuSheet*(xtal = hse8MHz(), boardCurrentMa = 150.0): Netlist =
     net DP,  kind = ntSignal
     net DM,  kind = ntSignal
     net AIN, kind = ntSignal
+    net CCSNS, kind = ntSignal
     net NRST,  kind = ntSignal
     net xin,  kind = ntSignal
     net xout, kind = ntSignal
@@ -141,6 +142,10 @@ proc mcuSheet*(xtal = hse8MHz(), boardCurrentMa = 150.0): Netlist =
       pin "PB9", i2c["sda"], kind = ptInOut, function = "I2C1.sda"
       pin "PB8", i2c["scl"], kind = ptInOut, function = "I2C1.scl"
       pin "PA3", AIN, kind = ptInput, function = "ADC1.in15"
+      # The USB-C sink's CC-sense tap: firmware reads the advertised current
+      # from it (`../../lib/usbc_sink.nim`). PC0 carries ADC1 and nothing else
+      # this board needs.
+      pin "PC0", CCSNS, kind = ptInput, function = "ADC1.in10"
       pin "PA11", usbMcu["n"], kind = ptInOut, function = "USB.n"
       pin "PA12", usbMcu["p"], kind = ptInOut, function = "USB.p"
       pin "NRST",  NRST, kind = ptInput

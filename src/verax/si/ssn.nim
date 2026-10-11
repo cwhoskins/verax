@@ -23,7 +23,7 @@
 ##   peak `nominal - v(power die)`, and at each quiet receiver the largest
 ##   excursion from its level and its noise margin (`measure.measureNoise`).
 
-import std/[math, strutils]
+import std/[math, options, strutils]
 import ./simulate
 import ./measure
 import ../netlist/annotations
@@ -42,8 +42,8 @@ type
     pkgSignal*: PackageRlc
     powerPins*, groundPins*: int
     pkgPower*, pkgGround*: PackageRlc
-    supply*: float
-      ## Board supply, volts; `NaN` = the driver's pullup rail.
+    supply*: Option[float]
+      ## Board supply, volts; `none` = the driver's pullup rail.
     dieDecap*: float
 
   SsnResult* = object
@@ -67,10 +67,10 @@ proc ssnNet*(s: SsnSpec): SiNet =
   if s.powerPins < 1 or s.groundPins < 1:
     result.unsupported.add "SSN needs at least one power and one ground pin"
     return
-  let vNom = if s.supply.isNaN: s.driver.rails.pullup else: s.supply
+  let vNom = s.supply.get(s.driver.rails.pullup)
   let vccDie = result.addNode("vcc:die")
   let gndDie = result.addNode("gnd:die")
-  result.supply = SiSupply(present: true, vccDie: vccDie, gndDie: gndDie)
+  result.supply = some(SiSupply(vccDie: vccDie, gndDie: gndDie))
   # Power: die - R/n - L/n - board supply. Ground: die - R/n - L/n - 0.
   let vccBoard = result.addNode("vcc:board")
   result.addSource(vccBoard, 0, vNom, "board supply")
@@ -113,7 +113,7 @@ proc ssn*(s: SsnSpec, stimuli: openArray[Stimulus], o = defaultSiOptions()): Ssn
     result.status = ssUnsupported
     result.reason = net.unsupported.join("; ")
     return
-  let vNom = if s.supply.isNaN: s.driver.rails.pullup else: s.supply
+  let vNom = s.supply.get(s.driver.rails.pullup)
   result.quietMargin = NaN
   for stim in stimuli:
     let r = simulate(net, stim, o)
@@ -124,11 +124,11 @@ proc ssn*(s: SsnSpec, stimuli: openArray[Stimulus], o = defaultSiOptions()): Ssn
       result.reason = $stim & ": " & r.reason
       return
     let what = $stim
-    for x in r.v[net.supply.gndDie]:
+    for x in r.v[net.supply.get.gndDie]:
       if abs(x) > result.groundBounce:
         result.groundBounce = abs(x)
         result.at[0] = what
-    for x in r.v[net.supply.vccDie]:
+    for x in r.v[net.supply.get.vccDie]:
       if vNom - x > result.powerDroop:
         result.powerDroop = vNom - x
         result.at[1] = what

@@ -29,19 +29,19 @@ suite "a module asks by function, a board answers by part":
 
   test "a rating is derived from the working voltage, or not at all":
     let known = defaultCapacitor(
-      CapRequest(value: 100.nF, use: cuDecoupling, working: 3.3.V))
-    check float(known.voltageRating) == 10.0        # 2x 3.3 rounded up
+      CapRequest(value: 100.nF, use: cuDecoupling, working: some(3.3.V)))
+    check float(known.voltageRating.get) == 10.0        # 2x 3.3 rounded up
 
     # Zero working voltage means unknown; a rating would invent the circuit.
     let unknown = defaultCapacitor(CapRequest(value: 100.nF, use: cuDecoupling))
-    check float(unknown.voltageRating) == 0.0
+    check unknown.voltageRating.isNone
 
   test "an inductor is rated above the peak it was told about, not at it":
     # Saturation lowers inductance, raising ripple, which compounds.
-    let ch = defaultInductor(IndRequest(value: 3.3.uH, use: iuPower, carrying: 5.A))
-    check float(ch.isat) > 5.0
-    check float(ch.currentRating) > 5.0
-    check float(ch.isat) > float(ch.currentRating)
+    let ch = defaultInductor(IndRequest(value: 3.3.uH, use: iuPower, carrying: some(5.A)))
+    check float(ch.isat.get) > 5.0
+    check float(ch.currentRating.get) > 5.0
+    check float(ch.isat.get) > float(ch.currentRating.get)
 
   test "package sizing climbs with capacitance, and with voltage rating too":
     # Higher rating -> bigger case for the same capacitance.
@@ -88,7 +88,7 @@ suite "a choice lands as ordinary registered annotations":
         pin "2", gnd, kind = ptPassive
     let c = nl.components["C1"]
     applyChoice(c, defaultCapacitor(
-      CapRequest(value: 100.nF, use: cuDecoupling, working: 3.3.V)))
+      CapRequest(value: 100.nF, use: cuDecoupling, working: some(3.3.V))))
     check c.attrs["dielectric"] == "X7R"
     check annotationFloat(c, "voltage_rating").value == 10.0
     check c.attrs.hasKey("package")

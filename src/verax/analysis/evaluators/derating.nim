@@ -7,9 +7,20 @@ import ../analyses/derating
 const deratingQuantities = ["worst_voltage_derating", "worst_power_derating",
                             "parts_over_derating"]
 
-proc deratingKey(ctx: EvalContext, a: Assertion): string = subjectNet(ctx.design, a)
-  ## Keyed by rail: each claim is a worst case over a filtered set of parts,
-  ## so one run can't serve two subjects (unlike `dc_voltage`).
+proc deratingSpecOf(ctx: EvalContext, a: Assertion): DeratingSpec =
+  ## Everything but the operating point, which the run solves (once, shared).
+  result = defaultDeratingSpec()
+  result.onlyTouching = subjectNet(ctx.design, a)
+  # The assertion owns the ceiling (measurement-only, as everywhere).
+  result.defaultCeiling = Inf
+  for k in result.ceilingByFamily.keys:
+    result.ceilingByFamily[k] = Inf
+
+proc deratingKey(ctx: EvalContext, a: Assertion): string =
+  ## Keyed by rail (inside the spec): each claim is a worst case over a
+  ## filtered set of parts, so one run can't serve two subjects (unlike
+  ## `dc_voltage`).
+  specKey(deratingSpecOf(ctx, a))
 
 proc deratingDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
@@ -24,13 +35,8 @@ proc runDerating(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] 
   if rail.len == 0:
     return failBatch(batch, name, "no net subject whose parts could be checked")
 
-  var spec = defaultDeratingSpec()
-  spec.onlyTouching = rail
+  var spec = deratingSpecOf(ctx, batch[0])
   spec.precomputed = nodeVoltages(sharedOperatingPoint(ctx))
-  # The assertion owns the ceiling (measurement-only, as everywhere).
-  spec.defaultCeiling = Inf
-  for k in spec.ceilingByFamily.keys:
-    spec.ceilingByFamily[k] = Inf
 
   var rep: AnalysisReport
   try:
@@ -45,4 +51,6 @@ proc registerDeratingEvaluator*() =
   registerEvaluator(Evaluator(
     name: "spice.derating", produces: @deratingQuantities,
     needs: {capSpiceOp}, arity: 1 .. 1, subjectKinds: {skNet},
+    units: {"worst_voltage_derating": "", "worst_power_derating": "",
+            "parts_over_derating": ""}.toTable,
     setupKey: deratingKey, setupDoc: deratingDoc, run: runDerating))

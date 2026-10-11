@@ -52,11 +52,11 @@ proc parasiticFor(c: Component, d: ParasiticDefaults): tuple[p: Parasitic, notes
 
   let authoredEsr = esr(c)
   if authoredEsr.has:
-    p.esr = authoredEsr.value
+    p.esr = float(authoredEsr.value)
     esrSrc = ""
   let authoredEsl = esl(c)
   if authoredEsl.has:
-    p.esl = authoredEsl.value
+    p.esl = float(authoredEsl.value)
     eslSrc = ""
 
   var notes: seq[Assumption]

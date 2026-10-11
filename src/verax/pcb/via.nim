@@ -113,7 +113,7 @@ proc viaGeometryFor*(pcb: Pcb, h: Hole, entry, exit: PcbLayer,
   ## A hole's geometry off the board. Missing stack-up data is an issue and a
   ## `NaN` field, never a guess; a defaulted antipad is an `Assumption`.
   var g = ViaGeometry(backdrillResidual: -1.0, entryRef: entryRef, exitRef: exitRef)
-  g.drillDia = (if h.finishedDia.raw > 0: h.finishedDia else: h.drillDia).toMm / 1000.0
+  g.drillDia = (if h.finishedDia.has: h.finishedDia.value else: h.drillDia).toMm / 1000.0
   var pad = 0.0
   for c in h.pads: pad = max(pad, max(c.box.width, c.box.height).toMm / 1000.0)
   if pad <= 0.0:

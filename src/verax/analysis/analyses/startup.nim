@@ -122,15 +122,12 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
 
   var targetV = spec.targetV
   if targetV == 0.0:
-    if not nl.nets[measured].attrs.hasKey("voltage"):
+    let stated = railVoltage(nl.nets[measured])   # raises if unparseable
+    if not stated.has:
       raise newException(NetlistError,
         "no regulated voltage for '" & measured & "': set StartupSpec.targetV " &
-        "or Net.attrs[\"voltage\"]")
-    try:
-      targetV = parseFloat(nl.nets[measured].attrs["voltage"])
-    except ValueError:
-      raise newException(NetlistError,
-        "unparseable voltage attr on net '" & measured & "'")
+        "or the net's `voltage` annotation")
+    targetV = float(stated.value)
   if targetV == 0.0:
     raise newException(NetlistError, "regulated voltage must be non-zero")
 

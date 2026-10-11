@@ -23,9 +23,9 @@ proc supplyRailsOf*(c: Component): tuple[hi, lo: float, known: bool] =
     let v = annotations.railVoltage(p.net)
     if not v.has: continue
     if p.name.toLowerAscii in ["v+", "vcc", "vdd", "vs+", "vp"]:
-      hi = v.value
+      hi = float(v.value)
     elif p.name.toLowerAscii in ["v-", "vee", "vss", "vs-", "vn"]:
-      lo = v.value
+      lo = float(v.value)
   # Single-supply: V- on ground states no voltage and is 0 by definition.
   if hi.classify != fcNan and lo.classify == fcNan:
     for _, p in c.pins:

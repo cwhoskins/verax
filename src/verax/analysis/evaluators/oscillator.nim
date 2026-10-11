@@ -16,13 +16,19 @@ proc oscKick(ctx: EvalContext, a: Assertion): tuple[net: string, v: float] =
   ## self-starting circuit), hence no `binds`.
   (bindingName(ctx.design, a, "kick"), conditionFloat(a, "kick_v", 0.1))
 
-proc oscKey(ctx: EvalContext, a: Assertion): string =
-  let d = ctx.design
-  # The kick is setup, so it joins the key with the window.
+proc oscSpecOf(ctx: EvalContext, a: Assertion): TransientSpec =
+  ## The window, and the kick as an initial condition (so it is in the key).
+  result = defaultTransientSpec()
+  measurementOnly(result)
+  let (tSettle, tWindow) = transientWindow(a)
+  result.tSettle = tSettle
+  result.tWindow = tWindow
   let k = oscKick(ctx, a)
-  subjectNet(d, a) & "|" & $conditionFloat(a, "t_settle", 0.0) &
-                     "|" & $conditionFloat(a, "t_window", 0.0) &
-                     "|" & k.net & "|" & $k.v
+  if k.net.len > 0:
+    result.initialConditions[k.net] = k.v
+
+proc oscKey(ctx: EvalContext, a: Assertion): string =
+  subjectNet(ctx.design, a) & "|" & specKey(oscSpecOf(ctx, a))
 
 proc oscDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
@@ -53,14 +59,7 @@ proc runOscillation(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResul
   if outNet.len == 0:
     return failBatch(batch, name, "no net subject to measure")
 
-  var spec = defaultTransientSpec()
-  measurementOnly(spec)
-  let (tSettle, tWindow) = transientWindow(batch[0])
-  spec.tSettle = tSettle
-  spec.tWindow = tWindow
-  let k = oscKick(ctx, batch[0])
-  if k.net.len > 0:
-    spec.initialConditions[k.net] = k.v
+  let spec = oscSpecOf(ctx, batch[0])
 
   var rep: AnalysisReport
   try:
@@ -74,4 +73,6 @@ proc registerOscillatorEvaluator*() =
   registerEvaluator(Evaluator(
     name: "spice.oscillator", produces: @oscQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
+    conditions: @["t_settle", "t_window", "kick_v"],
+    units: {"osc_freq": "Hz", "swing_pp": "V", "osc_thd_pct": "%"}.toTable,
     setupKey: oscKey, setupDoc: oscDoc, run: runOscillation))
