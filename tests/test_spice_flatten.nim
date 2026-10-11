@@ -344,3 +344,59 @@ suite "flatten before applySimReplacements, for a nested XSPICE component":
     # floating nodes in ngspice.
     check "XA.AU1 IN OUT" in deck
     check "XA.AU1 vin vout" notin deck
+
+suite "destructive merges consume child port entries":
+  test "aliased ports flatten without losing traversal or leaking foreign ports":
+    var globals: OrderedTable[string, Net]
+    let templ = newNetlist("ALIASES")
+    let a = addNet(templ, newNet("a"))
+    let b = addNet(templ, newNet("b"))
+    addPort(templ, "A", a)
+    addPort(templ, "B", b)
+    addPort(templ, "alias", b)
+    let r = addComponent(templ, newComponent("R1", kind = "resistor"))
+    discard connect(r, "1", a)
+    discard connect(r, "2", b)
+    let top = newNetlist("TOP")
+    let n = addNet(top, newNet("n"))
+    let x = instantiate(top, "X", templ, @[n, n, n], globals)
+    let child = x.subNetlist
+    # Exercise the repaired same-netlist merge before destructive flattening.
+    mergeNets(child.nets["a"], child.nets["b"])
+    discard flatten(top)
+    check child.ports.len == 0
+    check child.nets.len == 0
+    check top.children.len == 0
+    check top.nets.len == 1
+    check n.pins.len == 2
+    for _, p in top.components["X.R1"].pins: check p.net == n
+    check templ.ports.len == 3
+    check templ.nets.len == 2
+    let copied = clone(top, globals)
+    check copied.components["X.R1"].pins["2"].net == copied.nets["n"]
+
+  test "ground fallback consumes an unbound ground port and merges attributes":
+    var globals: OrderedTable[string, Net]
+    let templ = rcBlock()
+    let top = newNetlist("TOP")
+    let n = addNet(top, newNet("n"))
+    let g = addNet(top, newNet("0", ntGround))
+    g.attrs["shared"] = "parent"
+    let x = instantiate(top, "X", templ, @[n, n, g], globals)
+    let child = x.subNetlist
+    let oldGround = child.nets["0"]
+    oldGround.attrs["shared"] = "child"
+    oldGround.attrs["local"] = "ground-note"
+    # No global identity and no connected port: inline's ground path, not
+    # its port loop, must merge this net and remove the consumed port.
+    disconnect(x.pins["GND"])
+    discard flatten(top)
+    check child.ports.len == 0
+    check oldGround.netlist == nil
+    check oldGround.pins.len == 0
+    check top.components["X.C1"].pins["2"].net == g
+    check g.attrs["shared"] == "parent"
+    check g.attrs["local"] == "ground-note"
+    check not top.nets.hasKey("X.0")
+    let copied = clone(top, globals)
+    check copied.components["X.C1"].pins["2"].net == copied.nets["0"]

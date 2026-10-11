@@ -4,7 +4,7 @@ Runs simulations through ngspice and owns the simulation-only netlist transforms
 
 ## Simulation-only replacement — `Component.simModels`
 
-A table of `SimReplacement`s set via the DSL's `simReplace`, inert until `transform.materializeSimNetlist(nl, globalNets, purpose)` clones and applies them (recursively). **A part may carry several**, because the right model depends on the question (averaged vs switching regulator).
+A table of `SimReplacement`s set via the DSL's `simReplace`, inert until `transform.applySimReplacements` applies them. The analysis order is **clone → flatten → applySimReplacements → behavioural/pin-model passes → optional isolation**; some capacitor/source impedance passes follow isolation. Replacement-built `xspice.ports` is frozen text, so it must use post-flatten names. `materializeSimNetlist(nl, globalNets, purpose)` remains a clone-plus-recursive-replacement helper for already-flat netlists or hierarchical uses with **no subsequent flattening**, not the start of a flattening pipeline. Startup excludes the selected regulator from initial replacements and pin-model passes, then builds its replacement/ramp on the isolated fragment. **A part may carry several models**, because the right model depends on the question (averaged vs switching regulator).
 
 - `simReplace` getter/setter is an accessor over the one table; `simDefault` names the default (empty = first added). Duplicate names raise.
 - `SimReplacement.build` replaces the `kind`/`pinNets` shape entirely — needed for XSPICE code models, because `replaceComponent` never touches `nl.models` and the `.MODEL` card would otherwise be lost (the part would stop being passive and get dropped by `isolate`).

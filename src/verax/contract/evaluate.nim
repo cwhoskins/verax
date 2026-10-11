@@ -654,28 +654,64 @@ proc runStep(ctx: EvalContext, step: PlanStep): seq[AssertionResult] =
   ## A misbehaving evaluator (wrong result count, raises) must not take down
   ## the whole run.
   let ev = evaluatorRegistry[step.evaluator]
+  # Empty authored IDs are not identities. Give evaluator-facing copies
+  # unique tokens, avoiding every authored (and hidden dependency) ID.
+  var requests = step.assertions
+  var requestCounts: CountTable[string]
+  for a in requests:
+    if a.id.len > 0: requestCounts.inc a.id
+  var serial = 0
+  for a in requests.mitems:
+    if a.id.len == 0:
+      var id: string
+      while true:
+        id = "\x1fcontract-anon\x1f" & $serial
+        inc serial
+        if not requestCounts.hasKey(id): break
+      a.id = id
+      requestCounts.inc id
+
   var produced: seq[AssertionResult]
   try:
-    produced = ev.run(ctx, step.assertions)
+    produced = ev.run(ctx, requests)
   except CatchableError as e:
     for a in step.assertions:
       result.add notEvaluated(a, ev.name,
         "evaluator '" & ev.name & "' failed: " & e.msg)
     return
 
-  if produced.len == step.assertions.len:
-    return produced
-
-  # Match what came back by assertion id, and account for the rest.
+  # Count as well as index: neither equal batch lengths nor last-write-wins
+  # proves that every requested assertion was answered exactly once.
   var byId: Table[string, AssertionResult]
+  var answerCounts: CountTable[string]
+  var foreignIds: seq[string]
   for r in produced:
-    if r.assertion.id.len > 0: byId[r.assertion.id] = r
-  for a in step.assertions:
-    if a.id.len > 0 and byId.hasKey(a.id):
-      result.add byId[a.id]
+    let id = r.assertion.id
+    if not requestCounts.hasKey(id):
+      foreignIds.add id.escape()
     else:
-      result.add notEvaluated(a, ev.name,
+      answerCounts.inc id
+      byId[id] = r
+  for i, a in step.assertions:
+    let id = requests[i].id
+    var r: AssertionResult
+    if requestCounts[id] > 1:
+      r = notEvaluated(a, ev.name,
+        "ambiguous duplicate request assertion id " & id.escape())
+    elif answerCounts[id] > 1:
+      r = notEvaluated(a, ev.name,
+        "evaluator '" & ev.name & "' returned duplicate results for this assertion")
+    elif answerCounts[id] == 0:
+      r = notEvaluated(a, ev.name,
         "evaluator '" & ev.name & "' returned no result for this assertion")
+    else:
+      r = byId[id]
+      r.assertion = a
+    if foreignIds.len > 0:
+      r.issues.add newIssue("evaluator_foreign_result", sevWarning,
+        "evaluator '" & ev.name & "' returned unrequested assertion ids: " &
+        foreignIds.join(", ") & " -- excluded from results")
+    result.add r
 
 proc runPlan*(ctx: EvalContext, p: Plan): seq[seq[AssertionResult]] =
   ## One inner `seq` per plan step, in order. `evaluate` flattens it; the

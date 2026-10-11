@@ -460,17 +460,21 @@ step**. `analysis/analyses/pdn.analyzePdn` is the canonical one:
 ```
   d.netlist                        the design as authored -- never mutated, never simulated
       |
-      | materializeSimNetlist(nl, purpose = spSmallSignal)
-      v                            clone, then apply each part's simReplace for this purpose
+      | clone(nl, cloneNets)
+      v                            independent work copy; replacements still inert
   work
       |
       | flattenForSim(work, ...)
       v                            dissolve subcircuit instances into the top level
   work (flat)
       |
+      | applySimReplacements(work, purpose = spSmallSignal)
+      v                            purpose-selected replacements, using final flat names
+  work (replaced)
+      |
       | expandPinModels(work)
-      v                            every part isPassive rejects becomes per-pin impedances
-  work (all-passive)
+      v                            behavioural stand-ins, then per-pin impedances as fallback
+  work (modelled)
       |
       | isolateNets(work, [rail], spec)
       v                            grow a fragment outward; ground -> node "0";
@@ -497,7 +501,8 @@ step**. `analysis/analyses/pdn.analyzePdn` is the canonical one:
 
 ### Why that order and no other
 
-**`materializeSimNetlist`, not a bare `clone`.** A component's `simReplace` is
+**Clone → flatten → `applySimReplacements` → behavioural/pin-model passes
+→ optional isolation.** A component's `simReplace` is
 the design's own statement of how it wants that part simulated. A part may
 carry *several*, because which model is right depends on the question: an
 averaged model of a switching regulator answers the rail voltage in
@@ -509,6 +514,21 @@ to ask. `selectSimModel` picks by `purpose` — `spOperating`, `spSmallSignal`,
 asked, not which SPICE card gets written**. Both LT8640A models are `.tran`
 models; naming the card would put them in one bucket and leave the choice to a
 coin toss.
+
+`xspice.ports` is frozen text written when a code-model instance is built;
+flattening afterwards moves graph nets but does not rewrite that text. Therefore
+replacements must see post-flatten names. `materializeSimNetlist` remains a
+legitimate clone-plus-recursive-replacement helper for already-flat netlists or
+hierarchical uses with **no subsequent flattening**; it is not the first step
+of this flattening pipeline.
+
+Startup deliberately excludes the selected regulator from initial replacements
+and pin-model expansion. It isolates the regulator and output network first,
+then builds the regulator's own replacement or the assumed ramp on the fragment.
+Non-isolating analyses omit isolation; capacitor/source impedance passes may
+follow isolation, as in PDN below. This is an ordering description, not a new
+shared preparation API (`tests/test_spice_transform.nim` and
+`tests/test_analysis_startup.nim` pin the ordering and exceptions).
 
 **Flatten before any model pass.** `expandPinModels`, `expandSourceImpedance`
 and `expandCapacitorParasitics` all walk only `nl.components`, so a part inside

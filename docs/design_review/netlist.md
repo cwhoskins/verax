@@ -123,10 +123,13 @@ readback, deck-designator collisions).
    old name (a `Pcb.netCopper` entry, a `Subject`) is not told. Safe today
    because renames happen on simulation clones.
 
-8. **`mergeNets` does not touch `ports`.** If `gone` is a port net of its
-   netlist, `ports` keeps pointing at a deregistered `Net`. In `flatten` the
-   child is dissolved immediately afterwards, so it does not matter there;
-   as a general graph primitive it leaves a dangling entry.
+8. **Fixed: `mergeNets` maintains port references.** Same-netlist merges
+   preserve port aliases and declaration order, retargeting their values and
+   matching owner-instance pins' `hierNet` references to `keep`, so cloning
+   remains valid. Cross-netlist destructive merges (flatten's port and ground
+   paths) remove consumed child port entries rather than pointing them at
+   foreign nets; instance bindings remain intact for traversal until dissolution.
+   Pin movement, keep-wins attributes, and nil/self noops are unchanged.
 
 9. **Linear scans in hot-ish paths.** `disconnect` is O(degree);
    `connectedComponents` and `hierNetGroup` use `notin` on a `seq`

@@ -149,8 +149,24 @@ proc mergeNets*(keep, gone: Net) =
   ## Moves every pin on `gone` onto `keep`, then deregisters `gone` -- what a
   ## subcircuit port becomes once hierarchy is gone. `keep`'s annotations win;
   ## `gone`'s only fill gaps (a port's local `voltage` mustn't overwrite the
-  ## rail's).
+  ## rail's). Same-netlist merges preserve port aliases and their order,
+  ## including the owning instance's bindings. Cross-netlist merges consume
+  ## child ports (flattening): never leave a port pointing into a foreign
+  ## netlist, and leave instance bindings for the caller's dissolution walk.
   if keep == nil or gone == nil or keep == gone: return
+  let owner = gone.netlist
+  if owner != nil:
+    if owner == keep.netlist:
+      for _, n in owner.ports.mpairs:
+        if n == gone: n = keep
+      if owner.instanceOf != nil:
+        for _, p in owner.instanceOf.pins:
+          if p.hierNet == gone: p.hierNet = keep
+    else:
+      var consumed: seq[string]
+      for name, n in owner.ports:
+        if n == gone: consumed.add name
+      for name in consumed: owner.ports.del name
   for p in gone.pins:
     p.net = keep
     keep.pins.add p

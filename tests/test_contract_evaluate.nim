@@ -733,3 +733,182 @@ test "re-registering under the same name is still an override":
     name: "test.overridable", produces: @["test_override_q"], needs: {capBench},
     arity: 1 .. 1, subjectKinds: {skNet}, run: runDup))
   check evaluatorFor("test_override_q").get.needs == {capBench}
+
+# --- batch identity, including misbehaving plugins ----------------------
+
+var batchMode: string
+var seenBatch: seq[Assertion]
+
+proc runIdentity(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
+  seenBatch = batch
+  if batchMode == "raise": raise newException(ValueError, "broken batch")
+  var answers: seq[AssertionResult]
+  for i, a in batch:
+    var r = verdict(a, float(i + 1), "V", "test.identity",
+      @[note("retained assumption")],
+      @[newIssue("original_issue", sevInfo, "retained issue")])
+    # An evaluator may return an altered assertion, but owns no authored data.
+    r.assertion.rationale = "plugin rewrite"
+    answers.add r
+  case batchMode
+  of "duplicate": result = @[answers[0], answers[0]]
+  of "reverse":
+    for i in countdown(answers.high, 0): result.add answers[i]
+  of "statuses":
+    result = answers
+    result[0].status = esFail
+    result[0].reason = "plugin failure witness"
+    result[1].status = esNotEvaluable
+    result[1].value = NaN
+    result[1].reason = "plugin refusal"
+  of "empty": discard
+  of "partial": result = @[answers[0]]
+  of "foreign", "extra":
+    var foreign = answers[0]
+    foreign.assertion.id = "not-requested"
+    if batchMode == "extra": result = answers
+    else: result = @[answers[0]]
+    result.add foreign
+  else: result = answers
+
+registerEvaluator(Evaluator(name: "test.identity", produces: @["identity_q"],
+  needs: {capStatic}, setupKey: fixedKey, run: runIdentity))
+
+proc identityClaims(ids: openArray[string]): seq[Assertion] =
+  for id in ids:
+    var a = probe("identity_q", "V")
+    a.id = id
+    result.add a
+
+proc identityResults(ids: openArray[string], mode: string): seq[AssertionResult] =
+  batchMode = mode
+  let p = Plan(steps: @[PlanStep(evaluator: "test.identity",
+    assertions: identityClaims(ids))])
+  runPlan(newEvalContext(statusBoard()), p)[0]
+
+test "equal-length duplicate answers cannot masquerade as a complete batch":
+  let rs = identityResults(["A", "B"], "duplicate")
+  check rs.len == 2
+  check rs[0].assertion.id == "A"
+  check rs[1].assertion.id == "B"
+  for r in rs:
+    check r.status == esNotEvaluated
+    check r.value.isNaN
+  check "duplicate" in rs[0].reason
+  check "no result" in rs[1].reason
+
+test "reordered answers retain payloads but restore requested assertions":
+  let rs = identityResults(["A", "B"], "reverse")
+  check rs.len == 2
+  for i, r in rs:
+    check r.assertion.id == ["A", "B"][i]
+    check r.assertion.rationale == "why"
+    check r.value == float(i + 1)
+    check r.status == esPass
+    check r.unit == "V"
+    check r.evaluator == "test.identity"
+    check "measured" in r.reason
+    check r.assumptions.len == 1
+    check r.issues.len == 1
+    check r.issues[0].kind == "original_issue"
+
+test "matched fail and declined statuses are preserved, not recomputed":
+  let rs = identityResults(["A", "B"], "statuses")
+  check rs[0].status == esFail
+  check rs[0].value == 1.0
+  check rs[0].reason == "plugin failure witness"
+  check rs[1].status == esNotEvaluable
+  check rs[1].value.isNaN
+  check rs[1].reason == "plugin refusal"
+  for r in rs:
+    check r.assertion.rationale == "why"
+    check r.assumptions.len == 1
+    check r.issues.len == 1
+    check r.issues[0].kind == "original_issue"
+
+test "empty and partial batches account for every missing request":
+  for mode in ["empty", "partial"]:
+    let rs = identityResults(["A", "B"], mode)
+    check rs.len == 2
+    check rs[1].assertion.id == "B"
+    check rs[1].status == esNotEvaluated
+    check rs[1].value.isNaN
+    check "no result" in rs[1].reason
+    check rs[0].status == (if mode == "empty": esNotEvaluated else: esPass)
+
+test "foreign and extra answers warn without poisoning valid matches":
+  for mode in ["foreign", "extra"]:
+    let rs = identityResults(["A", "B"], mode)
+    check rs.len == 2
+    check rs[0].status == esPass
+    check rs[0].value == 1.0
+    check rs[0].issues[0].kind == "original_issue"
+    check rs[1].status == (if mode == "foreign": esNotEvaluated else: esPass)
+    for r in rs:
+      check r.assertion.id in ["A", "B"]
+      check r.issues[^1].kind == "evaluator_foreign_result"
+      check r.issues[^1].severity == sevWarning
+      check "not-requested" in r.issues[^1].message
+
+test "anonymous and mixed requests get collision-free temporary identities":
+  for ids in [@["", ""], @["", "\x1fcontract-anon\x1f0", "", "A"]]:
+    let rs = identityResults(ids, "reverse")
+    check rs.len == ids.len
+    for i, r in rs:
+      check r.assertion.id == ids[i]
+      check r.assertion.rationale == "why"
+      check r.value == float(i + 1)
+      check seenBatch[i].id.len > 0
+      for j in 0 ..< i: check seenBatch[i].id != seenBatch[j].id
+    let partial = identityResults(ids, "partial")
+    check partial[0].status == esPass
+    for i in 1 ..< ids.len:
+      check partial[i].status == esNotEvaluated
+      check partial[i].assertion.id == ids[i]
+
+test "duplicate authored request IDs are ambiguous even with one answer":
+  for mode in ["normal", "partial"]:
+    let rs = identityResults(["A", "A", "B"], mode)
+    check rs.len == 3
+    for i in 0 .. 1:
+      check rs[i].status == esNotEvaluated
+      check rs[i].value.isNaN
+      check "duplicate request" in rs[i].reason
+    if mode == "normal": check rs[2].status == esPass
+
+test "a raising batch is contained and restores anonymous requests too":
+  batchMode = "raise"
+  let p = Plan(steps: @[
+    PlanStep(evaluator: "test.identity", assertions: identityClaims(["", "B"])),
+    PlanStep(evaluator: "test.fixed", assertions: @[probe("test_value", "V")])])
+  let rs = runPlan(newEvalContext(statusBoard()), p)
+  check rs.len == 2
+  check rs[0].len == 2
+  check rs[0][0].assertion.id == ""
+  for r in rs[0]:
+    check r.status == esNotEvaluated
+    check r.value.isNaN
+    check "broken batch" in r.reason
+  check rs[1][0].status == esPass
+
+test "reconciliation preserves hidden dependency folding and capability gates":
+  let d = design("identity_deps"):
+    net a, kind = ntSignal
+    require identity_q(a) <= 2.0 * identity_q(a), id = "REL"
+    require pred(x = identity_q(a), y = identity_q(a), id = "PRED") do (x, y: float) -> bool:
+      x < y
+  batchMode = "reverse"
+  let rs = evaluate(d)
+  check rs.len == 2
+  check rs[0].assertion.id == "REL"
+  check rs[1].assertion.id == "PRED"
+  for r in rs: check r.status == esPass
+  batchMode = "duplicate"
+  let bad = evaluate(d)
+  check bad.len == 2
+  for r in bad: check r.status == esNotEvaluated
+  seenBatch = @[]
+  let gated = evaluate(d, {capSpiceAc})
+  check seenBatch.len == 0
+  check gated.len == 2
+  for r in gated: check r.status == esNotEvaluated

@@ -28,34 +28,44 @@ model passes", "skip `ckZone` in copper walks", "snapshot net names before
 
 ### R2.1 — A phase-typed simulation-prep chain *(medium)*
 
-Wrap the transform chain's intermediates in distinct types so the order is a
-compile-time property:
+Future proposal only (no new prep API or transform refactor implemented): wrap
+intermediates in distinct types. The actual order to preserve is **clone →
+flatten → applySimReplacements → behavioural/pin-model passes → optional
+isolation**, with some capacitor/source impedance passes after isolation:
 
 ```nim
 type
-  SimClone*    = distinct Netlist   ## materialised: simReplace applied
+  SimClone*    = distinct Netlist   ## cloned, replacements still inert
   FlatNet*     = distinct Netlist   ## flattened
+  ReplacedNet* = distinct Netlist   ## purpose-selected simReplace applied
   ModelledNet* = distinct Netlist   ## pin models / behavioural stand-ins applied
   Fragment*    = object             ## isolated + terminated
     nl*: Netlist
     iso*: Isolated
 
-proc materialize*(nl: Netlist, purpose: string): SimClone
+proc copyForSim*(nl: Netlist): SimClone
 proc flatten*(x: SimClone, keep: openArray[string]): FlatNet
-proc standIn*(x: FlatNet, exclude: openArray[string]): (ModelledNet, seq[Assumption])
+proc replace*(x: FlatNet, purpose: string): ReplacedNet
+proc standIn*(x: ReplacedNet, exclude: openArray[string]): (ModelledNet, seq[Assumption])
 proc isolate*(x: ModelledNet, ...): Fragment
 proc withParasitics*(f: var Fragment, bias: ...): seq[Assumption]
 ```
 
-Then `pdn`, `startup` and `opamp` share one `prepareFragment(spec)` builder
-(also recommended in [analysis.md](analysis.md) critique 4), and the
-non-isolating analyses stop at `ModelledNet`. The untyped procs stay
-available underneath for tests and for code that genuinely needs them.
+Replacement-built `xspice.ports` is frozen text: later flattening changes the
+graph but not those node names. `materializeSimNetlist` is still useful for
+already-flat netlists or hierarchical uses with **no subsequent flattening**;
+it cannot serve as `SimClone` above.
 
-*Cost:* moderate; the passes don't change, only their signatures and the six
-analysis call sites. *Benefit:* the most expensive class of wrong answer in
-the project's history (an op-amp reaching the deck as `U1`, a rail reading
-0 Ω) becomes a type error.
+A future shared builder (also proposed in [analysis.md](analysis.md) critique 4)
+would need to preserve exceptions, not force all analyses into one chain:
+startup excludes the selected regulator from initial replacements and pin-model
+passes, then builds its own replacement/ramp on the isolated fragment;
+non-isolating analyses omit isolation. Existing `tests/test_spice_transform.nim`
+and `tests/test_analysis_startup.nim` pin these ordering constraints.
+
+*Cost:* requires modelling those exceptions, not just changing signatures.
+*Benefit:* types could enforce transform ordering, but would not by themselves
+prove model suitability or prevent every ideal-source error.
 
 ### R2.2 — Make `ckZone` unreachable from ordinary copper walks *(medium, small)*
 
