@@ -69,6 +69,9 @@ type
       ## What the verdict rested on that the design didn't state.
     issues*: seq[Issue]
       ## Diagnostics the analysis reported alongside the measurement.
+    scope*: seq[Subject]
+      ## The nets and parts the answer was read from, named as flattened
+      ## (what a picture of this test should show). Empty: the subjects.
 
   EvalContext* = ref object
     ## Everything one evaluation run may see -- the **only** argument an
@@ -83,6 +86,10 @@ type
       ## (`"spice.operating_point"`). Type-erased so `contract` never depends
       ## on `analysis` or `pcb`: owners store a `ref object of RootObj` and
       ## downcast. Lives one run, so caches can't go stale against an edit.
+    onStep*: proc (index: int, starting: bool) {.closure.}
+      ## Optional: called before (`starting`) and after each plan step in
+      ## `runPlan`, so a caller can attribute side effects (simulator runs)
+      ## to the step that caused them. `nil` by default.
 
   EvalProc* = proc (ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] {.nimcall.}
     ## Takes every assertion routed here with one setup key; returns one
@@ -340,6 +347,16 @@ proc notEvaluable*(a: Assertion, evaluator, reason: string): AssertionResult =
 proc notEvaluated*(a: Assertion, evaluator, reason: string): AssertionResult =
   AssertionResult(assertion: a, status: esNotEvaluated, value: NaN,
                   unit: a.unit, reason: reason, evaluator: evaluator)
+
+proc withScope*(r: AssertionResult, nets, parts: openArray[string]): AssertionResult =
+  ## `r` with its `scope` set (deduplicated, nets first).
+  result = r
+  for n in nets:
+    let s = Subject(kind: skNet, name: n)
+    if n.len > 0 and s notin result.scope: result.scope.add s
+  for p in parts:
+    let s = Subject(kind: skComponent, name: p)
+    if p.len > 0 and s notin result.scope: result.scope.add s
 
 proc verdict*(a: Assertion, value: float, unit: string, evaluator: string,
               assumptions: seq[Assumption] = @[],
@@ -717,7 +734,10 @@ proc runPlan*(ctx: EvalContext, p: Plan): seq[seq[AssertionResult]] =
   ## One inner `seq` per plan step, in order. `evaluate` flattens it; the
   ## grouping is what lets a report attach assumptions to the run they came
   ## from, and it can't be recovered from a flat list.
-  for step in p.steps: result.add runStep(ctx, step)
+  for i, step in p.steps:
+    if ctx.onStep != nil: ctx.onStep(i, true)
+    result.add runStep(ctx, step)
+    if ctx.onStep != nil: ctx.onStep(i, false)
 
 proc runPlan*(d: Design, p: Plan): seq[seq[AssertionResult]] =
   ## Convenience overload with a fresh context (shares nothing with `plan`).
@@ -777,6 +797,8 @@ proc relativeResult(a: Assertion, prim, dep: AssertionResult): AssertionResult =
     evaluator: prim.evaluator,
     assumptions: prim.assumptions & dep.assumptions,
     issues: prim.issues & dep.issues)
+  for sc in prim.scope & dep.scope:
+    if sc notin result.scope: result.scope.add sc
   if ok:
     result.status = esPass
     result.reason = "measured " & eng(prim.value, unit) &
@@ -798,6 +820,7 @@ proc predicateResult(a: Assertion,
   var evaluator = ""
   var unit = ""
   var shown: seq[string]
+  var scope: seq[Subject]
 
   for (name, r) in deps:
     if r.status notin {esPass, esFail}:
@@ -811,6 +834,8 @@ proc predicateResult(a: Assertion,
     shown.add name & " = " & eng(r.value, r.unit)
     assumptions.add r.assumptions
     issues.add r.issues
+    for sc in r.scope:
+      if sc notin scope: scope.add sc
     if evaluator.len == 0: evaluator = r.evaluator
     if unit.len == 0 and r.unit.len > 0: unit = r.unit
 
@@ -827,7 +852,7 @@ proc predicateResult(a: Assertion,
     value: NaN, unit: unit, evaluator: evaluator,
     reason: (if ok: "predicate held" else: "predicate did not hold") &
       " (" & shown.join(", ") & ")",
-    assumptions: assumptions, issues: issues)
+    assumptions: assumptions, issues: issues, scope: scope)
 
 proc resolveHidden*(p: Plan, batches: seq[seq[AssertionResult]]): seq[AssertionResult] =
   ## One result per relative/predicate claim, in `p.resolves` order.

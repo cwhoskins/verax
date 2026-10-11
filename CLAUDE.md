@@ -10,6 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Type-check a module**: `nim check --path:./src src/verax/netlist.nim`
 - **Build the binary**: `nimble build` → `./bin/verax`.
 - **Check a design**: `./bin/verax check designs/foo.nim`. `nimble verify` checks every design under `designs/` and every file under `templates/` — template health is `verify`'s job, not `test`'s. `nimble guide` prints the authoring guide. See `designs/CLAUDE.md`.
+- **Test report**: `./bin/verax report designs/foo.nim [-o foo_report.html|foo.pdf] [check flags]`, or `--report=<path>` on `check`. One self-contained HTML file (TOC; per test: circuit under test, setup, pass criteria, the circuit under test as simulated (a view grown from the test bench, models folded into design parts) plus the bench (scope, stimulus, probes, terminations), verdicts, ngspice plots, issues/assumptions/log); inconclusive and not-run claims at the end. A `.pdf` needs headless chromium/weasyprint/wkhtmltopdf on `PATH`, else the HTML is kept. See `src/verax/report/CLAUDE.md`.
 - **Compile a BOM**: `./bin/verax bom designs/foo.nim --bom-catalog=parts.json [-o bom.csv] [--bom-format=text|csv|json] [--bom-lock=prior.json]` (`$VERAX_BOM_CATALOG` if no flag). Runs no checks; the JSON output is also the next run's `--bom-lock`.
 - **Discovery** (reads live registries, writes nothing): `verax roles`, `verax role <name>`, `verax quantities`, `verax annotations`, `verax guide`, `verax env`, `verax new <blank|rail|i2c> <path>`.
 - **Generate a board**: `verax layout designs/foo.nim -o foo.kicad_pcb [--layout-layers=N] [--layout-size=WxH]` — a blank `Pcb` with real footprints (from `spec: footprint = "Lib:Name"`, resolved against `$VERAX_FOOTPRINT_PATH`/`/usr/share/kicad/footprints`), parts gridded outside the outline, unrouted. `nimble generate` is its `kicad-cli` acceptance gate; `nimble kicadcheck` is the edit path's.
@@ -20,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `verax` is a proprietary-licensed Nim library for describing a circuit, stating what it must do, and checking that by simulation.
 
-Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, `netlist` <- `schematic`, `netlist` <- `bom`, `netlist` <- `parts`, `pcb` <- `fem`, `netlist`/`pcb` <- `ibis`, `touchstone` <- `pcb`, `ibis`/`pcb`/`touchstone` <- `si` <- `analysis` (no `si` -> `spice` edge, no `spice` -> `schematic` edge — `run_archive.nim` joins those two from above). **Nothing depends backwards** — when a type is needed by two siblings it moves down, and when a module needs two siblings it moves up.
+Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `netlist` <- `contract`, `netlist` <- `schematic`, `netlist` <- `bom`, `netlist` <- `parts`, `pcb` <- `fem`, `netlist`/`pcb` <- `ibis`, `touchstone` <- `pcb`, `ibis`/`pcb`/`touchstone` <- `si` <- `analysis` (no `si` -> `spice` edge, no `spice` -> `schematic` edge — `run_archive.nim` joins those two from above), `contract`/`analysis` <- `readiness` <- `report` <- `verify`. **Nothing depends backwards** — when a type is needed by two siblings it moves down, and when a module needs two siblings it moves up.
 
 | Submodule | What it is |
 | --- | --- |
@@ -37,7 +38,7 @@ Dependency order is `netlist` <- `spice` <- `analysis`, `netlist` <- `pcb`, `net
 | `fem/` | Field-solver interface skeleton (no backend yet). |
 | `touchstone/` | Touchstone `.sNp` reader and S-parameter/dB conversions; root-level, used by `pcb/tline` and `si`. |
 
-`units.nim`/`stated.nim`/`eng.nim`/`waveform.nim` and `touchstone/` (S-parameter files) sit below everything, `run_archive.nim` joins `spice` to `schematic` for the run archive, `verify.nim` above everything, `cli.nim` is the binary. `src/verax.nim` is deliberately **not** a re-export hub — import submodules by path (`import verax/netlist`). `namedBin["verax/cli"] = "verax"` builds the binary from `cli.nim` so `import verax` doesn't drag in the simulator.
+`units.nim`/`stated.nim`/`eng.nim`/`waveform.nim`/`plot.nim` and `touchstone/` (S-parameter files) sit below everything, `run_archive.nim` joins `spice` to `schematic` for the run archive, `readiness.nim` runs a design's checks unrendered, `report/` (+ `report.nim`) writes the HTML test report over it, `verify.nim` above everything, `cli.nim` is the binary. `src/verax.nim` is deliberately **not** a re-export hub — import submodules by path (`import verax/netlist`). `namedBin["verax/cli"] = "verax"` builds the binary from `cli.nim` so `import verax` doesn't drag in the simulator.
 
 No dependencies beyond the Nim stdlib (`nim >= 2.2.10`). The MCP server is a **separate package** under `mcp/` because a nimble dependency can only be opt-in per package.
 

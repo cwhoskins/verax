@@ -50,6 +50,10 @@ back-edges: nothing below ever learns about anything above it.
                           cli.nim              (the `verax` binary)
                              |
                           verify.nim           (the runner + the catalog)
+                             |       \
+                             |      report/        (HTML test report; + plot.nim)
+                             |       /
+                          readiness.nim        (checking, unrendered)
                         /            \
                        /              \
               contract/            analysis/   (+ analysis/evaluators/, the join)
@@ -60,7 +64,7 @@ back-edges: nothing below ever learns about anything above it.
                              |   \________|___________|________/ | \
                              |                          ibis/ <-/   \-> fem/
                              |                            (over pcb + netlist)
-                    units.nim   eng.nim   waveform.nim   touchstone/   (below everything)
+                    units.nim   eng.nim   waveform.nim   plot.nim   touchstone/   (below everything)
 ```
 
 `ibis/` (reads a vendor `.ibs` buffer model and interprets it as a
@@ -110,7 +114,7 @@ drag in `osproc` and the whole analysis tree.
 |---|---|---|
 | `netlist/` | the electrical graph: nets, components, pins, hierarchy, annotations, environment, SPICE file format | simulation, geometry, intent |
 | `schematic/` | a renderer-neutral schematic scene and deterministic placement/routing, with SVG/JSON writers | simulation, geometry, intent (it is a leaf over `netlist`) |
-| `spice/` | turning a netlist into something a simulator can solve, and running it | what question is being asked |
+| `spice/` | turning a netlist into something a simulator can solve, and running it — through a `bench` (stimulus, probes, a registered scoping strategy from `region_strategy`, provenance marks on every element it adds) | what question is being asked |
 | `analysis/` | asking a question and extracting a number from the answer | what claim the number is for |
 | `contract/` | what the circuit must do, and comparing a number against it | how any number is produced |
 | `pcb/` | the physical board: layers, copper, holes, placements, BoM, routing and closed-form transmission-line characterization | anything electrical beyond a forward reference into a `Netlist` |
@@ -120,7 +124,12 @@ drag in `osproc` and the whole analysis tree.
 | `fem/` | stating a field problem over a board and running it through an external solver | what question the field answers |
 | `touchstone/` | reading a Touchstone `.sNp` file and the S-parameter/dB conversions (used by `pcb/tline` and `si/`) | what the network is part of |
 | `run_archive.nim` | installing the schematic writer into `spice/ngspice`'s run-archive hook, so `spice/` needs no edge to `schematic/` | — |
-| `verify.nim` | joining the last two, and rendering | — |
+| `readiness.nim` | joining the last two: running the structural validators and the contract plan into an unrendered `Readiness` | how it is rendered |
+| `report/` | the simulation test report: collecting every ngspice run per check through `spice/ngspice`'s run observer, and rendering one self-contained HTML file (PDF when a converter is installed) | — curves never enter `Readiness` |
+| `plot.nim` | SVG line plots (linear/log axes, limits, stacked panels) | what is being plotted |
+| `verify.nim` | rendering a `Readiness` as text/JSON/JUnit, the CLI options, and the catalog | — |
+
+**How much of a design a simulation sees** is one decision with one owner. `netlist/region.growRegion` is the graph walk; `spice/region_strategy` registers strategies (`whole`, `terminated`, `source_closed`, and any a project adds) that choose a region and close its cut; every analysis builds its circuit through a `spice/bench.Bench` that names its strategy and declares its fixture. The same walk, with view rules, picks what the HTML report draws, and `spice/provenance` marks let it fold model elements back into the design parts they stand for.
 
 Two of those are worth stating plainly because it is easy to assume otherwise:
 

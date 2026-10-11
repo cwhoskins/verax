@@ -19,9 +19,9 @@ import ../../netlist/types
 import ../../netlist/graph
 import ../../netlist/formats/spice as spiceFormat
 import ../../spice/transform
-import ../../spice/flatten
 import ../../spice/models
 import ../../spice/ngspice
+import ../../spice/bench
 import ../report
 
 export report
@@ -35,6 +35,8 @@ const
 
 type
   DcSweepSpec* = object
+    scope*: ScopeChoice
+      ## How much of the design is simulated (`spice/region_strategy`).
     fromVal*, toVal*: float
       ## The swept range, in the source's unit (volts or amps).
     step*: float
@@ -58,7 +60,8 @@ type
     modelUnmodelledParts*: bool
 
 proc defaultDcSweepSpec*(): DcSweepSpec =
-  DcSweepSpec(fromVal: 0.0, toVal: 0.0, step: 0.0, points: 0, nominal: 0.0,
+  DcSweepSpec(scope: ScopeChoice(strategy: "source_closed", icSinks: true),
+              fromVal: 0.0, toVal: 0.0, step: 0.0, points: 0, nominal: 0.0,
               dropoutBand: 0.0, pinModels: defaultPinModels(),
               flattenHierarchy: true, modelUnmodelledParts: true)
 
@@ -77,17 +80,20 @@ proc stepOf(spec: DcSweepSpec): float =
   abs(spec.toVal - spec.fromVal) / float(n - 1)
 
 proc prepare(nl: Netlist, spec: DcSweepSpec, rep: var AnalysisReport,
-             namedParts: varargs[string]): Netlist =
+             namedParts: varargs[string]): Bench =
   ## The work copy: cloned, flattened, *then* sim-replaced for an operating
   ## point (so nested XSPICE ports use post-flatten names), with unmodelled
   ## parts stood in for.
-  var cloneNets: OrderedTable[string, Net]
-  result = clone(nl, cloneNets)
-  discard flattenForSim(result, spec.flattenHierarchy, spec.keepInstances,
-                        namedParts)
-  applySimReplacements(result, purpose = spOperating)
+  result = openBench(nl, "dc sweep", spOperating, spec.flattenHierarchy,
+                     spec.keepInstances, namedParts)
   if spec.modelUnmodelledParts:
-    rep.assumptions.add expandPinModels(result, spec.pinModels)
+    result.modelUnmodelled(spec.pinModels)
+
+proc scoped(b: var Bench, spec: DcSweepSpec, rep: var AnalysisReport,
+            seedParts, seedNets: openArray[string]) =
+  ## After the analysis has found what it drives and reads.
+  b.scopeBench(spec.scope, seedParts, seedNets)
+  rep.assumptions.add b.assumptions
 
 proc sweepCard(designator: string, spec: DcSweepSpec): string =
   ".dc " & designator & " " & spiceValue(spec.fromVal) & " " &
@@ -107,8 +113,10 @@ type SweptCurve = object
   x*, v*: seq[float]
   ok*: bool
 
-proc runSweep(work: Netlist, designator, measureNet: string,
+proc runSweep(b: var Bench, designator, measureNet: string,
               spec: DcSweepSpec, rep: var AnalysisReport): SweptCurve =
+  let work = b.netlist
+  b.probe(measureNet, "V(" & measureNet & ") across the sweep")
   let measured = findNet(work, measureNet)
   if measured == nil:
     raise newException(NetlistError, "no such net: " & measureNet & " (dc sweep)")
@@ -120,8 +128,8 @@ proc runSweep(work: Netlist, designator, measureNet: string,
       "answer rather than a trivial one.")
 
   try:
-    rep.raw = run(work, sweepCard(designator, spec),
-                  label = "dc:" & measureNet)
+    rep.raw = b.run(sweepCard(designator, spec),
+                    label = "dc:" & measureNet)
   except SpiceSimError as e:
     rep.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not run the dc sweep of " & designator & ": " & e.msg)
@@ -183,12 +191,17 @@ proc analyzeLineSweep*(nl: Netlist, source, measureNet: string,
   ## this.
   result.name = "dc line sweep"
 
-  let work = prepare(nl, spec, result, source)
-  let src = findComponent(work, source)
-  if src == nil:
+  var b = prepare(nl, spec, result, source)
+  let found = findComponent(b.work, source)
+  if found == nil:
     raise newException(NetlistError,
       "no such component: " & source & " -- a line sweep needs the source it " &
       "is to sweep, named as it appears in the design")
+  let seedPart = if b.work.components.hasKey(found.designator): found.designator
+                 else: ""
+  b.scoped(spec, result, [seedPart], [measureNet, spec.inputNet])
+  let work = b.netlist
+  let src = findComponent(work, source)
   let designator = spiceFormat.deckDesignator(src)
   if designator.len == 0 or designator[0].toUpperAscii != 'V':
     raise newException(NetlistError,
@@ -197,7 +210,9 @@ proc analyzeLineSweep*(nl: Netlist, source, measureNet: string,
       "load current, use analyzeLoadSweep, which injects its own sink rather " &
       "than needing one in the design.")
 
-  let c = runSweep(work, designator, measureNet, spec, result)
+  b.stimulus(src, source & " swept " & eng(spec.fromVal, "V") & " to " &
+             eng(spec.toVal, "V"))
+  let c = runSweep(b, designator, measureNet, spec, result)
   if not c.ok: return
 
   addEnvelope(result, c)
@@ -264,7 +279,9 @@ proc analyzeLoadSweep*(nl: Netlist, measureNet: string,
   ## divider's legs in parallel). Start at the specified load, usually zero.
   result.name = "dc load sweep"
 
-  let work = prepare(nl, spec, result)
+  var b = prepare(nl, spec, result)
+  b.scoped(spec, result, [], [measureNet])
+  let work = b.netlist
   let measured = findNet(work, measureNet)
   if measured == nil:
     raise newException(NetlistError,
@@ -291,7 +308,9 @@ proc analyzeLoadSweep*(nl: Netlist, measureNet: string,
     "' by the analysis. It is not in the design: a test load is not a part " &
     "anybody solders, and a resistor would sweep the drive along with the load")
 
-  let c = runSweep(work, spiceFormat.deckDesignator(sink), measureNet, spec,
+  b.load(sink, "load swept " & eng(spec.fromVal, "A") & " to " &
+         eng(spec.toVal, "A") & " out of '" & measureNet & "'")
+  let c = runSweep(b, spiceFormat.deckDesignator(sink), measureNet, spec,
                    result)
   if not c.ok: return
 

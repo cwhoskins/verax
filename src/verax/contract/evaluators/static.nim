@@ -14,6 +14,7 @@ import ../../netlist/interfaces
 import ../../netlist/annotations
 import ../../units
 import ../../netlist/formats/spice as spiceFormat
+import ../../netlist/region
 import ../evaluate
 
 export evaluate
@@ -63,6 +64,20 @@ proc capacitorsOn(net: Net): seq[Component] =
     seen.add c
     result.add c
 
+proc netScope(net: Net): tuple[nets, parts: seq[string]] =
+  ## A bus net and every leaf part on it, as flattened names: what a
+  ## graph check of the net looked at.
+  result.nets.add flatName(net)
+  for p in allPins(net):
+    let c = p.component
+    if c == nil or c.subNetlist != nil: continue
+    let f = flatName(c)
+    if f notin result.parts: result.parts.add f
+
+proc scoped(r: AssertionResult, net: Net): AssertionResult =
+  let s = netScope(net)
+  r.withScope(s.nets, s.parts)
+
 proc magnitudeOf(c: Component, value: var float): bool =
   ## A resistor's or capacitor's value as a number (only parts whose `value`
   ## is a bare magnitude; see `parseSpiceMagnitude`).
@@ -80,7 +95,7 @@ proc runPullupCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResul
         "subject is not a net in this design")
       continue
     result.add verdict(a, float(pullupsOn(net.get).len), "",
-                       "static.pullup_count")
+                       "static.pullup_count").scoped(net.get)
 
 # --- pullup_sink_current ------------------------------------------------
 
@@ -134,7 +149,7 @@ proc runPullupSinkCurrent(ctx: EvalContext, batch: seq[Assertion]): seq[Assertio
         "nominal voltage, and neither is guessed at")
       continue
 
-    result.add verdict(a, total, "A", name)
+    result.add verdict(a, total, "A", name).scoped(net)
 
 # --- rc_corner ----------------------------------------------------------
 
@@ -193,43 +208,57 @@ proc runRcCorner(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] 
 
     let resistance = 1.0 / conductance
     let corner = 1.0 / (2.0 * PI * resistance * farads)
-    result.add verdict(a, corner, "Hz", "static.rc_corner", assumptions)
+    result.add verdict(a, corner, "Hz", "static.rc_corner", assumptions).scoped(net)
 
 # --- dc_path_exists ----------------------------------------------------
 
-proc dcConnected(a, b: Net): bool =
-  ## Is there a DC-conductive path from `a` to `b`? BFS across conductive pin
-  ## pairs (`conductiveExits`) and hierarchy boundaries, stopping at `b`.
+proc dcPath(a, b: Net): tuple[found: bool, nets, parts: seq[string]] =
+  ## Is there a DC-conductive path from `a` to `b`, and which nets and parts
+  ## (flattened names) carry it? BFS across conductive pin pairs
+  ## (`conductiveExits`) and hierarchy boundaries, stopping at `b`.
   ## Ambiguous parts (diodes, ICs, transformers) are never crossed -- the
   ## isolation-barrier check -- while a declared `traverse:` spec is honoured.
-  if a == b: return true
+  if a == b: return (true, @[flatName(a)], @[])
   var visited: seq[Net] = @[a]
   var queue: seq[Net] = @[a]
+  var came: Table[pointer, tuple[net: Net, part: Component]]
+    ## net -> the net and part (nil across a hierarchy boundary) it was
+    ## reached from
+  template reach(n, fromNet: Net, via: Component) =
+    if n notin visited:
+      visited.add n
+      queue.add n
+      came[cast[pointer](n)] = (fromNet, via)
   var qi = 0
   while qi < queue.len:
     let net = queue[qi]
     inc qi
+    if net == b: break
     for p in net.pins:
       let comp = p.component
       if comp == nil: continue
       if comp.subNetlist != nil:
-        if p.hierNet != nil and p.hierNet notin visited:
-          if p.hierNet == b: return true
-          visited.add p.hierNet
-          queue.add p.hierNet
+        if p.hierNet != nil: reach(p.hierNet, net, nil)
         continue
       for exitNet in conductiveExits(comp, p):
-        if exitNet == b: return true
-        if exitNet notin visited:
-          visited.add exitNet
-          queue.add exitNet
+        reach(exitNet, net, comp)
     if net.netlist != nil and net.netlist.instanceOf != nil:
       for _, pp in net.netlist.instanceOf.pins:
-        if pp.hierNet == net and pp.net != nil and pp.net notin visited:
-          if pp.net == b: return true
-          visited.add pp.net
-          queue.add pp.net
-  false
+        if pp.hierNet == net and pp.net != nil: reach(pp.net, net, nil)
+  if b notin visited: return (false, @[flatName(a), flatName(b)], @[])
+  result.found = true
+  var cur = b
+  while true:
+    let f = flatName(cur)
+    if f notin result.nets: result.nets.insert(f, 0)
+    if cur == a: break
+    let (prev, via) = came[cast[pointer](cur)]
+    if via != nil:
+      let pf = flatName(via)
+      if pf notin result.parts: result.parts.insert(pf, 0)
+    cur = prev
+
+proc dcConnected(a, b: Net): bool = dcPath(a, b).found
 
 proc runDcPathExists(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResult] =
   ## `dc_path_exists(a, b)`: 1 if a DC-conductive path joins the nets, 0 if
@@ -244,8 +273,9 @@ proc runDcPathExists(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionResu
       result.add notEvaluable(a, name,
         "dc_path_exists takes two nets that both exist in this design")
       continue
-    result.add verdict(a, (if dcConnected(n1.get, n2.get): 1.0 else: 0.0),
-                       "", name)
+    let path = dcPath(n1.get, n2.get)
+    result.add verdict(a, (if path.found: 1.0 else: 0.0), "", name).withScope(
+      path.nets, path.parts)
 
 proc dcPathDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   var ns: seq[string]
@@ -307,7 +337,11 @@ proc runControllerCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionR
         "the role on '" & netName & "' bound no `controller` part, and " &
         "controller-ness cannot be recovered from topology")
       continue
-    result.add verdict(a, float(controllers.len), "", "static.controller_count")
+    var r = verdict(a, float(controllers.len), "", "static.controller_count")
+    if live != nil: r = r.scoped(live)
+    var ctl: seq[string]
+    for c in controllers: ctl.add c
+    result.add r.withScope([], ctl)
 
 # --- miso_driver_count ---------------------------------------------------
 
@@ -353,7 +387,10 @@ proc runMisoDriverCount(ctx: EvalContext, batch: seq[Assertion]): seq[AssertionR
         "cannot be told from a receiver on it")
       continue
 
-    result.add verdict(a, float(drivers.len), "", name)
+    var drv: seq[string]
+    for c in drivers: drv.add flatName(c)
+    result.add verdict(a, float(drivers.len), "", name).scoped(miso).withScope(
+      [flatName(cs)], drv)
 
 # --- what each walk is ---------------------------------------------------
 

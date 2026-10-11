@@ -22,6 +22,7 @@ import ../../netlist/kinds
 import ../../contract/evaluate
 import ../report
 import ../analyses/operating
+from ../../spice/region_strategy import ScopeChoice
 
 export evaluate, report, operating
 
@@ -116,3 +117,8 @@ proc sharedOperatingPoint*(ctx: EvalContext): OperatingPoint =
     return OpCacheEntry(ctx.scratch[opScratchKey]).op
   result = solveOperatingPoint(root(ctx.design.netlist))
   ctx.scratch[opScratchKey] = OpCacheEntry(op: result)
+
+proc applyScopeConditions*(a: Assertion, choice: var ScopeChoice) =
+  ## `ic_sinks = "off"` keeps load ICs' stand-ins (see `ScopeChoice`).
+  let v = conditionOf(a, "ic_sinks")
+  if v.isSome: choice.icSinks = v.get != "off"

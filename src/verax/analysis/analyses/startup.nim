@@ -13,8 +13,8 @@ import ../../netlist/graph
 import ../../netlist/kinds
 import ../../netlist/formats/spice as spiceFormat
 import ../../spice/isolate
+import ../../spice/bench
 import ../../spice/models
-import ../../spice/flatten
 import ../../spice/probes
 import ../../spice/transform
 import ../../spice/ngspice
@@ -146,20 +146,20 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
 
   # Stand in for loads before isolating (`isolate` won't traverse undescribed
   # parts). The regulator is excluded: it's about to become the ramp.
-  var cloneNets: OrderedTable[string, Net]
   # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
   # nested XSPICE regulator's ports use post-flatten names. `simReplace` is
   # honoured for everything but the regulator.
-  let work = clone(nl, cloneNets)
-  discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances, regulator)
-  applySimReplacements(work, [regulator], purpose = spStartup)
+  var b = openBench(nl, "startup:" & measured, spStartup,
+                    spec.flattenHierarchy, spec.keepInstances, [regulator],
+                    replaceExclude = [regulator])
   if spec.modelUnmodelledParts:
-    result.assumptions.add expandPinModels(work, spec.pinModels, [regulator])
+    b.modelUnmodelled(spec.pinModels, [regulator])
 
-  var globalNets: OrderedTable[string, Net]
-  let iso = isolateFrom(work, [regulator], seedNets, isoSpec, globalNets)
-  result.assumptions.add iso.assumptions
-  let frag = iso.netlist
+  b.scopeBench ScopeRequest(strategy: "terminated", seedParts: @[regulator],
+                            seedNets: seedNets, isolation: isoSpec)
+  result.assumptions.add b.assumptions
+  let iso = (dropped: b.scoped.region.dropped)
+  let frag = b.netlist
   if iso.dropped.len > 0:
     result.assumptions.add note("components " & iso.dropped.join(", ") &
       " were cut at the boundary: the current they would draw during start-up " &
@@ -176,49 +176,54 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
   # anything.
   var standIn: Component = nil
 
-  if sr != nil and sr.build != nil:
-    # **The `build` route**: an XSPICE model needs a `.MODEL` card, an ordered
-    # port binding and port text, which `kind`/`pinNets` can't express, so
-    # the model supplies a proc.
-    let old = frag.components.getOrDefault(regulator)
-    if old == nil:
-      raise newException(NetlistError,
-        "regulator " & regulator & " did not survive isolation, so its own " &
-        "model cannot be applied to the fragment")
-    standIn = sr.build(frag, old)
-    result.assumptions.add note("regulator " & regulator &
-      " modelled by its own simReplace '" & sr.name & "', which builds its " &
-      "own stand-in rather than naming a device kind")
-  elif sr != nil:
-    # A user-described regulator, verbatim except the designator (taken over
-    # so the inrush probe knows the branch).
-    var pinNets: seq[(string, Net)]
-    for pinName, netName in sr.pinNets:
-      if not frag.nets.hasKey(netName):
+  provenance(frag, regulator, brStandIn):
+    if sr != nil and sr.build != nil:
+      # **The `build` route**: an XSPICE model needs a `.MODEL` card, an ordered
+      # port binding and port text, which `kind`/`pinNets` can't express, so
+      # the model supplies a proc.
+      let old = frag.components.getOrDefault(regulator)
+      if old == nil:
         raise newException(NetlistError,
-          "simReplace on " & regulator & " names net '" & netName &
-          "' which is not in the isolated fragment")
-      pinNets.add (pinName, frag.nets[netName])
-    var attrs: seq[(string, string)]
-    for k, v in sr.attrs: attrs.add (k, v)
-    standIn = replaceComponent(frag, regulator, sr.kind, pinNets,
-                               newDesignator = srcDesig, attrs = attrs)
-    result.assumptions.add note("regulator " & regulator &
-      " modelled by its own simReplace (kind '" & sr.kind & "')")
-  else:
-    let pwl = "PWL(0 0 " & spiceValue(spec.softStart) & " " & spiceValue(targetV) & ")"
-    standIn = replaceComponent(frag, regulator, "voltage_source",
-                               [("+", outNet), ("-", gnd)],
-                               newDesignator = srcDesig,
-                               attrs = [("value", pwl)])
-    result.assumptions.add assumption(
-      "regulator " & regulator, "softStart", spec.softStart, "s", annDerived,
-      "ramp to " & eng(targetV, "V") & " by an ideal source")
-    result.assumptions.add note(
-      "regulator " & regulator & " has no simReplace, so it was replaced by that source" &
-      " (assumed soft-start; no control loop, current limit or dropout is modelled)")
+          "regulator " & regulator & " did not survive isolation, so its own " &
+          "model cannot be applied to the fragment")
+      standIn = sr.build(frag, old)
+      result.assumptions.add note("regulator " & regulator &
+        " modelled by its own simReplace '" & sr.name & "', which builds its " &
+        "own stand-in rather than naming a device kind")
+    elif sr != nil:
+      # A user-described regulator, verbatim except the designator (taken over
+      # so the inrush probe knows the branch).
+      var pinNets: seq[(string, Net)]
+      for pinName, netName in sr.pinNets:
+        if not frag.nets.hasKey(netName):
+          raise newException(NetlistError,
+            "simReplace on " & regulator & " names net '" & netName &
+            "' which is not in the isolated fragment")
+        pinNets.add (pinName, frag.nets[netName])
+      var attrs: seq[(string, string)]
+      for k, v in sr.attrs: attrs.add (k, v)
+      standIn = replaceComponent(frag, regulator, sr.kind, pinNets,
+                                 newDesignator = srcDesig, attrs = attrs)
+      result.assumptions.add note("regulator " & regulator &
+        " modelled by its own simReplace (kind '" & sr.kind & "')")
+    else:
+      let pwl = "PWL(0 0 " & spiceValue(spec.softStart) & " " & spiceValue(targetV) & ")"
+      standIn = replaceComponent(frag, regulator, "voltage_source",
+                                 [("+", outNet), ("-", gnd)],
+                                 newDesignator = srcDesig,
+                                 attrs = [("value", pwl)])
+      result.assumptions.add assumption(
+        "regulator " & regulator, "softStart", spec.softStart, "s", annDerived,
+        "ramp to " & eng(targetV, "V") & " by an ideal source")
+      result.assumptions.add note(
+        "regulator " & regulator & " has no simReplace, so it was replaced by that source" &
+        " (assumed soft-start; no control loop, current limit or dropout is modelled)")
+  if standIn != nil:
+    b.stimulus(standIn, "stands in for " & regulator & " and powers '" &
+               outputNet & "' up", owner = regulator)
 
   let vProbe = addVoltageProbe(frag.nets[measured])
+  b.probe(measured, "rise time, overshoot and final value of V(" & measured & ")")
 
   # The inrush probe needs a stand-in pin on `outputNet` to split. A
   # `simReplace` names its own pins, and an XSPICE model's ports can't be
@@ -231,6 +236,7 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
     for _, pin in standIn.pins:
       if pin.net != nil and pin.net.name == outputNet:
         iProbe = addCurrentProbe(frag, pin)
+        b.probe(iProbe.source, "inrush current out of the regulator")
         haveInrush = true
         break
   if not haveInrush:
@@ -263,7 +269,7 @@ proc analyzeStartup*(nl: Netlist, regulator, outputNet: string,
       "applied and wrong for anything that is already up")
 
   try:
-    result.raw = run(frag, @[card], label = "startup:" & measured)
+    result.raw = b.run(@[card], label = "startup:" & measured)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not run the isolated start-up fragment: " & e.msg)

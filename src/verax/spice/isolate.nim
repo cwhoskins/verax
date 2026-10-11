@@ -18,7 +18,11 @@ import ../netlist/graph
 import ../netlist/kinds
 import ../netlist/annotations
 import ../netlist/formats/spice as spiceFormat
+import ../netlist/region
 import ./extract
+import ./provenance
+
+export region
 
 type
   IsolationSpec* = object
@@ -78,73 +82,19 @@ proc uniqueDesignator(nl: Netlist, base: string): string =
     inc n
     result = base & "_" & $n
 
+proc terminatedRules*(spec: IsolationSpec): RegionRules =
+  ## Isolation's growth: through parts fully described by their value;
+  ## instances, unmodellable parts and `stopKinds` are cut (and recorded).
+  let stops = spec.stopKinds
+  RegionRules(maxHops: spec.maxHops, closeCouplings: true,
+    absorb: proc (c: Component, via: Net): RegionAction =
+      if c.subNetlist != nil or not isPassive(c) or c.kind in stops: raDrop
+      else: raInclude)
+
 proc growSelection(nl: Netlist, seedDesignators: openArray[string], seedNets: openArray[Net],
                    spec: IsolationSpec): tuple[selected: seq[string], dropped: seq[string]] =
-  var seedNetNames = initHashSet[string]()
-  for n in seedNets: seedNetNames.incl n.name
-
-  var selected = initOrderedSet[string]()
-  for d in seedDesignators:
-    if not nl.components.hasKey(d):
-      raise newException(NetlistError, "no such component: " & d)
-    selected.incl d
-
-  var visited = initHashSet[string]()
-  var queue: seq[tuple[net: Net, hop: int]]
-  var droppedSeen = initHashSet[string]()
-  var dropped: seq[string]
-
-  template enqueue(n: Net, h: int) =
-    if n != nil and n.name notin visited and h <= spec.maxHops:
-      visited.incl n.name
-      queue.add (net: n, hop: h)
-
-  for d in seedDesignators:
-    for _, p in nl.components[d].pins:
-      enqueue(p.net, 0)
-  for n in seedNets:
-    enqueue(n, 0)
-
-  var qi = 0
-  while qi < queue.len:
-    let (net, hop) = queue[qi]
-    inc qi
-    # A rail is a boundary, not a highway (every bypass cap shares VDD) --
-    # unless the caller seeded it.
-    if isRail(net) and net.name notin seedNetNames: continue
-
-    for p in net.pins:
-      let comp = p.component
-      if comp == nil or comp.designator in selected: continue
-
-      let unmodellable = comp.subNetlist != nil or not isPassive(comp) or
-                         comp.kind in spec.stopKinds
-      if unmodellable:
-        if comp.designator notin droppedSeen:
-          droppedSeen.incl comp.designator
-          dropped.add comp.designator
-        continue
-
-      selected.incl comp.designator
-      for _, other in comp.pins:
-        if other.net != nil and other.net != net:
-          enqueue(other.net, hop + 1)
-
-  # A `K` coupling has no pins, so the walk never reaches it; pull it in
-  # when both inductors are selected, or a transformer splits into two
-  # independent windings.
-  for _, comp in nl.components:
-    if comp.kind notin couplingKinds or comp.designator in selected: continue
-    let couples = comp.attrs.getOrDefault("spice.couples", "")
-    if couples.len == 0: continue
-    var both = true
-    for d in couples.split(','):
-      if d.strip() notin selected: both = false
-    if both: selected.incl comp.designator
-
-  var sel: seq[string]
-  for d in selected: sel.add d
-  (selected: sel, dropped: dropped)
+  let r = growRegion(nl, seedDesignators, seedNets, terminatedRules(spec))
+  (selected: r.parts, dropped: r.dropped)
 
 proc terminate(frag: Netlist, spec: IsolationSpec, res: var Isolated) =
   ## Closes the cut boundary so the fragment is a real circuit.
@@ -214,6 +164,8 @@ proc terminate(frag: Netlist, spec: IsolationSpec, res: var Isolated) =
     discard connect(src, "+", rail, ptPower)
     discard connect(src, "-", gnd, ptGround)
     src.attrs["value"] = "DC " & spiceValue(v)
+    mark(src, brTermination, note = "rail '" & rail.name & "' held at " &
+         spiceValue(v) & " V by an ideal source")
     res.railNets.add rail.name
     res.assumptions.add assumption(
       "rail '" & rail.name & "'", "voltage", v, "V", annDerived,
@@ -254,6 +206,7 @@ proc terminate(frag: Netlist, spec: IsolationSpec, res: var Isolated) =
       discard connect(r, "2", gnd, ptPassive)
       r.attrs["value"] = spiceValue(spec.openPortLeak)
       r.attrs["isolate.leak"] = "true"
+      mark(r, brTermination, note = "open net '" & n.name & "' leaked to ground")
   if spec.openPortLeak > 0.0 and openPorts.len > 0:
     var names: seq[string]
     for (portName, _) in openPorts: names.add portName

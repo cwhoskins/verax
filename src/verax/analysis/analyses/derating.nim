@@ -18,8 +18,8 @@ import ../../netlist/annotations
 
 import ../../netlist/formats/spice as spiceFormat
 import ../../spice/ngspice
+import ../../spice/bench
 import ../../spice/transform
-import ../../spice/flatten
 import ../../spice/models
 import ../../eng
 import ../report
@@ -86,17 +86,17 @@ proc analyzeDerating*(nl: Netlist, spec = defaultDeratingSpec()): AnalysisReport
   ## rating. **Not isolated**: boundary sources would invent the voltages.
   # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
   # nested XSPICE component's ports use post-flatten net names.
-  var globalNets: OrderedTable[string, Net]
-  let simNl = clone(root(nl), globalNets)
-  if spec.flattenHierarchy: discard flatten(simNl)
-  applySimReplacements(simNl, purpose = spOperating)
+  var b = openBench(root(nl), "derating", spOperating, spec.flattenHierarchy)
   if spec.modelUnmodelledParts:
-    result.assumptions.add expandPinModels(simNl, spec.pinModels)
+    b.modelUnmodelled(spec.pinModels)
+  b.scopeBench ScopeRequest(strategy: "whole")
+  result.assumptions.add b.assumptions
+  let simNl = b.netlist
 
   var sim: SimResult
   if spec.precomputed.len == 0:
     try:
-      sim = run(simNl, @[".op"], label = "derating")
+      sim = b.run(@[".op"], label = "derating")
     except CatchableError as e:
       result.issues.add newIssue(KindSimulationFailed, sevWarning,
         "the operating point needed to check part ratings did not solve: " & e.msg)

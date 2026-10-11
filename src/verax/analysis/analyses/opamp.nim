@@ -23,8 +23,8 @@ import ../../netlist/formats/spice as spiceFormat
 import ../../spice/isolate
 import ../../spice/transform
 import ../../spice/models
-import ../../spice/flatten
 import ../../spice/ngspice
+import ../../spice/bench
 import ../measure
 import ../report
 
@@ -231,6 +231,7 @@ proc checkInjectionPoint*(nl: Netlist, opamp, inputNet: string): seq[Issue] =
     net = target, components = @[c])]
 
 type Prepared = object
+  b: Bench
   frag: Netlist
   negPin: Pin
   posNet, outNet, gnd: Net
@@ -251,28 +252,31 @@ proc prepare(nl: Netlist, opamp, inputNet, outputNet: string,
 
   # Before isolating, so a part in the loop (a buffer) is stood in for
   # rather than cut, which would open the loop.
-  var cloneNets: OrderedTable[string, Net]
   # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
   # nested XSPICE component's ports use post-flatten net names. `bound`
   # selects which purpose a multi-model part is stood in for.
-  let work = clone(nl, cloneNets)
-  discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances, opamp)
-  applySimReplacements(work, purpose = (if bound: spLargeSignal else: spSmallSignal))
+  var b = openBench(nl, "opamp:" & opamp,
+                    (if bound: spLargeSignal else: spSmallSignal),
+                    spec.flattenHierarchy, spec.keepInstances, [opamp])
+  let work = b.work
 
   # Read after flattening (a nested amp's pins move to `XL.amp` etc.) and
   # before isolation (so rails are the design's, not the terminations).
   let pins = findOpAmpPins(findComponent(work, opamp))
 
   if spec.modelUnmodelledParts:
-    result.assumptions.add expandPinModels(work, spec.pinModels, [opamp])
+    b.modelUnmodelled(spec.pinModels, [opamp])
 
-  var globalNets: OrderedTable[string, Net]
-  let iso = isolateFrom(work, [opamp], [inputNet, outputNet], isoSpec, globalNets)
-  result.frag = iso.netlist
-  result.assumptions.add iso.assumptions
+  b.scopeBench ScopeRequest(strategy: "terminated", seedParts: @[opamp],
+                            seedNets: @[inputNet, outputNet],
+                            isolation: isoSpec)
+  result.frag = b.netlist
+  result.assumptions.add b.assumptions
+  let iso = (dropped: b.scoped.region.dropped)
   if iso.dropped.len > 0:
     result.assumptions.add note("components " & iso.dropped.join(", ") &
       " were cut at the boundary: any loading they present is not represented")
+  b.focus(inputNet, outputNet)
 
   result.gnd = result.frag.nets["0"]
   result.posNet = result.frag.nets[pins.pos.net.name]
@@ -294,7 +298,6 @@ proc prepare(nl: Netlist, opamp, inputNet, outputNet: string,
     let statedGbw = annotationFloat(findComponent(work, opamp), "gbw")
     let gbw = if statedGbw.has and statedGbw.value > 0.0: statedGbw.value
               else: spec.idealGbw
-    removeComponent(result.frag, opamp)
     let tmpl = idealOpAmp("IDEAL_OPAMP", spec.idealAol, gbw, vHi, vLo)
     if clamp:
       result.assumptions.add note(opamp & " saturates at " & eng(vLo, "V") &
@@ -307,8 +310,11 @@ proc prepare(nl: Netlist, opamp, inputNet, outputNet: string,
       result.assumptions.add note(opamp & " has no stated supply rails, so " &
         "its output is unbounded and it cannot run out of swing: a stage " &
         "whose only nonlinearity is this amplifier saturating measures clean")
-    let inst = instantiate(result.frag, "X" & opamp, tmpl,
-                           @[result.posNet, negNet, result.outNet], globalNets)
+    var inst: Component
+    provenance(result.frag, result.frag.components[opamp], brStandIn):
+      removeComponent(result.frag, opamp)
+      inst = instantiate(result.frag, "X" & opamp, tmpl,
+                         @[result.posNet, negNet, result.outNet], b.globals)
     result.negPin = inst.pins["INN"]
     if not (statedGbw.has and statedGbw.value > 0.0):
       result.assumptions.add assumption(
@@ -316,6 +322,7 @@ proc prepare(nl: Netlist, opamp, inputNet, outputNet: string,
         "of a substituted ideal single-pole op-amp (Aol " & eng(spec.idealAol) &
         "); no offset, slew rate, output impedance, supply rails or second " &
         "pole are represented. State `gbw` on the part to use its own")
+  result.b = b
 
 proc detachDrivers(frag: Netlist, netName: string): seq[string] =
   ## Removes stiff drivers of `netName`, since the measurement replaces them
@@ -362,7 +369,7 @@ proc analyzeOpAmpResponse*(nl: Netlist, opamp, inputNet, outputNet: string,
     result.issues = injIssues
     return
 
-  let p = prepare(nl, opamp, inputNet, outputNet, spec)
+  var p = prepare(nl, opamp, inputNet, outputNet, spec)
   result.assumptions = p.assumptions
 
   let displaced = detachDrivers(p.frag, inputNet)
@@ -377,9 +384,12 @@ proc analyzeOpAmpResponse*(nl: Netlist, opamp, inputNet, outputNet: string,
   discard connect(src, "+", p.frag.nets[inputNet], ptPassive)
   discard connect(src, "-", p.gnd, ptPassive)
   src.attrs["value"] = "DC 0 AC 1"
+  p.b.detached(displaced)
+  p.b.stimulus(src, "1 V AC into '" & inputNet & "'")
+  p.b.probe(outputNet, "V(" & outputNet & ") / V(" & inputNet & ") is the closed-loop gain")
 
   try:
-    result.raw = run(p.frag, @[acCard(spec)],
+    result.raw = p.b.run(@[acCard(spec)],
                      label = "closed loop:" & opamp)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
@@ -459,7 +469,7 @@ proc analyzeLoopGain*(nl: Netlist, opamp, inputNet, outputNet: string,
     result.issues = injIssues
     return
 
-  let p = prepare(nl, opamp, inputNet, outputNet, spec)
+  var p = prepare(nl, opamp, inputNet, outputNet, spec)
   result.assumptions = p.assumptions
 
   # Break the loop: the feedback network keeps the original net (A), the
@@ -487,9 +497,15 @@ proc analyzeLoopGain*(nl: Netlist, opamp, inputNet, outputNet: string,
   discard connect(inj, "+", netA, ptPassive)
   discard connect(inj, "-", netB, ptPassive)
   inj.attrs["value"] = "DC 0 AC 1"
+  p.b.detached(displaced)
+  p.b.stimulus(zero, "'" & inputNet & "' held at 0 V AC so the injection is the only excitation")
+  p.b.stimulus(inj, "1 V AC in series at the inverting input: the loop is broken between '" &
+               netA.name & "' (A) and LOOP_INJ (B)")
+  p.b.probe(netA.name, "loop gain T = -V(A)/V(B)")
+  p.b.probe("LOOP_INJ", "loop gain T = -V(A)/V(B)")
 
   try:
-    result.raw = run(p.frag, @[acCard(spec)], label = "loop gain:" & opamp)
+    result.raw = p.b.run(@[acCard(spec)], label = "loop gain:" & opamp)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not sweep the broken loop: " & e.msg)
@@ -608,7 +624,7 @@ proc analyzeLargeSignal*(nl: Netlist, opamp, inputNet, outputNet: string,
 
   boundOpAmpsToRails = spec.boundToRails
   defer: boundOpAmpsToRails = false
-  let p = prepare(nl, opamp, inputNet, outputNet, spec, bound = true)
+  var p = prepare(nl, opamp, inputNet, outputNet, spec, bound = true)
   result.assumptions = p.assumptions
 
   let displaced = detachDrivers(p.frag, inputNet)
@@ -619,7 +635,9 @@ proc analyzeLargeSignal*(nl: Netlist, opamp, inputNet, outputNet: string,
   # The bias the design gives the input, with nothing driving it.
   var bias = 0.0
   try:
-    let op = run(p.frag, @[".op"], label = "large signal bias:" & opamp)
+    p.b.detached(displaced)
+    p.b.focus(inputNet, outputNet)
+    let op = p.b.run(@[".op"], label = "large signal bias:" & opamp)
     bias = op["v(" & inputNet & ")"][0]
   except CatchableError:
     result.assumptions.add note("the operating point of '" & inputNet &
@@ -635,6 +653,10 @@ proc analyzeLargeSignal*(nl: Netlist, opamp, inputNet, outputNet: string,
   src.attrs["value"] = "SIN(" & spiceFormat.spiceValue(bias) & " " &
     spiceFormat.spiceValue(spec.driveAmplitude) & " " &
     spiceFormat.spiceValue(spec.driveFreq) & ")"
+  p.b.stimulus(src, "sine " & eng(spec.driveAmplitude, "V") & " at " &
+               eng(spec.driveFreq, "Hz") & " on the input's own bias, into '" &
+               inputNet & "'")
+  p.b.probe(outputNet, "output swing, clipping and THD")
 
   let period = 1.0 / spec.driveFreq
   let settle = float(spec.driveSettlePeriods) * period
@@ -645,7 +667,7 @@ proc analyzeLargeSignal*(nl: Netlist, opamp, inputNet, outputNet: string,
     spiceFormat.spiceValue(stop) & " " & spiceFormat.spiceValue(settle)
 
   try:
-    result.raw = run(p.frag, @[card], label = "large signal:" & opamp)
+    result.raw = p.b.run(@[card], label = "large signal:" & opamp)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not drive the stage: " & e.msg)

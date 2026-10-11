@@ -41,10 +41,10 @@ import ../../netlist/graph
 import ../../netlist/kinds
 import ../../netlist/formats/spice as spiceFormat
 import ../../spice/transform
-import ../../spice/flatten
 import ../../spice/models
 import ../../spice/probes
 import ../../spice/ngspice
+import ../../spice/bench
 import ../measure
 import ../report
 
@@ -65,6 +65,8 @@ const
 
 type
   PsrrSpec* = object
+    scope*: ScopeChoice
+      ## How much of the design is simulated (`spice/region_strategy`).
     fStart*, fStop*: float
       ## The swept band, for `analyzePsrrAc`. 0 takes 10 Hz to 10 MHz.
     ptsPerDecade*: int
@@ -107,7 +109,8 @@ type
       ## converging.
 
 proc defaultPsrrSpec*(): PsrrSpec =
-  PsrrSpec(fStart: 0.0, fStop: 0.0, ptsPerDecade: 0, atF: 0.0,
+  PsrrSpec(scope: ScopeChoice(strategy: "source_closed", icSinks: true),
+           fStart: 0.0, fStop: 0.0, ptsPerDecade: 0, atF: 0.0,
            rippleF: 0.0, rippleV: 0.0, tSettle: 0.0, periods: 0,
            samplesPerPeriod: 0, floorV: 0.0, snrMargin: 0.0,
            pinModels: defaultPinModels(),
@@ -131,20 +134,22 @@ proc snrOf(s: PsrrSpec): float =
   if s.snrMargin > 0.0: s.snrMargin else: 2.0
 
 proc prepare(nl: Netlist, spec: PsrrSpec, rep: var AnalysisReport,
-             purpose: string, namedParts: varargs[string]): Netlist =
+             purpose: string, source, inputNet, outputNet: string): Bench =
   ## The purpose differs by method: `.ac` wants `spSmallSignal`; a tone wants
   ## the steady-state model (on a converter, the switching one).
   # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
   # nested XSPICE component's ports use post-flatten net names.
-  var cloneNets: OrderedTable[string, Net]
-  result = clone(nl, cloneNets)
-  discard flattenForSim(result, spec.flattenHierarchy, spec.keepInstances,
-                        namedParts)
-  applySimReplacements(result, purpose = purpose)
+  result = openBench(nl, "psrr", purpose, spec.flattenHierarchy,
+                     spec.keepInstances, [source])
   if spec.modelUnmodelledParts:
-    rep.assumptions.add expandPinModels(result, spec.pinModels)
+    result.modelUnmodelled(spec.pinModels)
+  let src = findComponent(result.work, source)
+  let seedPart = if src != nil and result.work.components.hasKey(src.designator):
+                   src.designator else: ""
+  result.scopeBench(spec.scope, [seedPart], [inputNet, outputNet])
+  rep.assumptions.add result.assumptions
   if spec.capacitorParasitics:
-    rep.assumptions.add expandCapacitorParasitics(result, spec.parasitics)
+    rep.assumptions.add expandCapacitorParasitics(result.netlist, spec.parasitics)
 
 proc supplyPin(work: Netlist, source: string): Pin =
   ## The supply's board-facing pin (the one not on ground), found by net
@@ -240,12 +245,16 @@ proc analyzePsrrAc*(nl: Netlist, source, inputNet, outputNet: string,
   ## level-dependent questions want `analyzePsrrTone`).
   result.name = "psrr"
 
-  let work = prepare(nl, spec, result, spSmallSignal, source)
+  var b = prepare(nl, spec, result, spSmallSignal, source, inputNet, outputNet)
+  let work = b.netlist
   discard netOr(work, inputNet, "input")
   discard netOr(work, outputNet, "output")
   if spec.modelSources:
     result.assumptions.add expandSourceImpedance(work, spec.sourceZ)
   let desig = injectRipple(work, source, "DC 0 AC 1")
+  b.stimulus(work.components[desig], "1 V AC ripple in series with " & source)
+  b.probe(inputNet, "ripple reaching the input")
+  b.probe(outputNet, "ripple left at the output")
   result.assumptions.add note(desig,
     "1 V of AC ripple injected in series with " & source & ", ahead of its " &
     "own output impedance. The sweep is linear, so the amplitude cannot " &
@@ -254,7 +263,7 @@ proc analyzePsrrAc*(nl: Netlist, source, inputNet, outputNet: string,
     "credit and not the regulator's")
 
   try:
-    result.raw = run(work, acCard(spec), label = "psrr:" & outputNet)
+    result.raw = b.run(acCard(spec), label = "psrr:" & outputNet)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not sweep the supply ripple: " & e.msg)
@@ -326,7 +335,8 @@ proc analyzePsrrTone*(nl: Netlist, source, inputNet, outputNet: string,
   let tStop = spec.tSettle + window
   let tStep = period / float(perPeriodOf(spec))
 
-  let work = prepare(nl, spec, result, spSteadyState, source)
+  var b = prepare(nl, spec, result, spSteadyState, source, inputNet, outputNet)
+  let work = b.netlist
   discard netOr(work, inputNet, "input")
   discard netOr(work, outputNet, "output")
   if spec.modelSources:
@@ -334,6 +344,10 @@ proc analyzePsrrTone*(nl: Netlist, source, inputNet, outputNet: string,
   let desig = injectRipple(work, source,
     "DC 0 SIN(0 " & spiceFormat.spiceValue(amp) & " " &
     spiceFormat.spiceValue(f0) & ")")
+  b.stimulus(work.components[desig], eng(amp, "V") & " ripple at " &
+             eng(f0, "Hz") & " in series with " & source)
+  b.probe(inputNet, "ripple reaching the input")
+  b.probe(outputNet, "ripple left at the output")
   result.assumptions.add note(desig,
     eng(amp, "V") & " of ripple at " & eng(f0, "Hz") & " injected in series " &
     "with " & source & ", ahead of its own output impedance. Unlike an `.ac` " &
@@ -347,7 +361,7 @@ proc analyzePsrrTone*(nl: Netlist, source, inputNet, outputNet: string,
     card &= " " & spiceFormat.spiceValue(spec.tSettle)
 
   try:
-    result.raw = run(work, card, label = "psrr tone:" & outputNet)
+    result.raw = b.run(card, label = "psrr tone:" & outputNet)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not run the ripple tone: " & e.msg)

@@ -13,6 +13,7 @@ import std/[strutils, tables, sequtils]
 import ../netlist/types
 import ../netlist/graph
 import ../netlist/formats/spice as spiceFormat
+import ./provenance
 
 const
   spOperating* = "op"
@@ -107,19 +108,21 @@ proc applySimReplacements*(nl: Netlist, exclude: openArray[string] = [],
     if designator in exclude: continue
     let comp = nl.components[designator]
     let repl = selectSimModel(comp, purpose)
-    if repl != nil and repl.build != nil:
-      # The replacement builds itself and must remove the part it replaces.
-      discard repl.build(nl, comp)
-    elif repl != nil:
-      var pinNets: seq[(string, Net)]
-      for pinName, netName in repl.pinNets:
-        if not nl.nets.hasKey(netName):
-          raise newException(NetlistError,
-            "simReplace on " & designator & " references unknown net: " & netName)
-        pinNets.add (pinName, nl.nets[netName])
-      discard replaceComponent(nl, designator, repl.kind, pinNets,
-                                newDesignator = repl.designator, partNumber = repl.partNumber,
-                                attrs = toSeq(repl.attrs.pairs))
+    if repl == nil: continue
+    provenance(nl, comp, brStandIn):
+      if repl.build != nil:
+        # The replacement builds itself and must remove the part it replaces.
+        discard repl.build(nl, comp)
+      else:
+        var pinNets: seq[(string, Net)]
+        for pinName, netName in repl.pinNets:
+          if not nl.nets.hasKey(netName):
+            raise newException(NetlistError,
+              "simReplace on " & designator & " references unknown net: " & netName)
+          pinNets.add (pinName, nl.nets[netName])
+        discard replaceComponent(nl, designator, repl.kind, pinNets,
+                                  newDesignator = repl.designator, partNumber = repl.partNumber,
+                                  attrs = toSeq(repl.attrs.pairs))
   for _, child in nl.children:
     applySimReplacements(child, exclude, purpose)
 

@@ -286,6 +286,10 @@ let builtinConditions = [
   cond("sweep_to", "", "DC sweep end"),
   cond("sweep_step", "", "DC sweep increment"),
   cond("v_nominal", "V", "the nominal line voltage percentages refer to"),
+  ConditionDef(key: "ic_sinks", kind: cdText, allowed: @["on", "off"],
+               doc: "whether a load IC on a rail is drawn as a constant " &
+                    "current sink (the `source_closed` scope); off keeps " &
+                    "its stand-in"),
   ConditionDef(key: "sweep", kind: cdText, allowed: @["source", "load"],
                doc: "which DC sweep: an existing source, or an injected load"),
 ]

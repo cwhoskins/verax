@@ -25,9 +25,9 @@ import ../../units
 import ../../netlist/graph
 import ../../netlist/formats/spice as spiceFormat
 import ../../spice/transform
-import ../../spice/flatten
 import ../../spice/models
 import ../../spice/ngspice
+import ../../spice/bench
 import ../measure
 import ../report
 
@@ -44,6 +44,8 @@ const
 
 type
   TransientSpec* = object
+    scope*: ScopeChoice
+      ## How much of the design is simulated (`spice/region_strategy`).
     tSettle*: float
       ## Simulated seconds before the measurement window opens.
     tWindow*: float
@@ -74,7 +76,8 @@ type
       ## reads low.
 
 proc defaultTransientSpec*(): TransientSpec =
-  TransientSpec(tSettle: 0.0, tWindow: 0.0, tStop: 0.0, tStep: 0.0,
+  TransientSpec(scope: ScopeChoice(strategy: "source_closed", icSinks: true),
+                tSettle: 0.0, tWindow: 0.0, tStop: 0.0, tStep: 0.0,
                 tMax: 0.0, settleTol: 0.0,
                 pinModels: defaultPinModels(), flattenHierarchy: true,
                 modelUnmodelledParts: true, capacitorParasitics: true)
@@ -148,27 +151,42 @@ proc resolveProbe(work: Netlist, p: Probe): ProbeResult =
 proc runWindow(nl: Netlist, probes: openArray[Probe], spec: TransientSpec,
                rep: var AnalysisReport, windowSamples = 1000,
                label = "",
-               mutate: proc (work: Netlist) {.closure.} = nil): WindowRun =
+               mutate: proc (b: var Bench) {.closure.} = nil): WindowRun =
   ## Simulates the design as authored and returns the window. Assumptions
   ## and issues go onto `rep` as produced, including on failure paths.
-  var cloneNets: OrderedTable[string, Net]
   # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
   # nested XSPICE component's ports use post-flatten net names. The purpose
   # picks which model a multi-model part uses.
-  let work = clone(nl, cloneNets)
-  discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances)
-  applySimReplacements(work, purpose = spSteadyState)
+  var b = openBench(nl, "transient", spSteadyState, spec.flattenHierarchy,
+                    spec.keepInstances)
   if spec.modelUnmodelledParts:
-    rep.assumptions.add expandPinModels(work, spec.pinModels)
+    b.modelUnmodelled(spec.pinModels)
+  # Seeds: what is read. A stimulus `mutate` adds lands on a probed net.
+  var seedNets, seedParts: seq[string]
+  for p in probes:
+    case p.kind
+    of pkVoltage:
+      let n = findNet(b.work, p.target)
+      if n != nil: seedNets.add n.name
+    of pkCurrent:
+      let c = findComponent(b.work, p.target)
+      if c != nil and b.work.components.hasKey(c.designator):
+        seedParts.add c.designator
+  b.scopeBench(spec.scope, seedParts, seedNets)
+  rep.assumptions.add b.assumptions
+  let work = b.netlist
   if spec.capacitorParasitics:
     rep.assumptions.add expandCapacitorParasitics(work)
 
   # Stimuli (a pulsed load, a ripple source) are added after every model
   # pass, so `expandPinModels` never sees them, and before probes resolve.
-  if mutate != nil: mutate(work)
+  if mutate != nil: mutate(b)
 
   for p in probes:
     result.probes.add resolveProbe(work, p)
+    case p.kind
+    of pkVoltage: b.probe(p.target, "V(" & p.target & ") over the window")
+    of pkCurrent: b.probeCurrent(p.target, "current through " & p.target)
 
   let tWindow =
     if spec.tWindow > 0.0: spec.tWindow
@@ -222,7 +240,7 @@ proc runWindow(nl: Netlist, probes: openArray[Probe], spec: TransientSpec,
     elif probes.len > 0: "transient:" & probes[0].target
     else: "transient"
   try:
-    rep.raw = run(work, card, setup, label = runLabel)
+    rep.raw = b.run(card, setup, label = runLabel)
   except SpiceSimError as e:
     rep.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not run the transient: " & e.msg)
@@ -438,6 +456,8 @@ const loadStepDesignator = "ILOADSTEP"
 type
   LoadStepSpec* = object
     ## A current step at a node, and the window either side of it.
+    scope*: ScopeChoice
+      ## How much of the design is simulated (`spice/region_strategy`).
     iFrom*, iTo*: float
       ## Load before and after the edge, in amps. `iTo < iFrom` measures a
       ## release.
@@ -467,7 +487,8 @@ type
       ## solver timestep, so it sets how well the edge is solved.
 
 proc defaultLoadStepSpec*(): LoadStepSpec =
-  LoadStepSpec(iFrom: 0.0, iTo: 0.0, tSettle: 0.0, tBaseline: 0.0,
+  LoadStepSpec(scope: ScopeChoice(strategy: "source_closed", icSinks: true),
+               iFrom: 0.0, iTo: 0.0, tSettle: 0.0, tBaseline: 0.0,
                tEdge: 0.0, tHold: 0.0, tRecover: 0.0, settleTol: 0.0,
                pinModels: defaultPinModels(), flattenHierarchy: true,
                modelUnmodelledParts: true, capacitorParasitics: true,
@@ -519,6 +540,7 @@ proc toTransient(spec: LoadStepSpec): TransientSpec =
   result.keepInstances = spec.keepInstances
   result.modelUnmodelledParts = spec.modelUnmodelledParts
   result.capacitorParasitics = spec.capacitorParasitics
+  result.scope = spec.scope
 
 proc sliceBetween(t, v: openArray[float], fromT, toT: float):
     tuple[t, v: seq[float]] =
@@ -557,7 +579,8 @@ proc analyzeLoadStep*(nl: Netlist, measureNet: string,
   var injected = false
   let r = runWindow(nl, [Probe(kind: pkVoltage, target: measureNet)],
                     tSpec, result, label = "load step:" & measureNet,
-                    mutate = proc (work: Netlist) =
+                    mutate = proc (b: var Bench) =
+      let work = b.netlist
       let node = findNet(work, measureNet)
       if node == nil:
         raise newException(NetlistError,
@@ -577,6 +600,8 @@ proc analyzeLoadStep*(nl: Netlist, measureNet: string,
       discard connect(src, "+", node, ptPassive)
       discard connect(src, "-", gnd, ptPassive)
       src.attrs["value"] = pulseValue(sink)
+      b.load(src, "load stepped " & eng(sink.iFrom, "A") & " to " &
+             eng(sink.iTo, "A") & " out of '" & measureNet & "'")
       injected = true)
 
   if injected:

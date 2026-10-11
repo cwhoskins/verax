@@ -13,8 +13,8 @@ import std/tables
 import ../../netlist/types
 import ../../netlist/graph
 import ../../spice/transform
-import ../../spice/flatten
 import ../../spice/ngspice
+import ../../spice/bench
 import ../issue
 import ../io_check
 
@@ -37,15 +37,14 @@ proc resolveAmbiguousDCPaths*(nl: Netlist, issues: seq[Issue]): seq[Issue] =
   if not hasAmbiguous:
     return issues
 
-  var globalNets: OrderedTable[string, Net]
-  let simNl = clone(root(nl), globalNets)
-  discard flatten(simNl)
-  applySimReplacements(simNl, purpose = spOperating)
+  var b = openBench(root(nl), "dc path fallback", spOperating)
+  b.scopeBench ScopeRequest(strategy: "whole")
+  let simNl = b.netlist
 
   var simResult: SimResult
   var simErrorMsg = ""
   try:
-    simResult = run(simNl, @[".op"], label = "dc path fallback")
+    simResult = b.run(@[".op"], label = "dc path fallback")
   except SpiceSimError as e:
     simErrorMsg = e.msg
 

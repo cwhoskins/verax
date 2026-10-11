@@ -8,6 +8,7 @@ import ../../netlist/graph
 import ../../netlist/annotations
 import ../../netlist/formats/spice as spiceFormat
 import ./common
+import ../provenance
 
 type
   SourceImpedance* = tuple[rout, lout: float]
@@ -69,36 +70,37 @@ proc expandSourceImpedance*(nl: Netlist, d = defaultSourceImpedance(),
       sources.add c
 
   for src in sources:
-    let pins = orderedPins(src)
-    if pins.len != 2: continue
-    if pins[0].net == nil or pins[1].net == nil: continue
+    provenance(nl, src, brModel):
+      let pins = orderedPins(src)
+      if pins.len != 2: continue
+      if pins[0].net == nil or pins[1].net == nil: continue
 
-    let (z, notes) = sourceImpedanceFor(src, d)
-    if z.rout == 0.0 and z.lout == 0.0:
-      # Ideal by request: mark and leave it.
+      let (z, notes) = sourceImpedanceFor(src, d)
+      if z.rout == 0.0 and z.lout == 0.0:
+        # Ideal by request: mark and leave it.
+        src.attrs["source.zout.expanded"] = "true"
+        continue
+      result.add notes
+
+      let outNet = pins[0].net
+      let midR = addNet(nl, newNet(src.designator & "_ROUT_N"))
+      let midL = addNet(nl, newNet(src.designator & "_LOUT_N"))
+
+      disconnect(pins[0])
+      connect(pins[0], midR)
+
+      let r = addComponent(nl, newComponent(
+        $spiceFormat.designatorPrefix("resistor") & src.designator & "_ROUT",
+        kind = "resistor"))
+      discard connect(r, "1", midR, ptPassive)
+      discard connect(r, "2", midL, ptPassive)
+      r.attrs["value"] = spiceValue(max(z.rout, 1.0e-9))
+
+      let l = addComponent(nl, newComponent(
+        $spiceFormat.designatorPrefix("inductor") & src.designator & "_LOUT",
+        kind = "inductor"))
+      discard connect(l, "1", midL, ptPassive)
+      discard connect(l, "2", outNet, ptPassive)
+      l.attrs["value"] = spiceValue(max(z.lout, 1.0e-15))
+
       src.attrs["source.zout.expanded"] = "true"
-      continue
-    result.add notes
-
-    let outNet = pins[0].net
-    let midR = addNet(nl, newNet(src.designator & "_ROUT_N"))
-    let midL = addNet(nl, newNet(src.designator & "_LOUT_N"))
-
-    disconnect(pins[0])
-    connect(pins[0], midR)
-
-    let r = addComponent(nl, newComponent(
-      $spiceFormat.designatorPrefix("resistor") & src.designator & "_ROUT",
-      kind = "resistor"))
-    discard connect(r, "1", midR, ptPassive)
-    discard connect(r, "2", midL, ptPassive)
-    r.attrs["value"] = spiceValue(max(z.rout, 1.0e-9))
-
-    let l = addComponent(nl, newComponent(
-      $spiceFormat.designatorPrefix("inductor") & src.designator & "_LOUT",
-      kind = "inductor"))
-    discard connect(l, "1", midL, ptPassive)
-    discard connect(l, "2", outNet, ptPassive)
-    l.attrs["value"] = spiceValue(max(z.lout, 1.0e-15))
-
-    src.attrs["source.zout.expanded"] = "true"

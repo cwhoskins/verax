@@ -16,6 +16,7 @@ import ./ferrite_bead
 import ./passives
 import ./magnetics
 import ./switch
+import ../provenance
 
 type
   PinModelDefaults* = object
@@ -96,9 +97,10 @@ proc expandPinModels*(nl: Netlist, d = defaultPinModels(),
     # untouched rather than broken into impedances).
     let bm = behavioralModelFor(c.kind)
     if bm != nil:
-      let (handled, notes) = bm(nl, c, gnd)
-      result.add notes
-      if handled: c.attrs["models.pin.expanded"] = "true"
+      provenance(nl, c, brStandIn):
+        let (handled, notes) = bm(nl, c, gnd)
+        result.add notes
+        if handled: c.attrs["models.pin.expanded"] = "true"
       continue
 
     # Snapshot before removing: the pins go with the component.
@@ -110,13 +112,15 @@ proc expandPinModels*(nl: Netlist, d = defaultPinModels(),
       if invented: result.add note
       terminals.add (name: p.name, z: z, net: p.net)
 
-    removeComponent(nl, c.designator)
+    provenance(nl, c, brStandIn):
+      removeComponent(nl, c.designator)
 
-    for t in terminals:
-      let r = addComponent(nl, newComponent(
-        $spiceFormat.designatorPrefix("resistor") & c.designator & "_" & t.name,
-        kind = "resistor"))
-      discard connect(r, "1", t.net, ptPassive)
-      discard connect(r, "2", gnd, ptPassive)
-      r.attrs["value"] = spiceValue(t.z)
-      r.attrs["models.pin.expanded"] = "true"
+      for t in terminals:
+        let r = addComponent(nl, newComponent(
+          $spiceFormat.designatorPrefix("resistor") & c.designator & "_" & t.name,
+          kind = "resistor"))
+        discard connect(r, "1", t.net, ptPassive)
+        discard connect(r, "2", gnd, ptPassive)
+        r.attrs["value"] = spiceValue(t.z)
+        r.attrs["models.pin.expanded"] = "true"
+        r.attrs[benchPinKey] = t.name

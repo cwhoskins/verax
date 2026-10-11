@@ -41,6 +41,7 @@ proc psrrSpecOf(a: Assertion): PsrrSpec =
   ## other's stay at the default), so the spec key never splits a run on a
   ## condition that run doesn't use.
   result = defaultPsrrSpec()
+  applyScopeConditions(a, result.scope)
   measurementOnly(result)
   result.fStart = conditionFloat(a, "f_from", 0.0)
   result.fStop = conditionFloat(a, "f_to", 0.0)
@@ -88,7 +89,7 @@ proc psrrAcDoc(ctx: EvalContext, batch: seq[Assertion]): string =
            (if p.src.len > 0: p.src else: "an unbound source") &
            ", reading net '" & p.inp & "' against net '" & p.outp &
            "'. The sweep is linear, so the drive level cannot move the " &
-           "answer. The design is simulated as authored -- not isolated, " &
+           "answer. Everything connected is simulated (`source_closed`: nothing terminated), " &
            "since a rail held at its nominal by a boundary source cannot " &
            "ripple"
 
@@ -121,7 +122,7 @@ proc registerPsrrEvaluators*() =
     name: "spice.psrr_tone", produces: @psrrToneQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
     binds: @["source", "input"],
-    conditions: @["ripple_f", "ripple_v", "t_settle", "ripple_periods",
+    conditions: @["ic_sinks", "ripple_f", "ripple_v", "t_settle", "ripple_periods",
                   "ripple_points"],
     units: {"psrr_db": "dB", "in_ripple_v": "V", "out_ripple_v": "V"}.toTable,
     setupKey: psrrKey, setupDoc: psrrToneDoc, run: runPsrrTone))
@@ -130,6 +131,6 @@ proc registerPsrrEvaluators*() =
     name: "spice.psrr_ac", produces: @psrrAcQuantities,
     needs: {capSpiceAc}, arity: 1 .. 1, subjectKinds: {skNet},
     binds: @["source", "input"],
-    conditions: @["f_from", "f_to", "at_f"],
+    conditions: @["f_from", "f_to", "at_f", "ic_sinks"],
     units: {"psrr_min_db": "dB", "f_psrr_min": "Hz", "psrr_at_f": "dB"}.toTable,
     setupKey: psrrKey, setupDoc: psrrAcDoc, run: runPsrrAc))

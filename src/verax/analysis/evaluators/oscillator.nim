@@ -19,6 +19,7 @@ proc oscKick(ctx: EvalContext, a: Assertion): tuple[net: string, v: float] =
 proc oscSpecOf(ctx: EvalContext, a: Assertion): TransientSpec =
   ## The window, and the kick as an initial condition (so it is in the key).
   result = defaultTransientSpec()
+  applyScopeConditions(a, result.scope)
   measurementOnly(result)
   let (tSettle, tWindow) = transientWindow(a)
   result.tSettle = tSettle
@@ -35,7 +36,7 @@ proc oscDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let outNet = subjectNet(d, batch[0])
   let (tSettle, tWindow) = transientWindow(batch[0])
   let k = oscKick(ctx, batch[0])
-  result = "`.tran` over the whole design as authored -- not isolated, and " &
+  result = "`.tran` over everything connected to the measurement (the `source_closed` scope: nothing terminated), and " &
            "not swept, because an oscillator has no transfer function to " &
            "sweep and driving its input would hold the node the loop " &
            "returns to. Reading net '" & outNet & "'"
@@ -73,6 +74,6 @@ proc registerOscillatorEvaluator*() =
   registerEvaluator(Evaluator(
     name: "spice.oscillator", produces: @oscQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
-    conditions: @["t_settle", "t_window", "kick_v"],
+    conditions: @["t_settle", "t_window", "kick_v", "ic_sinks"],
     units: {"osc_freq": "Hz", "swing_pp": "V", "osc_thd_pct": "%"}.toTable,
     setupKey: oscKey, setupDoc: oscDoc, run: runOscillation))

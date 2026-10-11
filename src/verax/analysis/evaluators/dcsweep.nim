@@ -19,6 +19,7 @@ proc sweepKind(a: Assertion): string =
 
 proc dcSweepSpecOf(ctx: EvalContext, a: Assertion): DcSweepSpec =
   result = defaultDcSweepSpec()
+  applyScopeConditions(a, result.scope)
   result.fromVal = conditionFloat(a, "sweep_from", 0.0)
   result.toVal = conditionFloat(a, "sweep_to", 0.0)
   result.step = conditionFloat(a, "sweep_step", 0.0)
@@ -43,7 +44,7 @@ proc dcSweepDoc(ctx: EvalContext, batch: seq[Assertion]): string =
     result = "`.dc` sweep of " & (if src.len > 0: src else: "an unbound source") &
              " from " & eng(spec.fromVal, "V") & " to " & eng(spec.toVal, "V") &
              ", measured at net '" & node &
-             "'. The design is simulated as authored -- not isolated, so the " &
+             "'. Everything connected to it is simulated (`source_closed`: nothing terminated), so the " &
              "node has to follow the sweep rather than be held at its " &
              "nominal by a boundary source"
     if spec.inputNet.len > 0:
@@ -111,7 +112,8 @@ proc registerDcSweepEvaluator*() =
     name: "spice.dc_sweep", produces: @dcSweepQuantities,
     needs: {capSpiceDc}, arity: 1 .. 1, subjectKinds: {skNet},
     binds: @["source"],
-    conditions: @["sweep", "sweep_from", "sweep_to", "sweep_step", "v_nominal"],
+    conditions: @["sweep", "sweep_from", "sweep_to", "sweep_step", "v_nominal",
+                  "ic_sinks"],
     units: {"dc_out_min": "V", "dc_out_max": "V", "dc_out_delta": "V",
             "dc_transfer": "", "line_reg_pct": "%", "line_reg_pct_per_v": "%/V",
             "dropout_v": "V", "load_reg_pct": "%", "z_out_dc": "ohm"}.toTable,

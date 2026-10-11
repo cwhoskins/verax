@@ -9,6 +9,7 @@ import std/tables
 import ../netlist/types
 import ../netlist/graph
 import ../netlist/formats/spice as spiceFormat
+import ./provenance
 
 type
   ProbeKind* = enum
@@ -70,6 +71,9 @@ proc addCurrentProbe*(nl: Netlist, pin: Pin, designator = ""): Probe =
   let src = addComponent(nl, newComponent(desig, kind = "voltage_source"))
   discard connect(src, "+", originalNet)
   discard connect(src, "-", probeNet)
+  let owner = designOf(pin.component)
+  mark(src, brProbe, owner, "current into " & owner & "." & pin.name)
+  probeNet.attrs[benchOfKey] = owner
 
   result = Probe(kind: pkCurrent, label: "i(" & desig & ")", net: probeNet, source: src)
 
@@ -95,5 +99,8 @@ proc addImpedanceProbe*(nl: Netlist, net, refNet: Net, designator = "",
   discard connect(src, "+", refNet, ptPassive)
   discard connect(src, "-", net, ptPassive)
   src.attrs["value"] = "DC 0 AC " & spiceValue(amps)
+  mark(src, brStimulus, note = spiceValue(amps) & " A AC injected into '" &
+       net.name & "'")
+  mark(net, brProbe, note = "V = Z in ohms at 1 A")
 
   result = Probe(kind: pkVoltage, label: "v(" & net.name & ")", net: net, source: src)

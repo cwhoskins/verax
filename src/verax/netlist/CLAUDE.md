@@ -12,6 +12,12 @@ The in-memory netlist and its file formats.
 - **Hierarchy** — a sub-netlist hangs off `Component.subNetlist`. `instantiate` deep-clones per instance, except nets in the `globalNets` table (e.g. `"0"`), which are shared by identity. An instance pin's `hierNet` points at the matching port `Net` inside the child.
 - **`issue.nim`** — shared `Issue` type. Lives here (not `analysis`) because `netlist`, `pcb` and `analysis` all report through it.
 
+## `region.nim` — growing a region from seeds
+
+`growRegion(nl, seedParts, seedNets, rules)` is the one graph walk every scoping strategy (`spice/region_strategy`), the report's circuit view and isolation share. Breadth-first over nets; each part reached is asked `RegionRules.absorb(part, via)` -> `raInclude` (walk on through its other pins), `raBoundary` (kept, not walked) or `raDrop` (left out, recorded). `traverseNet(net, seeded)` decides whether a net is walked *from* (default: not a rail unless seeded). `maxHops` is a backstop; `closeCouplings` pulls in a pinless `K` once its inductors are in. Seed parts are always walked through all their pins — pass an IC as a boundary block, not a seed, when that would flood (the report does).
+
+`flatName(component|net)` spells a hierarchical entity as `spice/flatten` will (`XA.XB.R1`; a port net takes its outer net's name; ground keeps its own). Static evaluators name their `AssertionResult.scope` with it so the report can find what they read in the flattened design.
+
 ## `annotations.nim` — the vocabulary
 
 A typo'd `attrs` key is indistinguishable from an absent one (and `spice/models` would silently default it *and report that as an assumption*). The registry fixes that.

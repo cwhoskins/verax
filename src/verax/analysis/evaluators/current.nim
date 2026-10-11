@@ -21,6 +21,7 @@ const currentQuantities = ["i_peak", "i_rms", "i_avg", "i_pp",
 
 proc currentSpecOf(a: Assertion): TransientSpec =
   result = defaultTransientSpec()
+  applyScopeConditions(a, result.scope)
   result.settleTol = 0.0
   let (tSettle, tWindow) = transientWindow(a)
   result.tSettle = tSettle
@@ -39,7 +40,7 @@ proc currentParts(ctx: EvalContext, batch: seq[Assertion]): seq[string] =
 proc currentDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let parts = currentParts(ctx, batch)
   let (tSettle, tWindow) = transientWindow(batch[0])
-  result = "`.tran` over the whole design as authored -- not isolated, so " &
+  result = "`.tran` over everything connected to the measurement (the `source_closed` scope: nothing terminated), so " &
            "each part carries what the circuit actually pushes through it. " &
            "Reading the branch current of " &
            (if parts.len > 0: parts.join(", ") else: "no resolvable part")
@@ -152,7 +153,7 @@ proc registerCurrentEvaluator*() =
   registerEvaluator(Evaluator(
     name: "spice.current_path", produces: @currentQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skComponent},
-    conditions: @["t_settle", "t_window"],
+    conditions: @["t_settle", "t_window", "ic_sinks"],
     units: {"i_peak": "A", "i_rms": "A", "i_avg": "A", "i_pp": "A",
             "i_min": "A", "i_max": "A", "i_peak_derating": "",
             "i_rms_derating": "", "i_out_derating": ""}.toTable,

@@ -21,6 +21,7 @@ import ../../eng
 import ../../netlist/formats/spice as spiceFormat
 import ./common
 import ./behavioral
+import ../provenance
 
 type
   SwitchModel* = object
@@ -56,63 +57,64 @@ proc expandSwitches*(nl: Netlist, d = defaultSwitchModel()): seq[Assumption] =
 
   let gnd = groundOf(nl)
   for part in parts:
-    let desig = part.designator
-    let inP = pinNamed(part, switchThrowInNames)
-    let outP = pinNamed(part, switchThrowOutNames)
-    let ctrlP = pinNamed(part, switchCtrlNames)
-    var ctrlRetP = pinNamed(part, switchCtrlRetNames)
-    if inP == nil or outP == nil or ctrlP == nil or
-       inP.net == nil or outP.net == nil or ctrlP.net == nil:
-      var names: seq[string]
-      for pp in orderedPins(part): names.add pp.name
-      result.add note(desig & " (" & part.kind & ") needs a through pair " &
-        "(IN/OUT) and a control pin to be modelled as an S switch; it has " &
-        names.join(", ") & ". Left unmodelled.")
-      continue
-    let ctrlRet = if ctrlRetP != nil and ctrlRetP.net != nil: ctrlRetP.net
-                  elif gnd != nil: gnd
-                  else: nil
-    if ctrlRet == nil:
-      result.add note(desig & ": no ground for the switch control reference.")
-      continue
+    provenance(nl, part, brStandIn):
+      let desig = part.designator
+      let inP = pinNamed(part, switchThrowInNames)
+      let outP = pinNamed(part, switchThrowOutNames)
+      let ctrlP = pinNamed(part, switchCtrlNames)
+      var ctrlRetP = pinNamed(part, switchCtrlRetNames)
+      if inP == nil or outP == nil or ctrlP == nil or
+         inP.net == nil or outP.net == nil or ctrlP.net == nil:
+        var names: seq[string]
+        for pp in orderedPins(part): names.add pp.name
+        result.add note(desig & " (" & part.kind & ") needs a through pair " &
+          "(IN/OUT) and a control pin to be modelled as an S switch; it has " &
+          names.join(", ") & ". Left unmodelled.")
+        continue
+      let ctrlRet = if ctrlRetP != nil and ctrlRetP.net != nil: ctrlRetP.net
+                    elif gnd != nil: gnd
+                    else: nil
+      if ctrlRet == nil:
+        result.add note(desig & ": no ground for the switch control reference.")
+        continue
 
-    let rail = controlRailFor(ctrlP.net, d)
-    let ronA = annotationFloat(part, "ron")
-    let roffA = annotationFloat(part, "roff")
-    let vtA = annotationFloat(part, "vt")
-    let vhA = annotationFloat(part, "vh")
-    let ron = if ronA.has and ronA.value > 0.0: ronA.value else: float(d.ron)
-    let roff = if roffA.has and roffA.value > 0.0: roffA.value else: float(d.roff)
-    let vt = if vtA.has: vtA.value else: rail * 0.5
-    let vh = if vhA.has: vhA.value else: rail * 0.1
-    if not (ronA.has and ronA.value > 0.0):
-      result.add assumption(desig, "ron", ron, "ohm", annDefaulted,
-        "typical for a small analog/load switch; state it where the drop " &
-        "across a closed contact matters")
-    if not (roffA.has and roffA.value > 0.0):
-      result.add assumption(desig, "roff", roff, "ohm", annDefaulted,
-        "an open switch is treated as a flat 1 Gohm; real off-isolation " &
-        "falls with frequency and this does not")
-    if not vtA.has:
-      result.add assumption(desig, "vt", vt, "V", annDefaulted,
-        "half of an assumed " & eng(rail, "V") & " control rail")
+      let rail = controlRailFor(ctrlP.net, d)
+      let ronA = annotationFloat(part, "ron")
+      let roffA = annotationFloat(part, "roff")
+      let vtA = annotationFloat(part, "vt")
+      let vhA = annotationFloat(part, "vh")
+      let ron = if ronA.has and ronA.value > 0.0: ronA.value else: float(d.ron)
+      let roff = if roffA.has and roffA.value > 0.0: roffA.value else: float(d.roff)
+      let vt = if vtA.has: vtA.value else: rail * 0.5
+      let vh = if vhA.has: vhA.value else: rail * 0.1
+      if not (ronA.has and ronA.value > 0.0):
+        result.add assumption(desig, "ron", ron, "ohm", annDefaulted,
+          "typical for a small analog/load switch; state it where the drop " &
+          "across a closed contact matters")
+      if not (roffA.has and roffA.value > 0.0):
+        result.add assumption(desig, "roff", roff, "ohm", annDefaulted,
+          "an open switch is treated as a flat 1 Gohm; real off-isolation " &
+          "falls with frequency and this does not")
+      if not vtA.has:
+        result.add assumption(desig, "vt", vt, "V", annDefaulted,
+          "half of an assumed " & eng(rail, "V") & " control rail")
 
-    let inNet = inP.net
-    let outNet = outP.net
-    let ctrlNet = ctrlP.net
-    let modelName = "MSW_" & desig.replace(".", "_")
-    setModel(nl, modelName, swCard(ron, roff, vt, vh))
-    removeComponent(nl, desig)
+      let inNet = inP.net
+      let outNet = outP.net
+      let ctrlNet = ctrlP.net
+      let modelName = "MSW_" & desig.replace(".", "_")
+      setModel(nl, modelName, swCard(ron, roff, vt, vh))
+      removeComponent(nl, desig)
 
-    let s = addComponent(nl, newComponent("S" & desig, kind = "vswitch"))
-    discard connect(s, "1", inNet, ptPassive)
-    discard connect(s, "2", outNet, ptPassive)
-    discard connect(s, "C+", ctrlNet, ptInput)
-    discard connect(s, "C-", ctrlRet, ptInput)
-    s.attrs["value"] = modelName
+      let s = addComponent(nl, newComponent("S" & desig, kind = "vswitch"))
+      discard connect(s, "1", inNet, ptPassive)
+      discard connect(s, "2", outNet, ptPassive)
+      discard connect(s, "C+", ctrlNet, ptInput)
+      discard connect(s, "C-", ctrlRet, ptInput)
+      s.attrs["value"] = modelName
 
-    result.add note(desig & ": modelled as an S switch, " & eng(ron, "ohm") &
-      " on / " & eng(roff, "ohm") & " off, threshold " & eng(vt, "V"))
+      result.add note(desig & ": modelled as an S switch, " & eng(ron, "ohm") &
+        " on / " & eng(roff, "ohm") & " off, threshold " & eng(vt, "V"))
 
 # --- the multi-throw mux -------------------------------------------------
 

@@ -1,6 +1,6 @@
 # Package-root modules
 
-`units.nim`, `stated.nim`, `eng.nim`, `waveform.nim` and `touchstone/` sit *below* every submodule that uses them (several need them, none may own them). `verify.nim` sits *above* every submodule (it needs `contract` and `analysis` together, and neither may depend on it). `run_archive.nim` sits above `spice` and `schematic`. `cli.nim` is the binary.
+`units.nim`, `stated.nim`, `eng.nim`, `waveform.nim`, `plot.nim` and `touchstone/` sit *below* every submodule that uses them (several need them, none may own them). `verify.nim` sits *above* every submodule (it needs `contract` and `analysis` together, and neither may depend on it). `run_archive.nim` sits above `spice` and `schematic`. `cli.nim` is the binary.
 
 ## `touchstone/`
 
@@ -32,6 +32,18 @@ Typed quantities (`Volts`/`Ohms`/`Farads`/…/`Fraction`, plus `Degrees`, `Decib
 
 Curve math over sampled axes (crossings, extrema, rise/settle, harmonics), moved down from `analysis/measure` so the SI engine (`si/`, below `analysis`) shares it. `analysis/measure` re-exports it; its rules are in `analysis/CLAUDE.md`.
 
+## `plot.nim`
+
+SVG line plots for reports, stdlib-only over `eng`: `Plot` (axes, `Series`, `Limit`s with an optional x band, `Marker`s, `VLine`s), `plotSvg`, `stackSvg` (panels sharing x; one legend; x labels at the bottom — a Bode plot). Colours are `var(--vx-s1..8, fallback)` in the dataviz reference order, so the embedding page themes them. Each panel carries `data-xmap`/`data-ymap` and each line `data-name` for a page-side crosshair. Tick labels get enough significant digits to stay distinct (`tickSig`); series are min/max-decimated to `maxPlotPoints`. Presentation only.
+
+## `readiness.nim`
+
+`Check`/`Readiness`, `readiness(d, allowed, board, onStep)`, `exitCode`/`exitLabel`, `claimLint`, `availableCapabilities`, and the wording helpers both renderers share (`capList`, `foldAssumptions`, `marginText`, `statusMark`, `statusJsonName`, `sevLabel`, `claimLabel`, `didYouMean`). Split out of `verify` so `report` can sit between them; `verify` re-exports it, so `import verax/verify` still sees all of it. `Check.step` is the plan-step index (checks with no visible result are dropped, so it is not the check's position). `onStep` goes into `EvalContext.onStep`.
+
+## `report/` and `report.nim`
+
+The simulation test report — see `report/CLAUDE.md`. `verify` imports it for `--report=`.
+
 ## `verify.nim`
 
 The runner: checks a `Design` and renders one *readiness report*.
@@ -39,9 +51,10 @@ The runner: checks a `Design` and renders one *readiness report*.
 - **It imports `analysis/evaluators/contract_eval` unconditionally.** Without it, a valid claim reports `no evaluator produces X` (false) instead of `requires capSpiceAc, which was not offered` (true and actionable). What is *offered* stays the caller's choice via `allowed`.
 - **The report is rendered fresh, not composed** from `report`/`summary`/`explain*` — those each re-list assertions; ordering and de-duplication are the product. Section order: structure, CHECKS, failures, NOT CHECKED, MOVED, summary. `NOT CHECKED` is never collapsed — unchecked must not read as passed. Issues on failed/unchecked results print de-duplicated across the whole report; a passing result's issues are not printed.
 - **`CHECKS` is one block per analysis run**, which is why `readiness` goes through `runPlan` (one `seq` per step) not `evaluate` (flattened). Each block shows `ran:` (`Evaluator.setupDoc`, falling back to the setup key; a raising `setupDoc` is caught), `assuming:` (folded by `foldAssumptions` on `(key, value, unit, detail)` — which is why `annotations.note(entity, detail)` exists: a designator baked into the sentence can't be folded), and the claims. `FAILED` and `NOT CHECKED` share `renderClaim`. Claims that reached no test are listed only under `NOT CHECKED`.
-- **A `Readiness` never holds an `AnalysisReport`** — a test pins rendered size so curve data can't leak in.
+- **A `Readiness` never holds an `AnalysisReport`** — a test pins rendered size so curve data can't leak in. The HTML report gets curves through the run observer instead (`report/collect`).
+- `--report=<file>` runs `collectReport` in place of `readiness`, writes the report (its message to **stderr**, so `--format=json` stays parseable), and prints/returns exactly what it would have otherwise.
 - `--format=text|json|junit`. `renderJson` (`verax.readiness/1`) is hand-built; every float goes through `jnum` so `NaN`/`Inf` become `null`. `results[]` is authoritative and references `checks[]` by index. **Nothing else may write to stdout during `readiness`** or `--format=json | jq` breaks. JUnit maps not-evaluated/not-evaluable to `<skipped>` with the reason as message.
-- Margins: `contract/evaluate.marginOf` computes, `verify.marginText` words it — don't re-derive `Expectation.bounds` arithmetic here.
+- Margins: `contract/evaluate.marginOf` computes, `readiness.marginText` words it — don't re-derive `Expectation.bounds` arithmetic here.
 - `--baseline=<path>` diffs against a prior JSON report; a missing/unparseable baseline is a usage error (`exitCompile`), never silently skipped. A unit change is reported as incomparable, never differenced.
 - `didYouMean` ranks quantities by edit distance for an unknown quantity. `claimLint` flags a unitless claim against a quantity with a unit (e.g. `<= 5.pct` vs a measurement in percent is off by 100×), using the producer's declared `Evaluator.units` (so unrun claims are flagged too), else the measured unit. `verax quantities` shows each quantity's unit and the conditions it accepts.
 - **Catalog** (`describeRoles`/`describeRole`/`describeQuantities`/`describeAnnotations`) returns strings because both the CLI and MCP server use them. Reachability is *computed* by `claimingRoles()` — expanding every role with all params stated, then each param alone, because a param can *redirect* a claim (`gain_stage.atF`). Role params are stated as the placeholder `"1"`: a string-valued mode parameter therefore selects no branch and hides claims (see `contract/CLAUDE.md`). An expander that raises yields nothing rather than breaking `verax roles`.

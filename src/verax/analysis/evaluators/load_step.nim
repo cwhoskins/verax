@@ -17,6 +17,7 @@ proc measurementOnly(spec: var LoadStepSpec) =
 
 proc loadStepSpecOf(a: Assertion): LoadStepSpec =
   result = defaultLoadStepSpec()
+  applyScopeConditions(a, result.scope)
   measurementOnly(result)
   result.iFrom = conditionFloat(a, "step_from", 0.0)
   result.iTo = conditionFloat(a, "step_to", 0.0)
@@ -36,7 +37,7 @@ proc loadStepDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
   let rail = subjectNet(d, batch[0])
   let spec = loadStepSpecOf(batch[0])
-  result = "`.tran` over the whole design as authored -- not isolated, so " &
+  result = "`.tran` over everything connected to the measurement (the `source_closed` scope: nothing terminated), so " &
            "the rail has to hold itself up rather than be held by a boundary " &
            "source. A constant-current sink injected at net '" & rail &
            "' steps from " & eng(spec.iFrom, "A") & " to " &
@@ -80,7 +81,7 @@ proc registerLoadStepEvaluator*() =
   registerEvaluator(Evaluator(
     name: "spice.load_step", produces: @loadStepQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
-    conditions: @["step_from", "step_to", "step_edge", "step_at", "step_hold",
+    conditions: @["ic_sinks", "step_from", "step_to", "step_edge", "step_at", "step_hold",
                   "step_recover", "step_points", "step_band"],
     units: {"step_droop_v": "V", "step_droop_pct": "%",
             "step_overshoot_v": "V", "step_overshoot_pct": "%",

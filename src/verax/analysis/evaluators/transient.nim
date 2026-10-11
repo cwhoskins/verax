@@ -14,6 +14,7 @@ proc measurementOnly(spec: var TransientSpec) =
 
 proc transientSpecOf(a: Assertion): TransientSpec =
   result = defaultTransientSpec()
+  applyScopeConditions(a, result.scope)
   measurementOnly(result)
   let (tSettle, tWindow) = transientWindow(a)
   result.tSettle = tSettle
@@ -26,7 +27,7 @@ proc transientDoc(ctx: EvalContext, batch: seq[Assertion]): string =
   let d = ctx.design
   let rail = subjectNet(d, batch[0])
   let (tSettle, tWindow) = transientWindow(batch[0])
-  result = "`.tran` over the whole design as authored -- not isolated, so " &
+  result = "`.tran` over everything connected to the measurement (the `source_closed` scope: nothing terminated), so " &
            "the node has to arrive where it arrives rather than be held " &
            "there by a boundary source. Reading net '" & rail & "'"
   if tSettle > 0.0:
@@ -56,7 +57,7 @@ proc registerTransientEvaluator*() =
   registerEvaluator(Evaluator(
     name: "spice.transient", produces: @transientQuantities,
     needs: {capSpiceTran}, arity: 1 .. 1, subjectKinds: {skNet},
-    conditions: @["t_settle", "t_window"],
+    conditions: @["t_settle", "t_window", "ic_sinks"],
     units: {"settled_v": "V", "ripple_pp": "V", "settled_min": "V",
             "settled_max": "V"}.toTable,
     setupKey: transientKey, setupDoc: transientDoc, run: runTransient))

@@ -8,6 +8,9 @@ import ../netlist/formats/spice as spiceFormat
 import ./backend
 import ./xspice/cmpath
 import ./xspice/instance
+import ./provenance
+
+export provenance.BenchInfo, provenance.BenchItem, provenance.BenchRole
 
 export backend
 
@@ -123,6 +126,45 @@ var runPictureWriter: RunPictureWriter
 proc setRunPictureWriter*(w: RunPictureWriter) =
   ## Installs (or, with `nil`, removes) the per-run picture writer.
   runPictureWriter = w
+
+type
+  RunRecord* = object
+    ## One ngspice run as an observer sees it, success or not. `netlist` is
+    ## the derived fragment that was simulated (isolated, flattened,
+    ## substituted), not the design.
+    label*, analysis*: string
+    setup*: seq[string]
+    netlist*: Netlist
+    ok*: bool
+    error*: string        ## the `SpiceSimError` message when `ok` is false
+    result*: SimResult    ## empty when `ok` is false
+    log*: string          ## ngspice's `-o` log, kept even on success
+    deck*: string         ## the deck text that ran
+    ms*: int
+    bench*: BenchInfo     ## what the analysis declared (empty if it didn't)
+
+  RunObserver* = proc (r: RunRecord) {.closure.}
+    ## Sees every run after it finishes. A hook, like `RunPictureWriter`,
+    ## so a report can keep curves and logs without `spice` knowing about
+    ## it and without anything on disk.
+
+var runObserver: RunObserver
+
+proc setRunObserver*(o: RunObserver) =
+  ## Installs (or, with `nil`, removes) the run observer.
+  runObserver = o
+
+proc clearRunObserver*() =
+  runObserver = nil
+
+proc notifyRunObserver(r: RunRecord) =
+  ## Best effort: an observer that raises must not change what a run
+  ## returns or raises.
+  if runObserver == nil: return
+  try:
+    runObserver(r)
+  except CatchableError:
+    discard
 
 proc keepSchematic(nl: Netlist, dir, slot: string) =
   ## Draws the derived netlist into the run archive, when one is kept and a
@@ -289,7 +331,8 @@ proc saveCurrentsCard*(nl: Netlist, analysis: string): string =
   ".save " & toks.join(" ")
 
 proc run*(nl: Netlist, analysis: string, setup: seq[string] = @[],
-          codemodels: seq[string] = @[], label = ""): SimResult =
+          codemodels: seq[string] = @[], label = "",
+          bench = BenchInfo()): SimResult =
   ## Runs `nl` through ngspice in batch mode and returns the vectors.
   ##
   ## **`analysis` and `setup` are separate**: only one analysis plot can be
@@ -340,6 +383,7 @@ proc run*(nl: Netlist, analysis: string, setup: seq[string] = @[],
   var status = "failed"
   var plot, dataText = ""
   var nvars, npoints = 0
+  var runError = ""
   try:
   # The netlist's components say which code models survived cloning,
   # flattening, substitution and isolation; an explicit argument still
@@ -417,7 +461,22 @@ proc run*(nl: Netlist, analysis: string, setup: seq[string] = @[],
                  of sdReal: v.values.len
                  of sdComplex: v.cvalues.len)
       break
+  except CatchableError as e:
+    runError = e.msg
+    raise
   finally:
+    if runObserver != nil:
+      var rec = RunRecord(label: label, analysis: analysis, setup: setup,
+                          netlist: nl, ok: status == "ok", error: runError,
+                          ms: int((epochTime() - started) * 1000),
+                          bench: bench)
+      if rec.ok: rec.result = result
+      try:
+        if fileExists(logPath): rec.log = readFile(logPath)
+        if fileExists(deckPath): rec.deck = readFile(deckPath)
+      except CatchableError:
+        discard
+      notifyRunObserver(rec)
     if archiving:
       var rawBytes = 0
       try:
@@ -430,7 +489,8 @@ proc run*(nl: Netlist, analysis: string, setup: seq[string] = @[],
     else:
       removeDir(workDir)
 proc run*(nl: Netlist, cards: seq[string],
-          codemodels: seq[string] = @[], label = ""): SimResult =
+          codemodels: seq[string] = @[], label = "",
+          bench = BenchInfo()): SimResult =
   ## The older one-seq shape. More than one card raises rather than guess
   ## which is the analysis; use `run(nl, analysis, setup = ...)`.
   if cards.len == 0:
@@ -453,5 +513,5 @@ proc run*(nl: Netlist, cards: seq[string],
       (if analyses.len == 1: analyses[0] else: "an analysis")
       else: "e.g. .ic with .tran ... uic") &
       " -- call run(nl, analysis, setup = @[...]), which says which is which.")
-  run(nl, cards[0], @[], codemodels, label)
+  run(nl, cards[0], @[], codemodels, label, bench)
 

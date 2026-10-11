@@ -13,9 +13,9 @@ import ../../netlist/types
 import ../../netlist/graph
 import ../../netlist/formats/spice as spiceFormat
 import ../../spice/isolate
+import ../../spice/bench
 import ../../spice/transform
 import ../../spice/models
-import ../../spice/flatten
 import ../../spice/probes
 import ../../spice/ngspice
 import ../measure
@@ -99,19 +99,14 @@ proc analyzePdn*(nl: Netlist, powerNet: string, groundNet = "",
 
   # Stand in for undescribed parts *before* isolating; `isolate` won't
   # traverse them afterwards.
-  var cloneNets: OrderedTable[string, Net]
-  # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
-  # nested XSPICE component's ports use post-flatten net names.
-  let work = clone(nl, cloneNets)
-  discard flattenForSim(work, spec.flattenHierarchy, spec.keepInstances)
-  applySimReplacements(work, purpose = spSmallSignal)
-  if spec.modelUnmodelledParts:
-    result.assumptions.add expandPinModels(work, spec.pinModels)
-
-  var globalNets: OrderedTable[string, Net]
-  let iso = isolateNets(work, [powerNet], isoSpec, globalNets)
-  result.assumptions.add iso.assumptions
-  let frag = iso.netlist
+  var b = openBench(nl, "pdn:" & powerNet, spSmallSignal,
+                    spec.flattenHierarchy, spec.keepInstances)
+  if spec.modelUnmodelledParts: b.modelUnmodelled(spec.pinModels)
+  b.scopeBench ScopeRequest(strategy: "terminated", seedNets: @[powerNet],
+                            isolation: isoSpec)
+  result.assumptions.add b.assumptions
+  let iso = (dropped: b.scoped.region.dropped)
+  let frag = b.netlist
 
   var caps: seq[Component]
   for _, c in frag.components:
@@ -137,11 +132,13 @@ proc analyzePdn*(nl: Netlist, powerNet: string, groundNet = "",
       "are not represented")
 
   let probe = addImpedanceProbe(frag, frag.nets[powerNet], frag.nets["0"])
+  b.stimulus(probe.source, "1 A AC injected into '" & powerNet & "'")
+  b.probe(powerNet, "V(" & powerNet & ") is the rail's impedance in ohms")
 
   let card = ".ac dec " & $spec.ptsPerDecade & " " &
              spiceFormat.spiceValue(spec.fStart) & " " & spiceFormat.spiceValue(spec.fStop)
   try:
-    result.raw = run(frag, @[card], label = "pdn:" & powerNet)
+    result.raw = b.run(@[card], label = "pdn:" & powerNet)
   except SpiceSimError as e:
     result.issues.add newIssue(KindSimulationFailed, sevWarning,
       "ngspice could not sweep the isolated PDN fragment: " & e.msg)

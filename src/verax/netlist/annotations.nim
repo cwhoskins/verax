@@ -208,6 +208,12 @@ const builtinAnnotations* = [
   AnnDef(key: "current_rating", kind: akFloat, unit: "A", scopes: {asComponent},
     doc: "Maximum continuous current. For an inductor see `isat` as well: " &
          "they are different limits and the smaller one governs."),
+  AnnDef(key: "supply_current", kind: akFloat, unit: "A",
+    scopes: {asComponent, asPin},
+    doc: "Steady current a part draws from its supply, on the part (one " &
+         "supply pin) or on each supply pin. Read by the `source_closed` " &
+         "scope, which may stand a load IC in as a constant sink at this " &
+         "current instead of its per-pin stand-in."),
   AnnDef(key: "isat", kind: akFloat, unit: "A", scopes: {asComponent},
     doc: "Inductor saturation current -- where the core stops behaving " &
          "linearly and inductance collapses. Distinct from `current_rating`, " &
@@ -710,6 +716,10 @@ proc voltageRating*(c: Component): AnnValue[Volts] =
   annotationAs(c, "voltage_rating", Volts)
 proc currentRating*(c: Component): AnnValue[Amps] =
   annotationAs(c, "current_rating", Amps)
+proc supplyCurrent*(c: Component): AnnValue[Amps] =
+  annotationAs(c, "supply_current", Amps)
+proc supplyCurrent*(p: Pin): AnnValue[Amps] =
+  annotationAs(p, "supply_current", Amps)
 proc powerRating*(c: Component): AnnValue[Watts] =
   annotationAs(c, "power_rating", Watts)
 proc package*(c: Component): AnnValue[string] = annotation(c, "package")

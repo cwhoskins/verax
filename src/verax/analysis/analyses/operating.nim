@@ -19,9 +19,9 @@ import ../../netlist/types
 import ../../netlist/graph
 import ../../netlist/annotations
 import ../../spice/transform
-import ../../spice/flatten
 import ../../spice/models
 import ../../spice/ngspice
+import ../../spice/bench
 
 type
   OperatingPoint* = object
@@ -50,16 +50,16 @@ proc solveOperatingPoint*(nl: Netlist, spec = defaultOperatingSpec()): Operating
   ## terminate rails at the nominal voltages consumers are trying to find.
   # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
   # nested XSPICE component's ports use post-flatten net names.
-  var globalNets: OrderedTable[string, Net]
-  let simNl = clone(root(nl), globalNets)
-  if spec.flattenHierarchy: discard flatten(simNl)
-  applySimReplacements(simNl, purpose = spOperating)
+  var b = openBench(root(nl), "operating point", spOperating, spec.flattenHierarchy)
   if spec.modelUnmodelledParts:
-    result.assumptions.add expandPinModels(simNl, spec.pinModels)
+    b.modelUnmodelled(spec.pinModels)
+  b.scopeBench ScopeRequest(strategy: "whole")
+  result.assumptions.add b.assumptions
+  let simNl = b.netlist
 
   var sim: SimResult
   try:
-    sim = run(simNl, @[".op"], label = "operating point")
+    sim = b.run(@[".op"], label = "operating point")
   except CatchableError as e:
     result.reason = e.msg
     return

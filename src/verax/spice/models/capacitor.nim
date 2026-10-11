@@ -10,6 +10,7 @@ import ../../netlist/annotations
 import ../../netlist/formats/spice as spiceFormat
 import ./common
 import ./derating
+import ../provenance
 
 type
   Parasitic* = tuple[esr, esl: float]
@@ -83,38 +84,39 @@ proc expandCapacitorParasitics*(nl: Netlist, d = defaultParasitics(),
       caps.add c
 
   for cap in caps:
-    let pins = orderedPins(cap)
-    if pins.len != 2:
-      raise newException(NetlistError,
-        "cannot expand parasitics for " & cap.designator & ": expected 2 pins, got " & $pins.len)
-    if pins[0].net == nil or pins[1].net == nil:
-      continue  # a dangling cap contributes nothing; leave it exactly as-is
+    provenance(nl, cap, brModel):
+      let pins = orderedPins(cap)
+      if pins.len != 2:
+        raise newException(NetlistError,
+          "cannot expand parasitics for " & cap.designator & ": expected 2 pins, got " & $pins.len)
+      if pins[0].net == nil or pins[1].net == nil:
+        continue  # a dangling cap contributes nothing; leave it exactly as-is
 
-    # Derate first: it rewrites the capacitance itself.
-    result.add derateCapacitor(cap, derating, bias)
+      # Derate first: it rewrites the capacitance itself.
+      result.add derateCapacitor(cap, derating, bias)
 
-    let (par, notes) = parasiticFor(cap, d)
-    result.add notes
+      let (par, notes) = parasiticFor(cap, d)
+      result.add notes
 
-    let farNet = pins[1].net
-    let midR = addNet(nl, newNet(cap.designator & "_ESR_N"))
-    let midL = addNet(nl, newNet(cap.designator & "_ESL_N"))
+      let farNet = pins[1].net
+      let midR = addNet(nl, newNet(cap.designator & "_ESR_N"))
+      let midL = addNet(nl, newNet(cap.designator & "_ESL_N"))
 
-    disconnect(pins[1])
-    connect(pins[1], midR)
+      disconnect(pins[1])
+      connect(pins[1], midR)
 
-    let r = addComponent(nl, newComponent(
-      $spiceFormat.designatorPrefix("resistor") & cap.designator & "_ESR",
-      kind = "resistor"))
-    discard connect(r, "1", midR, ptPassive)
-    discard connect(r, "2", midL, ptPassive)
-    r.attrs["value"] = spiceValue(par.esr)
+      let r = addComponent(nl, newComponent(
+        $spiceFormat.designatorPrefix("resistor") & cap.designator & "_ESR",
+        kind = "resistor"))
+      discard connect(r, "1", midR, ptPassive)
+      discard connect(r, "2", midL, ptPassive)
+      r.attrs["value"] = spiceValue(par.esr)
 
-    let l = addComponent(nl, newComponent(
-      $spiceFormat.designatorPrefix("inductor") & cap.designator & "_ESL",
-      kind = "inductor"))
-    discard connect(l, "1", midL, ptPassive)
-    discard connect(l, "2", farNet, ptPassive)
-    l.attrs["value"] = spiceValue(par.esl)
+      let l = addComponent(nl, newComponent(
+        $spiceFormat.designatorPrefix("inductor") & cap.designator & "_ESL",
+        kind = "inductor"))
+      discard connect(l, "1", midL, ptPassive)
+      discard connect(l, "2", farNet, ptPassive)
+      l.attrs["value"] = spiceValue(par.esl)
 
-    cap.attrs["parasitics.expanded"] = "true"
+      cap.attrs["parasitics.expanded"] = "true"

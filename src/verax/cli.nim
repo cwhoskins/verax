@@ -148,6 +148,13 @@ proc cmdBom(file, pathFlag, outPath: string, extra: seq[string]): int =
   forward.add extra
   cmdCheck(file, pathFlag, forward)
 
+# --- report -------------------------------------------------------------
+
+proc cmdReport(file, pathFlag, outPath: string, extra: seq[string]): int =
+  ## As `cmdBom`: `--report=` is read by the design binary, which runs the
+  ## checks once and both prints the usual result and writes the report.
+  cmdCheck(file, pathFlag, @["--report=" & absolutePath(outPath)] & extra)
+
 # --- constraints --------------------------------------------------------
 
 proc cmdConstraints(file, pathFlag: string, extra: seq[string]): int =
@@ -225,6 +232,10 @@ usage:
                                     assemble a board from a design's footprints
   verax bom <file.nim> [-o <out>] [--bom-*]
                                     compile a bill of materials
+  verax report <file.nim> [-o <out.html|out.pdf>] [check flags]
+                                    check a design and write a test report:
+                                    per test its circuit, setup, criteria,
+                                    schematic, plots, verdicts and logs
   verax constraints <file.nim> [--net=<n>] [--dru=<out.kicad_dru>]
                     [--stackup-layers=N] [--format=json] [-o <out>]
                                     SI routing rules for every si_net,
@@ -247,6 +258,10 @@ check flags (forwarded to the design file):
                      no ngspice needed; included by --offline)
   --board=<file.kicad_pcb>
                      the routed board si_net claims are checked on
+  --report=<file.html|file.pdf>
+                     also write the test report there (a .pdf needs a
+                     headless chromium/weasyprint/wkhtmltopdf on PATH;
+                     without one the .html beside it is kept)
   --verbose          show the full plan and the passing claims
   --strict           treat warnings and unevaluated claims as failures
   --keep-runs=<dir>  archive every simulation there: the deck handed to
@@ -371,6 +386,27 @@ proc main(): int =
     if file.len == 0:
       raise newException(ValueError, "bom needs a file: verax bom <file.nim>")
     cmdBom(file, pathFlag, outPath, forward)
+  of "report":
+    var file = ""
+    var outPath = ""
+    var forward: seq[string]
+    var i = 0
+    while i < rest.len:
+      let a = rest[i]
+      if a == "-o" or a == "--out":
+        inc i
+        if i >= rest.len:
+          raise newException(ValueError, "-o needs a path: verax report <file.nim> -o <out.html>")
+        outPath = rest[i]
+      elif file.len == 0 and not a.startsWith("-"):
+        file = a
+      else:
+        forward.add a
+      inc i
+    if file.len == 0:
+      raise newException(ValueError, "report needs a file: verax report <file.nim> [-o <out.html>]")
+    if outPath.len == 0: outPath = file.splitFile.name & "_report.html"
+    cmdReport(file, pathFlag, outPath, forward)
   of "constraints":
     var file = ""
     var forward: seq[string]

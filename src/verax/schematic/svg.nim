@@ -1,7 +1,7 @@
 ## Self-contained SVG writer for a `Schematic`: colours and styles inlined,
 ## no stylesheet or external resources. Pure string building.
 
-import std/[math, strutils]
+import std/[math, sets, strutils]
 import ../netlist/types
 import ./scene
 import ./layout
@@ -460,8 +460,19 @@ proc drawDivider(d: SchematicDivider): seq[string] =
       "\" font-family=\"monospace\" font-size=\"12\" fill=\"#999999\">" &
       xmlEscape(d.label) & "</text>"
 
-proc renderSvg*(s: Schematic): string =
-  ## The whole scene as one self-contained SVG document.
+const highlightColour* = "#eb6834"
+  ## Underlay for highlighted nets: a translucent band beneath the wire, so
+  ## the wire itself is drawn exactly as without highlighting.
+
+type HighlightClass* = tuple[nets: HashSet[string], colour: string]
+  ## One highlight: the nets to underlay and the band's colour.
+
+proc renderSvg*(s: Schematic, classes: openArray[HighlightClass]): string =
+  ## The whole scene as one self-contained SVG document, with every wire on
+  ## a net of a class (a scalar net, or a member of a collapsed bus)
+  ## underlaid in that class's colour, classes painted in order. No class
+  ## (or only empty ones) adds nothing, so the output is byte-identical to
+  ## `renderSvg(s)`.
   let w = s.maxX - s.minX
   let h = s.maxY - s.minY
   var L: seq[string]
@@ -476,6 +487,17 @@ proc renderSvg*(s: Schematic): string =
   for g in drawGrid(s.minX, s.minY, s.maxX, s.maxY): L.add "  " & g
   for d in s.dividers:
     for e in drawDivider(d): L.add "  " & e
+
+  for (highlight, colour) in classes:
+    if highlight.len == 0: continue
+    for wire in s.wires:
+      var hit = wire.net in highlight
+      for m in wire.members:
+        if m in highlight: hit = true
+      if hit and wire.points.len >= 2:
+        L.add "  " & polyAt(wire.points, colour, "9").replace(
+          "<polyline ", "<polyline stroke-opacity=\"0.45\" " &
+          "stroke-linecap=\"round\" stroke-linejoin=\"round\" ")
 
   for wire in s.wires:
     # The glyph is perpendicular to the stub, so sideways/downward stubs get
@@ -541,6 +563,15 @@ proc renderSvg*(s: Schematic): string =
 
   L.add "</svg>"
   result = L.join("\n") & "\n"
+
+proc renderSvg*(s: Schematic, highlight: HashSet[string]): string =
+  ## One highlight class in `highlightColour`; an empty set is
+  ## byte-identical to `renderSvg(s)`.
+  renderSvg(s, [(nets: highlight, colour: highlightColour)])
+
+proc renderSvg*(s: Schematic): string =
+  ## The whole scene as one self-contained SVG document.
+  renderSvg(s, initHashSet[string]())
 
 proc renderSvg*(nl: Netlist): string =
   ## Convenience: lay out `nl` and render it.
