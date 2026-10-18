@@ -364,6 +364,40 @@ prerequisites — the dependencies are stated where they exist.
     evaluators still decline, and still need the pair-identity and accuracy
     decisions above -- the board-delivery half is done.
 
+82. **A connector cannot say "a cable, then another device"** (§82,
+    2026-10-11). The far side of a board edge has two ways to be stated, and
+    neither can hold a cable's S-parameters in front of an IBIS buffer.
+
+    **What exists.** `spice/boundary.driveConnector` (ngspice path) records
+    lumped drives only: `driveSource` (V behind R/L), `driveLoad`,
+    `driveSink`, `driveOpen`. It has no S-parameter or IBIS form, and nothing
+    on the ngspice side runs a Touchstone file: the `sparams` annotation is
+    free text, and its doc defers a `sparam_block` XSPICE model to "a later
+    phase". On the native SI path, `ibis_mate_file`/`_component`/`_model` on
+    a connector already make it the IBIS buffer of whatever is plugged in
+    (`analysis/analyses/si.ibisSetup`; `designs/datalogger` uses it for the
+    USB-C host). `si/topology.SiTemplate.channel`/`hasChannel` puts a
+    Touchstone 2-port between the trunk and the receiver, simulated by its
+    impulse response (`si/engine/sblock`) — but only point-to-point, only a
+    2-port, and only from code: no annotation, no `si_net` claim, nothing in
+    `analysis/` or `contract/` sets it, and `si/board.nim` (the routed-board
+    path, `--board=`) has no way to put one at a connector.
+
+    **What "cable + device" needs**, cheapest first:
+    1. A connector annotation naming the cable's file — a **new key** (e.g.
+       `channel_file`), not a second meaning for `sparams`, which describes
+       the part's own S-parameters.
+    2. `deriveSiConstraints`' template building reading it into
+       `SiTemplate.channel`.
+    3. `si/board.nim` inserting the block between the connector's pad and
+       the mate's IBIS receiver, so routed-board checks see the cable.
+    4. For ngspice-side analyses (PDN, power transients), the `sparam_block`
+       model or a fitted equivalent circuit — a separate, larger job; a
+       `driveSource(rout, lout)` is usually adequate for power.
+
+    1–3 are small: the engine already does the physics, only the plumbing
+    from a design to it is missing.
+
 ---
 
 ## Roles not yet written
