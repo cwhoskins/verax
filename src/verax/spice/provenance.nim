@@ -116,6 +116,9 @@ type
       ## Stimuli, probes and loads, in the order added.
     detached*: seq[string]
       ## Design parts removed so a stimulus could take their place.
+    unmated*: seq[string]
+      ## Connectors with nothing plugged in (the `unmated` condition):
+      ## removed, so no stand-in for the mate is invented.
     dropped*: seq[string]
       ## Parts the scope reached and cut away.
 

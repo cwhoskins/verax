@@ -152,6 +152,11 @@ proc mcuSheet*(xtal = hse8MHz(), boardCurrentMa = 150.0): Netlist =
       pin "BOOT0", GND,  kind = ptInput
       pin "PH0", xin,  kind = ptPassive
       pin "PH1", xout, kind = ptPassive
+      # PA13/PA15/PB4 are pulled up and PA14 down out of reset -- stated once,
+      # in the part's pinmux table (`../../lib/stm32h563.nim`'s
+      # `resetPulls`), not here. They are what holds the TAP with `J3`
+      # unfitted (`dnp`); the board sheet's `unmated = "J3"` claims read
+      # them. U1's one supply pin is the pull-ups' rail.
       pin "PA14", jtag["tck"],   kind = ptInput,  function = "JTAG.tck"
       pin "PA13", jtag["tms"],   kind = ptInput,  function = "JTAG.tms"
       pin "PA15", jtag["tdi"],   kind = ptInput,  function = "JTAG.tdi"

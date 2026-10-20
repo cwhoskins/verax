@@ -1,4 +1,7 @@
 import std/[tables, unittest, strutils]
+import verax/units
+import verax/netlist/graph
+import verax/netlist/annotations
 
 import verax/netlist/dsl
 import verax/analysis
@@ -258,3 +261,83 @@ test "analyzeIO includes it":
   var kinds: seq[string]
   for i in found: kinds.add i.kind
   check "rail_voltage_unknown" in kinds
+
+# --- connectors (the mate's drivers) and internal pulls ------------------
+
+proc tapBoard(pull: string): Netlist =
+  ## A debug header driving an MCU input, with `pull` deciding what else
+  ## holds the line: "", "internal" (a stated pull-up), or "resistor".
+  result = netlist("tap"):
+    net tck, kind = ntSignal
+    net vdd, kind = ntPower, voltage = "3.3"
+    net gnd, kind = ntGround, name = "0"
+    component J1, kind = "connector":
+      pin "TCK", tck, kind = ptOutput
+      pin "GND", gnd, kind = ptGround
+    component U1, kind = "mcu":
+      pin "PA14", tck, kind = ptInput
+      pin "VDD", vdd, kind = ptPower
+      pin "GND", gnd, kind = ptGround
+  if pull == "internal":
+    setAnnotation(findPin(result, "U1.PA14"), "pull_up", 40.kohm)
+  elif pull == "resistor":
+    let r = addComponent(result, newComponent("R1", kind = "resistor"))
+    discard connect(r, "1", findNet(result, "tck"), ptPassive)
+    discard connect(r, "2", findNet(result, "vdd"), ptPassive)
+
+test "an input held only by a connector's driver floats when unmated":
+  let issues = checkDCPaths(tapBoard(""))
+  check issues.len == 1
+  check issues[0].kind == "input_floats_unmated"
+  check issues[0].severity == sevWarning
+  check issues[0].pins[0].name == "PA14"
+  check issues[0].components[0].designator == "J1"
+  check "J1" in issues[0].message
+
+test "a stated internal pull holds the line with the connector unmated":
+  check checkDCPaths(tapBoard("internal")).len == 0
+
+test "an external pull resistor holds the line with the connector unmated":
+  check checkDCPaths(tapBoard("resistor")).len == 0
+
+test "a stated pull is a DC terminus on its own, with no connector":
+  let nl = netlist("strap"):
+    net boot, kind = ntSignal
+    net vdd, kind = ntPower, voltage = "3.3"
+    net gnd, kind = ntGround, name = "0"
+    component U1, kind = "mcu":
+      pin "BOOT", boot, kind = ptInput
+      pin "VDD", vdd, kind = ptPower
+      pin "GND", gnd, kind = ptGround
+  setAnnotation(findPin(nl, "U1.BOOT"), "pull_down", 40.kohm)
+  check checkDCPaths(nl).len == 0
+
+test "floatsWithout names only the connectors it was asked about":
+  let nl = tapBoard("")
+  let net = findNet(nl, "tck")
+  check floatsWithout(net, ["J1"]).floats
+  check not floatsWithout(net, ["J9"]).floats
+  check not floatsWithout(findNet(tapBoard("internal"), "tck"), ["J1"]).floats
+
+test "checkPulls: both pulls on one pin, and an unresolvable pull rail":
+  let nl = netlist("bad_pulls"):
+    net a, kind = ntSignal
+    net b, kind = ntSignal
+    net v1, kind = ntPower, voltage = "3.3"
+    net v2, kind = ntPower, voltage = "1.8"
+    net gnd, kind = ntGround, name = "0"
+    component U1, kind = "mcu":
+      pin "A", a, kind = ptInput
+      pin "B", b, kind = ptInput
+      pin "VDD", v1, kind = ptPower
+      pin "VDDIO", v2, kind = ptPower
+      pin "GND", gnd, kind = ptGround
+  setAnnotation(findPin(nl, "U1.A"), "pull_up", 40.kohm)
+  setAnnotation(findPin(nl, "U1.A"), "pull_down", 40.kohm)
+  setAnnotation(findPin(nl, "U1.B"), "pull_up", 40.kohm)
+  var kinds: seq[string]
+  for i in checkPulls(nl): kinds.add i.kind
+  check kinds == @["pull_conflict", "pull_rail_unresolved"]
+  # Naming the rail resolves it.
+  setAnnotation(findPin(nl, "U1.B"), "pull_rail", "VDDIO")
+  check checkPulls(nl).len == 1

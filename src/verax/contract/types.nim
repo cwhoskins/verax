@@ -9,7 +9,7 @@
 ## failing witness, and room for bench results later. A quantity nothing
 ## produces shows up as unevaluable immediately.
 
-import std/[editdistance, math, sets, strutils, tables]
+import std/[algorithm, editdistance, math, sets, strutils, tables]
 import ../netlist/issue
 import ../netlist/annotations
 import ../eng
@@ -292,7 +292,20 @@ let builtinConditions = [
                     "its stand-in"),
   ConditionDef(key: "sweep", kind: cdText, allowed: @["source", "load"],
                doc: "which DC sweep: an existing source, or an injected load"),
+  ConditionDef(key: "unmated", kind: cdText,
+               doc: "connectors with nothing plugged in, comma-separated " &
+                    "designators (\"J3\", \"J2,J3\"): each is removed from " &
+                    "the bench, so the board is checked with the cable pulled"),
 ]
+
+proc unmatedConnectors*(a: Assertion): seq[string] =
+  ## The `unmated` condition's designators, trimmed and sorted (so a
+  ## setup key built from them is order-independent); empty when absent.
+  if not a.condition.hasKey("unmated"): return
+  for part in a.condition["unmated"].split(','):
+    let d = part.strip()
+    if d.len > 0 and d notin result: result.add d
+  result.sort()
 
 var conditionRegistry: OrderedTable[string, ConditionDef]
 for d in builtinConditions: conditionRegistry[d.key] = d

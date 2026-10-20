@@ -8,6 +8,7 @@ import std/tables
 import ../../netlist/types
 import ../../netlist/graph
 import ../../netlist/annotations
+import ../../netlist/pinmux
 import ../../netlist/kinds
 import ../../netlist/formats/spice as spiceFormat
 import ./common
@@ -60,6 +61,38 @@ proc pinImpedanceFor(p: Pin, c: Component, d: PinModelDefaults):
      "no model for this " & (if c.kind.len > 0: c.kind else: "part") &
      "; stood in from the pin kind (" & $p.kind & ")"), true)
 
+type PullTerminal = tuple[pin: string, ohms: float, net, other: Net, suffix: string]
+
+proc pullTerminals(c: Component, gnd: Net): seq[PullTerminal] =
+  ## `c`'s internal pulls (`pinmux.pinPull`: stated on the pin, or its
+  ## part's pinmux table), resolved to nets while the pins still exist. A
+  ## pull-up whose rail can't be resolved is skipped here;
+  ## `io_check.checkPulls` reports it.
+  for p in orderedPins(c):
+    if p.net == nil or p.net == gnd: continue
+    let pull = pinPull(p)
+    if not pull.has: continue
+    case pull.value.kind
+    of pkUp:
+      let (rail, _) = pullRail(p)
+      if rail != nil and rail != p.net:
+        result.add (pin: p.name, ohms: float(pull.value.ohms), net: p.net,
+                    other: rail, suffix: "_PU")
+    of pkDown:
+      result.add (pin: p.name, ohms: float(pull.value.ohms), net: p.net,
+                  other: gnd, suffix: "_PD")
+
+proc emitPulls(nl: Netlist, c: Component, pulls: seq[PullTerminal]) =
+  for t in pulls:
+    let r = addComponent(nl, newComponent(
+      $spiceFormat.designatorPrefix("resistor") & c.designator & "_" & t.pin & t.suffix,
+      kind = "resistor"))
+    discard connect(r, "1", t.net, ptPassive)
+    discard connect(r, "2", t.other, ptPassive)
+    r.attrs["value"] = spiceValue(t.ohms)
+    r.attrs["models.pin.expanded"] = "true"
+    r.attrs[benchPinKey] = t.pin
+
 proc expandPinModels*(nl: Netlist, d = defaultPinModels(),
                       exclude: openArray[string] = []): seq[Assumption] =
   ## Replaces every component nothing describes (`isPassive` false, no
@@ -95,25 +128,38 @@ proc expandPinModels*(nl: Netlist, d = defaultPinModels(),
   for c in unmodelled:
     # A modelled kind decides its own fate, including declining (left
     # untouched rather than broken into impedances).
+    # A stated internal pull is emitted alongside whatever stands the part
+    # in, so a pulled-up input reads high rather than wherever its stand-in
+    # leaves it.
+    let pulls = pullTerminals(c, gnd)
     let bm = behavioralModelFor(c.kind)
     if bm != nil:
       provenance(nl, c, brStandIn):
         let (handled, notes) = bm(nl, c, gnd)
         result.add notes
-        if handled: c.attrs["models.pin.expanded"] = "true"
+        if handled:
+          c.attrs["models.pin.expanded"] = "true"
+          emitPulls(nl, c, pulls)
       continue
 
-    # Snapshot before removing: the pins go with the component.
+    # Snapshot before removing: the pins go with the component. A pin with a
+    # pull keeps only a *stated* `zin`: the defaulted one is an invented
+    # leak to ground that would pull a pulled-up pin below its rail.
     var terminals: seq[tuple[name: string, z: float, net: Net]]
     for p in orderedPins(c):
       if p.net == nil or p.net == gnd: continue
       let (z, note, invented) = pinImpedanceFor(p, c, d)
       if z <= 0.0: continue
+      var pulled = false
+      for t in pulls:
+        if t.pin == p.name: pulled = true
+      if invented and pulled: continue
       if invented: result.add note
       terminals.add (name: p.name, z: z, net: p.net)
 
     provenance(nl, c, brStandIn):
       removeComponent(nl, c.designator)
+      emitPulls(nl, c, pulls)
 
       for t in terminals:
         let r = addComponent(nl, newComponent(

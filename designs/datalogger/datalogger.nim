@@ -258,8 +258,11 @@ let d = design("datalogger"):
 
   # --- board-level parts ---------------------------------------------------
 
+  # A connector's pin kinds state what is plugged in (`netlist/kinds`'
+  # `connectorKinds`): the sensor at J2 *drives* `ain`, so `AIN` is an
+  # output from the board's point of view.
   component J2, kind = "connector", description = "3p-header":
-    pin "AIN", ain, kind = ptInput
+    pin "AIN", ain, kind = ptOutput
     pin "GND", gnd, kind = ptGround
 
   # ARM/MIPI 20-pin JTAG (2x10, 0.1"), the connector SEGGER documents as
@@ -277,13 +280,18 @@ let d = design("datalogger"):
   # Fitted for bring-up, not for production: `dnp` keeps the header's line
   # on the BOM -- the footprint is on the board and the decision is visible
   # -- but marks it not populated at assembly. A debug board build flips it.
+  #
+  # The TAP pins are bound with the **probe's** modport, `controller`: a
+  # connector's pins describe what is plugged in, and the J-Link is what
+  # drives TCK/TMS/TDI/NTRST and reads TDO. That driver exists only while a
+  # probe is mated -- and with `dnp`, never in production -- so the claims
+  # below check the TAP with `unmated = "J3"` too, where only U1's own
+  # reset-state pulls (`lib/mcu.nim`) hold the lines.
   component J3, kind = "connector", description = "ARM-JTAG-20":
     pin "VTREF",  vdd,          kind = ptPower
-    pin "NTRST",  jtag["ntrst"], kind = ptInput
-    pin "TDI",    jtag["tdi"],   kind = ptInput
-    pin "TMS",    jtag["tms"],   kind = ptInput
-    pin "TCK",    jtag["tck"],   kind = ptInput
-    pin "TDO",    jtag["tdo"],   kind = ptPassive
+    port jtag, controller,
+         pins = {"tck": "TCK", "tms": "TMS", "tdi": "TDI", "tdo": "TDO",
+                 "ntrst": "NTRST"}
     pin "NRESET", nrst,          kind = ptInOut
     pin "GND",    gnd,          kind = ptGround
     spec:
@@ -379,6 +387,37 @@ let d = design("datalogger"):
           id = "REQ-DL-AIN-ISO-001",
           because = "C_IN must block DC between the input connector and the " &
                     "rail; a short across it is a path into VDD"
+
+  # --- with the cables pulled ------------------------------------------------
+  #
+  # `J3` is `dnp`, so in production nothing ever drives the TAP: U1's own
+  # reset-state pulls (`lib/mcu.nim`) are all that hold it. TCK must sit low
+  # so the TAP is never clocked by noise, and TMS/TDI/nTRST high so it stays
+  # in Test-Logic-Reset. 0.3/0.7 x VDD are the STM32's own VIL/VIH.
+  require dc_voltage(jtag["tck"]) <= 0.99.V, unmated = "J3",
+          id = "REQ-DL-JTAG-IDLE-001",
+          because = "with no probe fitted an undriven TCK must read low, or " &
+                    "noise on the header clocks the TAP"
+  require dc_voltage(jtag["tms"]) >= 2.31.V, unmated = "J3",
+          id = "REQ-DL-JTAG-IDLE-002",
+          because = "TMS held high keeps the TAP in Test-Logic-Reset with no " &
+                    "probe fitted"
+  require dc_voltage(jtag["tdi"]) >= 2.31.V, unmated = "J3",
+          id = "REQ-DL-JTAG-IDLE-003",
+          because = "a floating TDI is a CMOS input left to drift; the " &
+                    "reset-state pull-up is what defines it"
+  require dc_voltage(jtag["ntrst"]) >= 2.31.V, unmated = "J3",
+          id = "REQ-DL-JTAG-IDLE-004",
+          because = "nTRST low holds the TAP in reset; it must sit released " &
+                    "(high) with no probe fitted, as the debug logic expects"
+
+  # And the analog input with nothing plugged into J2: the AC-coupled front
+  # end has to bias itself, not lean on whatever the sensor's source is.
+  require dc_voltage(aout) == 1.649.V, band = 2.pct, unmated = "J2",
+          id = "REQ-DL-AOUT-BIAS-002",
+          because = "the ADC input must sit mid-rail with the input " &
+                    "connector empty, or the first conversion after a " &
+                    "sensor is plugged in starts from a rail"
 
   # --- the PDN beyond its worst point ---------------------------------------
   #

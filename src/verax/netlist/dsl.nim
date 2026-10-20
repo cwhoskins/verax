@@ -95,10 +95,12 @@ proc deckSafeValue*(x: float): string =
 
 proc dispatchField(entityVar: NimNode, knownFields: openArray[string], pair: NimNode): NimNode =
   ## Known field name -> typed field assignment; anything else ->
-  ## `.attrs[key] = $value`, except a `Quantity`-typed `value`
-  ## (`value = 2.2.kohm`), written through `deckSafeValue` because `$` gives
-  ## `"2.2 kohm"`, which corrupts a deck line. The branch is chosen by static
-  ## type, so no notation is parsed; a plain string passes through as is.
+  ## `.attrs[key] = $value`, except a `Quantity`: as `value` (`value =
+  ## 2.2.kohm`) it is written through `deckSafeValue` because `$` gives
+  ## `"2.2 kohm"`, which corrupts a deck line; as any other key it goes
+  ## through the typed `setAnnotation` (registered key, unit checked). The
+  ## branch is chosen by static type, so no notation is parsed; a plain
+  ## string passes through as is.
   pair.expectKind(nnkExprEqExpr)
   let key = pair[0]
   key.expectKind(nnkIdent)
@@ -113,9 +115,17 @@ proc dispatchField(entityVar: NimNode, knownFields: openArray[string], pair: Nim
       else:
         setRawAnnotation(`entityVar`, "value", $(`value`))
   else:
-    # Via `setRawAnnotation` so users needn't import `std/tables`.
-    result = newCall(ident"setRawAnnotation", entityVar, newLit(key.strVal),
-                     newCall(ident"$", value))
+    # Via `setRawAnnotation` so users needn't import `std/tables`. A
+    # `Quantity` (`pull_up = 40.kohm`) goes through the typed, checked
+    # `setAnnotation` instead: `$` would store `"40.0 kohm"`, which no
+    # reader parses.
+    let quantityTy = bindSym("Quantity")
+    let keyLit = newLit(key.strVal)
+    result = quote do:
+      when `value` is `quantityTy`:
+        setAnnotation(`entityVar`, `keyLit`, `value`)
+      else:
+        setRawAnnotation(`entityVar`, `keyLit`, $(`value`))
   result.copyLineInfo(pair)
 
 proc handleSpec(entityVar: NimNode, scope: AnnScope, stmt: NimNode,

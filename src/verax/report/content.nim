@@ -81,6 +81,7 @@ type
     rows*: seq[BenchRow]
     dropped*: seq[string]
     detached*: seq[string]
+    unmated*: seq[string]
     folded*: seq[string]
 
   TestSection* = object
@@ -489,6 +490,7 @@ proc benchOf(run: RunRecord, v: View): BenchView =
                                  text: benchNote(c))
   result.dropped = b.dropped
   result.detached = b.detached
+  result.unmated = b.unmated
   for f in v.folded:
     result.folded.add f.part & ": " & f.elements.join(", ")
 

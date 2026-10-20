@@ -109,14 +109,20 @@ type OpCacheEntry = ref object of RootObj
   ## `OperatingPoint`.
   op: OperatingPoint
 
-proc sharedOperatingPoint*(ctx: EvalContext): OperatingPoint =
-  ## One `.op` per run, solved on first request and reused. Scoped to the
-  ## `EvalContext`, so it can never be stale. Shared by `dc_voltage`,
-  ## derating and DC-bias derating of capacitors.
-  if ctx.scratch.hasKey(opScratchKey):
-    return OpCacheEntry(ctx.scratch[opScratchKey]).op
-  result = solveOperatingPoint(root(ctx.design.netlist))
-  ctx.scratch[opScratchKey] = OpCacheEntry(op: result)
+proc sharedOperatingPoint*(ctx: EvalContext, unmated: seq[string] = @[]):
+    OperatingPoint =
+  ## One `.op` per run -- per set of `unmated` connectors -- solved on first
+  ## request and reused. Scoped to the `EvalContext`, so it can never be
+  ## stale. Shared by `dc_voltage`, derating and DC-bias derating of
+  ## capacitors. `unmated` is expected sorted (`unmatedConnectors`).
+  let key = if unmated.len == 0: opScratchKey
+            else: opScratchKey & ".unmated=" & unmated.join(",")
+  if ctx.scratch.hasKey(key):
+    return OpCacheEntry(ctx.scratch[key]).op
+  var spec = defaultOperatingSpec()
+  spec.unmated = unmated
+  result = solveOperatingPoint(root(ctx.design.netlist), spec)
+  ctx.scratch[key] = OpCacheEntry(op: result)
 
 proc applyScopeConditions*(a: Assertion, choice: var ScopeChoice) =
   ## `ic_sinks = "off"` keeps load ICs' stand-ins (see `ScopeChoice`).

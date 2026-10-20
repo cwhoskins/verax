@@ -248,6 +248,51 @@ Without it the pin is stood in with an impedance to ground, which for a power
 inlet means the board has no supply at all. `spice/boundary.asSubcircuit` turns
 the same connectors into the ports of a reusable `.SUBCKT`.
 
+**A connector's pin kinds describe what is plugged in**, not the connector.
+VBUS from a charger is `ptPower`; TCK from a debug probe is `ptOutput`, because
+the probe drives it. Bind an interface with the mate's modport:
+
+```nim
+component J3, kind = "connector":
+  pin "VTREF", vdd, kind = ptPower
+  port jtag, controller,
+       pins = {"tck": "TCK", "tms": "TMS", "tdi": "TDI", "tdo": "TDO",
+               "ntrst": "NTRST"}
+```
+
+That driver only exists while something is mated. `verax check` walks every
+input a second time with connector drivers removed, and reports
+`input_floats_unmated` for any input that nothing else holds. The fix is a pull
+resistor, or the part's own internal pull (below). To check the board with the
+cable pulled, put `unmated` on a `dc_voltage` claim. The named connectors (and
+any `driveConnector` drive on them) are removed from the bench. A claim whose
+net then has no DC path fails as floating rather than reporting a leak's
+voltage:
+
+```nim
+require dc_voltage(jtag["tms"]) >= 2.31.V, unmated = "J3",
+        id = "REQ-JTAG-IDLE", because = "TMS high keeps the TAP in reset"
+```
+
+**Internal pulls.** A part that pulls a pin up or down out of reset holds the
+line with nothing else attached. If the part has a pinmux table, state its
+pulls once in the table, and every design that uses the part inherits them:
+
+```nim
+registerPartPinmux(newPartPinmux("STM32H563", ...,
+  resetPulls = [(pin: "PA13", kind: pkUp, ohms: 40.kohm),
+                (pin: "PA14", kind: pkDown, ohms: 40.kohm)]))
+```
+
+A part with no table, or a single pin that differs from it, gets a pin
+annotation: `pin "BOOT", boot, kind = ptInput, pull_down = 40.kohm`. A pull-up
+returns to the part's supply pin. `pull_rail = "VDDIO"` names the pin to use
+when the part has more than one supply. The DC checks count a pull as a path to
+its rail, and the simulator emits it as a resistor in place of the pin's
+invented 1 MΩ stand-in. A part replaced by its own model owns its pins, so its
+pulls are not emitted; this is reported as an assumption. Either form states
+the **reset** state. A pull that firmware enables later is not a reset pull.
+
 **Connecting boards together.** `asSubcircuit` turns a board's connectors into
 the ports of a reusable `.SUBCKT`, so the same design answers both "what does
 this do on the bench" and "what does it do in the product":

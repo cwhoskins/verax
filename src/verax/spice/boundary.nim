@@ -2,7 +2,11 @@
 ##
 ## A connector's behaviour is whatever is plugged into it, which a netlist
 ## can't know; per-pin stand-ins make a USB inlet's VBUS 1 Mohm to ground
-## with no supply at all. So connectors are treated as boundary markers:
+## with no supply at all. So connectors are treated as boundary markers.
+## Their pin kinds state what the *mate* presents (see
+## `netlist/kinds.connectorKinds`), and a claim's `unmated` condition
+## removes one from the bench (`spice/bench.openBench`) to check the board with
+## nothing plugged in:
 ##
 ## * `asSubcircuit` promotes connector nets to ports and drops the
 ##   connectors -- a **composition** feature (export, reuse); changes no
@@ -22,9 +26,9 @@ import ./models
 import ../units
 import ../eng
 
-const connectorKinds* = ["connector", "header", "receptacle", "socket",
-                         "terminal_block", "test_point"]
-  ## Kinds treated as a board edge rather than as a part.
+# `connectorKinds`/`isConnector` live in `netlist/kinds` (the static checks
+# and pin models need them too); re-exported here, where they started.
+export kinds.connectorKinds, kinds.isConnector
 
 type
   DriveKind* = enum
@@ -64,9 +68,6 @@ proc driveSink*(current: Amps): PortDrive =
 
 proc driveOpen*(): PortDrive =
   PortDrive(kind: dkOpen)
-
-proc isConnector*(c: Component): bool =
-  c != nil and c.kind.toLowerAscii in connectorKinds
 
 proc connectorPorts*(nl: Netlist): seq[tuple[port: string, net: Net]] =
   ## Every net a connector pin sits on, named by the **net** (unique, as

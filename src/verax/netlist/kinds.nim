@@ -23,6 +23,19 @@ const
     ## resistor from a capacitor). A current source's infinite impedance
     ## blocks.
 
+const connectorKinds* = ["connector", "header", "receptacle", "socket",
+                         "terminal_block", "test_point"]
+  ## Kinds treated as a board edge rather than as a part. **A connector's
+  ## pin kinds -- and any `port <iface>, <modport>` on it -- describe what
+  ## is plugged in, not the connector**: a VBUS pin a charger supplies is
+  ## `ptPower`, a TCK pin a debug probe drives is `ptOutput` (the probe's
+  ## `controller` modport). Such a driver exists only while something is
+  ## mated, which `analysis/io_check` checks (`input_floats_unmated`) and
+  ## the `unmated` claim condition simulates.
+
+proc isConnector*(c: Component): bool =
+  c != nil and c.kind.toLowerAscii in connectorKinds
+
 proc classifyConductivity*(c: Component): Conductivity =
   ## Not meaningful for an instance (hierarchy is walked via `hierNet`).
   ## Any unlisted kind is `condAmbiguous`, never guessed.

@@ -72,6 +72,9 @@ type
     scope*: seq[Subject]
       ## The nets and parts the answer was read from, named as flattened
       ## (what a picture of this test should show). Empty: the subjects.
+    noMargin*: bool
+      ## A fail whose number is not a meaningful reading (a floating node:
+      ## whatever leak sits on it), so no margin is computed from it.
 
   EvalContext* = ref object
     ## Everything one evaluation run may see -- the **only** argument an
@@ -918,7 +921,7 @@ type
 proc marginOf*(r: AssertionResult): Option[Margin] =
   ## `none` when nothing was measured, or for `ekRelative`/`ekPredicate`
   ## (limit is another measurement).
-  if r.status notin {esPass, esFail}: return none(Margin)
+  if r.status notin {esPass, esFail} or r.noMargin: return none(Margin)
   let e = r.assertion.expect
   if e.kind in {ekRelative, ekPredicate}: return none(Margin)
   let (lo, hi) = e.bounds

@@ -5,6 +5,7 @@ import verax/netlist/formats/spice
 import verax/netlist/annotations
 import verax/netlist/kinds
 import verax/spice/models
+import verax/units
 
 proc oneCap(attrs: openArray[(string, string)]): Netlist =
   result = newNetlist("t")
@@ -429,3 +430,45 @@ test "a part with a .MODEL card is never stood in for":
   check nl.components.hasKey("D1")          # modelled, left alone
   check not nl.components.hasKey("D2")      # no card, stood in for
   check nl.components.hasKey("RD2_A")
+
+# --- internal pulls ---------------------------------------------------------
+
+suite "internal pulls on a stood-in part":
+  test "a pull-up becomes a resistor to the part's rail, replacing the invented zin":
+    let nl = boardWithMcu()
+    setAnnotation(nl.components["U1"].pins["SDA"], "pull_up", 40.0e3.ohm)
+    let notes = expandPinModels(nl)
+    check nl.components.hasKey("RU1_SDA_PU")
+    check not nl.components.hasKey("RU1_SDA")        # no 1 M leak beside it
+    let r = nl.components["RU1_SDA_PU"]
+    check abs(valueOf(nl, "RU1_SDA_PU") - 40.0e3) < 1e-6
+    var nets: seq[string]
+    for _, p in r.pins: nets.add p.net.name
+    check "sda" in nets and "vdd" in nets
+    for n in notes: check "U1.SDA" notin $n          # nothing invented for SDA
+
+  test "a pull-down goes to ground":
+    let nl = boardWithMcu()
+    setAnnotation(nl.components["U1"].pins["SDA"], "pull_down", 10.0e3.ohm)
+    discard expandPinModels(nl)
+    var nets: seq[string]
+    for _, p in nl.components["RU1_SDA_PD"].pins: nets.add p.net.name
+    check "0" in nets
+
+  test "a stated zin is kept alongside the pull":
+    let nl = boardWithMcu()
+    let sda = nl.components["U1"].pins["SDA"]
+    setAnnotation(sda, "pull_up", 40.0e3.ohm)
+    setAnnotation(sda, "zin", 2.0e6.ohm)
+    discard expandPinModels(nl)
+    check nl.components.hasKey("RU1_SDA_PU")
+    check abs(valueOf(nl, "RU1_SDA") - 2.0e6) < 1e-3
+
+  test "a pull-up with no resolvable rail is not emitted, and the pin keeps its stand-in":
+    let nl = boardWithMcu()
+    let vio = addNet(nl, newNet("vio", ntPower))
+    discard connect(nl.components["U1"], "VDDIO", vio, ptPower)
+    setAnnotation(nl.components["U1"].pins["SDA"], "pull_up", 40.0e3.ohm)
+    discard expandPinModels(nl)
+    check not nl.components.hasKey("RU1_SDA_PU")
+    check nl.components.hasKey("RU1_SDA")

@@ -110,8 +110,10 @@ let d = design("rf_trx"):
     pin "VIN", vin_raw, kind = ptPower
     pin "GND", gnd_in, kind = ptPassive
   component J5, kind = "connector", description = "3-pin control header":
-    pin "TR", tr, kind = ptInput
-    pin "RX_EN", rx_en, kind = ptInput
+    # The radio drives both lines: a connector's pin kinds state what is
+    # plugged in (`netlist/kinds.connectorKinds`).
+    pin "TR", tr, kind = ptOutput
+    pin "RX_EN", rx_en, kind = ptOutput
     pin "GND", gnd, kind = ptGround
 
   # --- the antenna feed ------------------------------------------------------
@@ -330,7 +332,7 @@ let d = design("rf_trx"):
                     "multimeter can check"
 
   # Power-up state: with the radio unplugged the T/R line sits low.
-  require dc_voltage(tr) <= 0.3.V,
+  require dc_voltage(tr) <= 0.3.V, unmated = "J5",
           id = "REQ-RF-TRSAFE-001",
           because = "an undriven T/R line must select receive, so a " &
                     "transmitter is never switched into an open antenna port"

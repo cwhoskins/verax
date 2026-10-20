@@ -75,8 +75,9 @@ let d = design("lt8640a_buck"):
   net trss, kind = ntSignal                # soft-start
   net pg,   kind = ntSignal                # power good
   net bst,  kind = ntSignal                # bootstrap
+  net rt,   kind = ntSignal                # RT: resistor to GND sets fsw
   # INTVCC is an output of the part, not an input to it, but it is still a
-  # rail: RT hangs off it and an analysis that cuts a fragment out around
+  # rail: CVCC decouples it and an analysis that cuts a fragment out around
   # this area has to know what to drive it with. The datasheet says 3.4 V.
   net vcc,  kind = ntPower:                # INTVCC, internal 3.4 V regulator
     spec:
@@ -120,6 +121,7 @@ let d = design("lt8640a_buck"):
     pin "PG",    pg,   kind = ptOutput
     pin "BST",   bst,  kind = ptPassive
     pin "INTVCC", vcc, kind = ptPower
+    pin "RT",    rt,   kind = ptPassive
     pin "GND",   gnd,  kind = ptGround
     spec:
       voltage = 4.962.V
@@ -202,7 +204,7 @@ let d = design("lt8640a_buck"):
       package = "0402"
 
   component RT, kind = "resistor", value = "41.2k":
-    pin "1", vcc, kind = ptPassive
+    pin "1", rt,  kind = ptPassive
     pin "2", gnd, kind = ptPassive
 
   # A 1 ohm load: 5 V at 5 A is what the front page is specified at.

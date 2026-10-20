@@ -4,6 +4,8 @@ import std/[sequtils, strutils, tables, unittest]
 import verax/netlist
 import verax/netlist/pinmux
 import verax/netlist/interfaces/std
+import verax/netlist/annotations
+import verax/units
 
 proc mcuTable(name: string, complete = false): PartPinmux =
   ## A tiny STM32-shaped table: SPI1/SPI2/SPI3, one primary pin group plus an
@@ -216,3 +218,55 @@ suite "pinmux: validatePinmux":
     discard instantiate(top, "X1", child, @[tn], globals)
     check top.children["X1"].components["U1"].pins["PB13"].attrs[keyPinmuxSignal] == "sclk"
     check validatePinmux(top).anyIt(it.kind == "pinmux_incapable")
+
+suite "pinmux: reset-state pulls":
+  proc pulledTable(name: string): PartPinmux =
+    newPartPinmux(name, partNumbers = ["PART-" & name],
+      peripherals = [(name: "JTAG", iface: "jtag")],
+      pins = [(pin: "PA13", function: "JTAG.tms"),
+              (pin: "PA14", function: "JTAG.tck"),
+              (pin: "PA15", function: "GPIO")],
+      resetPulls = [(pin: "PA13", kind: pkUp, ohms: 40.kohm),
+                    (pin: "PA14", kind: pkDown, ohms: 40.kohm)])
+
+  proc partOn(nl: Netlist, table: string): Component =
+    let vdd = addNet(nl, newNet("vdd", ntPower))
+    result = addComponent(nl, newComponent("U1", kind = "mcu",
+                                           partNumber = "PART-" & table))
+    discard connect(result, "VDD", vdd, ptPower)
+    for pin in ["PA13", "PA14", "PA15"]:
+      discard connect(result, pin, addNet(nl, newNet(pin.toLowerAscii)), ptInput)
+
+  test "a part inherits its table's reset pulls, by pin":
+    registerPartPinmux(pulledTable("pulls-a"))
+    let u = partOn(newNetlist("t"), "pulls-a")
+    let tms = pinPull(u.pins["PA13"])
+    check tms.has and tms.value.kind == pkUp
+    check abs(float(tms.value.ohms) - 40.0e3) < 1e-9
+    check "pulls-a" in tms.value.origin
+    check pinPull(u.pins["PA14"]).value.kind == pkDown
+    check not hasPull(u.pins["PA15"])
+    check pullRail(u.pins["PA13"]).net.name == "vdd"
+
+  test "a pull stated on the pin overrides the table's":
+    registerPartPinmux(pulledTable("pulls-b"))
+    let u = partOn(newNetlist("t"), "pulls-b")
+    setAnnotation(u.pins["PA13"], "pull_down", 10.kohm)
+    let p = pinPull(u.pins["PA13"])
+    check p.value.kind == pkDown
+    check abs(float(p.value.ohms) - 10.0e3) < 1e-9
+    check p.value.origin == "stated on the pin"
+
+  test "a part with no table has only the pulls stated on its pins":
+    let nl = newNetlist("t")
+    let u = addComponent(nl, newComponent("U1", kind = "mcu"))
+    let p = connect(u, "BOOT", addNet(nl, newNet("boot")), ptInput)
+    check not hasPull(p)
+    setAnnotation(p, "pull_up", 47.kohm)
+    check hasPull(p)
+
+  test "a reset pull on a pin the table does not name is refused":
+    expect NetlistError:
+      registerPartPinmux(newPartPinmux("pulls-bad",
+        peripherals = [], pins = [(pin: "PA1", function: "GPIO")],
+        resetPulls = [(pin: "PA9", kind: pkUp, ohms: 40.kohm)]))

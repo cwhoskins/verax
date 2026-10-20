@@ -157,6 +157,21 @@ const builtinAnnotations* = [
          "per-pin-kind default spice/models substitutes for a part that " &
          "carries no model. On a component it applies to every pin of that " &
          "component that has no zin of its own."),
+  AnnDef(key: "pull_up", kind: akFloat, unit: "ohm", scopes: {asPin},
+    doc: "A pull-up built into the part, present in its reset/default state " &
+         "(an MCU's debug pins, a strap input): this many ohms from the pin " &
+         "to the rail `pull_rail` names. A part with a pinmux table states " &
+         "its reset pulls there (`PartPinmux.resetPulls`) and this key " &
+         "overrides one per pin. Static checks count it as a DC " &
+         "path (`analysis/io_check`); spice/models emits it as a resistor " &
+         "in place of the pin's defaulted `zin`. Not for a pull firmware " &
+         "enables later -- the checks assume the state the part powers up in."),
+  AnnDef(key: "pull_down", kind: akFloat, unit: "ohm", scopes: {asPin},
+    doc: "As `pull_up`, to ground."),
+  AnnDef(key: "pull_rail", kind: akString, scopes: {asPin},
+    doc: "The pin of the same component whose net a `pull_up` returns to " &
+         "(\"VDDIO2\"). Optional when all of the component's `ptPower` pins " &
+         "share one net; required when they do not."),
   AnnDef(key: "rout", kind: akFloat, unit: "ohm", scopes: {asComponent, asPin},
     doc: "Series output resistance of a source or regulator: the flat, " &
          "low-frequency part of its output impedance. Without it spice/" &
@@ -722,6 +737,37 @@ proc supplyCurrent*(p: Pin): AnnValue[Amps] =
   annotationAs(p, "supply_current", Amps)
 proc powerRating*(c: Component): AnnValue[Watts] =
   annotationAs(c, "power_rating", Watts)
+proc pullUp*(p: Pin): AnnValue[Ohms] = annotationAs(p, "pull_up", Ohms)
+proc pullDown*(p: Pin): AnnValue[Ohms] = annotationAs(p, "pull_down", Ohms)
+proc pullRail*(p: Pin): tuple[net: Net, problem: string] =
+  ## The net a pull-up on `p` returns to (stated on the pin, or from its
+  ## part's pinmux table -- `pinmux.pinPull`): the net of the pin
+  ## `pull_rail` names, else the one net every `ptPower` pin of the
+  ## component shares. `problem` says why there is none (`net` is then nil).
+  let c = p.component
+  let label = (if c != nil: c.designator else: "?") & "." & p.name
+  let named = annotation(p, "pull_rail")
+  if named.has:
+    if c == nil or not c.pins.hasKey(named.value):
+      return (nil, label & "'s pull_rail names pin '" & named.value &
+                   "', which the part does not have")
+    let n = c.pins[named.value].net
+    if n == nil:
+      return (nil, label & "'s pull_rail pin '" & named.value & "' is not connected")
+    return (n, "")
+  var rail: Net = nil
+  if c != nil:
+    for _, q in c.pins:
+      if q.kind != ptPower or q.net == nil: continue
+      if rail == nil: rail = q.net
+      elif q.net != rail:
+        return (nil, label & " has a pull-up but its part has more than " &
+                     "one supply net; say which with `pull_rail`")
+  if rail == nil:
+    return (nil, label & " has a pull-up but its part has no connected " &
+                 "ptPower pin to return it to; say which with `pull_rail`")
+  (rail, "")
+
 proc package*(c: Component): AnnValue[string] = annotation(c, "package")
 proc footprint*(c: Component): AnnValue[string] = annotation(c, "footprint")
 proc deviceValue*(c: Component): AnnValue[string] = annotation(c, "value")

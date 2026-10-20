@@ -46,6 +46,10 @@
 ## (`NRST`), and not to be confused with it: asserting one resets the debug
 ## port, the other the whole MCU.
 ##
+## `resetPulls` carries the debug port's reset-state pulls (PA13/PA15/PB4 up,
+## PA14 down, 40 k): the one part of the reset state the DC checks and the
+## simulator read (`pinmux.pinPull`).
+##
 ## Source: ST's `STM32_open_pin_data` (`mcu/STM32H563ZITx.xml`) -- the pin
 ## database STM32CubeMX itself reads -- cross-checked against the DS14258
 ## datasheet alternate-function table.  The `...ZIT6Q` part (internal SMPS) has a
@@ -54,6 +58,7 @@
 ## its own entry.
 
 import verax/netlist/pinmux
+import verax/units
 export pinmux
 
 registerPartPinmux(newPartPinmux("STM32H563",
@@ -200,4 +205,17 @@ registerPartPinmux(newPartPinmux("STM32H563",
     # --- Port H --------------------------------------------------------------
     (pin: "PH0", function: "GPIO"),
     (pin: "PH1", function: "GPIO")
+  ],
+  # The debug port's reset state (RM0481, "SWJ debug port pins"): out of
+  # reset these are already the JTAG alternate function, with JTDI, JTMS and
+  # NJTRST pulled up and JTCK pulled down (JTDO/PB3 floats). The pulls are
+  # the I/O's weak RPU/RPD, 40 k typical (30-50 k) in DS14258's I/O static
+  # characteristics. They are what holds a TAP whose header is unfitted, so
+  # every design using this part inherits them (`pinmux.pinPull`); a pin's
+  # own `pull_up`/`pull_down` overrides one.
+  resetPulls = [
+    (pin: "PA13", kind: pkUp,   ohms: 40.kohm),   # JTMS/SWDIO
+    (pin: "PA14", kind: pkDown, ohms: 40.kohm),   # JTCK/SWCLK
+    (pin: "PA15", kind: pkUp,   ohms: 40.kohm),   # JTDI
+    (pin: "PB4",  kind: pkUp,   ohms: 40.kohm),   # NJTRST
   ]))

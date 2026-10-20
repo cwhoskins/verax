@@ -16,6 +16,13 @@
 ##    unaffected.
 ## 3. *`functions =` on a wide signal*: SPI1 has one hardware NSS; extra CS
 ##    lines are GPIO (`functions = {"cs_1": "GPIO"}`).
+## 4. *Reset-state pulls live in the table too* (`resetPulls`): which pins
+##    the part pulls up or down out of reset is a datasheet fact about the
+##    part, like its capabilities, so every design using it gets them
+##    without restating them. `pinPull` is the one read: a `pull_up`/
+##    `pull_down` stated on the pin wins (an override, or a part with no
+##    table), else the table's. The DC checks and the simulator assume the
+##    reset state -- a pull firmware enables or removes later is not it.
 ##
 ## A SPICE round trip loses all of this.
 
@@ -24,6 +31,8 @@ import std/[strutils, tables]
 import ./types
 import ./graph
 import ./issue
+import ./annotations
+import ../units
 
 export issue
 
@@ -41,6 +50,15 @@ type
     iface*: string            ## InterfaceDef name ("spi"); "" when not an
                               ## interface (a bare ADC)
 
+  PullKind* = enum
+    pkUp = "pull-up"
+    pkDown = "pull-down"
+
+  ResetPull* = object
+    ## A pull the part applies to a pin out of reset (its weak RPU/RPD).
+    kind*: PullKind
+    ohms*: Ohms
+
   PartPinmux* = ref object
     name*: string                                  ## registry key, "STM32H563"
     partNumbers*: seq[string]                      ## part numbers it covers
@@ -50,6 +68,9 @@ type
       ## warning: the table claims the whole pinout.
     peripherals*: OrderedTable[string, PeripheralDef]
     pins*: OrderedTable[string, seq[PinCapability]]
+    resetPulls*: OrderedTable[string, ResetPull]
+      ## Pins the part pulls up or down out of reset, by pin name. A pull-up
+      ## returns to the part's supply (`annotations.pullRail`).
     attrs*: OrderedTable[string, string]
 
 const
@@ -73,11 +94,19 @@ proc newPartPinmux*(name: string,
                     peripherals: openArray[tuple[name, iface: string]],
                     pins: openArray[tuple[pin, function: string]],
                     partNumbers: openArray[string] = [],
-                    doc = "", complete = false): PartPinmux =
+                    doc = "", complete = false,
+                    resetPulls: openArray[tuple[pin: string, kind: PullKind,
+                                                ohms: Ohms]] = []): PartPinmux =
   ## Build a table from a datasheet: one `(name, iface)` per peripheral,
   ## one `(pin, "PERIPH.sig")` per capability; repeated pins accumulate.
+  ## `resetPulls`: one `(pin, pkUp|pkDown, ohms)` per pin pulled out of reset.
   result = PartPinmux(name: name, doc: doc, complete: complete,
                       partNumbers: @partNumbers)
+  for (pin, kind, ohms) in resetPulls:
+    if result.resetPulls.hasKey(pin):
+      raise newException(NetlistError,
+        "pinmux '" & name & "' lists a reset pull on pin '" & pin & "' twice")
+    result.resetPulls[pin] = ResetPull(kind: kind, ohms: ohms)
   for (pName, iface) in peripherals:
     result.peripherals[pName] = PeripheralDef(name: pName, iface: iface)
   for (pin, function) in pins:
@@ -118,6 +147,15 @@ proc validateDef(def: PartPinmux) =
         raise newException(NetlistError,
           "pinmux '" & def.name & "' pin '" & pin & "' lists capability '" &
           k & "' twice")
+  for pin, pull in def.resetPulls:
+    if not def.pins.hasKey(pin):
+      raise newException(NetlistError,
+        "pinmux '" & def.name & "' lists a reset " & $pull.kind & " on pin '" &
+        pin & "', which the table does not name")
+    if float(pull.ohms) <= 0.0:
+      raise newException(NetlistError,
+        "pinmux '" & def.name & "' pin '" & pin & "': a reset " & $pull.kind &
+        " must be a positive resistance")
 
 proc knownPinmuxes*(): seq[string] =
   for k in pinmuxRegistry.keys: result.add k
@@ -156,6 +194,37 @@ proc pinmuxFor*(c: Component): PartPinmux =
   if c.partNumber.len > 0 and pinmuxByPartNumber.hasKey(c.partNumber):
     return pinmuxRegistry[pinmuxByPartNumber[c.partNumber]]
   nil
+
+# --- internal pulls -------------------------------------------------------
+
+type PinPull* = object
+  ## A pin's internal pull, wherever it was stated.
+  kind*: PullKind
+  ohms*: Ohms
+  origin*: string
+    ## "stated on the pin", or "pinmux table 'STM32H563'".
+
+proc pinPull*(p: Pin): Stated[PinPull] =
+  ## The pull holding `p` in the state the part resets to: a `pull_up`/
+  ## `pull_down` stated on the pin (both at once is `io_check`'s
+  ## `pull_conflict`, read here as none), else its part's table
+  ## (`PartPinmux.resetPulls`), else absent. A pull-up's rail is
+  ## `annotations.pullRail(p)`.
+  let up = pullUp(p)
+  let down = pullDown(p)
+  if up.has and down.has: return absent(PinPull)
+  if up.has:
+    return stated(PinPull(kind: pkUp, ohms: up.value, origin: "stated on the pin"))
+  if down.has:
+    return stated(PinPull(kind: pkDown, ohms: down.value, origin: "stated on the pin"))
+  let def = pinmuxFor(p.component)
+  if def != nil and def.resetPulls.hasKey(p.name):
+    let r = def.resetPulls[p.name]
+    return stated(PinPull(kind: r.kind, ohms: r.ohms,
+                          origin: "pinmux table '" & def.name & "'"))
+  absent(PinPull)
+
+proc hasPull*(p: Pin): bool {.inline.} = pinPull(p).has
 
 # --- authoring helpers ---------------------------------------------------
 

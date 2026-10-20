@@ -1,11 +1,19 @@
 ## Static IO/electrical-rules checks over a `Netlist` (no simulation):
 ##
 ##  - `checkOutputConflicts`: no net driven by more than one output.
-##  - `checkDCPaths`: every input has a DC path to an output or a rail.
+##  - `checkDCPaths`: every input has a DC path to an output, a rail, or a
+##    pin's stated internal pull (`pull_up`/`pull_down`) -- and still has
+##    one with every connector unplugged (`"input_floats_unmated"`).
+##  - `checkPulls`: every stated pull-up can name the rail it returns to.
 ##
 ## A component that's neither conductive nor blocking (diodes, ICs, unknown
 ## kinds) yields `"ambiguous_dc_path"` rather than a guess;
 ## `spice_fallback` can try to resolve those.
+##
+## A connector's pins state what is plugged in (`kinds.connectorKinds`), so
+## a connector `ptOutput` is a driver that exists only while something is
+## mated. The DC walk counts it, then walks again without it: an input held
+## only by a mate floats when the cable is pulled.
 ##
 ## Only as good as the `Pin.kind` data: a raw SPICE deck has no pin
 ## directions, so these find nothing on it. Analyse a section by extracting
@@ -15,6 +23,7 @@ import std/[strutils, tables]
 import ../netlist/types
 import ../netlist/kinds
 import ../netlist/annotations
+import ../netlist/pinmux
 import ./issue
 
 export issue, kinds
@@ -70,30 +79,41 @@ proc checkOutputConflicts*(nl: Netlist, recursive = true): seq[Issue] =
     for _, child in nl.children:
       result.add checkOutputConflicts(child, recursive = true)
 
-proc isTerminus(net: Net): bool =
-  ## "Reached": a rail (`kinds.isRail`) or a net carrying an output pin.
+proc isMateDriver(p: Pin): bool {.inline.} =
+  ## A driver on a connector: the mate's, present only while one is plugged in.
+  p.kind == ptOutput and isConnector(p.component)
+
+proc isTerminus(net: Net, unmated: bool): bool =
+  ## "Reached": a rail (`kinds.isRail`), a net carrying an output pin, or
+  ## one carrying a pin with a stated internal pull. With `unmated`, a
+  ## connector's output (the mate's driver) does not count.
   if isRail(net): return true
   for p in net.pins:
-    if p.kind == ptOutput: return true
+    if p.kind == ptOutput and not (unmated and isMateDriver(p)): return true
+    if hasPull(p): return true
   false
 
-proc dcReachable(startNet: Net): tuple[reached: bool, ambiguous: seq[Component]] =
+proc dcReachable(startNet: Net, unmated = false):
+    tuple[reached: bool, ambiguous: seq[Component], mates: seq[Component]] =
   ## BFS from `startNet` across conductive components and hierarchy
   ## boundaries until a terminus or exhaustion. Ambiguous components are
-  ## collected, not traversed.
+  ## collected, not traversed. `mates` collects the connectors whose drivers
+  ## sat on a visited net (only meaningful with `unmated`).
   var visited: seq[Net] = @[startNet]
   var queue: seq[Net] = @[startNet]
   var ambiguous: seq[Component]
+  var mates: seq[Component]
   var qi = 0
   while qi < queue.len:
     let net = queue[qi]
     inc qi
-    if isTerminus(net):
-      return (true, ambiguous)
+    if isTerminus(net, unmated):
+      return (true, ambiguous, mates)
 
     for p in net.pins:
       let comp = p.component
       if comp == nil: continue
+      if isMateDriver(p) and comp notin mates: mates.add comp
       if comp.subNetlist != nil:
         if p.hierNet != nil and p.hierNet notin visited:
           visited.add p.hierNet
@@ -126,14 +146,39 @@ proc dcReachable(startNet: Net): tuple[reached: bool, ambiguous: seq[Component]]
           visited.add pp.net
           queue.add pp.net
 
-  (false, ambiguous)
+  (false, ambiguous, mates)
+
+proc floatsWhenUnmated*(net: Net): tuple[floats: bool, mates: seq[Component]] =
+  ## Whether `net` has a DC path with every connector's driver present but
+  ## none once they are all unplugged. `mates` names the connectors it
+  ## depends on. The `unmated` claim condition's guard
+  ## (`analysis/evaluators/dc_voltage`) and `checkDCPaths` share it.
+  let (reached, _, _) = dcReachable(net)
+  if not reached: return (false, @[])
+  let (stillReached, _, mates) = dcReachable(net, unmated = true)
+  if stillReached or mates.len == 0: return (false, @[])
+  (true, mates)
+
+proc floatsWithout*(net: Net, connectors: openArray[string]):
+    tuple[floats: bool, mates: seq[Component]] =
+  ## As `floatsWhenUnmated`, restricted to the named connectors: true only
+  ## when one of `connectors` is among the mates `net` depends on.
+  let (floats, mates) = floatsWhenUnmated(net)
+  if not floats: return (false, @[])
+  for m in mates:
+    if m.designator in connectors: result.mates.add m
+  result.floats = result.mates.len > 0
 
 proc checkDCPaths*(nl: Netlist, recursive = true): seq[Issue] =
   ## For every `ptInput` pin (recursing into children if `recursive`),
   ## walks for a DC path to a terminus. Unconnected: `"unconnected_input"`.
   ## Exhausted with nothing ambiguous: `"no_dc_path"` (`sevError`). With
   ## ambiguous parts: `"ambiguous_dc_path"` (`sevWarning`), which
-  ## `spice_fallback.resolveAmbiguousDCPaths` consumes.
+  ## `spice_fallback.resolveAmbiguousDCPaths` consumes. Reached only through
+  ## a connector's driver: `"input_floats_unmated"` (`sevWarning`) -- the
+  ## line floats with the cable pulled, so it wants a pull resistor or a
+  ## stated internal pull. Not raised for a connector's own inputs (the
+  ## mate's, gone with it) or an instance's pins (the child's are checked).
   for _, comp in nl.components:
     for _, p in comp.pins:
       if p.kind != ptInput: continue
@@ -142,8 +187,18 @@ proc checkDCPaths*(nl: Netlist, recursive = true): seq[Issue] =
           "input pin " & pinLabel(p) & " is not connected to any net",
           pins = @[p])
         continue
-      let (reached, ambiguous) = dcReachable(p.net)
-      if reached: continue
+      let (reached, ambiguous, _) = dcReachable(p.net)
+      if reached:
+        if isConnector(comp) or comp.subNetlist != nil: continue
+        let (floats, mates) = floatsWhenUnmated(p.net)
+        if floats:
+          result.add newIssue("input_floats_unmated", sevWarning,
+            "input pin " & pinLabel(p) & " on net '" & p.net.name &
+            "' is driven only through connector(s) " & componentListLabel(mates) &
+            "; with nothing plugged in it floats -- add a pull resistor, or " &
+            "state the pin's internal pull (`pull_up = ...`/`pull_down = ...`)",
+            net = p.net, pins = @[p], components = mates)
+        continue
       if ambiguous.len == 0:
         result.add newIssue("no_dc_path", sevError,
           "input pin " & pinLabel(p) & " on net '" & p.net.name &
@@ -159,6 +214,29 @@ proc checkDCPaths*(nl: Netlist, recursive = true): seq[Issue] =
   if recursive:
     for _, child in nl.children:
       result.add checkDCPaths(child, recursive = true)
+
+proc checkPulls*(nl: Netlist, recursive = true): seq[Issue] =
+  ## A pull that can't be honoured: a pin with both `pull_up` and
+  ## `pull_down` (`"pull_conflict"`), or a pull-up -- stated on the pin or
+  ## from its part's pinmux table -- with no resolvable rail
+  ## (`"pull_rail_unresolved"`). Both `sevError`: the DC checks and
+  ## the simulator would otherwise each guess differently.
+  for _, comp in nl.components:
+    for _, p in comp.pins:
+      if pullUp(p).has and pullDown(p).has:
+        result.add newIssue("pull_conflict", sevError,
+          "pin " & pinLabel(p) & " states both pull_up and pull_down",
+          net = p.net, pins = @[p])
+        continue
+      let pull = pinPull(p)
+      if not pull.has or pull.value.kind != pkUp: continue
+      let (_, problem) = pullRail(p)
+      if problem.len > 0:
+        result.add newIssue("pull_rail_unresolved", sevError, problem,
+                            net = p.net, pins = @[p])
+  if recursive:
+    for _, child in nl.children:
+      result.add checkPulls(child, recursive = true)
 
 proc isPort(nl: Netlist, net: Net): bool =
   ## Whether `net` is a published port of `nl`, by identity (port names may
@@ -213,4 +291,4 @@ proc checkRailVoltages*(nl: Netlist, recursive = true): seq[Issue] =
 
 proc analyzeIO*(nl: Netlist, recursive = true): seq[Issue] =
   checkOutputConflicts(nl, recursive) & checkDCPaths(nl, recursive) &
-    checkRailVoltages(nl, recursive)
+    checkPulls(nl, recursive) & checkRailVoltages(nl, recursive)

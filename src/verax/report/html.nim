@@ -355,6 +355,9 @@ proc benchHtml(b: BenchView): string =
   if b.detached.len > 0:
     result.add "<p>Removed so the stimulus could take their place: <code>" &
       h(b.detached.join(", ")) & "</code>.</p>"
+  if b.unmated.len > 0:
+    result.add "<p>Unplugged -- nothing mated, so nothing drives their pins: <code>" &
+      h(b.unmated.join(", ")) & "</code>.</p>"
   if b.dropped.len > 0:
     result.add "<p>Cut away by the scope (not simulated): <code>" &
       h(b.dropped.join(", ")) & "</code>.</p>"

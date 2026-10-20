@@ -39,6 +39,9 @@ type
     pinModels*: PinModelDefaults
     modelUnmodelledParts*: bool
     flattenHierarchy*: bool
+    unmated*: seq[string]
+      ## Connectors with nothing plugged in (`spice/bench.openBench`'s
+      ## `unmated`): the board solved with the cable pulled.
 
 proc defaultOperatingSpec*(): OperatingSpec =
   result.pinModels = defaultPinModels()
@@ -50,7 +53,15 @@ proc solveOperatingPoint*(nl: Netlist, spec = defaultOperatingSpec()): Operating
   ## terminate rails at the nominal voltages consumers are trying to find.
   # Clone, flatten, *then* `simReplace` (not `materializeSimNetlist`), so a
   # nested XSPICE component's ports use post-flatten net names.
-  var b = openBench(root(nl), "operating point", spOperating, spec.flattenHierarchy)
+  let label = if spec.unmated.len == 0: "operating point"
+              else: "operating point, " & spec.unmated.join(", ") & " unmated"
+  var b: Bench
+  try:
+    b = openBench(root(nl), label, spOperating, spec.flattenHierarchy,
+                  unmated = spec.unmated)
+  except NetlistError as e:
+    result.reason = e.msg
+    return
   if spec.modelUnmodelledParts:
     b.modelUnmodelled(spec.pinModels)
   b.scopeBench ScopeRequest(strategy: "whole")
@@ -59,7 +70,7 @@ proc solveOperatingPoint*(nl: Netlist, spec = defaultOperatingSpec()): Operating
 
   var sim: SimResult
   try:
-    sim = b.run(@[".op"], label = "operating point")
+    sim = b.run(@[".op"], label = label)
   except CatchableError as e:
     result.reason = e.msg
     return

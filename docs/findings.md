@@ -398,6 +398,31 @@ prerequisites — the dependencies are stated where they exist.
     1–3 are small: the engine already does the physics, only the plumbing
     from a design to it is missing.
 
+83. **What the datalogger's cable-pulled checks left open** (§83,
+    2026-10-18). A connector's pin kinds now state its mate (`netlist/kinds.connectorKinds`).
+    Internal pulls are stated per part (`PartPinmux.resetPulls`) or per pin
+    (`pull_up`/`pull_down`). `io_check` reports `input_floats_unmated`, and
+    `unmated = "J3"` on a `dc_voltage` claim simulates the board with the
+    cable pulled. Still open:
+    1. **`interface_no_controller` across hierarchy.** `datalogger`'s `bus`
+       (top) and `Xmcu`'s `i2c`/`jtag` still warn. Two causes. `mcu.nim`'s
+       U1 uses plain `pin` rather than `port i2c, controller` /
+       `port jtag, target`, so no modport is stamped. And
+       `interfaces.addPorts`/`promotePortDirections` carry `iface.dir`
+       across an instance boundary but not `iface.modport`. A sheet that
+       publishes an interface port group also shouldn't need its own
+       controller.
+    2. **`designs/rf_trx.nim`'s `rx_en` floats with J5 unplugged**
+       (`input_floats_unmated` on `U3.EN`). `tr` has `R_TR` to ground, and
+       `rx_en` has nothing. This is a real design question: the gain-block
+       supply's state with the radio unplugged. It needs a pull-down, or a
+       stated pull if the load switch has one.
+    3. **`unmated` is read by `spice.dc_voltage` only.** Other evaluators
+       (transient, startup, PDN) would each pass `unmated` to `openBench`
+       and list it in `conditions`. Add them when a claim needs one.
+    4. **A pull on a part that brings its own model is not simulated**
+       (reported as an assumption by `openBench`). The model owns its pins.
+
 ---
 
 ## Roles not yet written

@@ -143,11 +143,43 @@ proc partNets(old: Component): seq[Net] =
         "have no way to represent an open pin")
     result.add n
 
+const intvccVolts = 3.4
+  ## INTVCC's regulated voltage (datasheet, typical).
+
+proc standInIntvcc(nl: Netlist, old: Component) =
+  ## INTVCC is the part's own internal LDO output, which neither code model
+  ## has a port for. Left to itself the net holds only its decoupling cap
+  ## once the part is replaced -- a node with no DC path, which ngspice
+  ## refuses as a singular matrix -- so it is stood in as a 3.4 V source
+  ## behind 1 ohm. The resistance is load-bearing: an isolating scope also
+  ## terminates `vcc` at its stated voltage, and two ideal sources on one
+  ## node are themselves singular. Nothing on this board draws from INTVCC
+  ## but CVCC, so no measurement depends on its stiffness. Call before the
+  ## part is removed.
+  if not old.pins.hasKey("INTVCC") or not old.pins.hasKey("GND"): return
+  let vcc = old.pins["INTVCC"].net
+  let gnd = old.pins["GND"].net
+  if vcc == nil or gnd == nil: return
+  let inner = addNet(nl, newNet(old.designator & "_intvcc_ldo", kind = ntSignal))
+  let src = addComponent(nl, newComponent(
+    $spiceFormat.designatorPrefix("voltage_source") & old.designator & "_INTVCC",
+    kind = "voltage_source"))
+  discard connect(src, "+", inner, ptPower)
+  discard connect(src, "-", gnd, ptGround)
+  src.attrs["value"] = "DC " & spiceValue(intvccVolts)
+  let r = addComponent(nl, newComponent(
+    $spiceFormat.designatorPrefix("resistor") & old.designator & "_INTVCC",
+    kind = "resistor"))
+  discard connect(r, "1", inner, ptPassive)
+  discard connect(r, "2", vcc, ptPassive)
+  r.attrs["value"] = "1"
+
 proc buildLt8640aAvg(nl: Netlist, old: Component): Component =
   ## Replaces the real part with the averaged `A` device, wired to the same
   ## nets.
   let nets = partNets(old)
   let desig = old.designator
+  standInIntvcc(nl, old)
   removeComponent(nl, desig)
   addCodeModelInstance(nl, "A" & desig, lt8640a_avgSpec, nets,
                        cmPath = cmPathFor("lt8640a_avg"))
@@ -164,6 +196,7 @@ proc buildLt8640aSw(nl: Netlist, old: Component): Component =
   ## `useLt8640a`'s own doc comment for why those two and not a `MODE` pin.
   let nets = partNets(old)
   let desig = old.designator
+  standInIntvcc(nl, old)
   removeComponent(nl, desig)
   var params: seq[(string, string)]
   for key in ["fsw", "ilim", "dmax"]:
@@ -268,7 +301,7 @@ proc buckSheet*(cfg: BuckConfig): Netlist =
   ## ties it to `vbus` through a resistor rather than wiring it straight to
   ## `VIN`, the same board-input net `buckSheet`'s own `VIN` port lands on.
   let r1 = feedbackPair(cfg).r1
-  let rt = rtForFsw(cfg.freq)
+  let rtValue = rtForFsw(cfg.freq)
   # L1/COUT/CB1 are sized from the config's ripple targets rather than
   # stated as component values -- see `buck.inductorForRipple`,
   # `buck.outputCapForRipple` and `buck.inputCapForRipple`'s own doc
@@ -300,7 +333,14 @@ proc buckSheet*(cfg: BuckConfig): Netlist =
     net PG,   kind = ntSignal
     net EN,   kind = ntSignal
     net bst,  kind = ntSignal
-    net vcc,  kind = ntPower
+    # INTVCC: the part's own internal regulator, 3.4 V per the datasheet --
+    # a fact about the part, not this board, so it is stated here.
+    net vcc,  kind = ntPower:
+      spec:
+        voltage = 3.4.V
+    # RT has its own pin: a resistor from it to GND sets the switching
+    # frequency. It does not hang off INTVCC.
+    net rt,   kind = ntSignal
 
     for i, p in inBank.parts:
       component kind = "capacitor", designator = "CB1_" & $(i + 1),
@@ -326,6 +366,7 @@ proc buckSheet*(cfg: BuckConfig): Netlist =
       pin "PG",     PG,   kind = ptOutput
       pin "BST",    bst,  kind = ptPassive
       pin "INTVCC", vcc,  kind = ptPower
+      pin "RT",     rt,   kind = ptPassive
       pin "GND",    GND,  kind = ptGround
       spec:
         voltage = cfg.voltage
@@ -386,8 +427,8 @@ proc buckSheet*(cfg: BuckConfig): Netlist =
       spec:
         package = "0402"
 
-    component RT, kind = "resistor", value = spiceValue(float(rt)):
-      pin "1", vcc, kind = ptPassive
+    component RT, kind = "resistor", value = spiceValue(float(rtValue)):
+      pin "1", rt,  kind = ptPassive
       pin "2", GND, kind = ptPassive
 
   attachLt8640a(result, "U1", fsw = float(cfg.freq), ilim = float(cfg.ilim),
