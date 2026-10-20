@@ -64,7 +64,7 @@ re-runs one route to classify the blocker.
   the scene usable as a regression artefact and keep archive pictures
   comparable across versions.
 - **A renderer-neutral scene** with a strict JSON round trip, so other
-  front ends (the HTML browser, a future GUI, an MCP client) consume the same
+  front ends (the HTML browser, a future GUI) consume the same
   placed geometry instead of re-running layout.
 - **Honest failure in a picture.** A net that could not be routed is drawn
   as a distinct dashed marker, not omitted — the same "silence is not

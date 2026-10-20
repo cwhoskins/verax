@@ -79,7 +79,7 @@ maximum.
 4. **Global source registry** (`var registry: seq[CatalogSource]`) shared by
    every BoM compiled in the process; `clearCatalogSources` is the test
    escape hatch. A `BomContext` passed through `compileBom` would let two
-   compilations with different catalogues coexist (e.g. in the MCP server).
+   compilations with different catalogues coexist (e.g. in a long-lived Python session).
 
 5. **Two `BomLine` types** (here and `pcb/bom.nim`) with fields aligned by
    convention. Declared a non-goal to reconcile; a reader will still trip on

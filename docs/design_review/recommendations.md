@@ -119,9 +119,9 @@ already owned by another model), `registerPartFamily`, `registerAnnotation`
 (same key, different unit) would gain the collision check. A small generic
 `Registry[T]` in a root module would implement it once.
 
-### R3.2 — A `Session` that owns registries *(low; do when the MCP server needs it)*
+### R3.2 — A `Session` that owns registries *(low; do when a long-lived front end needs it)*
 
-For one-design-per-process CLI use, globals are fine. The MCP server and any
+For one-design-per-process CLI use, globals are fine. A long-lived front end (e.g. a Python session) and any
 parallel checker want two designs with different catalogues, roles or
 policies in one process. Move registries into a `Session` object with a
 process-default instance, keeping today's free procs as wrappers over the
@@ -161,7 +161,7 @@ verify/commands/      bom.nim, layout.nim, constraints.nim (each a subcommand)
 
 Each file may still import anything (that is `verify`'s privilege); the split
 is about where a new feature lands. The catalog is already consumed by both
-CLI and MCP, so it benefits most from being separable.
+the CLI and the Python spike, so it benefits most from being separable.
 
 ### R4.2 — Modularise the schematic engine gradually *(low)*
 

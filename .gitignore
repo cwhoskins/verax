@@ -8,7 +8,6 @@
 # `examples/divider.nim` sits next to it.
 /bin/
 /out/
-/mcp/verax_mcp
 nimcache/
 *.exe
 *.dll

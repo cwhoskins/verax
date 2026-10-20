@@ -183,7 +183,7 @@ In order of building:
    (pan/zoom/hover-highlight/drag-to-rearrange) is a static HTML+JS shell
    consuming that scene — or, since place/route are pure and stdlib-only, the
    whole pipeline can be compiled to JS with `nim js` and run in-browser with
-   no backend at all. Keep it a separate package, the way the MCP server is:
+   no backend at all. Keep it a separate package, the way `python/` is:
    "opt-in per import" applies to the simulator, and a visualizer is no
    different.
 

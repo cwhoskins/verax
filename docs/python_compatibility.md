@@ -4,7 +4,7 @@ Can a design — its circuit, its roles, its assertions — be authored in Pytho
 while `verax` itself stays a Nim library with no dependency beyond the
 standard library? **Yes, with one architectural commitment**: a
 `nimpy`-compiled extension module as a second, permanently-coexisting front
-end, packaged the way `mcp/` already is — a separate package, so the "opt-in
+end, packaged as a separate package, so the "opt-in
 per import" rule the core observes everywhere else stays true for the core
 and applies at the *package* boundary instead. This is a study, not a plan:
 nothing here is code, and every claim below that needs a working prototype to
@@ -104,11 +104,8 @@ turns out to be worth automating.
 
 The core's zero-dependency posture (`verax.nimble`: "Nothing beyond the
 standard library, on purpose... a nimble dependency cannot be made
-opt-in-per-import the way a module can") is exactly the reasoning that
-already put the (currently unbuilt) MCP server in its own package under
-`mcp/` rather than in `src/verax/`. A Python binding is the same shape of
-problem and gets the same answer: a new top-level package (`python/` or
-similar), depending on `nimpy` and on `verax` itself, building a `.so`/`.pyd`
+opt-in-per-import the way a module can") applies directly. A Python binding
+gets the obvious answer: a new top-level package (`python/` or similar), depending on `nimpy` and on `verax` itself, building a `.so`/`.pyd`
 nobody who just runs `nimble test` ever compiles. `src/verax/` stays
 untouched; `import verax/netlist` in an unrelated Nim program still costs
 nothing.
@@ -326,7 +323,7 @@ Nothing in `verax`'s domain model is macro-only — the macros are a
 compile-time convenience layer over runtime APIs that were already built to
 be registered into and called at runtime, which is precisely what a second,
 dynamic front end needs to be true. The core stays pure Nim/stdlib; a
-`nimpy`-based `python/` package sits beside it the way `mcp/` already does.
+`nimpy`-based `python/` package sits beside it as its own package.
 The open question isn't "can Python author a design" — it can, cleanly, for
 everything in §3–4 — it's "how far the callback boundary goes before it gets
 awkward" for custom evaluators specifically (§5), and that has a cheap,

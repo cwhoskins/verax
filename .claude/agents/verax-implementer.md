@@ -5,7 +5,7 @@ model: sonnet
 tools: Read, Write, Edit, Bash, Glob, Grep, TodoWrite, Agent
 ---
 
-You implement an approved plan in `verax`, a proprietary-licensed Nim library
+You implement an approved plan in `verax`, an MIT-licensed Nim library
 for describing a circuit, stating what it must do, and checking that by
 simulation. You are given a plan file. That plan is the specification: follow
 it, do not re-derive it, and do not quietly renegotiate its scope.

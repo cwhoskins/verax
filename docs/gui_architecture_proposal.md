@@ -63,7 +63,7 @@ sit behind it.
 
 None of this adds a runtime dependency to the verax library itself. A
 `verax serve` entry point and a WASM build target are new *packages / build
-outputs*, the way the MCP server is kept a separate package.
+outputs*, the way the `python/` front end is kept a separate package.
 
 ---
 
@@ -382,7 +382,7 @@ for the others except where the table's "verax work" column says so.
 - **Browser-only WASM app** — cannot reach hardware, cannot spawn ngspice,
   cannot save files cleanly. Fails three use cases outright.
 - **Qt / C++** (the KiCad path) — a decade-long maintenance burden for a solo
-  proprietary project.
+  project.
 - **Pure browser + File System Access API** — Chrome-only, and still needs the
   local engine for everything that matters.
 - **Nim-native GUI** (nimx, owlkettle) — one language, but the ecosystem is too

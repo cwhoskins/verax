@@ -1,7 +1,7 @@
 version       = "0.1.0"
 author        = "verax"
-description   = "nimpy extension exposing a slice of verax's netlist/verify API to Python -- the phase 1 spike for docs/python_compatibility.md. Not part of the verax package: this is what keeps the core's zero-nimble-dependency posture true, the same reasoning that put mcp/ in its own package."
-license       = "Proprietary"
+description   = "nimpy extension exposing a slice of verax's netlist/verify API to Python -- the phase 1 spike for docs/python_compatibility.md. Not part of the verax package: this is what keeps the core's zero-nimble-dependency posture true."
+license       = "MIT"
 srcDir        = "."
 
 requires "nim >= 2.2.10"

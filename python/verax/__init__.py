@@ -21,7 +21,7 @@ one piece still open -- see `verax.custom`'s own module doc for why.
 
 Nothing in this package is imported by `src/verax/`, and nothing under
 `src/verax/` imports `nimpy` -- the core stays zero-dependency, exactly the
-`mcp/`-shaped boundary the study recommends.
+separate-package boundary the study recommends.
 """
 
 from .contract import Design, RoleRef, role_ref

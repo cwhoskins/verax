@@ -123,8 +123,8 @@ manifest; the kernel itself is never asked to remember which face was which
 pad.
 
 Heaviest install of the three (OCP wheels run to roughly 400 MB). Worth one
-licensing sentence given verax is proprietary-licensed: OCCT is
-LGPL-2.1-with-exception, and a proprietary binary that merely *runs* a
+licensing sentence given verax is MIT-licensed: OCCT is
+LGPL-2.1-with-exception, and a binary that merely *runs* a
 subprocess never links against it — the sidecar shape this document's
 contract already commits to is the licence-clean one regardless of which
 engine sits behind it.
@@ -173,7 +173,7 @@ its own 2D support). Both are named here because they are the honest answer
 to "why not just link something", and both are set aside because either
 breaks `requires "nim >= 2.2.10"` and nothing else — this codebase's stated
 rule that a nimble dependency can only be opt-in per *package*
-(`mcp/` is the existing example), not per import, inside the core library.
+(`python/` is the existing example), not per import, inside the core library.
 
 ## 4. Appendix: plain OpenSCAD and `.csg` — the only no-Python option
 

@@ -10,7 +10,7 @@ Read root CLAUDE.md, every applicable nested CLAUDE.md, and docs/architecture.md
 Assess:
 - Dependency direction and cycles: shared types belong below siblings; integration of siblings belongs above them. Check actual edges, including the forbidden si -> spice and spice -> schematic dependencies and run_archive's integration role.
 - Ownership of data, responsibilities, and public APIs; misplaced simulation-only transforms, duplicated responsibilities, and unnecessary coupling or leakage across module boundaries.
-- Opt-in imports: src/verax.nim is not a re-export hub; importing a design or contract must not unnecessarily pull in simulators. MCP remains a separate opt-in package.
+- Opt-in imports: src/verax.nim is not a re-export hub; importing a design or contract must not unnecessarily pull in simulators.
 - Standard-library-only dependencies and Nim 2.2.10 compatibility. Do not claim compilation or runtime validation from reading alone.
 
 Return:

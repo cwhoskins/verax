@@ -224,7 +224,7 @@ codebases of this size can say why each field exists.
    copper walks", "setup key must include everything the run reads" — each is
    enforced by documentation and tests, not by construction.
 3. **Global registries with mixed semantics** (P3). Fine for one process
-   checking one design; awkward for the MCP server, parallel checking, or a
+   checking one design; awkward for a long-lived front end (e.g. the Python binding), parallel checking, or a
    test suite that mutates registries.
 4. **Large integrating modules.** `verify.nim` (1.5k lines: runner, catalog,
    BoM, layout, SI constraints, baseline, three renderers) and

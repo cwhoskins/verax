@@ -83,8 +83,8 @@ board)` is pure with respect to the design: structure → context → plan → r
 
 **Critique.**
 1. **It has become the integration point for everything.** At ~1.5k lines it
-   holds the runner, the role/quantity/annotation catalog (used by CLI and
-   MCP), three renderers, baseline diffing, BoM compilation entry, board
+   holds the runner, the role/quantity/annotation catalog (used by the CLI and
+   the Python spike), three renderers, baseline diffing, BoM compilation entry, board
    layout entry, SI constraint derivation, schematic archiving, and option
    parsing. Each new top-level capability lands here because this is the one
    module allowed to import everything. Splitting by concern (`verify/run`,

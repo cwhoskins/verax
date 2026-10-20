@@ -63,7 +63,7 @@ so "can a bare `require` reach this quantity?" is answerable without running.
 
 - **A design is useful without a simulator.** `explain`, `plan`,
   `explainPlan`, static evaluators and structural checks all run with only
-  `netlist` linked. The CLI catalog, the MCP server and the Python spike all
+  `netlist` linked. The CLI catalog and the Python spike both
   lean on this.
 - **Extensibility without privilege.** User roles and evaluators register
   the same way built-ins do; a test pins it.
@@ -91,7 +91,7 @@ so "can a bare `require` reach this quantity?" is answerable without running.
    `CatchableError`, so a malformed condition value becomes the default value
    with no issue raised. The DSL path produces well-formed values, so this
    mostly bites the runtime API (`assertion(..., condition = …)`, the Python
-   front end, MCP).
+   front end).
    **Fixed 2026-10-10:** `plan` refuses a malformed value, and `conditionFloat` now defaults only an absent key and raises on a malformed one.
 
 3. **Setup keys and run procs must agree, and nothing checks it.** Each

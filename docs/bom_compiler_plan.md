@@ -67,7 +67,7 @@ stays resolved the same way.
 
 1. **Network via `std/httpclient` with `-d:ssl`.** Still stdlib-only; no new
    nimble dependency, which is the rule `verax.nimble:19-24` states and the
-   reason the MCP server is its own package. The network source modules are
+   reason `python/` is its own package. The network source modules are
    opt-in per import and guard on `when defined(ssl)` so a build without the
    flag gets a named refusal rather than an obscure raise from inside
    `std/net`.

@@ -884,7 +884,7 @@ proc parseVerifyArgs*(args: openArray[string]): VerifyOptions =
 
 # --- the catalog: what may be claimed ------------------------------------
 #
-# Rendered to strings for both the CLI and the MCP server.
+# Rendered to strings so any front end (the CLI, the Python binding) can use them.
 
 proc describeInterfaces*(): string =
   var lines = @["interfaces -- declared wire bundles and their modports", ""]

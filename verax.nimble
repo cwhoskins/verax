@@ -3,7 +3,7 @@
 version       = "0.1.0"
 author        = "Charles Hoskins"
 description   = "State what a circuit must do, and check it"
-license       = "Proprietary"
+license       = "MIT"
 srcDir        = "src"
 binDir        = "bin"
 
@@ -17,8 +17,8 @@ namedBin["verax/cli"] = "verax"
 
 
 # Dependencies
-# Nothing beyond the standard library, on purpose -- see CLAUDE.md. The MCP
-# server lives in its own package under `mcp/` for exactly this reason: a
+# Nothing beyond the standard library, on purpose -- see CLAUDE.md. The Python
+# front end lives in its own package under `python/` for exactly this reason: a
 # nimble dependency cannot be made opt-in-per-import the way a module can.
 
 requires "nim >= 2.2.10"

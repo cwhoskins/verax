@@ -16,8 +16,7 @@ piece still not wired in — see "What's not built yet" below.
 `src/verax/` is untouched: nothing under it imports `nimpy`, and nothing in
 this directory is on any path `nimble test`/`nimble build` walks. This
 package depends on `nimpy` and on `verax` itself; the core stays
-zero-nimble-dependency, the same reasoning that already put the (unbuilt)
-MCP server under `mcp/` rather than `src/verax/`.
+zero-nimble-dependency.
 
 ## Layout
 
